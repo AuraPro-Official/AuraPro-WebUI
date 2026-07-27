@@ -19,7 +19,7 @@
 
 	import { reindexKnowledgeFiles } from '$lib/apis/knowledge';
 	import { deleteAllFiles } from '$lib/apis/files';
-	import { downloadHFModel  } from '$lib/apis/utils';
+	import { downloadHFModel } from '$lib/apis/utils';
 
 	import ResetUploadDirConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import ResetVectorDBConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
@@ -32,7 +32,7 @@
 	import Download from '$lib/components/icons/Download.svelte';
 	import CheckCircle from '$lib/components/icons/CheckCircle.svelte';
 	import { splitStream } from '$lib/utils';
-	
+
 	const i18n = getContext('i18n');
 
 	let updateEmbeddingModelLoading = false;
@@ -51,13 +51,13 @@
 
 	let embeddingDownloadInProgress = false;
 	let rerankingDownloadInProgress = false;
-	
+
 	// 使用对象来确保 Svelte 可以正确跟踪响应式更新
 	let downloadProgress = {
 		embedding: { current: null as number | null },
 		reranking: { current: null as number | null }
 	};
-	
+
 	let embeddingDownloadDone = false;
 	let rerankingDownloadDone = false;
 	let lastDownloadedEmbeddingModel = '';
@@ -360,7 +360,7 @@
 			}
 
 			console.log('[Download] Starting download for:', model);
-			
+
 			// 使用原始流读取方式，更加可靠
 			const reader = response.body.getReader();
 			const decoder = new TextDecoder();
@@ -370,21 +370,21 @@
 			while (!done) {
 				const { value, done: readerDone } = await reader.read();
 				done = readerDone;
-	            if (done) break;
-				
+				if (done) break;
+
 				if (value) {
 					textBuffer += decoder.decode(value, { stream: true });
-					
+
 					const lines = textBuffer.split('\n\n');
 					textBuffer = lines.pop() || '';
-					
+
 					for (const line of lines) {
 						if (!line.trim()) continue;
-						
+
 						try {
 							console.log('[Download] Raw line:', line);
 							const data = JSON.parse(line);
-							
+
 							if (data.error) {
 								console.error('[Download] Error from server:', data.error);
 								throw new Error(data.error);
@@ -411,7 +411,7 @@
 					}
 				}
 			}
-			
+
 			// 处理缓冲区中的剩余数据
 			if (textBuffer.trim()) {
 				try {
@@ -439,7 +439,8 @@
 	};
 
 	const downloadEmbeddingModel = () => downloadModelWithProgress(RAG_EMBEDDING_MODEL, 'embedding');
-	const downloadRerankingModel = () => downloadModelWithProgress(RAGConfig?.RAG_RERANKING_MODEL ?? '', 'reranking');
+	const downloadRerankingModel = () =>
+		downloadModelWithProgress(RAGConfig?.RAG_RERANKING_MODEL ?? '', 'reranking');
 	onMount(async () => {
 		await setEmbeddingConfig();
 
@@ -1340,8 +1341,9 @@
 														xmlns="http://www.w3.org/2000/svg"
 														viewBox="0 0 16 16"
 														fill="currentColor"
-														class="w-4 h-4">
-														</svg>
+														class="w-4 h-4"
+													>
+													</svg>
 												{/if}
 											</button>
 										{/if}

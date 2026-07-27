@@ -273,7 +273,7 @@
 											? item?.url?.startsWith('http')
 												? item.url
 												: `${WEBUI_API_BASE_URL}/files/${fileId}/content`
-										: item.url,
+											: item.url,
 										'_blank',
 										'noopener,noreferrer'
 									);

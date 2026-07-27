@@ -1,12 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Release — Create GitHub release from CHANGELOG, trigger Docker builds
-# Runs on pushes to main when package.json version changes
+# Runs manually after the release version and changelog are ready
 # ─────────────────────────────────────────────────────────────────────────────
 name: Release
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
@@ -22,13 +21,6 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v5
-
-      - name: Abort if package.json unchanged
-        run: |
-          git diff --cached --diff-filter=d package.json || {
-            echo "package.json not modified — skipping release"
-            exit 1
-          }
 
       - name: Read version
         id: pkg

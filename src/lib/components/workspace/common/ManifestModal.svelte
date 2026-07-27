@@ -53,7 +53,8 @@
 							{$i18n.t('Support this plugin:')}
 							<a
 								href={manifest.funding_url}
-								target="_blank" rel="noopener noreferrer"
+								target="_blank"
+								rel="noopener noreferrer"
 								class="underline text-blue-400 hover:text-blue-300">{manifest.funding_url}</a
 							>
 						</div>

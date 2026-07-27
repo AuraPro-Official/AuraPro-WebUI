@@ -91,13 +91,16 @@ export const createGlossary = async (
 };
 
 export const activateGlossary = async (token: string, id: string) => {
-	const res = await fetch(`${WEBUI_API_BASE_URL}/glossary/glossaries/${encodeURIComponent(id)}/activate`, {
-		method: 'POST',
-		headers: {
-			Accept: 'application/json',
-			authorization: `Bearer ${token}`
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/glossary/glossaries/${encodeURIComponent(id)}/activate`,
+		{
+			method: 'POST',
+			headers: {
+				Accept: 'application/json',
+				authorization: `Bearer ${token}`
+			}
 		}
-	})
+	)
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();
 			return res.json();

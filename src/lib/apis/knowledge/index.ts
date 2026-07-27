@@ -5,7 +5,7 @@ export const createNewKnowledge = async (
 	name: string,
 	description: string,
 	accessGrants: object[],
-    meta?: Record<string, any>  
+	meta?: Record<string, any>
 ) => {
 	let error = null;
 
@@ -20,7 +20,7 @@ export const createNewKnowledge = async (
 			name: name,
 			description: description,
 			access_grants: accessGrants,
-            meta: meta ?? null   // 新增
+			meta: meta ?? null // 新增
 		})
 	})
 		.then(async (res) => {
@@ -604,7 +604,7 @@ type KnowledgeUpdateForm = {
 	description?: string;
 	data?: object;
 	access_grants?: object[];
-	meta?: Record<string, any>  
+	meta?: Record<string, any>;
 };
 
 export const updateKnowledgeById = async (token: string, id: string, form: KnowledgeUpdateForm) => {
@@ -1249,8 +1249,7 @@ export const LANG_LABELS: Record<string, string> = {
 	bs: 'Bosanski'
 };
 
-const LANG_PATTERN =
-	/^([a-z]{2}(?:-[a-z]{2})?)[-_.](.+)$|^(.+?)[-_.]([a-z]{2}(?:-[a-z]{2})?)$/i;
+const LANG_PATTERN = /^([a-z]{2}(?:-[a-z]{2})?)[-_.](.+)$|^(.+?)[-_.]([a-z]{2}(?:-[a-z]{2})?)$/i;
 
 export function parseFileName(name: string): { base: string; lang: string } | null {
 	const nameWithoutExt = name.replace(/\.[^.]+$/, '');
@@ -1306,7 +1305,12 @@ export const getBilingualAlign = async (
 export const updateSentenceTranslation = async (
 	token: string,
 	payload: { collection_name: string; id: string; lang: string; text: string }
-): Promise<{ status: boolean; id: string; lang: string; langs_modified: Record<string, boolean> }> => {
+): Promise<{
+	status: boolean;
+	id: string;
+	lang: string;
+	langs_modified: Record<string, boolean>;
+}> => {
 	const res = await fetch(`${WEBUI_API_BASE_URL}/retrieval/process/bilingual/sentence`, {
 		method: 'PUT',
 		headers: {
@@ -1318,8 +1322,6 @@ export const updateSentenceTranslation = async (
 	if (!res.ok) throw new Error(await res.text());
 	return res.json();
 };
-
-
 
 export type GlossaryTerm = {
 	id: string;

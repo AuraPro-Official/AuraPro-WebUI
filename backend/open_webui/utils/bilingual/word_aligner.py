@@ -16,12 +16,14 @@ logger = logging.getLogger('bilingual_align')
 try:
     # https://github.com/cgohlke/pyicu-build/releases/latest
     from icu import BreakIterator, Locale
+
     _ICU_AVAILABLE = True
 except ImportError:
     _ICU_AVAILABLE = False
 
 try:
     from wordfreq import zipf_frequency
+
     _WORDFREQ_AVAILABLE = True
 except ImportError:
     _WORDFREQ_AVAILABLE = False
@@ -49,19 +51,16 @@ class PhraseNormalizer:
     @classmethod
     def _normalize_zh(cls, phrase: str) -> str:
         # 全角 -> 半角
-        norm = ''.join(
-            chr(ord(ch) - 0xFEE0) if 0xFF01 <= ord(ch) <= 0xFF5E else ch
-            for ch in phrase
-        )
+        norm = ''.join(chr(ord(ch) - 0xFEE0) if 0xFF01 <= ord(ch) <= 0xFF5E else ch for ch in phrase)
         norm = norm.replace('\u3000', ' ')
         norm = unicodedata.normalize('NFKC', norm)
-        norm = re.sub(r'\s+', '', norm) 
+        norm = re.sub(r'\s+', '', norm)
         return norm.strip()
 
 
-
 class POSFilter:
-    """ 基于 Stanza 的词性标注器 """
+    """基于 Stanza 的词性标注器"""
+
     NOUN_TAGS = {'NOUN', 'PROPN'}
     CONTENT_TAGS = {'NOUN', 'PROPN', 'VERB', 'ADJ', 'ADV'}
     FUNCTION_TAGS = {'ADP', 'DET', 'PRON', 'CCONJ', 'SCONJ', 'AUX', 'PART', 'NUM', 'PUNCT', 'SYM', 'INTJ'}
@@ -73,6 +72,7 @@ class POSFilter:
     @classmethod
     def _get_pipeline(cls, lang: str):
         import stanza
+
         if lang in cls._unsupported_langs:
             return None
         if lang not in cls._pipelines:
@@ -83,7 +83,7 @@ class POSFilter:
                         cls._pipelines[lang] = stanza.Pipeline(
                             lang=lang,
                             processors='tokenize,pos',
-                            tokenize_pretokenized=True,  
+                            tokenize_pretokenized=True,
                             verbose=False,
                         )
                     except Exception as e:
@@ -91,7 +91,7 @@ class POSFilter:
                         cls._unsupported_langs.add(lang)
                         return None
         return cls._pipelines.get(lang)
-    
+
     @classmethod
     def tag_tokens(cls, tokens: list[str], lang: str) -> list[str] | None:
         if not tokens:
@@ -99,20 +99,20 @@ class POSFilter:
         pipeline = cls._get_pipeline(lang)
         if pipeline is None:
             return None
-        text = ' '.join(tokens)  
+        text = ' '.join(tokens)
         doc = pipeline(text)
         tags = [word.upos for sent in doc.sentences for word in sent.words]
         if len(tags) != len(tokens):
             return None
         return tags
-    
+
     @classmethod
     def has_noun(cls, tokens: list[str], lang: str) -> bool:
         tags = cls.tag_tokens(tokens, lang)
         if tags is None:
             return True
         return any(t in cls.NOUN_TAGS for t in tags)
-    
+
     @classmethod
     def has_content_word(cls, tokens: list[str], lang: str) -> bool:
         tags = cls.tag_tokens(tokens, lang)
@@ -126,7 +126,7 @@ class POSFilter:
         if not window_tags:
             return True
         return all(t in cls.FUNCTION_TAGS for t in window_tags)
-    
+
     @classmethod
     def tag_and_lemmatize(cls, tokens: list[str], lang: str) -> tuple[list[str] | None, list[str] | None]:
         """同时返回 (pos_tags, lemmas)，失败时各自为 None。"""
@@ -145,7 +145,6 @@ class POSFilter:
         return tags, lemmas
 
 
-    
 class CandidateGenerator:
     ALLOW = {'NOUN', 'PROPN', 'ADJ', 'VERB'}
     END_TAGS = {'NOUN', 'PROPN'}
@@ -169,7 +168,7 @@ class CandidateGenerator:
                     break
 
                 if all(tag in self.STRICT_ALLOW for tag in window_tags):
-                    if pos_tags[j-1] in self.END_TAGS:
+                    if pos_tags[j - 1] in self.END_TAGS:
                         candidates.append((i, j))
                 else:
                     break
@@ -251,7 +250,7 @@ class Tokenizer:
 
     @classmethod
     def _tokenize_fallback(cls, text: str) -> list[str]:
-        return [t for t in re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE) if t.strip()]
+        return [t for t in re.findall(r'\w+|[^\w\s]', text, flags=re.UNICODE) if t.strip()]
 
     @classmethod
     def _warn_once(cls, key: str, msg: str):
@@ -264,20 +263,22 @@ class Tokenizer:
         text = (text or '').strip()
         if not text:
             return ''
-        
-        if lang == "zh":
+
+        if lang == 'zh':
             words = list(jieba.cut(text))
             return words
 
         if not _ICU_AVAILABLE:
             if not cls._warned_no_icu:
                 cls._warned_no_icu = True
-                logger.warning('PyICU 未安装，已降级为正则分词，无空格语言(zh/th/lo/km/my等)分词粒度会变粗，建议 pip install PyICU')
+                logger.warning(
+                    'PyICU 未安装，已降级为正则分词，无空格语言(zh/th/lo/km/my等)分词粒度会变粗，建议 pip install PyICU'
+                )
             words = cls._tokenize_fallback(text)
         else:
             words = cls._tokenize_icu(text, lang)
         return words
-    
+
 
 class WordAligner:
     _instance: 'WordAligner | None' = None
@@ -285,20 +286,19 @@ class WordAligner:
     def __init__(
         self,
         model: str = 'bert',
-        matching_method: str = 'a', 
+        matching_method: str = 'a',
         layer: int = 8,
     ):
 
         from simalign import SentenceAligner
+
         self._aligner = SentenceAligner(
             model=model,
             token_type='bpe',
             matching_methods=matching_method,
             layer=layer,
         )
-        self._matching_key = {'a': 'inter', 'i': 'itermax', 'm': 'mwmf'}.get(
-            matching_method, 'itermax'
-        )
+        self._matching_key = {'a': 'inter', 'i': 'itermax', 'm': 'mwmf'}.get(matching_method, 'itermax')
 
     @classmethod
     def get_instance(cls) -> 'WordAligner':
@@ -316,7 +316,6 @@ class WordAligner:
         return [self.align(src, tgt) for src, tgt in pairs]
 
 
-
 @dataclass
 class GlossaryEntry:
     source: str
@@ -329,15 +328,17 @@ class GlossaryEntry:
 
 class PhrasePairExtractor:
     """优化后的 PhrasePairExtractor：基于 CandidateGenerator 遍历"""
+
     def __init__(self, max_phrase_len: int = 5):
         self.max_phrase_len = max_phrase_len
         self.generator = CandidateGenerator()
         self._STOPWORDS = ['的', '了', '在', '是', '和', '与', '也', '都', '就', '但', '而', '这', '那', '个']
 
     def _is_stopword(self, tokens: list[str]) -> bool:
-        if len(tokens) > 1: return False
+        if len(tokens) > 1:
+            return False
         return tokens[0].lower() in self._STOPWORDS
-    
+
     def _clean_phrase(self, tokens: list[str]) -> str:
         """
         对 token 列表进行清洗：
@@ -398,14 +399,14 @@ class PhrasePairExtractor:
                 continue
 
             src_phrase_tokens = src_tokens[start:end]
-            tgt_phrase_tokens = tgt_tokens[tgt_min:tgt_max + 1]
+            tgt_phrase_tokens = tgt_tokens[tgt_min : tgt_max + 1]
 
             if src_pos is not None:
                 src_content_count = sum(1 for p in src_pos[start:end] if p in POSFilter.CONTENT_TAGS)
                 if src_content_count == 0 or src_content_count / len(src_phrase_tokens) < 0.6:
                     continue
             if tgt_pos is not None:
-                tgt_content_count = sum(1 for p in tgt_pos[tgt_min:tgt_max + 1] if p in POSFilter.CONTENT_TAGS)
+                tgt_content_count = sum(1 for p in tgt_pos[tgt_min : tgt_max + 1] if p in POSFilter.CONTENT_TAGS)
                 if tgt_content_count == 0 or tgt_content_count / len(tgt_phrase_tokens) < 0.6:
                     continue
 
@@ -455,14 +456,11 @@ class GlossaryBuilder:
         if not valid:
             return
 
-        tok_pairs = [
-            (Tokenizer.tokenize(s, self.src_lang), Tokenizer.tokenize(t, self.tgt_lang))
-            for s, t in valid
-        ]
+        tok_pairs = [(Tokenizer.tokenize(s, self.src_lang), Tokenizer.tokenize(t, self.tgt_lang)) for s, t in valid]
         tok_pairs = [(s, t) for s, t in tok_pairs if s and t]
         if not tok_pairs:
             return
-        
+
         filtered_pairs, filtered_pos, filtered_lemmas = [], [], []
         for tok_src_tokens, tok_tgt_tokens in tok_pairs:
             src_pos, src_lemmas = POSFilter.tag_and_lemmatize(tok_src_tokens, self.src_lang)

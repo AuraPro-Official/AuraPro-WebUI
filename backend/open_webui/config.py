@@ -182,9 +182,7 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 CUSTOM_NAME = os.getenv('CUSTOM_NAME', '')
 if CUSTOM_NAME:
-    log.warning(
-        'CUSTOM_NAME remote branding is no longer supported; use bundled static assets and WEBUI_NAME instead.'
-    )
+    log.warning('CUSTOM_NAME remote branding is no longer supported; use bundled static assets and WEBUI_NAME instead.')
 
 
 ####################################

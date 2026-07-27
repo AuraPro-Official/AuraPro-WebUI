@@ -313,4 +313,3 @@ async def get_model_chats(
         chats=[ModelChatEntry.model_validate(chat) for chat in result['items']],
         total=result['total'] or 0,
     )
-

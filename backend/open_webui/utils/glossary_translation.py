@@ -25,6 +25,7 @@ from open_webui.retrieval.utils import VectorSearchRetriever
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.utils.lazy_model import LazyModel
+
 log = logging.getLogger(__name__)
 
 
@@ -39,6 +40,7 @@ def _load_jieba():
 
     jieba.initialize()
     return jieba
+
 
 OFFICIAL_GLOSSARIES: list[dict[str, str]] = [
     {
@@ -997,10 +999,10 @@ def _glossary_language_pair(settings: dict[str, Any]) -> tuple[str, str]:
 def _lang_to_code(lang_name: str) -> str:
     lang_name = lang_name.strip()
 
-    if lang_name == "中":
-        return "zh"
-    elif lang_name == "英":
-        return "en" 
+    if lang_name == '中':
+        return 'zh'
+    elif lang_name == '英':
+        return 'en'
 
     try:
         lang = langcodes.find(lang_name)
@@ -1008,9 +1010,9 @@ def _lang_to_code(lang_name: str) -> str:
     except LookupError:
         return lang_name.casefold()
 
+
 def _find_explicit_command(text: str, lang_name: str, window: int = 20) -> bool:
-    candidates = [f'翻译成{lang_name}', f'翻译{lang_name}', f'translate to {lang_name}',
-                  f'translate into {lang_name}']
+    candidates = [f'翻译成{lang_name}', f'翻译{lang_name}', f'translate to {lang_name}', f'translate into {lang_name}']
     head = text[:window]
     tail = text[-window:] if len(text) > window else text
 
@@ -1020,6 +1022,7 @@ def _find_explicit_command(text: str, lang_name: str, window: int = 20) -> bool:
             return True
     return False
 
+
 def _smart_language_detect(text: str, source_lang: str, target_lang: str) -> tuple[str, str]:
     source_lang = source_lang.strip() or DEFAULT_SETTINGS['source_lang']
     target_lang = target_lang.strip() or DEFAULT_SETTINGS['target_lang']
@@ -1028,7 +1031,7 @@ def _smart_language_detect(text: str, source_lang: str, target_lang: str) -> tup
         return target_lang, source_lang
     if _find_explicit_command(text, target_lang):
         return source_lang, target_lang
-    
+
     from fast_langdetect import detect_language
 
     detected_code = detect_language(text).lower()
@@ -1041,10 +1044,10 @@ def _smart_language_detect(text: str, source_lang: str, target_lang: str) -> tup
         return target_lang, source_lang
     if detected_code != source_code and detected_code != target_code:
         # 因为中文检测性较高，为了避免一些小语种检测错误，所以返回的时候应该以小语种优先
-        return target_lang, source_lang         
+        return target_lang, source_lang
 
     return source_lang, target_lang
-    
+
     # explicit_to_source = [f'翻译成{source_lang}', f'翻译{source_lang}', f'translate to {source_lang}']
     # explicit_to_target = [f'翻译成{target_lang}', f'翻译{target_lang}', f'translate to {target_lang}']
     # if any(cmd.casefold() in text.casefold() for cmd in explicit_to_source):
@@ -1072,7 +1075,6 @@ def _smart_language_detect(text: str, source_lang: str, target_lang: str) -> tup
     #     return other_side, chinese_side
 
     # return source_lang, target_lang
-
 
 
 @dataclass
@@ -1224,9 +1226,7 @@ class GlossaryMatcher:
     @staticmethod
     def _entries_hash(entries: dict[str, str]) -> str:
         """用内容 hash 做缓存 key，比 id() 可靠"""
-        h = hashlib.sha256(
-            json.dumps(sorted(entries.items()), ensure_ascii=False).encode()
-        ).hexdigest()
+        h = hashlib.sha256(json.dumps(sorted(entries.items()), ensure_ascii=False).encode()).hexdigest()
         return h
 
     def _parse_side(self, raw: str) -> ParsedSide:
@@ -1449,7 +1449,6 @@ class BilingualKnowledgeReader:
         else:
             self._bm25_cache.pop(collection_name, None)
 
-    
     async def _get_or_build_bm25_index(
         self,
         collection_name: str,
@@ -1484,9 +1483,7 @@ class BilingualKnowledgeReader:
             }
 
             expired = [
-                key
-                for key, value in self._bm25_cache.items()
-                if now - value['built_at'] >= self._bm25_index_ttl
+                key for key, value in self._bm25_cache.items() if now - value['built_at'] >= self._bm25_index_ttl
             ]
             for key in expired:
                 self._bm25_cache.pop(key, None)
@@ -1503,17 +1500,16 @@ class BilingualKnowledgeReader:
 
             self._bm25_cache[collection_name] = entry
             return entry
- 
 
     @classmethod
     def name_to_langcode(cls, name: str, default: str = 'en') -> str:
         if not name or not isinstance(name, str):
             return default
 
-        if name == "中":
-            return "zh"
-        elif name == "英":
-            return "en" 
+        if name == '中':
+            return 'zh'
+        elif name == '英':
+            return 'en'
 
         try:
             name = name.strip()
@@ -1617,15 +1613,13 @@ class BilingualKnowledgeReader:
         if lcs_len > min_overlap:
             return 100.0
         return 0.0
-    
-    
+
     _jieba = LazyModel(_load_jieba, 'jieba tokenizer', log)
 
     @classmethod
     def _tokenize(cls, text: str) -> list[str]:
         jieba = cls._jieba.get()
         return [token.strip() for token in jieba.cut_for_search(text) if token.strip()]
- 
 
     async def _bm25_recall(
         self,
@@ -1637,15 +1631,15 @@ class BilingualKnowledgeReader:
         entry = await self._get_or_build_bm25_index(collection_name, fetch_fn)
         if entry is None:
             return []
- 
+
         tokenized_query = self._tokenize(query)
         scores = entry['bm25'].get_scores(tokenized_query)
- 
+
         ranked = sorted(zip(scores, entry['texts'], entry['metadatas']), key=lambda x: x[0], reverse=True)
         ranked = [(s, t, m) for s, t, m in ranked if s > 0]
         if not ranked:
             return []
- 
+
         max_score = ranked[0][0]
         return [(s / max_score, t, m) for s, t, m in ranked[:k]]
 
@@ -1666,7 +1660,7 @@ class BilingualKnowledgeReader:
             (doc.metadata.get('score', doc.metadata.get('distance', 0.0)), doc.page_content, doc.metadata)
             for doc in docs
         ]
- 
+
     def _rerank_recall(
         self,
         query: str,
@@ -1683,7 +1677,7 @@ class BilingualKnowledgeReader:
         documents = [Document(page_content=c[1], metadata=c[2]) for c in candidates]
         scores = reranking_function(query, documents)
         reranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
-        
+
         scored = [(score, cand[1], cand[2]) for score, cand in reranked]
         above_threshold = [c for c in scored if c[0] >= r_score]
 
@@ -1691,9 +1685,9 @@ class BilingualKnowledgeReader:
         if len(above_threshold) >= top_n:
             result = above_threshold
         else:
-            result = scored[:max(top_n, len(above_threshold))]
+            result = scored[: max(top_n, len(above_threshold))]
         return self._deduplicate_candidates(result)[:top_n]
-    
+
     @staticmethod
     def _content_hash(text: str) -> str:
         return hashlib.sha256(text.encode()).hexdigest()
@@ -1718,7 +1712,7 @@ class BilingualKnowledgeReader:
             seen.add(normalized)
             deduped.append((score, text, meta))
         return deduped
- 
+
     def _fuse(
         self,
         bm25_results: list[tuple[float, str, dict]],
@@ -1726,11 +1720,11 @@ class BilingualKnowledgeReader:
         bm25_weight: float,
     ) -> list[tuple[float, str, dict]]:
         combined: dict[str, tuple[float, str, dict]] = {}
- 
+
         for score, text, meta in bm25_results:
             h = self._content_hash(text)
             combined[h] = (score * (1 - bm25_weight), text, meta)
- 
+
         for score, text, meta in embedding_results:
             h = self._content_hash(text)
             weighted = score * bm25_weight
@@ -1739,11 +1733,10 @@ class BilingualKnowledgeReader:
                 combined[h] = (prev_score + weighted, prev_text, prev_meta)
             else:
                 combined[h] = (weighted, text, meta)
- 
+
         fused = sorted(combined.values(), key=lambda x: x[0], reverse=True)
         return self._deduplicate_candidates([(score, text, meta) for score, text, meta in fused])
 
- 
     async def _retrieve_from_collection(
         self,
         collection_name: str,
@@ -1757,25 +1750,23 @@ class BilingualKnowledgeReader:
         hybrid_bm25_weight: float,
     ) -> list[tuple[float, str, dict]]:
         bm25_results = (
-            await self._bm25_recall(collection_name, query, k_recall, fetch_fn)
-            if hybrid_bm25_weight > 0
-            else []
+            await self._bm25_recall(collection_name, query, k_recall, fetch_fn) if hybrid_bm25_weight > 0 else []
         )
         embedding_results = (
             await self._embedding_recall(collection_name, query, embedding_function, k_recall)
             if hybrid_bm25_weight < 1
             else []
         )
- 
+
         if hybrid_bm25_weight <= 0:
             fused = embedding_results
         elif hybrid_bm25_weight >= 1:
             fused = bm25_results
         else:
             fused = self._fuse(bm25_results, embedding_results, hybrid_bm25_weight)
- 
+
         return self._rerank_recall(query, fused, reranking_function, top_n=k_final, r_score=r)
- 
+
     async def retrieve(
         self,
         collection_names: list[str],
@@ -1793,7 +1784,7 @@ class BilingualKnowledgeReader:
             except Exception as e:
                 log.exception(f'Failed to fetch collection {name}: {e}')
                 return None
- 
+
         async def _run(collection_name: str, query: str):
             try:
                 return await self._retrieve_from_collection(
@@ -1810,10 +1801,10 @@ class BilingualKnowledgeReader:
             except Exception as e:
                 log.exception(f'Error retrieving from {collection_name}: {e}')
                 return None
- 
+
         tasks = [(name, q) for name in collection_names for q in queries]
         all_results = await asyncio.gather(*[_run(name, q) for name, q in tasks])
- 
+
         merged: dict[str, tuple[float, str, dict]] = {}
         for result in all_results:
             if not result:
@@ -1822,59 +1813,62 @@ class BilingualKnowledgeReader:
                 h = self._content_hash(text)
                 if h not in merged or score > merged[h][0]:
                     merged[h] = (score, text, meta)
- 
+
         final = self._deduplicate_candidates(list(merged.values()))[:k_final]
         if not final:
             return {'distances': [[]], 'documents': [[]], 'metadatas': [[]]}
- 
+
         distances, documents, metadatas = zip(*final)
         return {
             'distances': [list(distances)],
             'documents': [list(documents)],
             'metadatas': [list(metadatas)],
         }
- 
+
     async def find_matches(self, request, queries, source_lang, target_lang, user):
         try:
             async with get_async_db() as session:
                 knowledges = await Knowledges.get_knowledge_bases(db=session)
                 filter_knowledges = [
-                    item for item in knowledges
-                    if isinstance(getattr(item, 'meta', None), dict)
-                    and item.meta.get('knowledge_type') == 'bilingual'
+                    item
+                    for item in knowledges
+                    if isinstance(getattr(item, 'meta', None), dict) and item.meta.get('knowledge_type') == 'bilingual'
                 ]
- 
+
             collection_names = [k.id for k in filter_knowledges]
-            knowledge_name_by_id = {
-                k.id: (getattr(k, 'name', None) or k.id) for k in filter_knowledges
-            }
-            embedding_function = lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(query, prefix=prefix, user=user)
+            knowledge_name_by_id = {k.id: (getattr(k, 'name', None) or k.id) for k in filter_knowledges}
+            embedding_function = lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                query, prefix=prefix, user=user
+            )
             reranking_function = (
                 (lambda query, documents: request.app.state.RERANKING_FUNCTION(query, documents, user=user))
-                if request.app.state.RERANKING_FUNCTION else None
+                if request.app.state.RERANKING_FUNCTION
+                else None
             )
- 
+
             retrieval_config = await Config.get_many(
-                'rag.top_k', 'rag.relevance_threshold', 'rag.hybrid_bm25_weight',
+                'rag.top_k',
+                'rag.relevance_threshold',
+                'rag.hybrid_bm25_weight',
             )
- 
+
             k_final = retrieval_config.get('rag.top_k', 3)
             k_recall = max(k_final * 5, 20)
 
             for collection_name in collection_names:
                 await self.cleanup_duplicate_collection_content(collection_name)
- 
+
             raw_result = await self.retrieve(
                 collection_names=collection_names,
                 queries=[queries],
                 embedding_function=embedding_function,
                 reranking_function=reranking_function,
                 k_recall=k_recall,
-                k_final=k_final, 
+                k_final=k_final,
                 r=retrieval_config.get('rag.relevance_threshold', 0.0),
                 hybrid_bm25_weight=retrieval_config.get('rag.hybrid_bm25_weight', 0.5),
             )
- 
+
             metadatas = raw_result.get('metadatas', [[]])[0]
             is_match = False
 
@@ -1888,36 +1882,41 @@ class BilingualKnowledgeReader:
 
             match is_match:
                 case True:
-                    return await self.find_matches_sentence(raw_result, source_lang, target_lang, collection_names, queries, knowledge_name_by_id)
+                    return await self.find_matches_sentence(
+                        raw_result, source_lang, target_lang, collection_names, queries, knowledge_name_by_id
+                    )
                 case False:
-                    return await self.find_matches_words(raw_result, source_lang, target_lang, collection_names, knowledge_name_by_id)
+                    return await self.find_matches_words(
+                        raw_result, source_lang, target_lang, collection_names, knowledge_name_by_id
+                    )
 
         except Exception as e:
             log.warning('BilingualKnowledgeReader: 查询知识库失败: %s', e)
             return []
-        
+
     async def find_matches_words(self, raw_result, source_lang, target_lang, collection_names, knowledge_name_by_id):
         documents = raw_result.get('documents', [[]])[0]
         metadatas = raw_result.get('metadatas', [[]])[0]
 
         source_lang_code = self.name_to_langcode(source_lang)
         target_lang_code = self.name_to_langcode(target_lang)
-        
+
         sentence_collection = []
         for collection_name in collection_names:
             for _, meta in zip(documents, metadatas):
-
                 bilingual_id = meta.get('bilingual_id')
                 para_idx = meta.get('para_index')
                 sentence_index = meta.get('sentence_index')
 
                 collection = VECTOR_DB_CLIENT.client.get_collection(collection_name)  # noqa: F821
                 result = collection.get(
-                    where={'$and': [
-                        {'bilingual_id': {'$eq': bilingual_id}},
-                        {'para_index': {'$eq': para_idx}},
-                        {'sentence_index': {'$eq': sentence_index}},
-                    ]},
+                    where={
+                        '$and': [
+                            {'bilingual_id': {'$eq': bilingual_id}},
+                            {'para_index': {'$eq': para_idx}},
+                            {'sentence_index': {'$eq': sentence_index}},
+                        ]
+                    },
                     include=['metadatas'],
                 )
 
@@ -1928,9 +1927,9 @@ class BilingualKnowledgeReader:
         words_list = []
         sources_by_collection: dict[str, dict] = {}
         for collection_name, result in sentence_collection:
-            metadatas = result.get("metadatas", [])
+            metadatas = result.get('metadatas', [])
             for meta in metadatas:
-                word_langs = meta.get("words", {})
+                word_langs = meta.get('words', {})
                 if isinstance(word_langs, str):
                     word_langs = ast.literal_eval(word_langs)
                 words = word_langs.get(target_lang_code, '')
@@ -1947,7 +1946,7 @@ class BilingualKnowledgeReader:
                 tgt_text = langs.get(target_lang_code, '')
                 if not collection_name:
                     continue
-            
+
                 knowledge_name = knowledge_name_by_id.get(collection_name, collection_name)
                 bucket = sources_by_collection.setdefault(
                     collection_name,
@@ -1973,7 +1972,9 @@ class BilingualKnowledgeReader:
                 )
         return words_list, list(sources_by_collection.values()), False
 
-    async def find_matches_sentence(self, raw_result, source_lang, target_lang, collection_names, queries, knowledge_name_by_id):
+    async def find_matches_sentence(
+        self, raw_result, source_lang, target_lang, collection_names, queries, knowledge_name_by_id
+    ):
         source_lang_code = self.name_to_langcode(source_lang)
         target_lang_code = self.name_to_langcode(target_lang)
 
@@ -1995,7 +1996,10 @@ class BilingualKnowledgeReader:
         full_para_map = {}
         for key in list(para_list):
             per_collection = await self._fetch_paragraph_sentences(
-                key, collection_names, source_lang_code, target_lang_code,
+                key,
+                collection_names,
+                source_lang_code,
+                target_lang_code,
             )
             full_para_map[key] = []
             for collection_name, sent_map, _ in per_collection:
@@ -2013,7 +2017,9 @@ class BilingualKnowledgeReader:
         sources_by_collection: dict[str, dict] = {}
         for key, para_items in full_para_map.items():
             collection_name = para_source_collection.get(key)
-            knowledge_name = knowledge_name_by_id.get(collection_name, collection_name) if collection_name else '双语知识库'
+            knowledge_name = (
+                knowledge_name_by_id.get(collection_name, collection_name) if collection_name else '双语知识库'
+            )
 
             for sentence_items in para_items:
                 for _, item in sentence_items.items():
@@ -2066,10 +2072,12 @@ class BilingualKnowledgeReader:
         for collection_name in collection_names:
             collection = VECTOR_DB_CLIENT.client.get_collection(collection_name)  # noqa: F821
             result = collection.get(
-                where={'$and': [
-                    {'bilingual_id': {'$eq': bilingual_id}},
-                    {'para_index': {'$eq': para_idx}},
-                ]},
+                where={
+                    '$and': [
+                        {'bilingual_id': {'$eq': bilingual_id}},
+                        {'para_index': {'$eq': para_idx}},
+                    ]
+                },
                 include=['metadatas'],
             )
             sent_map = {}
@@ -2106,14 +2114,16 @@ def _build_glossary_block(
 ) -> str:
     max_terms = int(settings.get('max_terms_injected') or 10)
     configured_source, configured_target = _glossary_language_pair(settings)
-    reverse = _language_key(source_lang) == _language_key(configured_target) and \
-              _language_key(target_lang) == _language_key(configured_source)
-    forward = _language_key(source_lang) == _language_key(configured_source) and \
-              _language_key(target_lang) == _language_key(configured_target)
+    reverse = _language_key(source_lang) == _language_key(configured_target) and _language_key(
+        target_lang
+    ) == _language_key(configured_source)
+    forward = _language_key(source_lang) == _language_key(configured_source) and _language_key(
+        target_lang
+    ) == _language_key(configured_target)
     if not (forward or reverse):
         return ''
 
-    key = settings.get("glossary_path")
+    key = settings.get('glossary_path')
     hits = matcher.find_matches(text, key, entries, max_terms=max_terms, reverse=reverse)
     if not hits:
         return ''
@@ -2426,8 +2436,9 @@ def build_learning_audio_prompt(user_text: str, entries: dict[str, str], setting
 async def build_rag_translation_prompt(request, text: str, settings: dict[str, Any], user) -> tuple[str, list]:
     configured_source, configured_target = _glossary_language_pair(settings)
     source_lang, target_lang = _smart_language_detect(text, configured_source, configured_target)
-    glossary_block, sources, is_matched = await _build_bilingual_block(request, text, settings, source_lang, target_lang, user)
-
+    glossary_block, sources, is_matched = await _build_bilingual_block(
+        request, text, settings, source_lang, target_lang, user
+    )
 
     if is_matched:
         prompt = (

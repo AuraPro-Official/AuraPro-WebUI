@@ -129,8 +129,7 @@
 			items: [
 				{ code: '"你好（呀/啊）": "hi"\n→ 你好呀 → hi\n→ 你好啊 → hi\n→ 你好 → hi' },
 				{
-					code:
-						'"好（呀/啊）": "(yes/yeah/yesss)"\n→ 好呀 → [yes, yeah, yesss]\n→ 好啊 → [yes, yeah, yesss]'
+					code: '"好（呀/啊）": "(yes/yeah/yesss)"\n→ 好呀 → [yes, yeah, yesss]\n→ 好啊 → [yes, yeah, yesss]'
 				}
 			]
 		}
@@ -140,11 +139,13 @@
 		const needle = query.trim().toLowerCase();
 		if (!needle) return true;
 		return (
-			entry.source.toLowerCase().includes(needle) ||
-			entry.target.toLowerCase().includes(needle)
+			entry.source.toLowerCase().includes(needle) || entry.target.toLowerCase().includes(needle)
 		);
 	});
-	$: { filteredEntries; currentPage = 1; }
+	$: {
+		filteredEntries;
+		currentPage = 1;
+	}
 	$: totalPages = Math.ceil(filteredEntries.length / pageSize);
 	$: pagedEntries = filteredEntries.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 	$: activeGlossary = (settings.glossaries ?? []).find(
@@ -386,13 +387,7 @@
 		if (!sourceLang || !targetLang) return;
 		loading = true;
 		try {
-			settings = await createGlossary(
-				localStorage.token,
-				name,
-				sourceLang,
-				targetLang,
-				targetLang
-			);
+			settings = await createGlossary(localStorage.token, name, sourceLang, targetLang, targetLang);
 			newGlossaryName = '';
 			newGlossarySourceLang = '';
 			newGlossaryTargetLang = '';
@@ -444,7 +439,12 @@
 		if (!importText.trim()) return;
 		importing = true;
 		try {
-			await importGlossaryEntries(localStorage.token, importText, replaceImport, importAsNewGlossary);
+			await importGlossaryEntries(
+				localStorage.token,
+				importText,
+				replaceImport,
+				importAsNewGlossary
+			);
 			importText = '';
 			showImport = false;
 			replaceImport = false;
@@ -506,7 +506,9 @@
 	const exportActiveGlossary = async () => {
 		try {
 			const blob = await exportGlossary(localStorage.token);
-			const active = (settings.glossaries ?? []).find((item) => item.id === settings.active_glossary_id);
+			const active = (settings.glossaries ?? []).find(
+				(item) => item.id === settings.active_glossary_id
+			);
 			const name = `${safeExportName(active?.name ?? active?.id ?? 'glossary')}-${
 				active?.version ?? settings.glossary_version ?? '1.0.0'
 			}.aurapro-glossary.json`;
@@ -669,7 +671,9 @@
 							</div>
 
 							{#if showGlossarySettings}
-								<div class="rounded-lg border border-gray-100 bg-gray-50/70 p-3 dark:border-gray-800 dark:bg-gray-900/60 space-y-3">
+								<div
+									class="rounded-lg border border-gray-100 bg-gray-50/70 p-3 dark:border-gray-800 dark:bg-gray-900/60 space-y-3"
+								>
 									<div class="flex items-center justify-between gap-2">
 										<div>
 											<div class="text-sm font-medium">{$i18n.t('Current glossary settings')}</div>
@@ -726,7 +730,6 @@
 									</div>
 								</div>
 							{/if}
-
 						</div>
 
 						<div class="flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
@@ -782,7 +785,7 @@
 												class="w-full rounded-md px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-850"
 												on:click={showBatchImport}
 											>
-														批量添加
+												批量添加
 											</button>
 										</div>
 									</div>
@@ -798,7 +801,9 @@
 						</div>
 
 						<div class="rounded-lg border border-gray-100 dark:border-gray-800 overflow-hidden">
-							<div class="grid grid-cols-[44px_minmax(120px,1fr)_minmax(120px,1fr)_112px] bg-gray-50 dark:bg-gray-900 text-xs font-medium text-gray-500">
+							<div
+								class="grid grid-cols-[44px_minmax(120px,1fr)_minmax(120px,1fr)_112px] bg-gray-50 dark:bg-gray-900 text-xs font-medium text-gray-500"
+							>
 								<div class="px-3 py-2 flex items-center justify-center">
 									<input
 										type="checkbox"
@@ -823,7 +828,9 @@
 							{/if}
 
 							{#each pagedEntries as entry (entry.source || entry)}
-								<div class="grid grid-cols-[44px_minmax(120px,1fr)_minmax(120px,1fr)_112px] border-t border-gray-100 dark:border-gray-800">
+								<div
+									class="grid grid-cols-[44px_minmax(120px,1fr)_minmax(120px,1fr)_112px] border-t border-gray-100 dark:border-gray-800"
+								>
 									<div class="px-3 py-2 flex items-center justify-center">
 										<input
 											type="checkbox"
@@ -874,7 +881,9 @@
 							<div>
 								<div class="text-sm font-medium">{$i18n.t('Global translation settings')}</div>
 								<div class="mt-0.5 text-xs text-gray-500">
-									{$i18n.t('Applies to translation, simultaneous interpretation, and learning modes.')}
+									{$i18n.t(
+										'Applies to translation, simultaneous interpretation, and learning modes.'
+									)}
 								</div>
 							</div>
 							<div class="grid grid-cols-1 gap-2">
@@ -912,7 +921,9 @@
 							</button>
 						</div>
 
-						<div class="rounded-lg border border-gray-100 dark:border-gray-800 p-3 text-xs text-gray-500 space-y-2">
+						<div
+							class="rounded-lg border border-gray-100 dark:border-gray-800 p-3 text-xs text-gray-500 space-y-2"
+						>
 							<div class="font-medium text-gray-700 dark:text-gray-200">
 								{$i18n.t('Import formats')}
 							</div>
@@ -923,27 +934,32 @@
 					</aside>
 				</section>
 
-
 				<!-- ↓ 插在這裡 -->
 				{#if totalPages > 1}
-					<div class="flex items-center justify-between px-3 py-2 border-t border-gray-100 dark:border-gray-800 text-sm text-gray-500">
-						<span>{(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filteredEntries.length)} / {filteredEntries.length}</span>
+					<div
+						class="flex items-center justify-between px-3 py-2 border-t border-gray-100 dark:border-gray-800 text-sm text-gray-500"
+					>
+						<span
+							>{(currentPage - 1) * pageSize + 1}–{Math.min(
+								currentPage * pageSize,
+								filteredEntries.length
+							)} / {filteredEntries.length}</span
+						>
 						<div class="flex gap-1">
 							<button
 								class="px-2 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-850 disabled:opacity-30"
 								disabled={currentPage === 1}
-								on:click={() => currentPage--}
-							>‹</button>
+								on:click={() => currentPage--}>‹</button
+							>
 							<span class="px-2 py-1">{currentPage} / {totalPages}</span>
 							<button
 								class="px-2 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-850 disabled:opacity-30"
 								disabled={currentPage === totalPages}
-								on:click={() => currentPage++}
-							>›</button>
+								on:click={() => currentPage++}>›</button
+							>
 						</div>
 					</div>
 				{/if}
-
 			</div>
 		</div>
 	{/if}
@@ -1000,7 +1016,9 @@
 							<input
 								class="w-full rounded-lg bg-gray-50 dark:bg-gray-950 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
 								bind:value={newGlossaryTargetLang}
-								placeholder={settings.target_lang ?? settings.glossary_lang ?? $i18n.t('Target language')}
+								placeholder={settings.target_lang ??
+									settings.glossary_lang ??
+									$i18n.t('Target language')}
 								on:keydown={(e) => {
 									if (e.key === 'Enter') createNewGlossary();
 								}}
@@ -1018,12 +1036,10 @@
 					</button>
 					<button
 						class="px-3 py-2 rounded-lg text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-50"
-						disabled={
-							!(
-								(newGlossarySourceLang.trim() || settings.source_lang) &&
-								(newGlossaryTargetLang.trim() || settings.target_lang || settings.glossary_lang)
-							)
-						}
+						disabled={!(
+							(newGlossarySourceLang.trim() || settings.source_lang) &&
+							(newGlossaryTargetLang.trim() || settings.target_lang || settings.glossary_lang)
+						)}
 						on:click={createNewGlossary}
 					>
 						{$i18n.t('Create')}
@@ -1033,108 +1049,151 @@
 		</div>
 	{/if}
 
-    {#if showImport}
-        <div class="fixed inset-0 z-[1000] flex items-center justify-center bg-black/30 px-4">
-            <div class="w-full max-w-2xl rounded-lg border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 shadow-xl">
+	{#if showImport}
+		<div class="fixed inset-0 z-[1000] flex items-center justify-center bg-black/30 px-4">
+			<div
+				class="w-full max-w-2xl rounded-lg border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 shadow-xl"
+			>
+				<!-- 頂部標題列 -->
+				<div class="flex items-start justify-between gap-3">
+					<div>
+						<!-- 標題與幫助圖標容器 (Flex 布局) -->
+						<div class="flex items-center gap-2">
+							<span class="text-base font-medium text-gray-900 dark:text-gray-100">批量添加</span>
 
-                <!-- 頂部標題列 -->
-                <div class="flex items-start justify-between gap-3">
-                    <div>
-                        <!-- 標題與幫助圖標容器 (Flex 布局) -->
-                        <div class="flex items-center gap-2">
-                            <span class="text-base font-medium text-gray-900 dark:text-gray-100">批量添加</span>
+							<!-- 幫助圖標與懸浮提示框 -->
+							<div class="relative group flex items-center">
+								<button
+									type="button"
+									class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+								>
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										fill="none"
+										viewBox="0 0 24 24"
+										stroke-width="2"
+										stroke="currentColor"
+										class="size-4"
+									>
+										<path
+											stroke-linecap="round"
+											stroke-linejoin="round"
+											d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z"
+										/>
+									</svg>
+								</button>
 
-                            <!-- 幫助圖標與懸浮提示框 -->
-                            <div class="relative group flex items-center">
-                                <button type="button" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="size-4">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12v-.008Z" />
-                                    </svg>
-                                </button>
+								<!-- 懸浮提示框 (數據渲染) -->
+								<div
+									class="absolute top-full left-1/2 z-50 mt-2 hidden w-[32rem] -translate-x-1/2 rounded-lg border border-gray-200 bg-white shadow-2xl group-hover:block dark:border-gray-700 dark:bg-gray-800"
+								>
+									<div class="max-h-[400px] overflow-y-auto p-4 custom-scrollbar">
+										<div
+											class="mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-100 dark:border-gray-700 pb-2"
+										>
+											词典格式说明
+										</div>
 
-                                <!-- 懸浮提示框 (數據渲染) -->
-                                <div class="absolute top-full left-1/2 z-50 mt-2 hidden w-[32rem] -translate-x-1/2 rounded-lg border border-gray-200 bg-white shadow-2xl group-hover:block dark:border-gray-700 dark:bg-gray-800">
-                                    <div class="max-h-[400px] overflow-y-auto p-4 custom-scrollbar">
-                                        <div class="mb-3 text-sm font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-100 dark:border-gray-700 pb-2">词典格式说明</div>
+										<div class="space-y-4">
+											{#each importHelpSections as section}
+												<div>
+													<h4
+														class="text-xs font-bold {section.type === 'error'
+															? 'text-red-600 dark:text-red-400'
+															: 'text-gray-800 dark:text-gray-200'}"
+													>
+														{section.title}
+													</h4>
+													{#if section.subtitle}
+														<p class="text-[11px] text-gray-500 mb-1.5 mt-0.5">
+															{section.subtitle}
+														</p>
+													{/if}
 
-                                        <div class="space-y-4">
-                                            {#each importHelpSections as section}
-                                                <div>
-                                                    <h4 class="text-xs font-bold {section.type === 'error' ? 'text-red-600 dark:text-red-400' : 'text-gray-800 dark:text-gray-200'}">
-                                                        {section.title}
-                                                    </h4>
-                                                    {#if section.subtitle}
-                                                        <p class="text-[11px] text-gray-500 mb-1.5 mt-0.5">{section.subtitle}</p>
-                                                    {/if}
+													{#if section.type === 'default'}
+														<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+															{#each section.items as item}
+																<pre
+																	class="whitespace-pre-wrap rounded bg-gray-50 p-2 text-[11px] font-mono text-gray-600 dark:bg-gray-900 dark:text-gray-300">{item.code}</pre>
+															{/each}
+														</div>
+													{:else}
+														<div class="space-y-2 pt-2">
+															{#each section.items as item}
+																<div
+																	class="rounded-md bg-red-50/50 p-2 text-[11px] dark:bg-red-950/20"
+																>
+																	<div class="text-red-600 dark:text-red-400 font-mono">
+																		❌ {item.bad}
+																	</div>
+																	<div class="text-gray-500 pl-4 my-0.5">→ {item.reason}</div>
+																	<div class="text-green-600 dark:text-green-500 font-mono mt-1">
+																		✅ {item.good}
+																	</div>
+																</div>
+															{/each}
+														</div>
+													{/if}
+												</div>
+											{/each}
+										</div>
+									</div>
+									<!-- 三角形指示器 -->
+									<div
+										class="absolute -top-2 left-1/2 -ml-2 h-0 w-0 border-x-8 border-b-8 border-x-transparent border-b-white dark:border-b-gray-800"
+									></div>
+								</div>
+							</div>
+						</div>
 
-                                                    {#if section.type === 'default'}
-                                                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                            {#each section.items as item}
-                                                                <pre class="whitespace-pre-wrap rounded bg-gray-50 p-2 text-[11px] font-mono text-gray-600 dark:bg-gray-900 dark:text-gray-300">{item.code}</pre>
-                                                            {/each}
-                                                        </div>
-                                                    {:else}
-                                                        <div class="space-y-2 pt-2">
-                                                            {#each section.items as item}
-                                                                <div class="rounded-md bg-red-50/50 p-2 text-[11px] dark:bg-red-950/20">
-                                                                    <div class="text-red-600 dark:text-red-400 font-mono">❌ {item.bad}</div>
-                                                                    <div class="text-gray-500 pl-4 my-0.5">→ {item.reason}</div>
-                                                                    <div class="text-green-600 dark:text-green-500 font-mono mt-1">✅ {item.good}</div>
-                                                                </div>
-                                                            {/each}
-                                                        </div>
-                                                    {/if}
-                                                </div>
-                                            {/each}
-                                        </div>
-                                    </div>
-                                    <!-- 三角形指示器 -->
-                                    <div class="absolute -top-2 left-1/2 -ml-2 h-0 w-0 border-x-8 border-b-8 border-x-transparent border-b-white dark:border-b-gray-800"></div>
-                                </div>
-                            </div>
-                        </div>
+						<!-- 副標題 -->
+						<div class="mt-1 text-sm text-gray-500">
+							每行一条，支持 JSON、CSV/TSV、或“中文 -> 外文”的格式。
+						</div>
+					</div>
 
-                        <!-- 副標題 -->
-                        <div class="mt-1 text-sm text-gray-500">
-                            每行一条，支持 JSON、CSV/TSV、或“中文 -> 外文”的格式。
-                        </div>
-                    </div>
+					<!-- 關閉按鈕 -->
+					<button
+						class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-850 dark:hover:text-gray-200"
+						on:click={closeImportModal}
+						aria-label="Close"
+					>
+						<XMark className="size-4" strokeWidth="2" />
+					</button>
+				</div>
 
-                    <!-- 關閉按鈕 -->
-                    <button class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-850 dark:hover:text-gray-200" on:click={closeImportModal} aria-label="Close">
-                        <XMark className="size-4" strokeWidth="2" />
-                    </button>
-                </div>
+				<!-- 輸入區域 -->
+				<textarea
+					class="mt-4 w-full min-h-64 rounded-lg bg-gray-50 dark:bg-gray-950 border border-gray-100 dark:border-gray-800 p-3 text-sm outline-none font-mono"
+					bind:value={importText}
+					placeholder={`{"你好": "hello"}\n你好 -> hello\n你好, hello`}
+				/>
 
-                <!-- 輸入區域 -->
-                <textarea
-                    class="mt-4 w-full min-h-64 rounded-lg bg-gray-50 dark:bg-gray-950 border border-gray-100 dark:border-gray-800 p-3 text-sm outline-none font-mono"
-                    bind:value={importText}
-                    placeholder={`{"你好": "hello"}\n你好 -> hello\n你好, hello`}
-                />
-
-                <!-- 底部動作欄 -->
-                <div class="mt-3 flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
-                    <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-                        <input type="checkbox" bind:checked={replaceImport} />
-                        {$i18n.t('Replace existing glossary')}
-                    </label>
-                    <div class="flex justify-end gap-2">
-                        <button class="px-3 py-2 rounded-lg text-sm bg-gray-100 dark:bg-gray-850 hover:bg-gray-200 dark:hover:bg-gray-800" on:click={closeImportModal}>
-                            {$i18n.t('Cancel')}
-                        </button>
-                        <button
-                            class="px-3 py-2 rounded-lg text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-50"
-                            disabled={importing || !importText.trim()}
-                            on:click={importEntries}
-                        >
-                            {importing ? $i18n.t('Importing...') : $i18n.t('Confirm')}
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    {/if}
+				<!-- 底部動作欄 -->
+				<div class="mt-3 flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
+					<label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+						<input type="checkbox" bind:checked={replaceImport} />
+						{$i18n.t('Replace existing glossary')}
+					</label>
+					<div class="flex justify-end gap-2">
+						<button
+							class="px-3 py-2 rounded-lg text-sm bg-gray-100 dark:bg-gray-850 hover:bg-gray-200 dark:hover:bg-gray-800"
+							on:click={closeImportModal}
+						>
+							{$i18n.t('Cancel')}
+						</button>
+						<button
+							class="px-3 py-2 rounded-lg text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-50"
+							disabled={importing || !importText.trim()}
+							on:click={importEntries}
+						>
+							{importing ? $i18n.t('Importing...') : $i18n.t('Confirm')}
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	{#if confirmDialog.show}
 		<div class="fixed inset-0 z-[1000] flex items-center justify-center bg-black/30 px-4">

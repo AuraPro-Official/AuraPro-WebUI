@@ -4,8 +4,8 @@
 	import {
 		settings,
 		config,
-		translationModeEnabled, 
-		interpretationModeEnabled, 
+		translationModeEnabled,
+		interpretationModeEnabled,
 		learningModeEnabled,
 		manuscriptTranslationModeEnabled
 	} from '$lib/stores';
@@ -123,8 +123,7 @@
 	};
 	const getWebSttEnabled = () => getSttEngine() === 'web';
 	const getMultimodalSttEnabled = () => getSttEngine() === 'multimodal';
-	const getServerSttEnabled = () =>
-		transcribe && !getWebSttEnabled() && !getMultimodalSttEnabled();
+	const getServerSttEnabled = () => transcribe && !getWebSttEnabled() && !getMultimodalSttEnabled();
 
 	const getGlossaryModeLanguageCandidates = async () => {
 		const modeEnabled =
@@ -150,12 +149,10 @@
 
 		const settings = glossarySettings ?? (await glossarySettingsPromise);
 		const targetLang = settings?.target_lang || settings?.glossary_lang || '';
-		const sourceLang = settings?.source_lang ||'';
+		const sourceLang = settings?.source_lang || '';
 
-        const languageCandidates = targetLang
-        ? [sourceLang, targetLang].filter(Boolean)
-        : ['zh']
-        return languageCandidates;
+		const languageCandidates = targetLang ? [sourceLang, targetLang].filter(Boolean) : ['zh'];
+		return languageCandidates;
 	};
 
 	const stopStreamingTranscription = () => {
@@ -196,7 +193,9 @@
 
 		return await new Promise((resolve) => {
 			recorder.onstop = () => {
-				const audioBlob = new Blob(streamingChunks, { type: recorder.mimeType || recorderMimeType });
+				const audioBlob = new Blob(streamingChunks, {
+					type: recorder.mimeType || recorderMimeType
+				});
 				streamingChunks = [];
 				streamingMediaRecorder = null;
 				resolve(audioBlob);
@@ -390,15 +389,10 @@
 			}
 
 			const streamingFallback = transcription.trim();
-            const languageCandidates = await getGlossaryModeLanguageCandidates()
-			const res = await transcribeAudio(
-				localStorage.token,
-				file,
-				undefined,
-				{
-					languageCandidates: languageCandidates
-				}
-			).catch((error) => {
+			const languageCandidates = await getGlossaryModeLanguageCandidates();
+			const res = await transcribeAudio(localStorage.token, file, undefined, {
+				languageCandidates: languageCandidates
+			}).catch((error) => {
 				toast.error(`${error}`);
 				return null;
 			});
@@ -467,7 +461,10 @@
 		mediaRecorder = new MediaRecorder(stream, {
 			mimeType: mineTypes.find((type) => MediaRecorder.isTypeSupported(type))
 		});
-		recorderMimeType = mediaRecorder.mimeType || mineTypes.find((type) => MediaRecorder.isTypeSupported(type)) || 'audio/webm';
+		recorderMimeType =
+			mediaRecorder.mimeType ||
+			mineTypes.find((type) => MediaRecorder.isTypeSupported(type)) ||
+			'audio/webm';
 
 		mediaRecorder.onstart = async () => {
 			console.log('Recording started');
@@ -480,8 +477,7 @@
 			streamingChunks = [];
 			transcription = '';
 			streamingStreamId =
-				globalThis.crypto?.randomUUID?.() ??
-				`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+				globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 			streamingChunkIndex = 0;
 			streamingSegmentStartedAt = 0;
 			streamingLastVoiceAt = 0;
@@ -745,27 +741,26 @@
 		dir="rtl"
 	>
 		{#if transcription}
-			<div class="w-full truncate text-left text-xs text-indigo-700/80 dark:text-indigo-200/80" dir="auto">
+			<div
+				class="w-full truncate text-left text-xs text-indigo-700/80 dark:text-indigo-200/80"
+				dir="auto"
+			>
 				{transcription}
 			</div>
 		{:else}
 			<div
 				class="flex items-center gap-0.5 h-6 w-full max-w-full overflow-hidden overflow-x-hidden flex-wrap"
 			>
-			{#each visualizerData.slice().reverse() as rms}
-				<div class="flex items-center h-full">
-					<div
-						class="w-[2px] shrink-0
-                    
-                    {loading
-							? ' bg-gray-500 dark:bg-gray-400   '
-							: 'bg-indigo-500 dark:bg-indigo-400  '} 
-                    
-                    inline-block h-full"
-						style="height: {Math.min(100, Math.max(14, rms * 100))}%;"
-					/>
-				</div>
-			{/each}
+				{#each visualizerData.slice().reverse() as rms}
+					<div class="flex items-center h-full">
+						<div
+							class="w-[2px] shrink-0 inline-block h-full {loading
+								? 'bg-gray-500 dark:bg-gray-400'
+								: 'bg-indigo-500 dark:bg-indigo-400'}"
+							style="height: {Math.min(100, Math.max(14, rms * 100))}%;"
+						/>
+					</div>
+				{/each}
 			</div>
 		{/if}
 	</div>

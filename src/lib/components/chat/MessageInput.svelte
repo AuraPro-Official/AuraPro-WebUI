@@ -36,12 +36,12 @@
 		showSettings,
 		selectedTerminalId,
 		temporaryChatEnabled,
-		translationModeEnabled, 
-		interpretationModeEnabled, 
-		learningModeEnabled, 
-		manuscriptTranslationModeEnabled, 
-		codeInterpreterEnabled, 
-		imageGenerationEnabled, 
+		translationModeEnabled,
+		interpretationModeEnabled,
+		learningModeEnabled,
+		manuscriptTranslationModeEnabled,
+		codeInterpreterEnabled,
+		imageGenerationEnabled,
 		ragTranslationModeEnabled
 	} from '$lib/stores';
 
@@ -200,7 +200,7 @@
 		selectedToolIds,
 		selectedSkillIds,
 		selectedFilterIds,
-		webSearchEnabled,
+		webSearchEnabled
 	});
 
 	const inputVariableHandler = async (text: string): Promise<string> => {
@@ -431,8 +431,6 @@
 			}
 		}
 	};
-
-
 
 	let command = '';
 	export let showCommands = false;
@@ -1880,13 +1878,10 @@
 											</div>
 										{/if}
 
-
-										
 										{#if $imageGenerationEnabled}
 											<Tooltip content={$i18n.t('Image')} placement="top">
 												<button
-													on:click|preventDefault={() =>
-														(imageGenerationEnabled.update(v => !v))}
+													on:click|preventDefault={() => imageGenerationEnabled.update((v) => !v)}
 													type="button"
 													class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {$imageGenerationEnabled
 														? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20'
@@ -1907,8 +1902,7 @@
 														? $i18n.t('Disable Code Interpreter')
 														: $i18n.t('Enable Code Interpreter')}
 													aria-pressed={$codeInterpreterEnabled}
-													on:click|preventDefault={() =>
-														(codeInterpreterEnabled.update(v => !v))}
+													on:click|preventDefault={() => codeInterpreterEnabled.update((v) => !v)}
 													type="button"
 													class=" group p-[7px] flex gap-1.5 items-center text-sm transition-colors duration-300 max-w-full overflow-hidden {$codeInterpreterEnabled
 														? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20'
@@ -1930,7 +1924,7 @@
 											<Tooltip content={$i18n.t('RAG Translation Mode')} placement="top">
 												<button
 													on:click|preventDefault={() =>
-														(ragTranslationModeEnabled.update(v => !v))}
+														ragTranslationModeEnabled.update((v) => !v)}
 													type="button"
 													class=" group p-[7px] flex gap-1.5 items-center text-sm transition-colors duration-300 max-w-full overflow-hidden text-purple-500 dark:text-purple-300 bg-purple-50 hover:bg-purple-100 dark:bg-purple-400/10 dark:hover:bg-purple-700/10 border border-purple-200/40 dark:border-purple-500/20 rounded-full"
 												>
@@ -1946,8 +1940,7 @@
 										{#if $translationModeEnabled}
 											<Tooltip content={$i18n.t('Translation Mode')} placement="top">
 												<button
-													on:click|preventDefault={() =>
-														(translationModeEnabled.update(v => !v))}
+													on:click|preventDefault={() => translationModeEnabled.update((v) => !v)}
 													type="button"
 													class=" group p-[7px] flex gap-1.5 items-center text-sm transition-colors duration-300 max-w-full overflow-hidden text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20 rounded-full"
 												>
@@ -1964,7 +1957,7 @@
 											<Tooltip content={$i18n.t('Manuscript Translation Mode')} placement="top">
 												<button
 													on:click|preventDefault={() =>
-														(manuscriptTranslationModeEnabled.update(v => !v))}
+														manuscriptTranslationModeEnabled.update((v) => !v)}
 													type="button"
 													class=" group p-[7px] flex gap-1.5 items-center text-sm transition-colors duration-300 max-w-full overflow-hidden text-violet-600 dark:text-violet-300 bg-violet-50 hover:bg-violet-100 dark:bg-violet-400/10 dark:hover:bg-violet-700/10 border border-violet-200/40 dark:border-violet-500/20 rounded-full"
 												>
@@ -1981,7 +1974,7 @@
 											<Tooltip content={$i18n.t('Simultaneous Interpretation')} placement="top">
 												<button
 													on:click|preventDefault={() =>
-														(interpretationModeEnabled.update(v => !v))}
+														interpretationModeEnabled.update((v) => !v)}
 													type="button"
 													class=" group p-[7px] flex gap-1.5 items-center text-sm transition-colors duration-300 max-w-full overflow-hidden text-amber-600 dark:text-amber-300 bg-amber-50 hover:bg-amber-100 dark:bg-amber-400/10 dark:hover:bg-amber-700/10 border border-amber-200/40 dark:border-amber-500/20 rounded-full"
 												>
@@ -1993,12 +1986,11 @@
 												</button>
 											</Tooltip>
 										{/if}
-								
+
 										{#if $imageGenerationEnabled}
 											<Tooltip content={$i18n.t('Image')} placement="top">
 												<button
-													on:click|preventDefault={() =>
-														(imageGenerationEnabled.update((v) => !v))}
+													on:click|preventDefault={() => imageGenerationEnabled.update((v) => !v)}
 													type="button"
 													class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {$imageGenerationEnabled
 														? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20'
@@ -2015,8 +2007,7 @@
 										{#if $learningModeEnabled}
 											<Tooltip content={$i18n.t('Learning Mode')} placement="top">
 												<button
-													on:click|preventDefault={() =>
-														(learningModeEnabled.update(v => !v))}
+													on:click|preventDefault={() => learningModeEnabled.update((v) => !v)}
 													type="button"
 													class=" group p-[7px] flex gap-1.5 items-center text-sm transition-colors duration-300 max-w-full overflow-hidden text-emerald-600 dark:text-emerald-300 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-400/10 dark:hover:bg-emerald-700/10 border border-emerald-200/40 dark:border-emerald-500/20 rounded-full"
 												>
@@ -2028,7 +2019,6 @@
 												</button>
 											</Tooltip>
 										{/if}
-
 
 										<div class="ml-1 flex gap-1.5 shrink-0">
 											{#if (selectedToolIds ?? []).length > 0}
@@ -2155,7 +2145,6 @@
 												</Tooltip>
 											{/if}
 
-
 											{#each pendingOAuthTools as pendingTool (pendingTool.id)}
 												<Tooltip content={$i18n.t('Click to connect')} placement="top">
 													<button
@@ -2177,7 +2166,6 @@
 
 								<div class="self-end flex space-x-1 mr-1 shrink-0 gap-[0.5px]">
 									{#if isActive && prompt === '' && files.length === 0}
-
 										<!-- ↓↓↓ Stop 状态下也显示 Voice Input 按钮 ↓↓↓ -->
 										{#if $_user?.role === 'admin' || ($_user?.permissions?.chat?.stt ?? true)}
 											<Tooltip content={$i18n.t('Dictate')}>
@@ -2190,7 +2178,12 @@
 															let stream = await navigator.mediaDevices
 																.getUserMedia({ audio: getAudioInputConstraint() })
 																.catch(function (err) {
-																	toast.error($i18n.t(`Permission denied when accessing microphone: {{error}}`, { error: err }));
+																	toast.error(
+																		$i18n.t(
+																			`Permission denied when accessing microphone: {{error}}`,
+																			{ error: err }
+																		)
+																	);
 																	return null;
 																});
 															if (stream) {
@@ -2206,15 +2199,22 @@
 													}}
 													aria-label="Voice Input"
 												>
-													<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5 translate-y-[0.5px]">
+													<svg
+														xmlns="http://www.w3.org/2000/svg"
+														viewBox="0 0 20 20"
+														fill="currentColor"
+														class="size-5 translate-y-[0.5px]"
+													>
 														<path d="M7 4a3 3 0 016 0v6a3 3 0 11-6 0V4z" />
-														<path d="M5.5 9.643a.75.75 0 00-1.5 0V10c0 3.06 2.29 5.585 5.25 5.954V17.5h-1.5a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5h-1.5v-1.546A6.001 6.001 0 0016 10v-.357a.75.75 0 00-1.5 0V10a4.5 4.5 0 01-9 0v-.357z" />
+														<path
+															d="M5.5 9.643a.75.75 0 00-1.5 0V10c0 3.06 2.29 5.585 5.25 5.954V17.5h-1.5a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5h-1.5v-1.546A6.001 6.001 0 0016 10v-.357a.75.75 0 00-1.5 0V10a4.5 4.5 0 01-9 0v-.357z"
+														/>
 													</svg>
 												</button>
 											</Tooltip>
 										{/if}
 
-        								<!-- Stop 按钮 -->
+										<!-- Stop 按钮 -->
 										<div class=" flex items-center">
 											<Tooltip content={$i18n.t('Stop')}>
 												<button
@@ -2279,9 +2279,12 @@
 																.getUserMedia({ audio: getAudioInputConstraint() })
 																.catch(function (err) {
 																	toast.error(
-																		$i18n.t(`Permission denied when accessing microphone: {{error}}`, {
-																			error: err
-																		})
+																		$i18n.t(
+																			`Permission denied when accessing microphone: {{error}}`,
+																			{
+																				error: err
+																			}
+																		)
 																	);
 																	return null;
 																});

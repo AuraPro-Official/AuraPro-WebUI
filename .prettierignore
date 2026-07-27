@@ -312,3 +312,4 @@ cypress/screenshots
 
 
 /static/*
+scripts/svelte-check-baseline.json

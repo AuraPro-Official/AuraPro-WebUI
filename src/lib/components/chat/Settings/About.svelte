@@ -63,7 +63,8 @@
 						{#if $config?.features?.enable_version_update_check}
 							<a
 								href="https://github.com/AuraPro-Official/AuraPro-WebUI/releases/tag/v{version.latest}"
-								target="_blank" rel="noopener noreferrer"
+								target="_blank"
+								rel="noopener noreferrer"
 							>
 								{updateAvailable === null
 									? $i18n.t('Checking for updates...')
@@ -113,38 +114,71 @@
 		<hr class=" border-gray-100/30 dark:border-gray-850/30" />
 
 		<div class="flex flex-wrap gap-x-3 gap-y-1 text-xs">
-			<a class="underline" href="https://docs.openwebui.com/" target="_blank" rel="noopener noreferrer">Documentation</a>
-			<a class="underline" href="https://github.com/open-webui/open-webui" target="_blank" rel="noopener noreferrer">GitHub</a
+			<a
+				class="underline"
+				href="https://docs.openwebui.com/"
+				target="_blank"
+				rel="noopener noreferrer">Documentation</a
 			>
-			<a class="underline" href="https://discord.gg/5rJgQTnV4s" target="_blank" rel="noopener noreferrer">Discord</a>
-			<a class="underline" href="https://twitter.com/OpenWebUI" target="_blank" rel="noopener noreferrer">X</a>
+			<a
+				class="underline"
+				href="https://github.com/open-webui/open-webui"
+				target="_blank"
+				rel="noopener noreferrer">GitHub</a
+			>
+			<a
+				class="underline"
+				href="https://discord.gg/5rJgQTnV4s"
+				target="_blank"
+				rel="noopener noreferrer">Discord</a
+			>
+			<a
+				class="underline"
+				href="https://twitter.com/OpenWebUI"
+				target="_blank"
+				rel="noopener noreferrer">X</a
+			>
 		</div>
 
 		<div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
 			Copyright (c) {new Date().getFullYear()}
-			<a class="font-medium underline" href="https://openwebui.com/" target="_blank" rel="noopener noreferrer"
-				>Open WebUI Inc.</a
+			<a
+				class="font-medium underline"
+				href="https://openwebui.com/"
+				target="_blank"
+				rel="noopener noreferrer">Open WebUI Inc.</a
 			>
 			<a
 				class="underline"
 				href="https://github.com/open-webui/open-webui/blob/main/LICENSE"
-				target="_blank" rel="noopener noreferrer">All rights reserved.</a
+				target="_blank"
+				rel="noopener noreferrer">All rights reserved.</a
 			>
 		</div>
 
 		<div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
 			{$i18n.t('Created by')}
-			<a class="font-medium underline" href="https://github.com/tjbck" target="_blank" rel="noopener noreferrer"
-				>Timothy J. Baek</a
+			<a
+				class="font-medium underline"
+				href="https://github.com/tjbck"
+				target="_blank"
+				rel="noopener noreferrer">Timothy J. Baek</a
 			>
 		</div>
 
 		<div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
 			Emoji graphics provided by
-			<a class="underline" href="https://github.com/jdecked/twemoji" target="_blank" rel="noopener noreferrer">Twemoji</a>,
-			licensed under
-			<a class="underline" href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer"
-				>CC-BY 4.0</a
+			<a
+				class="underline"
+				href="https://github.com/jdecked/twemoji"
+				target="_blank"
+				rel="noopener noreferrer">Twemoji</a
+			>, licensed under
+			<a
+				class="underline"
+				href="https://creativecommons.org/licenses/by/4.0/"
+				target="_blank"
+				rel="noopener noreferrer">CC-BY 4.0</a
 			>.
 		</div>
 
@@ -155,7 +189,8 @@
 			<a
 				class="font-medium underline"
 				href="https://github.com/AuraPro-Official/AuraPro-WebUI"
-				target="_blank" rel="noopener noreferrer">AuraPro contributors</a
+				target="_blank"
+				rel="noopener noreferrer">AuraPro contributors</a
 			>. It is not affiliated with, endorsed by, or maintained by Open WebUI Inc.
 		</div>
 
@@ -163,17 +198,20 @@
 			Distribution license information:
 			<a
 				href="https://github.com/AuraPro-Official/AuraPro-WebUI/blob/main/LICENSE"
-				target="_blank" rel="noopener noreferrer"
+				target="_blank"
+				rel="noopener noreferrer"
 				class="underline">LICENSE</a
 			>,
 			<a
 				href="https://github.com/AuraPro-Official/AuraPro-WebUI/blob/main/LICENSE_NOTICE"
-				target="_blank" rel="noopener noreferrer"
+				target="_blank"
+				rel="noopener noreferrer"
 				class="underline">LICENSE_NOTICE</a
 			>, and
 			<a
 				href="https://github.com/AuraPro-Official/AuraPro-WebUI/blob/main/LICENSE_HISTORY"
-				target="_blank" rel="noopener noreferrer"
+				target="_blank"
+				rel="noopener noreferrer"
 				class="underline">LICENSE_HISTORY</a
 			>.
 		</div>

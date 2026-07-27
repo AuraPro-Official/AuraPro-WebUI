@@ -158,41 +158,34 @@ export const downloadDatabase = async (token: string) => {
 	}
 };
 
-
-
 export interface HFDownloadRequest {
-  repo_id: string;
-  token?: string;
-  ignore_patterns?: string[];
+	repo_id: string;
+	token?: string;
+	ignore_patterns?: string[];
 }
- 
 
-export const downloadHFModel = async (
-  token: string,
-  req: HFDownloadRequest,
-): Promise<Response> => {
-  const response = await fetch(`${WEBUI_API_BASE_URL}/utils/huggingface/download`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(req),
-  });
- 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(err?.detail ?? `HTTP ${response.status}`);
-  }
- 
-  return response;
+export const downloadHFModel = async (token: string, req: HFDownloadRequest): Promise<Response> => {
+	const response = await fetch(`${WEBUI_API_BASE_URL}/utils/huggingface/download`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify(req)
+	});
+
+	if (!response.ok) {
+		const err = await response.json().catch(() => ({ detail: response.statusText }));
+		throw new Error(err?.detail ?? `HTTP ${response.status}`);
+	}
+
+	return response;
 };
- 
 
 export const getCachedHFModels = async (token: string) => {
-  const response = await fetch(`${WEBUI_API_BASE_URL}/utils/huggingface/cache`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+	const response = await fetch(`${WEBUI_API_BASE_URL}/utils/huggingface/cache`, {
+		headers: { Authorization: `Bearer ${token}` }
+	});
+	if (!response.ok) throw new Error(`HTTP ${response.status}`);
+	return response.json();
 };

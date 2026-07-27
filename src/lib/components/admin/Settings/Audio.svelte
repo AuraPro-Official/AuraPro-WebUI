@@ -3,7 +3,12 @@
 	import { createEventDispatcher, onMount, getContext } from 'svelte';
 
 	import { getBackendConfig } from '$lib/apis';
-	import { getAudioConfig, getModels as _getModels, getVoices as _getVoices, updateAudioConfig } from '$lib/apis/audio';
+	import {
+		getAudioConfig,
+		getModels as _getModels,
+		getVoices as _getVoices,
+		updateAudioConfig
+	} from '$lib/apis/audio';
 	import { config } from '$lib/stores';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
@@ -49,7 +54,9 @@
 		}
 
 		if (Array.isArray(error)) {
-			return error.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join('\n');
+			return error
+				.map((item) => (typeof item === 'string' ? item : JSON.stringify(item)))
+				.join('\n');
 		}
 
 		if (error instanceof Error) {
@@ -188,7 +195,9 @@
 			});
 
 			if (!res) {
-				throw new Error($i18n.t('Failed to save settings. Please check if the service is running.'));
+				throw new Error(
+					$i18n.t('Failed to save settings. Please check if the service is running.')
+				);
 			}
 
 			if (res) {

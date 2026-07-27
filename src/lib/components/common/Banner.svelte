@@ -73,7 +73,8 @@
 							<a
 								class="text-gray-700 dark:text-white text-xs font-semibold underline"
 								href="{WEBUI_BASE_URL}/assets/files/whitepaper.pdf"
-								target="_blank" rel="noopener noreferrer"
+								target="_blank"
+								rel="noopener noreferrer"
 							>
 								{$i18n.t('Learn More')}
 							</a>
@@ -109,7 +110,8 @@
 					<a
 						class="text-gray-700 dark:text-white text-xs font-semibold underline"
 						href="/"
-						target="_blank" rel="noopener noreferrer"
+						target="_blank"
+						rel="noopener noreferrer"
 					>
 						{$i18n.t('Learn More')}
 					</a>

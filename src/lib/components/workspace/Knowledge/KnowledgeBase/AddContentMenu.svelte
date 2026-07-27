@@ -59,92 +59,90 @@
 		<div
 			class="min-w-[200px] rounded-2xl px-1 py-1 border border-gray-100 dark:border-gray-800 z-50 bg-white dark:bg-gray-850 dark:text-white shadow-lg transition"
 		>
+			{#if knowledgeType !== 'bilingual'}
+				<button
+					class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
+					on:click={() => {
+						onUpload({ type: 'new_directory' });
+						show = false;
+					}}
+				>
+					<NewFolderAlt />
+					<div class="flex items-center">{$i18n.t('New directory')}</div>
+				</button>
 
+				<hr class="my-1 border-gray-100 dark:border-gray-800" />
 
-		{#if knowledgeType !== 'bilingual'}
-			<button
-				class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
-				on:click={() => {
-					onUpload({ type: 'new_directory' });
-					show = false;
-				}}
-			>
-				<NewFolderAlt />
-				<div class="flex items-center">{$i18n.t('New directory')}</div>
-			</button>
+				<button
+					class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
+					on:click={() => {
+						onUpload({ type: 'files' });
+					}}
+				>
+					<ArrowUpCircle strokeWidth="2" />
+					<div class="flex items-center">{$i18n.t('Upload files')}</div>
+				</button>
 
-			<hr class="my-1 border-gray-100 dark:border-gray-800" />
-
-			<button
-				class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
-				on:click={() => {
-					onUpload({ type: 'files' });
-				}}
-			>
-				<ArrowUpCircle strokeWidth="2" />
-				<div class="flex items-center">{$i18n.t('Upload files')}</div>
-			</button>
-
-			<button
-				class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
-				on:click={() => {
-					show = false;
-					onUpload({ type: 'directory' });
-				}}
-			>
-				<FolderOpen strokeWidth="2" />
-				<div class="flex items-center">{$i18n.t('Upload directory')}</div>
-			</button>
-
-			<Tooltip
-				content={$i18n.t(
-					'Sync a local directory with this knowledge base. Only new and modified files will be uploaded. The directory structure will be mirrored.'
-				)}
-				className="w-full"
-			>
 				<button
 					class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
 					on:click={() => {
 						show = false;
-						onSync();
+						onUpload({ type: 'directory' });
 					}}
 				>
-					<ArrowPath strokeWidth="2" />
-					<div class="flex items-center">{$i18n.t('Sync directory')}</div>
+					<FolderOpen strokeWidth="2" />
+					<div class="flex items-center">{$i18n.t('Upload directory')}</div>
 				</button>
-			</Tooltip>
 
-			<button
-				class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
-				on:click={() => {
-					show = false;
-					onUpload({ type: 'web' });
-				}}
-			>
-				<GlobeAlt strokeWidth="2" />
-				<div class="flex items-center">{$i18n.t('Add webpage')}</div>
-			</button>
+				<Tooltip
+					content={$i18n.t(
+						'Sync a local directory with this knowledge base. Only new and modified files will be uploaded. The directory structure will be mirrored.'
+					)}
+					className="w-full"
+				>
+					<button
+						class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
+						on:click={() => {
+							show = false;
+							onSync();
+						}}
+					>
+						<ArrowPath strokeWidth="2" />
+						<div class="flex items-center">{$i18n.t('Sync directory')}</div>
+					</button>
+				</Tooltip>
 
-			<button
-				class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
-				on:click={() => {
-					show = false;
-					onUpload({ type: 'text' });
-				}}
-			>
-				<BarsArrowUp strokeWidth="2" />
-				<div class="flex items-center">{$i18n.t('Add text content')}</div>
-			</button>
+				<button
+					class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
+					on:click={() => {
+						show = false;
+						onUpload({ type: 'web' });
+					}}
+				>
+					<GlobeAlt strokeWidth="2" />
+					<div class="flex items-center">{$i18n.t('Add webpage')}</div>
+				</button>
 
-			<hr class="my-1 border-gray-100 dark:border-gray-800" />
+				<button
+					class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
+					on:click={() => {
+						show = false;
+						onUpload({ type: 'text' });
+					}}
+				>
+					<BarsArrowUp strokeWidth="2" />
+					<div class="flex items-center">{$i18n.t('Add text content')}</div>
+				</button>
 
-			<button
-				class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
-				on:click={() => {
-					onReset();
-					show = false;
-				}}
-			>
+				<hr class="my-1 border-gray-100 dark:border-gray-800" />
+
+				<button
+					class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"
+					on:click={() => {
+						onReset();
+						show = false;
+					}}
+				>
 					<ArrowUturnLeft strokeWidth="2" />
 					<div class="flex items-center">{$i18n.t('Reset')}</div>
 				</button>
@@ -177,6 +175,6 @@
 					</div>
 				</button>
 			{/if}
-			</div>
+		</div>
 	</div>
 </Dropdown>

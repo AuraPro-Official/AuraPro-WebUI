@@ -21,7 +21,7 @@
 		showFileNavPath,
 		selectedTerminalId,
 		user,
-		codeInterpreterEnabled,
+		codeInterpreterEnabled
 	} from '$lib/stores';
 
 	import { uploadFile } from '$lib/apis/files';

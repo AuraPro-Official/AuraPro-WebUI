@@ -33,14 +33,16 @@
 			loading = false;
 			return;
 		}
-		
+
 		loading = true;
-		
+
 		// 设置加载超时，防止等待过长
 		if (loadingTimeout) clearTimeout(loadingTimeout);
 		loadingTimeout = setTimeout(() => {
 			if (loading) {
-				toast.warning($i18n?.t('Data loading is taking longer than expected') ?? '数据加载耗时较长');
+				toast.warning(
+					$i18n?.t('Data loading is taking longer than expected') ?? '数据加载耗时较长'
+				);
 			}
 		}, 8000);
 
@@ -72,7 +74,9 @@
 	};
 
 	const openAlignReview = (group: (typeof groups)[number]) => {
-		goto(`/workspace/knowledge/bilingual-align/${group.bilingualId}?collection=${knowledge?.id ?? ''}`);
+		goto(
+			`/workspace/knowledge/bilingual-align/${group.bilingualId}?collection=${knowledge?.id ?? ''}`
+		);
 	};
 
 	const handleDelete = async (group: (typeof groups)[number]) => {
@@ -80,13 +84,13 @@
 			await deleteBilingualFile(localStorage.token, knowledge.id, group.bilingualId);
 			groups = groups.filter((g) => g.bilingualId !== group.bilingualId);
 			totalCount = Math.max(0, totalCount - 1);
-			
+
 			// 如果删除后当前页没有数据了，回到上一页
 			if (groups.length === 0 && currentPage > 1) {
 				currentPage = currentPage - 1;
 				await loadFiles();
 			}
-			
+
 			toast.success($i18n?.t('Deleted successfully') ?? '删除成功');
 		} catch (e) {
 			console.error(e);
@@ -100,22 +104,24 @@
 
 	onMount(() => {
 		loadFiles();
-		
+
 		return () => {
 			if (loadingTimeout) clearTimeout(loadingTimeout);
 		};
 	});
-	
+
 	// 监听页码变化并重新加载
-	$: currentPage, (currentPage > 0) && loadFiles();
-	
+	$: (currentPage, currentPage > 0 && loadFiles());
+
 	// 监听知识库ID变化
-	$: knowledge?.id, (currentPage = 1);
+	$: (knowledge?.id, (currentPage = 1));
 </script>
 
 {#if loading}
 	<div class="flex flex-col items-center justify-center py-10 gap-3">
-		<div class="w-8 h-8 border-4 border-gray-200 dark:border-gray-700 border-t-blue-500 rounded-full animate-spin" />
+		<div
+			class="w-8 h-8 border-4 border-gray-200 dark:border-gray-700 border-t-blue-500 rounded-full animate-spin"
+		/>
 		<p class="text-gray-400 text-sm">{$i18n?.t('Loading...') ?? '加载中...'}</p>
 	</div>
 {:else if groups.length === 0}
@@ -131,7 +137,9 @@
 						<th class="text-left px-4 py-3 text-xs font-medium text-gray-400 dark:text-gray-500">
 							{$i18n?.t('File Name') ?? 'File Name'}
 						</th>
-						<th class="text-left px-4 py-3 text-xs font-medium text-gray-400 dark:text-gray-500 w-40">
+						<th
+							class="text-left px-4 py-3 text-xs font-medium text-gray-400 dark:text-gray-500 w-40"
+						>
 							{$i18n?.t('Alignment') ?? 'Alignment'}
 						</th>
 						<th class="text-left px-4 py-3 text-xs font-medium text-gray-400 dark:text-gray-500">
@@ -148,7 +156,9 @@
 
 				<tbody class="divide-y divide-gray-50 dark:divide-gray-800/50">
 					{#each groups as group}
-						<tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group align-top">
+						<tr
+							class="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group align-top"
+						>
 							<td class="px-4 py-4 text-xs font-medium text-gray-700 dark:text-gray-300">
 								<div class="line-clamp-2 max-w-[280px]">
 									{group.base}
@@ -213,15 +223,14 @@
 		</div>
 
 		{#if totalCount > pageSize}
-			<div class="mt-4 flex justify-between items-center px-4 py-2 border-t border-gray-100 dark:border-gray-800">
+			<div
+				class="mt-4 flex justify-between items-center px-4 py-2 border-t border-gray-100 dark:border-gray-800"
+			>
 				<div class="text-xs text-gray-500 dark:text-gray-400">
-					{$i18n?.t('Total') ?? 'Total'}: {totalCount} | {$i18n?.t('Page') ?? 'Page'}: {currentPage} / {Math.ceil(totalCount / pageSize)}
+					{$i18n?.t('Total') ?? 'Total'}: {totalCount} | {$i18n?.t('Page') ?? 'Page'}: {currentPage} /
+					{Math.ceil(totalCount / pageSize)}
 				</div>
-				<Pagination
-					bind:page={currentPage}
-					count={totalCount}
-					perPage={pageSize}
-				/>
+				<Pagination bind:page={currentPage} count={totalCount} perPage={pageSize} />
 			</div>
 		{/if}
 	</div>

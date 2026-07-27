@@ -206,17 +206,7 @@
 			id: 'audio',
 			title: 'Audio',
 			route: '/admin/settings/audio',
-			keywords: [
-				'audio',
-				'voice',
-				'speech',
-				'tts',
-				'stt',
-				'whisper',
-				'openai',
-				'sherpa',
-				'web api'
-			]
+			keywords: ['audio', 'voice', 'speech', 'tts', 'stt', 'whisper', 'openai', 'sherpa', 'web api']
 		},
 		{
 			id: 'images',

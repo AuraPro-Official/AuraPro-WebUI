@@ -366,8 +366,6 @@ export const processWeb = async (
 	return res;
 };
 
-
-
 export const queryDoc = async (
 	token: string,
 	collection_name: string,
@@ -494,21 +492,19 @@ export const resetVectorDB = async (token: string) => {
 	return res;
 };
 
-
-export interface BilingualEpubFile{
+export interface BilingualEpubFile {
 	id: string;
 	baseName: string;
 	langs: Record<LangCode, File>;
 	primaryLang: LangCode;
 }
 
- 
 /**
  * 处理EPUB文件 - 上传并分割为章节
- * 
+ *
  * 流程：
  * 1. 前端选择EPUB文件
- * 2. 上传到后端 /api/process/bilingual/epub	
+ * 2. 上传到后端 /api/process/bilingual/epub
  * 3. 后端分割并返回章节内容
  * 4. 前端显示预览
  * 5. 用户确认后进行最终导入
@@ -516,34 +512,31 @@ export interface BilingualEpubFile{
 export const processEpubFile = async (
 	token: string,
 	collection_name: string,
-	file: BilingualEpubFile,
+	file: BilingualEpubFile
 ) => {
- 
 	const formData = new FormData();
-    formData.append('collection_name', collection_name);
-    formData.append('primaryLang', file.primaryLang);
+	formData.append('collection_name', collection_name);
+	formData.append('primaryLang', file.primaryLang);
 
 	for (const [lang, langFile] of Object.entries(file.langs)) {
 		formData.append('files', langFile);
 		formData.append('langs', lang);
-    }
+	}
 
 	const response = await fetch(`${RETRIEVAL_API_BASE_URL}/process/bilingual/epub`, {
 		method: 'POST',
 		headers: {
-			'Authorization': `Bearer ${token}`,
+			Authorization: `Bearer ${token}`
 		},
-		body: formData,
+		body: formData
 	});
- 
+
 	if (!response.ok) {
 		const err = await response.json().catch(() => ({}));
 		throw new Error(err?.detail ?? `HTTP ${response.status}`);
 	}
 	return await response.json();
 };
- 
-
 
 export type LangCode = string;
 
@@ -573,15 +566,15 @@ export const processBilingual = async (
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
-			'Authorization': `Bearer ${token}`,
+			Authorization: `Bearer ${token}`
 		},
 		body: JSON.stringify({
 			collection_name: collectionName ?? null,
 			files,
 			languages,
 			primaryLang,
-			totalFiles: files.length,
-		}),
+			totalFiles: files.length
+		})
 	});
 
 	if (!response.ok) {
@@ -591,7 +584,6 @@ export const processBilingual = async (
 
 	return await response.json();
 };
-
 
 export const getBilingualFiles = async (
 	token: string,
@@ -664,14 +656,13 @@ export const deleteBilingualFile = async (
 	return res;
 };
 
-
 export type GoogleSheetPreview = {
-	languagePairs: string[];     
-	languages: string[];        
+	languagePairs: string[];
+	languages: string[];
 	rowCount: number;
 	rows: Record<string, string>[];
 };
- 
+
 export type GoogleSheetImportResult = {
 	files: {
 		id: string;
@@ -688,14 +679,13 @@ export type GoogleSheetImportResult = {
 	totalFiles: number;
 	rowErrors: { row: number; baseName: string; reason: string }[];
 };
- 
 
 export const previewBilingualGoogleSheet = async (
 	token: string,
 	sheetUrl: string
 ): Promise<GoogleSheetPreview> => {
 	let error = null;
- 
+
 	const res = await fetch(`${RETRIEVAL_API_BASE_URL}/process/bilingual/google-sheet/preview`, {
 		method: 'POST',
 		headers: {
@@ -713,12 +703,11 @@ export const previewBilingualGoogleSheet = async (
 			error = err?.detail ?? '解析表格失败';
 			return null;
 		});
- 
+
 	if (error) throw new Error(error);
 	return res;
 };
 
- 
 export const importBilingualGoogleSheet = async (
 	token: string,
 	sheetUrl: string,
@@ -726,7 +715,7 @@ export const importBilingualGoogleSheet = async (
 	skipFirstTableRow: boolean = false
 ): Promise<GoogleSheetImportResult> => {
 	let error = null;
- 
+
 	const res = await fetch(`${RETRIEVAL_API_BASE_URL}/process/bilingual/google-sheet`, {
 		method: 'POST',
 		headers: {
@@ -748,8 +737,7 @@ export const importBilingualGoogleSheet = async (
 			error = err?.detail ?? '导入 Google 表格失败';
 			return null;
 		});
- 
+
 	if (error) throw new Error(error);
 	return res;
 };
- 

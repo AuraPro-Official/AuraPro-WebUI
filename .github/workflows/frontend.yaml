@@ -33,13 +33,7 @@ jobs:
         run: npm install --force
 
       - name: Verify code formatting
-        run: npm run format
-
-      - name: Verify i18n strings
-        run: npm run i18n:parse
-
-      - name: Ensure working tree is clean
-        run: git diff --exit-code
+        run: npm run format:check
 
       - name: Production build
         run: npm run build

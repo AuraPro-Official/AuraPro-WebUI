@@ -100,7 +100,8 @@
 									{#if $config?.features?.enable_version_update_check}
 										<a
 											href="https://github.com/AuraPro-Official/AuraPro-WebUI/releases/tag/v{version.latest}"
-											target="_blank" rel="noopener noreferrer"
+											target="_blank"
+											rel="noopener noreferrer"
 										>
 											{updateAvailable === null
 												? $i18n.t('Checking for updates...')
@@ -150,27 +151,49 @@
 							<a
 								class="flex-shrink-0 text-xs font-medium underline"
 								href="https://docs.openwebui.com/"
-								target="_blank" rel="noopener noreferrer"
+								target="_blank"
+								rel="noopener noreferrer"
 							>
 								{$i18n.t('Documentation')}
 							</a>
 						</div>
 
 						<div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
-							<a class="underline" href="https://github.com/open-webui/open-webui" target="_blank" rel="noopener noreferrer"
-								>GitHub</a
+							<a
+								class="underline"
+								href="https://github.com/open-webui/open-webui"
+								target="_blank"
+								rel="noopener noreferrer">GitHub</a
 							>
-							<a class="underline" href="https://discord.gg/5rJgQTnV4s" target="_blank" rel="noopener noreferrer">Discord</a>
-							<a class="underline" href="https://twitter.com/OpenWebUI" target="_blank" rel="noopener noreferrer">X</a>
+							<a
+								class="underline"
+								href="https://discord.gg/5rJgQTnV4s"
+								target="_blank"
+								rel="noopener noreferrer">Discord</a
+							>
+							<a
+								class="underline"
+								href="https://twitter.com/OpenWebUI"
+								target="_blank"
+								rel="noopener noreferrer">X</a
+							>
 						</div>
 
 						<div class="mt-2 text-xs text-gray-500">
 							Open WebUI was created by
-							<a href="https://github.com/tjbck" target="_blank" rel="noopener noreferrer" class="underline"
-								>Timothy J. Baek</a
+							<a
+								href="https://github.com/tjbck"
+								target="_blank"
+								rel="noopener noreferrer"
+								class="underline">Timothy J. Baek</a
 							>
 							and is maintained by
-							<a href="https://openwebui.com/" target="_blank" rel="noopener noreferrer" class="underline">Open WebUI Inc.</a>
+							<a
+								href="https://openwebui.com/"
+								target="_blank"
+								rel="noopener noreferrer"
+								class="underline">Open WebUI Inc.</a
+							>
 						</div>
 
 						<div
@@ -179,13 +202,15 @@
 							This customized distribution is maintained by
 							<a
 								href="https://github.com/AuraPro-Official/AuraPro-WebUI"
-								target="_blank" rel="noopener noreferrer"
+								target="_blank"
+								rel="noopener noreferrer"
 								class="underline">AuraPro contributors</a
 							>
 							and is not affiliated with or endorsed by Open WebUI Inc. See
 							<a
 								href="https://github.com/AuraPro-Official/AuraPro-WebUI/blob/main/LICENSE_NOTICE"
-								target="_blank" rel="noopener noreferrer"
+								target="_blank"
+								rel="noopener noreferrer"
 								class="underline">LICENSE_NOTICE</a
 							>
 							for upstream license attribution.

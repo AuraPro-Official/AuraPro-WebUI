@@ -710,7 +710,8 @@
 						<a
 							class=" text-gray-500 dark:text-gray-300 font-medium underline"
 							href="https://ollama.com/library"
-							target="_blank" rel="noopener noreferrer">{$i18n.t('click here.')}</a
+							target="_blank"
+							rel="noopener noreferrer">{$i18n.t('click here.')}</a
 						>
 					</div>
 
@@ -1089,7 +1090,8 @@
 							<a
 								class=" text-gray-500 dark:text-gray-300 font-medium underline"
 								href="https://huggingface.co/models?search=gguf"
-								target="_blank" rel="noopener noreferrer">{$i18n.t('click here.')}</a
+								target="_blank"
+								rel="noopener noreferrer">{$i18n.t('click here.')}</a
 							>
 						</div>
 

@@ -35,7 +35,8 @@
 						<a
 							class=" font-medium underline"
 							href="https://github.com/AuraPro-Official/AuraPro-WebUI#how-to-install-"
-							target="_blank" rel="noopener noreferrer">{$i18n.t('See readme.md for instructions')}</a
+							target="_blank"
+							rel="noopener noreferrer">{$i18n.t('See readme.md for instructions')}</a
 						>
 					</div>
 

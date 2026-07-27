@@ -9,30 +9,32 @@ logger = logging.getLogger('bilingual_align')
 @dataclass
 class AlignmentConfig:
     """集中管理所有对齐参数"""
+
     max_align: int = 4
     min_score: float = 0.35
     empty_align_base_sim: float = 0.4
     empty_align_scale: float = 2.0
     fallback_score: float = 0.20
     debug_align: bool = False
-    
+
     def __post_init__(self):
         # 参数校验
         if not 0 < self.min_score < 1:
-            raise ValueError("min_score 必须在 (0, 1) 之间")
+            raise ValueError('min_score 必须在 (0, 1) 之间')
         if not 0 < self.fallback_score < 1:
-            raise ValueError("fallback_score 必须在 (0, 1) 之间")
+            raise ValueError('fallback_score 必须在 (0, 1) 之间')
         if self.fallback_score > self.min_score:
-            raise ValueError("fallback_score 应小于等于 min_score")
- 
- 
+            raise ValueError('fallback_score 应小于等于 min_score')
+
+
 @dataclass
 class AlignContext:
     """对齐上下文，避免重复传递参数"""
+
     para_index: int = 0
     para_source: str = ''
     para_target: str | dict = ''
- 
+
 
 @dataclass
 class AlignedPair:
@@ -55,12 +57,12 @@ class SentBlock:
     sents: list[str]
     embs: np.ndarray
     prefix_sums: np.ndarray = field(init=False)
-    
+
     def __post_init__(self):
         """初始化时计算前缀和，避免 DP 中重复计算"""
         n = len(self.embs)
         dim = self.embs.shape[1] if self.embs.ndim > 1 else 1
-        
+
         # 预分配内存，避免逐行累加
         prefix = np.zeros((n + 1, dim), dtype=self.embs.dtype)
         if self.embs.ndim > 1:
@@ -68,18 +70,16 @@ class SentBlock:
         else:
             np.cumsum(self.embs, out=prefix[1:])
         self.prefix_sums = prefix
-    
+
     def get_mean_embedding(self, start: int, end: int) -> np.ndarray:
         """快速计算 [start, end) 范围内的平均 embedding"""
         count = end - start
         if count == 0:
             return np.zeros(self.embs.shape[1])
         return (self.prefix_sums[end] - self.prefix_sums[start]) / count
- 
 
 
 class DPAlignMixin:
-
     def __init__(self, config: AlignmentConfig | None = None):
         self.config = config or AlignmentConfig()
         self._dp_steps_cache: list[tuple[int, int]] | None = None
@@ -90,24 +90,15 @@ class DPAlignMixin:
         """缓存 DP 转移步骤，避免重复生成"""
         if self._dp_steps_cache is None:
             steps = [
-                (si, ti) 
-                for si in range(1, self.config.max_align + 1) 
-                for ti in range(1, self.config.max_align + 1)
+                (si, ti) for si in range(1, self.config.max_align + 1) for ti in range(1, self.config.max_align + 1)
             ]
             steps += [(si, 0) for si in range(1, self.config.max_align + 1)]
             steps += [(0, ti) for ti in range(1, self.config.max_align + 1)]
             self._dp_steps_cache = steps
         return self._dp_steps_cache
-    
+
     def _create_aligned_pair(
-        self,
-        source: str,
-        target: str,
-        src_indices: list,
-        tgt_indices: list,
-        score: float,
-        ctx: AlignContext,
-        **kwargs
+        self, source: str, target: str, src_indices: list, tgt_indices: list, score: float, ctx: AlignContext, **kwargs
     ) -> AlignedPair:
         return AlignedPair(
             source=source,
@@ -118,9 +109,8 @@ class DPAlignMixin:
             para_index=ctx.para_index,
             para_source=ctx.para_source,
             para_target=ctx.para_target,
-            **kwargs
+            **kwargs,
         )
-    
 
     def _log(self, msg, *args):
         if self.config.debug_align:
@@ -185,7 +175,6 @@ class DPAlignMixin:
         dp[0][0] = 0.0
         back[0][0] = (0, 0, 0, 0, 0.0, False)
 
-
         for i in range(m + 1):
             for j in range(n + 1):
                 if dp[i][j] == NEG_INF:
@@ -201,7 +190,7 @@ class DPAlignMixin:
 
                     is_empty = False
                     if si > 0 and ti > 0:
-                        s_vec = src.get_mean_embedding(i, ni) 
+                        s_vec = src.get_mean_embedding(i, ni)
                         t_vec = tgt.get_mean_embedding(j, nj)
                         s_norm = np.linalg.norm(s_vec)
                         t_norm = np.linalg.norm(t_vec)
@@ -223,8 +212,6 @@ class DPAlignMixin:
                         dp[ni][nj] = total
                         back[ni][nj] = (i, j, si, ti, sim, is_empty)
 
-
-
         # 回溯提取对齐对
         pairs = self._backtrack(src, tgt, back, m, n, ctx)
 
@@ -235,8 +222,7 @@ class DPAlignMixin:
         if self.config.debug_align:
             self.visualize_alignment(sim_matrix, pairs, ctx.para_index)
         return pairs
-    
-    
+
     def _backtrack(
         self,
         src: SentBlock,
@@ -248,7 +234,7 @@ class DPAlignMixin:
     ) -> list[AlignedPair]:
         """从 DP 表回溯，提取对齐对"""
         pairs, i, j = [], m, n
-        
+
         while i > 0 or j > 0:
             node = back[i][j]
             if node is None:
@@ -256,70 +242,80 @@ class DPAlignMixin:
                 for k in range(i - 1, -1, -1):
                     chunk = src.sents[k].strip()
                     if chunk:
-                        pairs.append(self._create_aligned_pair(
-                            source=chunk,
-                            target='',
-                            src_indices=[k],
-                            tgt_indices=[],
-                            score=0.0,
-                            ctx=ctx,
-                            is_empty_aligned=True,
-                        ))
+                        pairs.append(
+                            self._create_aligned_pair(
+                                source=chunk,
+                                target='',
+                                src_indices=[k],
+                                tgt_indices=[],
+                                score=0.0,
+                                ctx=ctx,
+                                is_empty_aligned=True,
+                            )
+                        )
                 for k in range(j - 1, -1, -1):
                     chunk = tgt.sents[k].strip()
                     if chunk:
-                        pairs.append(self._create_aligned_pair(
-                            source='',
-                            target=chunk,
-                            src_indices=[],
-                            tgt_indices=[k],
-                            score=0.0,
-                            ctx=ctx,
-                            is_empty_aligned=True,
-                        ))
+                        pairs.append(
+                            self._create_aligned_pair(
+                                source='',
+                                target=chunk,
+                                src_indices=[],
+                                tgt_indices=[k],
+                                score=0.0,
+                                ctx=ctx,
+                                is_empty_aligned=True,
+                            )
+                        )
                 break
-            
+
             pi, pj, si, ti, sim, is_empty = node
             if pi == i and pj == j:
                 break
-            
-            src_chunk = ' '.join(src.sents[pi:pi + si]).strip()
-            tgt_chunk = ' '.join(tgt.sents[pj:pj + ti]).strip()
-            
+
+            src_chunk = ' '.join(src.sents[pi : pi + si]).strip()
+            tgt_chunk = ' '.join(tgt.sents[pj : pj + ti]).strip()
+
             if si > 0 and ti > 0:
                 low_conf = sim < self.config.min_score
-                pairs.append(self._create_aligned_pair(
-                    source=src_chunk,
-                    target=tgt_chunk,
-                    src_indices=list(range(pi, pi + si)),
-                    tgt_indices=list(range(pj, pj + ti)),
-                    score=round(sim, 4),
-                    ctx=ctx,
-                    is_low_confidence=low_conf,
-                ))
+                pairs.append(
+                    self._create_aligned_pair(
+                        source=src_chunk,
+                        target=tgt_chunk,
+                        src_indices=list(range(pi, pi + si)),
+                        tgt_indices=list(range(pj, pj + ti)),
+                        score=round(sim, 4),
+                        ctx=ctx,
+                        is_low_confidence=low_conf,
+                    )
+                )
             elif si > 0 and src_chunk:
-                pairs.append(self._create_aligned_pair(
-                    source=src_chunk,
-                    target='',
-                    src_indices=list(range(pi, pi + si)),
-                    tgt_indices=[],
-                    score=0.0,
-                    ctx=ctx,
-                    is_empty_aligned=True,
-                ))
+                pairs.append(
+                    self._create_aligned_pair(
+                        source=src_chunk,
+                        target='',
+                        src_indices=list(range(pi, pi + si)),
+                        tgt_indices=[],
+                        score=0.0,
+                        ctx=ctx,
+                        is_empty_aligned=True,
+                    )
+                )
             elif ti > 0 and tgt_chunk:
-                pairs.append(self._create_aligned_pair(
-                    source='',
-                    target=tgt_chunk,
-                    src_indices=[],
-                    tgt_indices=list(range(pj, pj + ti)),
-                    score=0.0,
-                    ctx=ctx,
-                    is_empty_aligned=True,
-                ))
-            
+                pairs.append(
+                    self._create_aligned_pair(
+                        source='',
+                        target=tgt_chunk,
+                        src_indices=[],
+                        tgt_indices=list(range(pj, pj + ti)),
+                        score=0.0,
+                        ctx=ctx,
+                        is_empty_aligned=True,
+                    )
+                )
+
             i, j = pi, pj
-        
+
         pairs.reverse()
         return pairs
 
@@ -346,40 +342,42 @@ class DPAlignMixin:
                 if best_j != ti and best_sim > orig_sim and best_sim >= self.config.fallback_score:
                     used_tgt.discard(ti)
                     used_tgt.add(best_j)
-                    recovered.append(self._create_aligned_pair(
-                                source=p.source,
-                                target=tgt.sents[best_j].strip(),
-                                src_indices=p.src_indices,
-                                tgt_indices=[best_j],
-                                score=round(best_sim, 4),
-                                ctx=ctx,
-                                fallback=True,
-                            ))
+                    recovered.append(
+                        self._create_aligned_pair(
+                            source=p.source,
+                            target=tgt.sents[best_j].strip(),
+                            src_indices=p.src_indices,
+                            tgt_indices=[best_j],
+                            score=round(best_sim, 4),
+                            ctx=ctx,
+                            fallback=True,
+                        )
+                    )
                 elif orig_sim >= self.config.fallback_score:
                     p.is_low_confidence = False
                     recovered.append(p)
                 else:
                     used_tgt.discard(ti)
-                    recovered.append(self._create_aligned_pair(
-                        source=p.source,
-                        target='',
-                        src_indices=p.src_indices,
-                        tgt_indices=[],
-                        score=0.0,
-                        ctx=ctx,
-                        is_empty_aligned=True,
-                    ))
+                    recovered.append(
+                        self._create_aligned_pair(
+                            source=p.source,
+                            target='',
+                            src_indices=p.src_indices,
+                            tgt_indices=[],
+                            score=0.0,
+                            ctx=ctx,
+                            is_empty_aligned=True,
+                        )
+                    )
                 continue
 
             elif p.is_empty_aligned:
                 if p.src_indices and not p.tgt_indices and len(p.src_indices) == 1:
-                    recovered.append(self._match_orphan_generic(
-                        p, src, tgt, sim_matrix, used_src, used_tgt, True, ctx
-                    ))
+                    recovered.append(self._match_orphan_generic(p, src, tgt, sim_matrix, used_src, used_tgt, True, ctx))
                 elif p.tgt_indices and not p.src_indices and len(p.tgt_indices) == 1:
-                    recovered.append(self._match_orphan_generic(
-                        p, src, tgt, sim_matrix, used_src, used_tgt, False, ctx
-                    ))
+                    recovered.append(
+                        self._match_orphan_generic(p, src, tgt, sim_matrix, used_src, used_tgt, False, ctx)
+                    )
                 else:
                     recovered.append(p)
             else:
@@ -405,7 +403,7 @@ class DPAlignMixin:
             row[list(used_tgt)] = -1.0
             best_j = int(row.argmax()) if row.size else -1
             best_sim = float(row[best_j]) if best_j >= 0 else -1.0
-            
+
             if best_sim >= self.config.fallback_score:
                 used_tgt.add(best_j)
                 return self._create_aligned_pair(
@@ -424,7 +422,7 @@ class DPAlignMixin:
             col[list(used_src)] = -1.0
             best_i = int(col.argmax()) if col.size else -1
             best_sim = float(col[best_i]) if best_i >= 0 else -1.0
-            
+
             if best_sim >= self.config.fallback_score:
                 used_src.add(best_i)
                 return self._create_aligned_pair(
@@ -437,7 +435,7 @@ class DPAlignMixin:
                     fallback=True,
                     is_empty_aligned=False,
                 )
-        
+
         return orphan_pair
 
     def _merge_orphan_targets(self, pairs, sim_matrix):

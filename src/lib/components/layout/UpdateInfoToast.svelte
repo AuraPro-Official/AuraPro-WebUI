@@ -23,7 +23,8 @@
 
 		<a
 			href="https://github.com/AuraPro-Official/AuraPro-WebUI/releases"
-			target="_blank" rel="noopener noreferrer"
+			target="_blank"
+			rel="noopener noreferrer"
 			class="underline"
 		>
 			{$i18n.t('Update for the latest features and improvements.')}</a

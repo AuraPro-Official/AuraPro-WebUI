@@ -16,7 +16,7 @@
 	let name = '';
 	let description = '';
 	let accessGrants = [];
-	let knowledgeType = 'general'
+	let knowledgeType = 'general';
 
 	const submitHandler = async () => {
 		loading = true;
@@ -29,13 +29,11 @@
 			return;
 		}
 
-		const res = await createNewKnowledge(localStorage.token, name, description, accessGrants,
-    			{ knowledge_type: knowledgeType } 
-		).catch(
-			(e) => {
-				toast.error(`${e}`);
-			}
-		);
+		const res = await createNewKnowledge(localStorage.token, name, description, accessGrants, {
+			knowledge_type: knowledgeType
+		}).catch((e) => {
+			toast.error(`${e}`);
+		});
 
 		if (res) {
 			toast.success($i18n.t('Knowledge created successfully.'));
@@ -109,34 +107,36 @@
 						/>
 					</div>
 				</div>
-					<div>
+				<div>
 					<div class="text-sm mb-2">{$i18n.t('Knowledge Type')}</div>
 					<div class="flex gap-2 mt-1">
 						<button
-						type="button"
-						class="flex-1 py-2 px-4 rounded-lg text-sm border-2 transition
+							type="button"
+							class="flex-1 py-2 px-4 rounded-lg text-sm border-2 transition
 							{knowledgeType === 'general'
-							? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-							: 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-850 text-gray-600 dark:text-gray-400'}"
-						on:click={() => knowledgeType = 'general'}
+								? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+								: 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-850 text-gray-600 dark:text-gray-400'}"
+							on:click={() => (knowledgeType = 'general')}
 						>
-						<div class="font-medium">{$i18n.t('General')}</div>
-						<div class="text-xs mt-0.5 opacity-70">{$i18n.t('Documents, webpages, text')}</div>
+							<div class="font-medium">{$i18n.t('General')}</div>
+							<div class="text-xs mt-0.5 opacity-70">{$i18n.t('Documents, webpages, text')}</div>
 						</button>
 
 						<button
-						type="button"
-						class="flex-1 py-2 px-4 rounded-lg text-sm border-2 transition
+							type="button"
+							class="flex-1 py-2 px-4 rounded-lg text-sm border-2 transition
 							{knowledgeType === 'bilingual'
-							? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-							: 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-850 text-gray-600 dark:text-gray-400'}"
-						on:click={() => knowledgeType = 'bilingual'}
+								? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+								: 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-850 text-gray-600 dark:text-gray-400'}"
+							on:click={() => (knowledgeType = 'bilingual')}
 						>
-						<div class="font-medium">{$i18n.t('Bilingual')}</div>
-						<div class="text-xs mt-0.5 opacity-70">{$i18n.t('Translation pairs, glossaries')}</div>
+							<div class="font-medium">{$i18n.t('Bilingual')}</div>
+							<div class="text-xs mt-0.5 opacity-70">
+								{$i18n.t('Translation pairs, glossaries')}
+							</div>
 						</button>
 					</div>
-					</div>
+				</div>
 			</div>
 		</div>
 

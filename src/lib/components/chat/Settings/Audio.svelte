@@ -143,7 +143,12 @@
 				>
 					<option value="">{$i18n.t('Default')}</option>
 					{#each audioInputDevices as device}
-						<option value={device.deviceId}>{device.label || $i18n.t('Microphone {{number}}', { number: audioInputDevices.indexOf(device) + 1 })}</option>
+						<option value={device.deviceId}
+							>{device.label ||
+								$i18n.t('Microphone {{number}}', {
+									number: audioInputDevices.indexOf(device) + 1
+								})}</option
+						>
 					{/each}
 				</select>
 			</div>
@@ -159,7 +164,12 @@
 				>
 					<option value="">{$i18n.t('Default')}</option>
 					{#each audioOutputDevices as device}
-						<option value={device.deviceId}>{device.label || $i18n.t('Speaker {{number}}', { number: audioOutputDevices.indexOf(device) + 1 })}</option>
+						<option value={device.deviceId}
+							>{device.label ||
+								$i18n.t('Speaker {{number}}', {
+									number: audioOutputDevices.indexOf(device) + 1
+								})}</option
+						>
 					{/each}
 				</select>
 			</div>
@@ -191,9 +201,13 @@
 
 			<div class="text-xs opacity-60 leading-5">
 				{#if simultaneousMode === 'call'}
-					{$i18n.t('For online calls, set Speaker to Voicemeeter, VB-CABLE, BlackHole, or another virtual audio device, then select that device as the microphone in your meeting app.')}
+					{$i18n.t(
+						'For online calls, set Speaker to Voicemeeter, VB-CABLE, BlackHole, or another virtual audio device, then select that device as the microphone in your meeting app.'
+					)}
 				{:else if simultaneousMode === 'face_to_face'}
-					{$i18n.t('Face-to-face mode automatically speaks every translated result through the selected speaker.')}
+					{$i18n.t(
+						'Face-to-face mode automatically speaks every translated result through the selected speaker.'
+					)}
 				{:else}
 					{$i18n.t('Off mode does not automatically play translated results with TTS.')}
 				{/if}

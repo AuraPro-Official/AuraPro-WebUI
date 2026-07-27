@@ -146,6 +146,7 @@ async def get_function_models(request):
 
 async def generate_function_chat_completion(request, form_data, user, models: dict | None = None):
     models = models or {}
+
     async def execute_pipe(pipe, params):
         if inspect.iscoroutinefunction(pipe):
             return await pipe(**params)

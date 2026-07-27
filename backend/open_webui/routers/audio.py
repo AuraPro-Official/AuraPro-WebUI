@@ -690,7 +690,7 @@ async def _transcribe_sherpa(request, file_path, filename, metadata, file_dir, i
     if metadata.get('reset_stream') is not None:
         payload['reset_stream'] = str(metadata['reset_stream']).lower()
 
-    headers = {'Authorization': f"Bearer {await Config.get('audio.stt.openai.api_key')}"}
+    headers = {'Authorization': f'Bearer {await Config.get("audio.stt.openai.api_key")}'}
     if user and ENABLE_FORWARD_USER_INFO_HEADERS:
         headers = include_user_info_headers(headers, user)
 
@@ -704,7 +704,7 @@ async def _transcribe_sherpa(request, file_path, filename, metadata, file_dir, i
 
         session = await get_session()
         response = await session.post(
-            url=f"{await Config.get('audio.stt.openai.api_base_url')}/audio/transcriptions",
+            url=f'{await Config.get("audio.stt.openai.api_base_url")}/audio/transcriptions',
             headers=headers,
             data=form_data,
             ssl=AIOHTTP_CLIENT_SESSION_SSL,

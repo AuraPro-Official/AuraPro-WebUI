@@ -867,8 +867,7 @@
 					{#if Object.keys(capabilities).filter((key) => capabilities[key]).length > 0}
 						{@const availableFeatures = Object.entries(capabilities)
 							.filter(
-								([key, value]) =>
-									value && ['code_interpreter', 'image_generation'].includes(key)
+								([key, value]) => value && ['code_interpreter', 'image_generation'].includes(key)
 							)
 							.map(([key, value]) => key)}
 

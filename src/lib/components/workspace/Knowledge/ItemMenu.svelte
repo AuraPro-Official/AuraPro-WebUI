@@ -65,9 +65,9 @@
 						onImport();
 					}}
 				>
-				<Download />
-				<div class="flex items-center">{$i18n.t('Import')}</div>
-			</button>
+					<Download />
+					<div class="flex items-center">{$i18n.t('Import')}</div>
+				</button>
 			{/if}
 
 			<button

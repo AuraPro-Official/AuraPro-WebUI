@@ -67,10 +67,7 @@ def _validate_archive(zf: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
         if total_uncompressed > _MAX_UNCOMPRESSED_BYTES:
             raise KnowledgeImportError('The expanded knowledge archive is too large.')
 
-        if (
-            info.file_size > 10 * _MIB
-            and info.file_size > max(info.compress_size, 1) * _MAX_COMPRESSION_RATIO
-        ):
+        if info.file_size > 10 * _MIB and info.file_size > max(info.compress_size, 1) * _MAX_COMPRESSION_RATIO:
             raise KnowledgeImportError('The knowledge archive has an unsafe compression ratio.')
 
         path = PurePosixPath(info.filename.replace('\\', '/'))

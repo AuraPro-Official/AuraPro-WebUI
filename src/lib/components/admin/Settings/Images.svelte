@@ -553,7 +553,8 @@
 								<a
 									class=" text-gray-300 font-medium"
 									href="https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/3734"
-									target="_blank" rel="noopener noreferrer"
+									target="_blank"
+									rel="noopener noreferrer"
 								>
 									{$i18n.t('(e.g. `sh webui.sh --api`)')}
 								</a>
@@ -585,7 +586,8 @@
 								<a
 									class=" text-gray-300 font-medium"
 									href="https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/13993"
-									target="_blank" rel="noopener noreferrer"
+									target="_blank"
+									rel="noopener noreferrer"
 								>
 									{$i18n
 										.t('(e.g. `sh webui.sh --api --api-auth username_password`)')

@@ -263,7 +263,8 @@
 							? 'text-gray-700 dark:text-gray-200'
 							: 'text-gray-300'}"
 						href="https://github.com/AuraPro-Official/AuraPro-WebUI/blob/main/docs/CONTRIBUTING.md#-translations-and-internationalization"
-						target="_blank" rel="noopener noreferrer"
+						target="_blank"
+						rel="noopener noreferrer"
 					>
 						Help us translate Open WebUI!
 					</a>

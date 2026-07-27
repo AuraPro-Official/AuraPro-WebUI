@@ -9,14 +9,15 @@ from open_webui.config import RAG_EMBEDDING_CONTENT_PREFIX
 from open_webui.utils.bilingual.dpalign_fixed import AlignedPair, DPAlignMixin, SentBlock, AlignContext
 
 
-
 import time
 import logging
 
 logger = logging.getLogger(__name__)
 
+
 class StageTimer:
     """简单的阶段计时器，用于快速定位耗时占比"""
+
     def __init__(self, name: str):
         self.name = name
         self.start = None
@@ -27,7 +28,7 @@ class StageTimer:
 
     def __exit__(self, *args):
         elapsed = time.perf_counter() - self.start
-        logger.info(f"[STAGE] {self.name}: {elapsed:.3f}s")
+        logger.info(f'[STAGE] {self.name}: {elapsed:.3f}s')
 
 
 import cProfile
@@ -36,11 +37,13 @@ import io
 import functools
 import time
 
+
 def profile_async(top_n: int = 30, sort_by: str = 'cumulative'):
     """
     异步函数专用 profiling 装饰器。
     打印耗时占比最高的 top_n 个函数调用。
     """
+
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
@@ -58,14 +61,15 @@ def profile_async(top_n: int = 30, sort_by: str = 'cumulative'):
                 stats = pstats.Stats(profiler, stream=stream).sort_stats(sort_by)
                 stats.print_stats(top_n)
 
-                print(f"\n{'='*80}")
-                print(f"[PROFILE] {func.__name__} 总耗时: {elapsed:.2f}s")
-                print(f"{'='*80}")
+                print(f'\n{"=" * 80}')
+                print(f'[PROFILE] {func.__name__} 总耗时: {elapsed:.2f}s')
+                print(f'{"=" * 80}')
                 print(stream.getvalue())
-                print(f"{'='*80}\n")
-        return wrapper
-    return decorator
+                print(f'{"=" * 80}\n')
 
+        return wrapper
+
+    return decorator
 
 
 class BilingualSplitter:
@@ -121,11 +125,12 @@ class BilingualSplitter:
         gc.collect()
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except ImportError:
             pass
-        
+
     def reload(self, model_name: str = 'sat-3l-sm'):
         """重新加载模型（release 之后如果还要用）"""
         self._model_name = model_name
@@ -248,7 +253,6 @@ class BilingualSplitter:
                 pass
 
         return [text]
-    
 
     def split_batch(self, texts: list[str], max_length: int = 40) -> list[list[str]]:
         texts = [t.strip() for t in texts]
@@ -259,10 +263,8 @@ class BilingualSplitter:
         non_empty_texts = [texts[i] for i in non_empty_idx]
         sat = self._ensure_sat()
         if sat is not None:
-            try:    
-                batch_parts = sat.split(
-                    non_empty_texts, stride=128, block_size=256, threshold=0.7
-                )
+            try:
+                batch_parts = sat.split(non_empty_texts, stride=128, block_size=256, threshold=0.7)
                 results = [[] for _ in texts]
                 for idx, parts in zip(non_empty_idx, batch_parts):
                     parts = [s.strip() for s in parts if s.strip()]
@@ -293,11 +295,10 @@ class BilingualAligner:
     def __init__(self, splitter):
         self.splitter = splitter
         self.align_mix = DPAlignMixin()
-        self._split_sem = asyncio.Semaphore(2) 
-        self._dp_sem = asyncio.Semaphore(4) 
-        self._split_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sat-split")
-        self._dp_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="dp-align")
-
+        self._split_sem = asyncio.Semaphore(2)
+        self._dp_sem = asyncio.Semaphore(4)
+        self._split_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='sat-split')
+        self._dp_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='dp-align')
 
     def set_embed_fn(self, embed_fn, user, request):
         self._embed_fn = embed_fn
@@ -307,17 +308,15 @@ class BilingualAligner:
     def split(self, text: str, lang: str) -> list[str]:
         return self.splitter.split(text, lang=lang)
 
-
     async def _split_paras_concurrently(self, paras: list[str], lang: str) -> list[list[str]]:
         if not paras:
             return []
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._split_executor, self.splitter.split_batch, paras)
 
-        
     async def _split_one_text(self, text: str, lang: str) -> tuple[list[str], list[list[str]]]:
         async with self._split_sem:
-            logger.info(f"[切割] 开始切割文本，长度 {len(text)}，语言 {lang}")
+            logger.info(f'[切割] 开始切割文本，长度 {len(text)}，语言 {lang}')
             paras = BilingualSplitter._split_paragraphs(text.strip())
             para_sents = await self._split_paras_concurrently(paras, lang)
             return paras, para_sents
@@ -329,8 +328,9 @@ class BilingualAligner:
         src_paras: list[str],
         tgt_paras_map: dict[str, list[str]],
     ) -> list[AlignedPair]:
-        
+
         all_pairs: list[AlignedPair] = []
+
         async def _align_one(para_index: int, lang: str, src_block, tgt_block, src_para, tgt_para):
             async with self._dp_sem:
                 if len(src_block.sents) == 1 and len(tgt_block.sents) == 1:
@@ -351,7 +351,6 @@ class BilingualAligner:
                         self._dp_align, src_block, tgt_block, para_index, src_para, tgt_para
                     )
                 return para_index, lang, pairs
-    
 
         tasks = []
         for para_index, src_block in enumerate(src_blocks):
@@ -369,7 +368,6 @@ class BilingualAligner:
         grouped: dict[int, dict[str, list[AlignedPair]]] = {}
         for para_index, lang, pairs in results:
             grouped.setdefault(para_index, {})[lang] = pairs
-
 
         for para_index in sorted(grouped.keys()):
             lang_results = grouped[para_index]
@@ -454,12 +452,9 @@ class BilingualAligner:
     def _dp_align(
         self, src: SentBlock, tgt: SentBlock, para_index: int = 0, para_source: str = '', para_target: str = ''
     ):
-        ctx = AlignContext(para_index=para_index, 
-                           para_source=para_source, 
-                           para_target=para_target)
-        
+        ctx = AlignContext(para_index=para_index, para_source=para_source, para_target=para_target)
+
         return self.align_mix._dp_align(src=src, tgt=tgt, ctx=ctx)
-    
 
     async def align_to_documents(self, src_text, tgt_texts, src_lang, metadata=None):
         docs_list = await self.align_batch_to_documents(
@@ -467,20 +462,19 @@ class BilingualAligner:
         )
         return docs_list[0]
 
-
     async def align_batch_to_documents(self, items: list[dict]) -> list[list[Document]]:
         n = len(items)
         if n == 0:
             return []
-        
+
         self.splitter.reload()
 
-        with StageTimer(f"分段+切句(批量,{n}个文件)"):
+        with StageTimer(f'分段+切句(批量,{n}个文件)'):
             split_tasks = []
             for i, item in enumerate(items):
                 split_tasks.append(self._split_one_text(item['src_text'].strip(), item['src_lang']))
             src_split_results = await asyncio.gather(*split_tasks)  # [(paras, para_sents), ...]
-            logger.info(f"[切割] 完成 {n} 个文件的源语言切割")
+            logger.info(f'[切割] 完成 {n} 个文件的源语言切割')
 
             tgt_split_tasks = []
             tgt_task_index = []
@@ -489,7 +483,7 @@ class BilingualAligner:
                     tgt_split_tasks.append(self._split_one_text(text.strip(), lang))
                     tgt_task_index.append((i, lang))
             tgt_split_results = await asyncio.gather(*tgt_split_tasks) if tgt_split_tasks else []
-            logger.info(f"[切割] 完成 {len(tgt_split_results)} 个目标语言切割")
+            logger.info(f'[切割] 完成 {len(tgt_split_results)} 个目标语言切割')
 
             # 整理回每个 item 的结构
             src_paras_list = [r[0] for r in src_split_results]
@@ -502,14 +496,13 @@ class BilingualAligner:
                 tgt_para_sents_map_list[item_idx][lang] = para_sents
         self.splitter.release()
 
-
-        with StageTimer(f"Embedding调用(批量,{n}个文件)"):
-            logger.info(f"[Embedding] 开始 {n} 个文件的 embedding 调用")
+        with StageTimer(f'Embedding调用(批量,{n}个文件)'):
+            logger.info(f'[Embedding] 开始 {n} 个文件的 embedding 调用')
             all_texts: list[str] = []
             src_slices: list[list[tuple[int, int]]] = []  # 每个item: 每段的(start,end)
             tgt_slices: list[dict[str, list[tuple[int, int]]]] = [dict() for _ in range(n)]
 
-            cursor = 0  
+            cursor = 0
             for i in range(n):
                 slices = []
                 for sents in src_para_sents_list[i]:
@@ -531,8 +524,8 @@ class BilingualAligner:
 
             if not all_texts:
                 return [[] for _ in range(n)]
-            
-            logger.info(f"[Embedding] 总共 {len(all_texts)} 个句子，开始调用 embedding 函数")
+
+            logger.info(f'[Embedding] 总共 {len(all_texts)} 个句子，开始调用 embedding 函数')
             embeddings = await self._embed_fn(
                 all_texts,
                 prefix=RAG_EMBEDDING_CONTENT_PREFIX,
@@ -556,9 +549,9 @@ class BilingualAligner:
                         blocks.append(SentBlock(sents=sents, embs=all_embs[s:e]))
                     tgt_blocks_map_list[i][lang] = blocks
 
-        with StageTimer(f"DP对齐(批量,{n}个文件)"):
+        with StageTimer(f'DP对齐(批量,{n}个文件)'):
             # 4. 每个 item 独立做 DP 对齐（仍然并发，但不再重复切句/embedding）
-            logger.info(f"[对齐] 开始 {n} 个文件的 DP 对齐")
+            logger.info(f'[对齐] 开始 {n} 个文件的 DP 对齐')
             all_pairs_list = [
                 await self._align_blocks(
                     src_blocks_list[i],
@@ -598,7 +591,5 @@ class BilingualAligner:
         return result
 
 
-
 bilingual_spliter = BilingualSplitter()
 bilingual_aligner = BilingualAligner(bilingual_spliter)
-

@@ -1530,10 +1530,10 @@ async def download_model(
 ):
     """Download a GGUF model from HuggingFace or GitHub and register it with Ollama."""
     parsed_download_url = urlparse(form_data.url)
-    if (
-        parsed_download_url.scheme != 'https'
-        or (parsed_download_url.hostname or '').lower() not in {'huggingface.co', 'github.com'}
-    ):
+    if parsed_download_url.scheme != 'https' or (parsed_download_url.hostname or '').lower() not in {
+        'huggingface.co',
+        'github.com',
+    }:
         raise HTTPException(
             status_code=400,
             detail='Invalid file_url. Only URLs from allowed hosts are permitted.',

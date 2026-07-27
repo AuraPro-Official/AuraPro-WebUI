@@ -58,7 +58,9 @@
 
 	$: visibleActions = [
 		...(actions.length === 0 ? DEFAULT_ACTIONS : actions),
-		...((actions.length === 0 ? DEFAULT_ACTIONS : actions).some((action) => action.id === 'correct_translation')
+		...((actions.length === 0 ? DEFAULT_ACTIONS : actions).some(
+			(action) => action.id === 'correct_translation'
+		)
 			? []
 			: [DEFAULT_ACTIONS.find((action) => action.id === 'correct_translation')])
 	].filter(Boolean);

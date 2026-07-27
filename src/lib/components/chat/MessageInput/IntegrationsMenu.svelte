@@ -29,10 +29,7 @@
 	import { getSkills } from '$lib/apis/skills';
 	import { getKnowledgeBases } from '$lib/apis/knowledge';
 	import { updateUserSettings } from '$lib/apis/users';
-	import {
-		applyExtensionMode,
-		type ExtensionMode
-	} from '$lib/utils/extension-modes';
+	import { applyExtensionMode, type ExtensionMode } from '$lib/utils/extension-modes';
 
 	import { toast } from 'svelte-sonner';
 
@@ -164,9 +161,9 @@
 				const pageItems = Array.isArray(res.items) ? res.items : [];
 				knowledgeBases = pageItems.map(
 					(kb: { id: string; name: string; meta?: { knowledge_type?: string } }) => ({
-					id: kb.id,
-					name: kb.name,
-					type: kb.meta?.knowledge_type ?? ''
+						id: kb.id,
+						name: kb.name,
+						type: kb.meta?.knowledge_type ?? ''
 					})
 				);
 			}

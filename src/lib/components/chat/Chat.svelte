@@ -549,7 +549,9 @@
 						$config?.features?.enable_image_generation &&
 						($user?.role === 'admin' || $user?.permissions?.features?.image_generation)
 					) {
-						imageGenerationEnabled.set(model.info.meta.defaultFeatureIds.includes('image_generation'));
+						imageGenerationEnabled.set(
+							model.info.meta.defaultFeatureIds.includes('image_generation')
+						);
 					}
 
 					if (
@@ -565,7 +567,9 @@
 						$config?.features?.enable_code_interpreter &&
 						($user?.role === 'admin' || $user?.permissions?.features?.code_interpreter)
 					) {
-						codeInterpreterEnabled.set(model.info.meta.defaultFeatureIds.includes('code_interpreter'));
+						codeInterpreterEnabled.set(
+							model.info.meta.defaultFeatureIds.includes('code_interpreter')
+						);
 					}
 				}
 
@@ -978,10 +982,10 @@
 
 		if (pendingTaskIds?.length === 0) {
 			await loadChat();
-			
+
 			// 重连后确认任务已结束（无论成功失败），释放可能残留的锁并推进队列
 			processingQueueChats.delete($chatId);
-        	await processNextInQueue($chatId);
+			await processNextInQueue($chatId);
 		}
 	};
 
@@ -1679,7 +1683,9 @@
 				history =
 					rawHistory && typeof rawHistory === 'object'
 						? structuredClone(rawHistory)
-						: convertMessagesToHistory(Array.isArray(chatContent.messages) ? chatContent.messages : []);
+						: convertMessagesToHistory(
+								Array.isArray(chatContent.messages) ? chatContent.messages : []
+							);
 
 				if (!history || typeof history !== 'object') {
 					history = { messages: {}, currentId: null };
@@ -1825,9 +1831,8 @@
 			});
 
 			await submitPrompt(nextTask.prompt, nextTask.files);
-
 		} catch (error) {
-			console.error("Failed to process queued message:", error);
+			console.error('Failed to process queued message:', error);
 			// 提交失败时，队列里没有"生成完成"事件会触发推进，
 			// 所以这里需要手动释放锁并尝试推进下一条，避免队列卡死
 			processingQueueChats.delete(targetChatId);
@@ -2141,9 +2146,9 @@
 			);
 		}
 
-		if(done || error){
+		if (done || error) {
 			// Process next queued request if any
-		    processingQueueChats.delete(chatId);
+			processingQueueChats.delete(chatId);
 			await processNextInQueue(chatId);
 		}
 

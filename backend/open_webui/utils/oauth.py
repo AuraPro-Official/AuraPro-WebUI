@@ -121,6 +121,7 @@ def _oauth_response_fields(value) -> list[str]:
         return []
     return sorted(str(key) for key in value.keys())[:32]
 
+
 OAUTH_RESOURCE_PARAMETER_MODES = {'auto', 'include', 'omit'}
 
 OAUTH_RUNTIME_CONFIG = {

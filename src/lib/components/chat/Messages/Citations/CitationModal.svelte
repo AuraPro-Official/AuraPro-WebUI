@@ -117,7 +117,8 @@
 									: document.source?.url?.includes('http')
 										? document.source.url
 										: `#`}
-								target="_blank" rel="noopener noreferrer"
+								target="_blank"
+								rel="noopener noreferrer"
 							>
 								{decodeString(citation?.source?.name)}
 							</a>
@@ -166,7 +167,8 @@
 									{#if snippetUrl}
 										<a
 											href={snippetUrl}
-											target="_blank" rel="noopener noreferrer"
+											target="_blank"
+											rel="noopener noreferrer"
 											class="underline hover:text-gray-500 dark:hover:text-gray-100"
 											>{$i18n.t('Content')}</a
 										>

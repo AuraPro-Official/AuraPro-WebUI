@@ -213,7 +213,13 @@
 		}}
 	/>
 
-	<input type="file" accept=".zip" bind:this={importInput} on:change={handleFileChange} style="display:none" />
+	<input
+		type="file"
+		accept=".zip"
+		bind:this={importInput}
+		on:change={handleFileChange}
+		style="display:none"
+	/>
 
 	<div class="flex flex-col gap-1 px-1 mt-1.5 mb-3">
 		<div class="flex justify-between items-center">
@@ -368,7 +374,7 @@
 															? () => {
 																	exportHandler(item);
 																}
-															: null}	
+															: null}
 														onImport={$user?.role === 'admin'
 															? () => {
 																	importHandler(item);

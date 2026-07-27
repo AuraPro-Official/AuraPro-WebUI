@@ -76,10 +76,9 @@
 	import AdjustmentsHorizontal from '$lib/components/icons/AdjustmentsHorizontal.svelte';
 	import Pagination from '$lib/components/common/Pagination.svelte';
 	import AttachWebpageModal from '$lib/components/chat/MessageInput/AttachWebpageModal.svelte';
-	
+
 	import BilingualModal from './KnowledgeBase/AddBilingualModal.svelte';
 	import BilingualFiles from './KnowledgeBase/BilingualFiles.svelte';
-
 
 	let largeScreen = true;
 
@@ -414,36 +413,29 @@
 					count: result.total_chunks
 				})
 			);
-
 		} catch (e: any) {
 			toast.error('导入失败：' + (e?.message ?? '未知错误'));
 			console.error('processBilingual failed:', e);
 		}
 	};
 
-	const uploadBilingualEpubFiles =  async (data: BilingualImportData) => {
+	const uploadBilingualEpubFiles = async (data: BilingualImportData) => {
 		const { files, primaryLang, languages } = data;
 		try {
-			for (const file of files){
-				const result = await processEpubFile(
-					localStorage.token,
-					knowledge.id,
-					file,
-				);
+			for (const file of files) {
+				const result = await processEpubFile(localStorage.token, knowledge.id, file);
 				toast.success(
 					$i18n.t('Bilingual import complete: {{count}} chunks imported', {
 						count: result.chapter_count
 					})
 				);
 			}
-
 		} catch (e: any) {
-	        console.error('🚨 Bilingual EPUB upload failed:', e);
+			console.error('🚨 Bilingual EPUB upload failed:', e);
 		}
 	};
 
-
-	const uploadFileHandler = async (file, is_process=true) => {
+	const uploadFileHandler = async (file, is_process = true) => {
 		console.log(file);
 
 		const fileItem = {
@@ -1004,7 +996,7 @@
 				name: knowledge.name,
 				description: knowledge.description,
 				access_grants: knowledge.access_grants ?? [],
-			    meta: knowledge.meta ?? {}   // 加上这行
+				meta: knowledge.meta ?? {} // 加上这行
 			}).catch((e) => {
 				toast.error(`${e}`);
 			});
@@ -1241,13 +1233,12 @@
 	}}
 />
 
-
 <BilingualModal
 	bind:show={showBilingualContentModal}
 	onSubmit={async (data, type) => {
-		if (type === "txt"){
+		if (type === 'txt') {
 			await uploadBilingualFiles(data);
-		}else{
+		} else {
 			await uploadBilingualEpubFiles(data);
 		}
 	}}
@@ -1421,10 +1412,10 @@
 							<div class="rounded-xl bg-gray-50 dark:bg-gray-850 px-3 py-2">
 								{$i18n.t('Admin-managed service account')}
 							</div>
-							</div>
 						</div>
+					</div>
 
-						<div class="text-xs text-gray-500">
+					<div class="text-xs text-gray-500">
 						{$i18n.t(
 							'This knowledge base retrieves from a connected source. Open WebUI can query it, but cannot upload, sync, edit, delete, reset, or reindex its source data.'
 						)}
@@ -1625,7 +1616,6 @@
 					</div>
 				{/if}
 
-
 				{#if knowledge?.meta?.knowledge_type === 'bilingual'}
 					<BilingualFiles
 						{knowledge}
@@ -1641,136 +1631,134 @@
 							selectedFile = null;
 						}}
 					/>
-				{:else}
-					{#if fileItems !== null && fileItemsTotal !== null}
-						<div class="flex flex-row flex-1 gap-3 px-2.5 mt-2">
-							<div class="flex-1 flex">
-								<div class=" flex flex-col w-full space-x-2 rounded-lg h-full">
-									<div class="w-full h-full flex flex-col min-h-full">
-										{#if fileItems.length > 0 || directoryItems.length > 0}
-											<div class=" flex overflow-y-auto h-full w-full scrollbar-hidden text-xs">
-												<Files
-													files={fileItems}
-													directories={directoryItems}
-													{knowledge}
-													{selectedFileId}
-													onClick={(fileId) => {
-														selectedFileId = fileId;
+				{:else if fileItems !== null && fileItemsTotal !== null}
+					<div class="flex flex-row flex-1 gap-3 px-2.5 mt-2">
+						<div class="flex-1 flex">
+							<div class=" flex flex-col w-full space-x-2 rounded-lg h-full">
+								<div class="w-full h-full flex flex-col min-h-full">
+									{#if fileItems.length > 0 || directoryItems.length > 0}
+										<div class=" flex overflow-y-auto h-full w-full scrollbar-hidden text-xs">
+											<Files
+												files={fileItems}
+												directories={directoryItems}
+												{knowledge}
+												{selectedFileId}
+												onClick={(fileId) => {
+													selectedFileId = fileId;
 
-														if (fileItems) {
-															const file = fileItems.find((file) => file.id === selectedFileId);
-															if (file) {
-																fileSelectHandler(file);
-															} else {
-																selectedFileId = null;
-																selectedFile = null;
-																selectedFileContent = '';
-																loadingFileContent = false;
-															}
-														}
-													}}
-													onDelete={(fileId) => {
-														selectedFileId = null;
-														selectedFile = null;
-														selectedFileContent = '';
-														loadingFileContent = false;
-
-														deleteFileHandler(fileId);
-													}}
-													onRename={(fileId, name) => renameFileHandler(fileId, name)}
-													onNavigateDirectory={(dirId) => navigateToDirectory(dirId)}
-													onRenameDirectory={(id, name) => renameDirectoryHandler(id, name)}
-													onDeleteDirectory={(id) => confirmDeleteDirectory(id)}
-													onMoveFileToDirectory={(fileId, dirId) =>
-														moveFileToDirectoryHandler(fileId, dirId)}
-													onMoveDirectoryToDirectory={(dirId, targetId) =>
-														moveDirectoryHandler(dirId, targetId)}
-												/>
-											</div>
-
-											{#if fileItemsTotal > 30}
-												<Pagination bind:page={currentPage} count={fileItemsTotal} perPage={30} />
-											{/if}
-										{:else}
-											<div
-												class="my-3 flex flex-col justify-center text-center text-gray-500 text-xs"
-											>
-												<div>
-													{$i18n.t('No content found')}
-												</div>
-											</div>
-										{/if}
-									</div>
-								</div>
-							</div>
-
-							{#if selectedFileId !== null}
-								<Drawer
-									className="h-full"
-									show={selectedFileId !== null}
-									onClose={() => {
-										selectedFileId = null;
-										selectedFile = null;
-										selectedFileContent = '';
-										loadingFileContent = false;
-									}}
-								>
-									<div class="flex flex-col justify-start h-full max-h-full">
-										<div class=" flex flex-col w-full h-full max-h-full">
-											<div class="shrink-0 flex items-center p-2">
-												<div class="mr-2">
-													<button
-														class="w-full text-left text-sm p-1.5 rounded-lg dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-gray-850"
-														aria-label={$i18n.t('Close')}
-														on:click={() => {
+													if (fileItems) {
+														const file = fileItems.find((file) => file.id === selectedFileId);
+														if (file) {
+															fileSelectHandler(file);
+														} else {
 															selectedFileId = null;
 															selectedFile = null;
 															selectedFileContent = '';
 															loadingFileContent = false;
-														}}
-													>
-														<ChevronLeft strokeWidth="2.5" />
-													</button>
-												</div>
-												<div class=" flex-1 text-lg line-clamp-1">
-													{selectedFile?.meta?.name}
-												</div>
+														}
+													}
+												}}
+												onDelete={(fileId) => {
+													selectedFileId = null;
+													selectedFile = null;
+													selectedFileContent = '';
+													loadingFileContent = false;
 
-												{#if knowledge?.write_access}
-													<div>
-														<button
-															class="flex self-center w-fit text-sm py-1 px-2.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-															disabled={isSaving || loadingFileContent}
-															on:click={() => {
-																updateFileContentHandler();
-															}}
-														>
-															{$i18n.t('Save')}
-															{#if isSaving}
-																<div class="ml-2 self-center">
-																	<Spinner />
-																</div>
-															{/if}
-														</button>
-													</div>
-												{/if}
+													deleteFileHandler(fileId);
+												}}
+												onRename={(fileId, name) => renameFileHandler(fileId, name)}
+												onNavigateDirectory={(dirId) => navigateToDirectory(dirId)}
+												onRenameDirectory={(id, name) => renameDirectoryHandler(id, name)}
+												onDeleteDirectory={(id) => confirmDeleteDirectory(id)}
+												onMoveFileToDirectory={(fileId, dirId) =>
+													moveFileToDirectoryHandler(fileId, dirId)}
+												onMoveDirectoryToDirectory={(dirId, targetId) =>
+													moveDirectoryHandler(dirId, targetId)}
+											/>
+										</div>
+
+										{#if fileItemsTotal > 30}
+											<Pagination bind:page={currentPage} count={fileItemsTotal} perPage={30} />
+										{/if}
+									{:else}
+										<div
+											class="my-3 flex flex-col justify-center text-center text-gray-500 text-xs"
+										>
+											<div>
+												{$i18n.t('No content found')}
+											</div>
+										</div>
+									{/if}
+								</div>
+							</div>
+						</div>
+
+						{#if selectedFileId !== null}
+							<Drawer
+								className="h-full"
+								show={selectedFileId !== null}
+								onClose={() => {
+									selectedFileId = null;
+									selectedFile = null;
+									selectedFileContent = '';
+									loadingFileContent = false;
+								}}
+							>
+								<div class="flex flex-col justify-start h-full max-h-full">
+									<div class=" flex flex-col w-full h-full max-h-full">
+										<div class="shrink-0 flex items-center p-2">
+											<div class="mr-2">
+												<button
+													class="w-full text-left text-sm p-1.5 rounded-lg dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-gray-850"
+													aria-label={$i18n.t('Close')}
+													on:click={() => {
+														selectedFileId = null;
+														selectedFile = null;
+														selectedFileContent = '';
+														loadingFileContent = false;
+													}}
+												>
+													<ChevronLeft strokeWidth="2.5" />
+												</button>
+											</div>
+											<div class=" flex-1 text-lg line-clamp-1">
+												{selectedFile?.meta?.name}
 											</div>
 
-											{#key selectedFile?.id}
-												<textarea
-													class="w-full h-full text-sm outline-none resize-none px-3 py-2"
-													bind:value={selectedFileContent}
-													disabled={!knowledge?.write_access || loadingFileContent}
-													aria-label={$i18n.t('File content')}
-													placeholder={$i18n.t('Add content here')}
-												></textarea>
-											{/key}
+											{#if knowledge?.write_access}
+												<div>
+													<button
+														class="flex self-center w-fit text-sm py-1 px-2.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+														disabled={isSaving || loadingFileContent}
+														on:click={() => {
+															updateFileContentHandler();
+														}}
+													>
+														{$i18n.t('Save')}
+														{#if isSaving}
+															<div class="ml-2 self-center">
+																<Spinner />
+															</div>
+														{/if}
+													</button>
+												</div>
+											{/if}
 										</div>
+
+										{#key selectedFile?.id}
+											<textarea
+												class="w-full h-full text-sm outline-none resize-none px-3 py-2"
+												bind:value={selectedFileContent}
+												disabled={!knowledge?.write_access || loadingFileContent}
+												aria-label={$i18n.t('File content')}
+												placeholder={$i18n.t('Add content here')}
+											></textarea>
+										{/key}
 									</div>
-								</Drawer>
-							{/if}
-						</div>
-					{/if}
+								</div>
+							</Drawer>
+						{/if}
+					</div>
 				{/if}
 			{/if}
 		</div>

@@ -352,7 +352,8 @@
 								<a
 									class=" text-gray-300 font-medium underline"
 									href="https://github.com/AuraPro-Official/AuraPro-WebUI#troubleshooting"
-									target="_blank" rel="noopener noreferrer"
+									target="_blank"
+									rel="noopener noreferrer"
 								>
 									{$i18n.t('Click here for help.')}
 								</a>

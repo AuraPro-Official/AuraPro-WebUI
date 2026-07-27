@@ -16,8 +16,8 @@
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	import {
-		translationModeEnabled, 
-		interpretationModeEnabled, 
+		translationModeEnabled,
+		interpretationModeEnabled,
 		learningModeEnabled,
 		manuscriptTranslationModeEnabled
 	} from '$lib/stores';
@@ -252,10 +252,8 @@
 		const targetLang = settings?.target_lang || settings?.glossary_lang || '';
 		const sourceLang = settings?.source_lang || '';
 
-        const languageCandidates = targetLang
-            ? [sourceLang, targetLang].filter(Boolean)
-            : ['zh']
-        return languageCandidates;
+		const languageCandidates = targetLang ? [sourceLang, targetLang].filter(Boolean) : ['zh'];
+		return languageCandidates;
 	};
 
 	const transcribeHandler = async (audioBlob) => {
@@ -269,15 +267,10 @@
 		await ensureInterpretationModeForVoiceTranslation();
 		const file = blobToFile(audioBlob, 'recording.wav');
 
-        const languageCandidates = await getGlossaryModeLanguageCandidates()
-		const res = await transcribeAudio(
-			localStorage.token,
-			file,
-            undefined,
-            {
-                languageCandidates: languageCandidates
-            }
-		).catch((error) => {
+		const languageCandidates = await getGlossaryModeLanguageCandidates();
+		const res = await transcribeAudio(localStorage.token, file, undefined, {
+			languageCandidates: languageCandidates
+		}).catch((error) => {
 			toast.error(`${error}`);
 			return null;
 		});
@@ -550,7 +543,9 @@
 					audioElement.playbackRate = $settings.audio?.tts?.playbackRate ?? 1;
 					const outputDeviceId = $settings?.audio?.outputDeviceId ?? '';
 					if (outputDeviceId && 'setSinkId' in audioElement) {
-						await (audioElement as HTMLAudioElement & { setSinkId: (deviceId: string) => Promise<void> })
+						await (
+							audioElement as HTMLAudioElement & { setSinkId: (deviceId: string) => Promise<void> }
+						)
 							.setSinkId(outputDeviceId)
 							.catch((error) => console.error(error));
 					}
@@ -881,7 +876,9 @@
 {#if $showCallOverlay}
 	<div class="max-w-lg w-full h-full max-h-[100dvh] flex flex-col justify-between p-3 md:p-6">
 		{#if isVoiceTranslationModeEnabled()}
-			<div class="mb-3 rounded-xl border border-gray-100 bg-gray-50/80 px-3 py-2 text-xs text-gray-700 dark:border-gray-800 dark:bg-gray-900/60 dark:text-gray-300">
+			<div
+				class="mb-3 rounded-xl border border-gray-100 bg-gray-50/80 px-3 py-2 text-xs text-gray-700 dark:border-gray-800 dark:bg-gray-900/60 dark:text-gray-300"
+			>
 				<div class="flex items-center justify-between gap-3">
 					<div class="min-w-0">
 						<div class="font-medium">
@@ -891,19 +888,27 @@
 						</div>
 						<div class="mt-0.5 truncate opacity-70">
 							{#if getVoiceTranslationMode() === 'call'}
-								{$i18n.t('Translated foreign speech is sent to the selected speaker or virtual audio device.')}
+								{$i18n.t(
+									'Translated foreign speech is sent to the selected speaker or virtual audio device.'
+								)}
 							{:else}
-								{$i18n.t('Translated foreign speech plays from this device speaker. Chinese results stay on screen.')}
+								{$i18n.t(
+									'Translated foreign speech plays from this device speaker. Chinese results stay on screen.'
+								)}
 							{/if}
 						</div>
 					</div>
-					<div class="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] shadow-xs dark:bg-gray-800">
+					<div
+						class="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] shadow-xs dark:bg-gray-800"
+					>
 						{getSelectedOutputDevice()?.label || $i18n.t('Default')}
 					</div>
 				</div>
 				{#if getVoiceTranslationMode() === 'call' && !isVirtualOutputSelected()}
 					<div class="mt-2 text-[11px] text-amber-700 dark:text-amber-300">
-						{$i18n.t('For online calls, choose Voicemeeter, VB-CABLE, BlackHole, or another virtual audio device as the speaker output.')}
+						{$i18n.t(
+							'For online calls, choose Voicemeeter, VB-CABLE, BlackHole, or another virtual audio device as the speaker output.'
+						)}
 					</div>
 				{/if}
 			</div>

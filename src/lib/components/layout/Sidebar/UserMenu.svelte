@@ -607,7 +607,8 @@
 					<!-- Releases -->
 					<a
 						href="https://github.com/AuraPro-Official/AuraPro-WebUI/releases"
-						target="_blank" rel="noopener noreferrer"
+						target="_blank"
+						rel="noopener noreferrer"
 						draggable="false"
 						class="flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition cursor-pointer select-none"
 						id="chat-share-button"

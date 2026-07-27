@@ -187,9 +187,7 @@ def _repo_cache_dir(repo_id: str) -> Path:
     snapshots_dir = repo_dir / 'snapshots'
     if snapshots_dir.exists():
         candidates = [
-            d
-            for d in snapshots_dir.iterdir()
-            if d.is_dir() and d.resolve().is_relative_to(repo_dir.resolve())
+            d for d in snapshots_dir.iterdir() if d.is_dir() and d.resolve().is_relative_to(repo_dir.resolve())
         ]
         if candidates:
             main_dir = snapshots_dir / 'main'
