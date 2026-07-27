@@ -36,7 +36,7 @@
 		"i18n:parse": "i18next --config i18next-parser.config.ts && prettier --write \"src/lib/i18n/**/*.{js,json}\"",
 		"cy:open": "cypress open",
 		"test": "npm run test:frontend && npm run test:backend",
-		"test:frontend": "vitest run --config vitest.config.ts --configLoader runner",
+		"test:frontend": "svelte-kit sync && vitest run --config vitest.config.ts --configLoader runner",
 		"test:backend": "python -m unittest discover -s backend/tests -p \"test_*.py\"",
 		"pyodide:fetch": "node scripts/prepare-pyodide.js"
 	},
