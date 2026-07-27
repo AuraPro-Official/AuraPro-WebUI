@@ -1,0 +1,31 @@
+AuraPro WebUI Distribution Notice
+==============================
+
+AuraPro WebUI is an AuraPro distribution/fork derived from Open WebUI.
+
+Upstream project:
+  Open WebUI
+  https://github.com/open-webui/open-webui
+
+Upstream copyright:
+  Copyright (c) 2023- Open WebUI Inc.
+  Created by Timothy Jaeryang Baek
+
+AuraPro-specific distribution:
+  Maintained by AuraPro contributors.
+
+The Python package is published as "aurapro-webui". The source package keeps the
+"open_webui" Python module namespace for compatibility with upstream code,
+database migrations, plugins, and integrations.
+
+AuraPro is not endorsed by Open WebUI Inc. unless explicitly stated in writing.
+
+License and contribution files in this distribution:
+  LICENSE
+  LICENSE_NOTICE
+  LICENSE_HISTORY
+  CONTRIBUTOR_LICENSE_AGREEMENT
+
+Redistributors should review those files before publishing source or binary
+builds. In particular, the current Open WebUI License includes attribution and
+branding-retention conditions for materials governed by that license.
