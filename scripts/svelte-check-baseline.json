@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "totalErrors": 4977,
+  "totalErrors": 4973,
   "groups": [
     {
       "file": "src/lib/apis/chats/index.ts",
@@ -8552,11 +8552,11 @@
       "message": "'element' is possibly 'null'.",
       "count": 14,
       "lines": [
-        70,
-        224,
-        271,
-        322,
-        495
+        71,
+        226,
+        273,
+        324,
+        497
       ]
     },
     {
@@ -8564,10 +8564,10 @@
       "message": "'message' is of type 'unknown'.",
       "count": 4,
       "lines": [
-        251,
-        252,
-        301,
-        302
+        253,
+        254,
+        303,
+        304
       ]
     },
     {
@@ -8575,7 +8575,7 @@
       "message": "'messagesCount' is possibly 'null'.",
       "count": 1,
       "lines": [
-        73
+        74
       ]
     },
     {
@@ -8583,8 +8583,8 @@
       "message": "'msg' is of type 'unknown'.",
       "count": 2,
       "lines": [
-        198,
-        199
+        200,
+        201
       ]
     },
     {
@@ -8592,7 +8592,7 @@
       "message": "Binding element 'content' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        339
+        341
       ]
     },
     {
@@ -8600,7 +8600,7 @@
       "message": "Binding element 'files' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        339
+        341
       ]
     },
     {
@@ -8608,7 +8608,7 @@
       "message": "Object literal may only specify known properties, but 'rateMessage' does not exist in type '{ chatId: any; selectedModels?: any[] | undefined; idx?: number | undefined; history: any; messageId: any; user: any; setInputText?: Function | undefined; gotoMessage: any; showPreviousMessage: any; ... 14 more ...; topPadding?: boolean | undefined; }'. Did you mean to write 'saveMessage'?",
       "count": 1,
       "lines": [
-        542
+        544
       ]
     },
     {
@@ -8616,7 +8616,7 @@
       "message": "Parameter '_messages' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        107
+        108
       ]
     },
     {
@@ -8624,7 +8624,7 @@
       "message": "Parameter 'actionId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        426
+        428
       ]
     },
     {
@@ -8632,7 +8632,7 @@
       "message": "Parameter 'childId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        446
+        448
       ]
     },
     {
@@ -8640,7 +8640,7 @@
       "message": "Parameter 'currentId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        107
+        108
       ]
     },
     {
@@ -8648,7 +8648,7 @@
       "message": "Parameter 'e' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        58
+        59
       ]
     },
     {
@@ -8656,7 +8656,7 @@
       "message": "Parameter 'grandchildId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        458
+        460
       ]
     },
     {
@@ -8664,8 +8664,8 @@
       "message": "Parameter 'id' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        340,
-        452
+        342,
+        454
       ]
     },
     {
@@ -8673,7 +8673,7 @@
       "message": "Parameter 'idx' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        191
+        193
       ]
     },
     {
@@ -8681,11 +8681,11 @@
       "message": "Parameter 'message' implicitly has an 'any' type.",
       "count": 5,
       "lines": [
-        191,
-        232,
-        279,
-        426,
-        430
+        193,
+        234,
+        281,
+        428,
+        432
       ]
     },
     {
@@ -8693,10 +8693,10 @@
       "message": "Parameter 'messageId' implicitly has an 'any' type.",
       "count": 4,
       "lines": [
-        330,
-        339,
-        430,
-        439
+        332,
+        341,
+        432,
+        441
       ]
     },
     {
@@ -8704,7 +8704,7 @@
       "message": "Parameter 'rating' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        330
+        332
       ]
     },
     {
@@ -8712,16 +8712,16 @@
       "message": "Property 'currentId' does not exist on type '{}'.",
       "count": 10,
       "lines": [
-        88,
-        132,
-        216,
-        247,
-        263,
-        297,
-        314,
-        371,
-        400,
-        478
+        89,
+        134,
+        218,
+        249,
+        265,
+        299,
+        316,
+        373,
+        402,
+        480
       ]
     },
     {
@@ -8729,62 +8729,62 @@
       "message": "Property 'messages' does not exist on type '{}'.",
       "count": 58,
       "lines": [
-        88,
-        99,
-        132,
-        179,
-        180,
-        195,
+        89,
+        100,
+        134,
+        181,
+        182,
         197,
-        210,
-        213,
-        235,
-        236,
-        240,
-        244,
-        250,
-        256,
-        260,
-        282,
+        199,
+        212,
+        215,
+        237,
+        238,
+        242,
+        246,
+        252,
+        258,
+        262,
         284,
-        285,
-        290,
-        294,
-        300,
-        307,
-        311,
-        331,
-        332,
-        344,
-        352,
-        361,
-        364,
-        365,
-        370,
-        377,
-        378,
-        385,
-        399,
-        404,
-        405,
-        414,
-        415,
-        418,
-        419,
-        431,
-        435,
-        440,
-        446,
-        450,
-        451,
+        286,
+        287,
+        292,
+        296,
+        302,
+        309,
+        313,
+        333,
+        334,
+        346,
+        354,
+        363,
+        366,
+        367,
+        372,
+        379,
+        380,
+        387,
+        401,
+        406,
+        407,
+        416,
+        417,
+        420,
+        421,
+        433,
+        437,
+        442,
+        448,
         452,
-        459,
-        460,
-        466,
-        472,
-        473,
-        476,
-        504
+        453,
+        454,
+        461,
+        462,
+        468,
+        474,
+        475,
+        478,
+        506
       ]
     },
     {
@@ -8792,8 +8792,8 @@
       "message": "Variable 'autoScroll' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        134,
-        493
+        136,
+        495
       ]
     },
     {
@@ -8801,7 +8801,7 @@
       "message": "Variable 'autoScroll' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        56
+        57
       ]
     },
     {
@@ -8809,7 +8809,7 @@
       "message": "Variable 'lastCurrentId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        113
+        114
       ]
     },
     {
@@ -8817,7 +8817,7 @@
       "message": "Variable 'lastCurrentId' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        83
+        84
       ]
     },
     {
@@ -8825,10 +8825,10 @@
       "message": "Variable 'messages' implicitly has an 'any[]' type.",
       "count": 4,
       "lines": [
-        160,
-        173,
-        511,
-        527
+        162,
+        175,
+        513,
+        529
       ]
     },
     {
@@ -8836,25 +8836,7 @@
       "message": "Variable 'messages' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        37
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Messages.svelte",
-      "message": "Variable 'pendingRebuild' implicitly has an 'any' type.",
-      "count": 3,
-      "lines": [
-        64,
-        118,
-        123
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Messages.svelte",
-      "message": "Variable 'pendingRebuild' implicitly has type 'any' in some locations where its type cannot be determined.",
-      "count": 1,
-      "lines": [
-        82
+        38
       ]
     },
     {

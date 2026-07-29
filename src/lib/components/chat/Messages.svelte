@@ -15,6 +15,7 @@
 	import { toast } from 'svelte-sonner';
 	import { deleteChatMessageById, getChatList, updateChatById } from '$lib/apis/chats';
 	import { copyToClipboard, extractCurlyBraceWords } from '$lib/utils';
+	import { scheduleFrameWithFallback } from '$lib/utils/render-scheduler';
 
 	import Message from './Messages/Message.svelte';
 	import Loader from '../common/Loader.svelte';
@@ -61,7 +62,7 @@
 	let messagesLoading = false;
 
 	onDestroy(() => {
-		cancelAnimationFrame(pendingRebuild);
+		pendingRebuildCancel?.();
 	});
 
 	const loadMoreMessages = async () => {
@@ -79,7 +80,7 @@
 		messagesLoading = false;
 	};
 
-	let pendingRebuild = null;
+	let pendingRebuildCancel: (() => void) | null = null;
 	let lastCurrentId = null;
 
 	const buildMessages = () => {
@@ -115,14 +116,15 @@
 
 		if (currentIdChanged) {
 			// Structural change: new chat, navigation, new message — rebuild immediately
-			cancelAnimationFrame(pendingRebuild);
-			pendingRebuild = null;
+			pendingRebuildCancel?.();
+			pendingRebuildCancel = null;
 			buildMessages();
 		} else if (_messages) {
-			// Content update (streaming) — throttle to once per frame
-			if (!pendingRebuild) {
-				pendingRebuild = requestAnimationFrame(() => {
-					pendingRebuild = null;
+			// Use the next frame when available, with a fallback for Electron
+			// webviews that occasionally pause animation-frame callbacks.
+			if (!pendingRebuildCancel) {
+				pendingRebuildCancel = scheduleFrameWithFallback(() => {
+					pendingRebuildCancel = null;
 					buildMessages();
 				});
 			}
