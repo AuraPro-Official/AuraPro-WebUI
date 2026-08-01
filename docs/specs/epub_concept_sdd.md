@@ -107,6 +107,13 @@ precedence over NCX; disagreement is retained as an auditable warning.
 - Seed glossary aliases are authoritative. Only deterministic normalized-name or
   alias matches merge automatically. Model-suggested semantic merges are review
   candidates, not irreversible automatic graph mutations.
+- **Deferred prompt optimization:** the initial Batch prompt performs generic
+  concept extraction and does not include the entire seed glossary. If offline
+  result review shows that the remote model fails to recognize established
+  proper nouns, add only the seed canonical names/aliases relevant to the
+  current passage as controlled candidate context. Keep the existing exact
+  normalized-name/alias ingestion checks authoritative; prompt context must
+  never itself create a semantic merge or bypass administrator review.
 
 ### 4.3 Search
 
