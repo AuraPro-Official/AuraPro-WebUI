@@ -21,6 +21,7 @@ from open_webui.retrieval.epub.batch import (
     BatchProvider,
     SQLiteBatchRepository,
 )
+from open_webui.retrieval.epub.retrieval_units import plan_retrieval_windows
 from open_webui.retrieval.epub.search import EpubSearchService, SearchResponse
 from open_webui.retrieval.epub.store import IntegrityError, SQLiteEpubStore
 from open_webui.retrieval.parsers.epub.parser import EPUBParser
@@ -52,6 +53,13 @@ class EpubApiRepository(Protocol):
     def create_book_version(self, book_id: str, *, epub_bytes: bytes, source_locator: str | None = None) -> Any: ...
     def add_toc_nodes(self, version_id: str, nodes: Sequence[Mapping[str, Any]]) -> list[str]: ...
     def add_passages(self, version_id: str, passages: Sequence[Mapping[str, Any]]) -> list[str]: ...
+    def add_retrieval_unit(
+        self,
+        passage_id: str,
+        start_codepoint: int,
+        end_codepoint: int,
+        **metadata: Any,
+    ) -> str: ...
     def set_version_status(self, version_id: str, status: str, *, failure_reason: str | None = None) -> None: ...
     def upsert_concept(self, canonical_name: str, **kwargs: Any) -> str: ...
 
@@ -72,6 +80,7 @@ class EpubConceptService:
         batch: BatchJobService | None = None,
         providers: Mapping[str, BatchProvider] | None = None,
         vector_indexer: Any | None = None,
+        retrieval_embedding_profile: str | None = None,
     ) -> None:
         self._store = store
         self._search = search or EpubSearchService(source=store)
@@ -84,6 +93,7 @@ class EpubConceptService:
         self._batch = batch
         self._providers = dict(providers or {})
         self._vector_indexer = vector_indexer
+        self._retrieval_embedding_profile = retrieval_embedding_profile or None
 
     def list_books(self) -> list[dict[str, Any]]:
         return self._store.list_books()
@@ -180,7 +190,7 @@ class EpubConceptService:
             }
         try:
             toc_ids = self._persist_toc(version.version_id, parsed.passages)
-            self._store.add_passages(
+            passage_ids = self._store.add_passages(
                 version.version_id,
                 [
                     {
@@ -195,6 +205,7 @@ class EpubConceptService:
                     for passage in parsed.passages
                 ],
             )
+            retrieval_unit_count = self._create_retrieval_units(passage_ids)
             self._store.set_version_status(version.version_id, "READY")
         except Exception as error:
             self._store.set_version_status(version.version_id, "FAILED", failure_reason=_safe_reason(error))
@@ -207,8 +218,34 @@ class EpubConceptService:
             "book_title": parsed.book_title,
             "epub_sha256": version.epub_sha256,
             "total_passages": len(parsed.passages),
+            "total_retrieval_units": retrieval_unit_count,
             "warnings": [asdict(warning) for warning in parsed.warnings],
         }
+
+    def _create_retrieval_units(self, passage_ids: Sequence[str]) -> int:
+        """Persist the standard vector windows for newly imported passages.
+
+        The store's exact-window lookup makes this safe to call again after a
+        retry: it returns existing units instead of duplicating them.  Source
+        passage content remains the only input and is never rewritten.
+        """
+        created_or_reused = 0
+        for passage_id in passage_ids:
+            passage = self._store.get_passage(passage_id)
+            if passage is None:
+                raise EpubServiceError("newly stored EPUB passage is unavailable")
+            content = passage.get("content")
+            if not isinstance(content, str):
+                raise EpubServiceError("newly stored EPUB passage has invalid source content")
+            for window in plan_retrieval_windows(content):
+                self._store.add_retrieval_unit(
+                    passage_id,
+                    window.start_codepoint,
+                    window.end_codepoint,
+                    embedding_profile=self._retrieval_embedding_profile,
+                )
+                created_or_reused += 1
+        return created_or_reused
 
     def create_batch_draft(
         self,

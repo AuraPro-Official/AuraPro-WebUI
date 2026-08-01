@@ -73,7 +73,15 @@ def initialize_epub_concept_service(
         if embeddings is not None and vector_backend is not None
         else None
     )
-    service = EpubConceptService(store=store, providers=providers, search=search, vector_indexer=indexer)
+    service = EpubConceptService(
+        store=store,
+        providers=providers,
+        search=search,
+        vector_indexer=indexer,
+        # Derived source windows bind to the configured local embedding profile
+        # at import time.  This keeps later vector records profile-isolated.
+        retrieval_embedding_profile=embeddings.profile if embeddings is not None else None,
+    )
     app.state.EPUB_CONCEPT_STORE = store
     app.state.EPUB_CONCEPT_SERVICE = service
     log.info("Initialized independent EPUB concept store at %s", database_path)
