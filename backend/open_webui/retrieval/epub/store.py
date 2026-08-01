@@ -71,6 +71,8 @@ class EpubStore(Protocol):
         self, passage_id: str, start_codepoint: int, end_codepoint: int, **metadata: Any
     ) -> str: ...
 
+    def list_retrieval_units(self, passage_id: str) -> list[dict[str, Any]]: ...
+
 
 _MIGRATION_1: tuple[str, ...] = (
     """
@@ -593,6 +595,17 @@ class SQLiteEpubStore:
             if start_codepoint < 0 or end_codepoint <= start_codepoint or end_codepoint > len(content):
                 raise IntegrityError("retrieval-unit offsets must identify a non-empty source substring")
             excerpt = content[start_codepoint:end_codepoint]
+            # Window generation is retry-safe.  SQLite UNIQUE considers two
+            # NULL embedding profiles distinct, so use ``IS`` explicitly
+            # rather than depending only on the schema constraint.
+            existing = connection.execute(
+                """SELECT retrieval_unit_id FROM retrieval_units
+                   WHERE passage_id = ? AND start_codepoint = ? AND end_codepoint = ?
+                     AND embedding_profile IS ?""",
+                (passage_id, start_codepoint, end_codepoint, embedding_profile),
+            ).fetchone()
+            if existing is not None:
+                return str(existing["retrieval_unit_id"])
             unit_id = retrieval_unit_id or str(uuid4())
             connection.execute(
                 """INSERT INTO retrieval_units(
@@ -611,6 +624,19 @@ class SQLiteEpubStore:
                 ),
             )
         return unit_id
+
+    def list_retrieval_units(self, passage_id: str) -> list[dict[str, Any]]:
+        """Return stable derived windows for one immutable source passage."""
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                """SELECT * FROM retrieval_units WHERE passage_id = ?
+                   ORDER BY start_codepoint, end_codepoint, retrieval_unit_id""",
+                (passage_id,),
+            )
+            .fetchall()
+        ]
 
     def get_retrieval_unit(self, retrieval_unit_id: str) -> dict[str, Any] | None:
         return self._row(

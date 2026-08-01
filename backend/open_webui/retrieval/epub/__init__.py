@@ -43,16 +43,26 @@ from .search import (
     SearchResponse,
     VectorCandidateBackend,
 )
+from .retrieval_units import (
+    CHINESE_SENTENCE_ENDINGS,
+    ENGLISH_SENTENCE_ENDINGS,
+    OVERLAP_CODEPOINTS,
+    TARGET_CODEPOINTS,
+    RetrievalWindow,
+    plan_retrieval_windows,
+)
 
 __all__ = [
     "DuplicateEpubError",
     "ConceptResolver",
+    "CHINESE_SENTENCE_ENDINGS",
     "ConceptTerm",
     "ConceptTermMatcher",
     "DerivedVectorBackend",
     "DerivedVectorIndexer",
     "DerivedVectorRecord",
     "EmbeddingService",
+    "ENGLISH_SENTENCE_ENDINGS",
     "EpubSearchRepository",
     "EpubSearchService",
     "EpubStore",
@@ -67,8 +77,10 @@ __all__ = [
     "LocalInferenceUnavailable",
     "LocalRerankerAdapter",
     "ModelAvailability",
+    "OVERLAP_CODEPOINTS",
     "PrivateModelEndpoint",
     "RerankerService",
+    "RetrievalWindow",
     "UrllibJsonTransport",
     "SearchError",
     "SearchExcerpt",
@@ -81,5 +93,7 @@ __all__ = [
     "VersionCreation",
     "VectorIndexError",
     "VectorCandidateBackend",
+    "TARGET_CODEPOINTS",
     "load_sqlite_vec",
+    "plan_retrieval_windows",
 ]
