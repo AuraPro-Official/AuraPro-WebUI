@@ -14,11 +14,14 @@ transport without changing the policy boundary.
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 import ipaddress
+import inspect
 import json
 import math
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
@@ -266,6 +269,233 @@ class LocalConceptResolverAdapter(_LocalJsonModel):
         if not isinstance(resolved, str):
             raise LocalInferenceUnavailable("local-concept-resolver returned a non-text concept")
         return resolved or None
+
+
+class AuraProEmbeddingAdapter:
+    """Synchronously consume AuraPro's already-configured local embedding function.
+
+    EPUB indexing and search deliberately execute their synchronous domain
+    services in a worker thread.  AuraPro's ``EMBEDDING_FUNCTION`` is instead
+    an async callable owned by the application event loop.  This adapter is
+    the one narrow bridge between those two execution models: it submits the
+    coroutine to the *existing* application loop with
+    :func:`asyncio.run_coroutine_threadsafe` and waits from the worker thread.
+
+    ``local_permitted`` is intentionally explicit.  The generic AuraPro RAG
+    function can be backed by OpenAI, Azure, Ollama, or a local sentence
+    transformer.  EPUB must not infer that a callable is local merely because
+    it exists; runtime wiring has to prove the selected RAG configuration is
+    local/private before this adapter can invoke it.  If that proof is absent,
+    this class fails closed and does not call the supplied function.
+    """
+
+    component = "aurapro-local-embedding"
+
+    def __init__(
+        self,
+        *,
+        embedding_function: Callable[..., Awaitable[Any]] | None,
+        event_loop: asyncio.AbstractEventLoop | None,
+        profile: str,
+        local_permitted: bool,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        if not profile or not profile.strip():
+            raise LocalInferenceError("model profile cannot be empty")
+        if not isinstance(local_permitted, bool):
+            raise LocalInferenceError("local_permitted must be a boolean")
+        if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+            raise LocalInferenceError("embedding timeout_seconds must be positive")
+        self._embedding_function = embedding_function
+        self._event_loop = event_loop
+        self._local_permitted = local_permitted
+        self._timeout_seconds = float(timeout_seconds)
+        self.profile = profile
+
+    @classmethod
+    def from_app_state(
+        cls,
+        *,
+        app_state: Any,
+        event_loop: asyncio.AbstractEventLoop | None,
+        profile: str,
+        local_permitted: bool,
+        timeout_seconds: float = 30.0,
+    ) -> "AuraProEmbeddingAdapter":
+        """Construct from ``app.state`` without importing FastAPI at this layer."""
+        return cls(
+            embedding_function=getattr(app_state, "EMBEDDING_FUNCTION", None),
+            event_loop=event_loop,
+            profile=profile,
+            local_permitted=local_permitted,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def availability(self) -> ModelAvailability:
+        reason = self._unavailable_reason()
+        if reason is not None:
+            return ModelAvailability.degraded(self.component, reason)
+        return ModelAvailability.ready(self.component)
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        _require_nonempty_texts(texts, "embedding input")
+        reason = self._unavailable_reason()
+        if reason is not None:
+            raise LocalInferenceUnavailable(f"{self.component} is unavailable: {reason}")
+        if self._runs_on_configured_loop():
+            # Blocking the application loop would deadlock the submitted
+            # coroutine.  Callers must use the EPUB worker-thread boundary.
+            raise LocalInferenceUnavailable(
+                f"{self.component} cannot synchronously bridge from the application event loop"
+            )
+        assert self._event_loop is not None
+        coroutine = self._invoke(list(texts))
+        try:
+            future = asyncio.run_coroutine_threadsafe(coroutine, self._event_loop)
+        except Exception as error:
+            coroutine.close()
+            raise LocalInferenceUnavailable(
+                f"{self.component} is unavailable: {_safe_reason(error)}"
+            ) from error
+        try:
+            raw = future.result(timeout=self._timeout_seconds)
+        except FutureTimeoutError as error:
+            future.cancel()
+            raise LocalInferenceUnavailable(
+                f"{self.component} is unavailable: embedding request timed out"
+            ) from error
+        except Exception as error:
+            raise LocalInferenceUnavailable(
+                f"{self.component} is unavailable: {_safe_reason(error)}"
+            ) from error
+        if not isinstance(raw, (list, tuple)) or len(raw) != len(texts):
+            raise LocalInferenceUnavailable(f"{self.component} returned an invalid embedding count")
+        vectors = [_validated_vector(vector) for vector in raw]
+        if len({len(vector) for vector in vectors}) != 1:
+            raise LocalInferenceUnavailable(f"{self.component} returned inconsistent dimensions")
+        return vectors
+
+    async def _invoke(self, texts: list[str]) -> Any:
+        assert self._embedding_function is not None
+        result = self._embedding_function(texts)
+        if not inspect.isawaitable(result):
+            raise LocalInferenceUnavailable("AuraPro EMBEDDING_FUNCTION must return an awaitable")
+        return await result
+
+    def _unavailable_reason(self) -> str | None:
+        if not self._local_permitted:
+            return "AuraPro RAG embedding is not explicitly configured as local/private"
+        if not callable(self._embedding_function):
+            return "AuraPro EMBEDDING_FUNCTION is not configured"
+        if self._event_loop is None:
+            return "AuraPro application event loop is not configured"
+        if self._event_loop.is_closed() or not self._event_loop.is_running():
+            return "AuraPro application event loop is not running"
+        return None
+
+    def _runs_on_configured_loop(self) -> bool:
+        try:
+            return asyncio.get_running_loop() is self._event_loop
+        except RuntimeError:
+            return False
+
+
+@dataclass(frozen=True, slots=True)
+class AuraProRerankDocument:
+    """The minimal LangChain-compatible document surface AuraPro expects."""
+
+    page_content: str
+
+
+class AuraProRerankerAdapter:
+    """Use AuraPro's configured local Cross-Encoder without an HTTP shim.
+
+    AuraPro's reranking function expects document-like values with a
+    ``page_content`` attribute.  EPUB owns immutable strings, so this adapter
+    wraps each string in :class:`AuraProRerankDocument` at the boundary.
+    ``local_permitted`` follows the same fail-closed policy as embedding.
+    """
+
+    component = "aurapro-local-reranker"
+
+    def __init__(
+        self,
+        *,
+        reranking_function: Callable[[str, Sequence[AuraProRerankDocument]], Any] | None,
+        profile: str,
+        local_permitted: bool,
+    ) -> None:
+        if not profile or not profile.strip():
+            raise LocalInferenceError("model profile cannot be empty")
+        if not isinstance(local_permitted, bool):
+            raise LocalInferenceError("local_permitted must be a boolean")
+        self._reranking_function = reranking_function
+        self._local_permitted = local_permitted
+        self.profile = profile
+
+    @classmethod
+    def from_app_state(
+        cls,
+        *,
+        app_state: Any,
+        profile: str,
+        local_permitted: bool,
+    ) -> "AuraProRerankerAdapter":
+        """Construct from ``app.state`` without a FastAPI dependency."""
+        return cls(
+            reranking_function=getattr(app_state, "RERANKING_FUNCTION", None),
+            profile=profile,
+            local_permitted=local_permitted,
+        )
+
+    def availability(self) -> ModelAvailability:
+        reason = self._unavailable_reason()
+        if reason is not None:
+            return ModelAvailability.degraded(self.component, reason)
+        return ModelAvailability.ready(self.component)
+
+    def score(self, query: str, documents: Sequence[str]) -> list[float]:
+        if not isinstance(query, str) or not query:
+            raise LocalInferenceError("reranker query cannot be empty")
+        _require_nonempty_texts(documents, "reranker documents")
+        reason = self._unavailable_reason()
+        if reason is not None:
+            raise LocalInferenceUnavailable(f"{self.component} is unavailable: {reason}")
+        assert self._reranking_function is not None
+        wrapped = [AuraProRerankDocument(page_content=document) for document in documents]
+        try:
+            raw = self._reranking_function(query, wrapped)
+        except Exception as error:
+            raise LocalInferenceUnavailable(
+                f"{self.component} is unavailable: {_safe_reason(error)}"
+            ) from error
+        if isinstance(raw, (str, bytes, Mapping)):
+            raise LocalInferenceUnavailable(f"{self.component} returned an invalid score list")
+        try:
+            values = list(raw)
+        except TypeError as error:
+            raise LocalInferenceUnavailable(f"{self.component} returned an invalid score list") from error
+        if len(values) != len(documents):
+            raise LocalInferenceUnavailable(f"{self.component} returned an invalid score count")
+        scores: list[float] = []
+        for value in values:
+            if isinstance(value, bool):
+                raise LocalInferenceUnavailable(f"{self.component} returned a non-finite score")
+            try:
+                score = float(value)
+            except (TypeError, ValueError) as error:
+                raise LocalInferenceUnavailable(f"{self.component} returned a non-finite score") from error
+            if not math.isfinite(score):
+                raise LocalInferenceUnavailable(f"{self.component} returned a non-finite score")
+            scores.append(score)
+        return scores
+
+    def _unavailable_reason(self) -> str | None:
+        if not self._local_permitted:
+            return "AuraPro RAG reranker is not explicitly configured as local/private"
+        if not callable(self._reranking_function):
+            return "AuraPro RERANKING_FUNCTION is not configured"
+        return None
 
 
 def _require_nonempty_texts(values: Sequence[str], label: str) -> None:
