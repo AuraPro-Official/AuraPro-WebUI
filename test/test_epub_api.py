@@ -1,0 +1,139 @@
+"""Authorization and composition tests for the authenticated EPUB REST API."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+import tempfile
+from types import SimpleNamespace
+import unittest
+
+from fastapi import FastAPI, HTTPException, status
+from fastapi.testclient import TestClient
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+
+from open_webui.retrieval.epub.store import SQLiteEpubStore  # noqa: E402
+from open_webui.routers.epub import get_epub_concept_service, router  # noqa: E402
+from open_webui.services.epub_concept import EpubConceptService  # noqa: E402
+from open_webui.utils.auth import get_admin_user, get_verified_user  # noqa: E402
+
+
+def _ordinary_user():
+    return SimpleNamespace(id="ordinary", role="user")
+
+
+def _admin_user():
+    return SimpleNamespace(id="administrator", role="admin")
+
+
+def _ordinary_user_cannot_administer():
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="access prohibited")
+
+
+class EpubAuthenticatedApiTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        store = SQLiteEpubStore(str(Path(self.temporary.name) / "epub.db"))
+        book_id = store.create_book("共享图书", book_id="book-1")
+        store.create_book_version(book_id, epub_bytes=b"api-test-epub", version_id="version-1")
+        store.add_passages(
+            "version-1",
+            [
+                {
+                    "passage_id": "passage-1",
+                    "source_href": "chapter.xhtml",
+                    "spine_index": 0,
+                    "ordinal": 0,
+                    "content_kind": "paragraph",
+                    "content": "TCP 是传输控制协议。原文必须完整返回。",
+                }
+            ],
+        )
+        store.set_version_status("version-1", "READY")
+        concept_id = store.upsert_concept("TCP", aliases=["Transmission Control Protocol"], status="APPROVED")
+        store.add_concept_mention(
+            concept_id, "passage-1", start_codepoint=0, end_codepoint=3, evidence="TCP", source="ADMIN"
+        )
+        self.service = EpubConceptService(store=store)
+        self.app = FastAPI()
+        self.app.include_router(router)
+        self.app.dependency_overrides[get_epub_concept_service] = lambda: self.service
+        self.app.dependency_overrides[get_verified_user] = _ordinary_user
+        self.app.dependency_overrides[get_admin_user] = _ordinary_user_cannot_administer
+        self.client = TestClient(self.app)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_ordinary_verified_user_can_browse_and_search_shared_content(self) -> None:
+        books = self.client.get("/api/v1/epub/books")
+        self.assertEqual(books.status_code, 200)
+        self.assertEqual(books.json()[0]["book_id"], "book-1")
+
+        book = self.client.get("/api/v1/epub/books/book-1")
+        self.assertEqual(book.status_code, 200)
+        self.assertEqual(book.json()["versions"][0]["version_id"], "version-1")
+
+        passages = self.client.get("/api/v1/epub/versions/version-1/passages")
+        self.assertEqual(passages.status_code, 200)
+        self.assertEqual(passages.json()["items"][0]["content"], "TCP 是传输控制协议。原文必须完整返回。")
+
+        result = self.client.post("/api/v1/epub/search", json={"query": "TCP"})
+        self.assertEqual(result.status_code, 200)
+        hit = result.json()["graph_results"][0]
+        self.assertEqual(hit["content"], "TCP 是传输控制协议。原文必须完整返回。")
+        self.assertEqual(hit["excerpt"], {"content": "TCP", "start_codepoint": 0, "end_codepoint": 3})
+
+    def test_ordinary_user_cannot_mutate_epub_domain(self) -> None:
+        mutations = [
+            ("put", "/api/v1/epub/admin/concepts", {"canonical_name": "HTTP"}),
+            (
+                "post",
+                "/api/v1/epub/admin/batches",
+                {"version_id": "version-1", "profile_name": "server-batch-profile"},
+            ),
+            ("post", "/api/v1/epub/admin/batches/missing/submit", None),
+            ("post", "/api/v1/epub/admin/batches/missing/poll", None),
+            ("post", "/api/v1/epub/admin/batches/missing/retry", None),
+            ("post", "/api/v1/epub/admin/retrieval-units/missing/index", None),
+        ]
+        for method, url, payload in mutations:
+            response = getattr(self.client, method)(url, json=payload)
+            self.assertEqual(response.status_code, 401, url)
+
+        upload = self.client.post(
+            "/api/v1/epub/admin/import",
+            files={"file": ("book.epub", b"not reached", "application/epub+zip")},
+        )
+        self.assertEqual(upload.status_code, 401)
+        self.assertIsNone(self.service.get_book("new-book"))
+
+    def test_admin_can_create_a_concept_and_batch_draft(self) -> None:
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        concept = self.client.put(
+            "/api/v1/epub/admin/concepts",
+            json={"canonical_name": "HTTP", "aliases": ["Hypertext Transfer Protocol"]},
+        )
+        self.assertEqual(concept.status_code, 200)
+        self.assertTrue(concept.json()["concept_id"])
+
+        draft = self.client.post(
+            "/api/v1/epub/admin/batches",
+            json={"version_id": "version-1", "profile_name": "server-batch-profile", "is_sample": True},
+        )
+        self.assertEqual(draft.status_code, 201)
+        self.assertEqual(draft.json()["item_count"], 1)
+
+    def test_service_is_fail_closed_when_startup_did_not_configure_it(self) -> None:
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_verified_user] = _ordinary_user
+        response = TestClient(app).get("/api/v1/epub/books")
+        self.assertEqual(response.status_code, 503)
+
+
+if __name__ == "__main__":
+    unittest.main()

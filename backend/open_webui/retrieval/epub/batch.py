@@ -866,6 +866,10 @@ class BatchJobService:
             batch_job_id=batch_job_id,
         )
 
+    def get_job(self, batch_job_id: str) -> dict[str, Any]:
+        """Read durable job metadata without exposing request bodies or credentials."""
+        return self._repository.get_job(batch_job_id)
+
     def submit(self, batch_job_id: str, provider: BatchProvider) -> str:
         job = self._repository.get_job(batch_job_id)
         if job["provider"] != provider.name:
