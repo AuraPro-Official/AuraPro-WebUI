@@ -174,8 +174,8 @@
 						</div>
 					{/if}
 					<div class="mt-4 flex justify-between">
-						<button class="rounded border px-2 py-1 text-xs disabled:opacity-50" disabled={searching || searchResult.graph_offset === 0} on:click={() => search(Math.max(0, searchResult.graph_offset - 20))}>上一页</button>
-						<button class="rounded border px-2 py-1 text-xs disabled:opacity-50" disabled={searching || searchResult.graph_offset + searchResult.graph_results.length >= searchResult.graph_total} on:click={() => search(searchResult.graph_offset + 20)}>下一页</button>
+						<button class="rounded border px-2 py-1 text-xs disabled:opacity-50" disabled={searching || (searchResult?.graph_offset ?? 0) === 0} on:click={() => search(Math.max(0, (searchResult?.graph_offset ?? 0) - 20))}>上一页</button>
+						<button class="rounded border px-2 py-1 text-xs disabled:opacity-50" disabled={searching || (searchResult?.graph_offset ?? 0) + (searchResult?.graph_results.length ?? 0) >= (searchResult?.graph_total ?? 0)} on:click={() => search((searchResult?.graph_offset ?? 0) + 20)}>下一页</button>
 					</div>
 				</article>
 
