@@ -52,6 +52,17 @@ that same UI in its authenticated WebView; it is not a separate feature client.
   typed element is retained in an ordered `fallback` unit rather than dropped;
   malformed XHTML additionally produces a recovery warning.
 
+### 2.2 First-phase language and retrieval-window rule
+
+The first operational EPUB acceptance sample is Simplified Chinese. Derived
+retrieval units retain their parent passage and are created only for vector
+retrieval: passages up to 800 Unicode code points produce one full-passage
+unit; longer passages are split near Chinese sentence boundaries (`。！？；`)
+with English punctuation as a fallback, targeting about 800 code points with
+about 150 code points of overlap. A fallback character boundary is allowed only
+when no sentence boundary is available. The displayed source remains the full,
+immutable parent passage in every case.
+
 ## 3. Deployment model
 
 | Profile | Canonical store | Derived vector index | Inference |
