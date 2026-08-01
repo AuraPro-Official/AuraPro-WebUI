@@ -108,7 +108,7 @@ async def get_passage(
 @router.post("/search")
 async def search_epub(form_data: SearchForm, service: ServiceDep, user=Depends(get_verified_user)) -> dict[str, Any]:
     try:
-        return service.search(
+        return await service.search_async(
             form_data.query,
             graph_offset=form_data.graph_offset,
             graph_limit=form_data.graph_limit,
@@ -199,7 +199,7 @@ async def index_retrieval_unit(
     retrieval_unit_id: str, service: ServiceDep, user=Depends(get_admin_user)
 ) -> dict[str, Any]:
     try:
-        return service.index_retrieval_unit(retrieval_unit_id)
+        return await service.index_retrieval_unit_async(retrieval_unit_id)
     except EpubServiceUnavailable as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
     except EpubServiceError as error:
