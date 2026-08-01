@@ -9,6 +9,7 @@ can configure a provider credential or replace an inference endpoint.
 from __future__ import annotations
 
 from dataclasses import asdict
+import asyncio
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -135,6 +136,18 @@ class EpubConceptService:
             vector_limit=vector_limit,
         )
         return self._search_response(response)
+
+    async def search_async(
+        self, query: str, *, graph_offset: int = 0, graph_limit: int = 20, vector_limit: int = 10
+    ) -> dict[str, Any]:
+        """Keep canonical SQLite reads and current sync adapters off the ASGI loop.
+
+        Native AuraPro async model adapters will replace this compatibility
+        bridge in the next integration step; the HTTP contract is async now.
+        """
+        return await asyncio.to_thread(
+            self.search, query, graph_offset=graph_offset, graph_limit=graph_limit, vector_limit=vector_limit
+        )
 
     def import_epub(
         self,
@@ -313,6 +326,9 @@ class EpubConceptService:
             "availability": asdict(result.availability),
             "reason": result.reason,
         }
+
+    async def index_retrieval_unit_async(self, retrieval_unit_id: str) -> dict[str, Any]:
+        return await asyncio.to_thread(self.index_retrieval_unit, retrieval_unit_id)
 
     def _provider_for_job(self, batch_job_id: str) -> BatchProvider:
         job = self._batch.get_job(batch_job_id)
