@@ -86,7 +86,7 @@
 	import HotkeyHint from '../common/HotkeyHint.svelte';
 
 	const BREAKPOINT = 768;
-	const DEFAULT_PINNED_ITEMS = ['glossary', 'notes', 'workspace'];
+	const DEFAULT_PINNED_ITEMS = ['epub', 'glossary', 'notes', 'workspace'];
 
 	let scrollTop = 0;
 
@@ -117,10 +117,12 @@
 
 	let sharedFolders: any[] = [];
 
-	$: pinnedItems = $settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS;
+	$: pinnedItems = Array.from(new Set([ ...($settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS), 'epub' ]));
 
 	const isMenuItemVisible = (id) => {
 		switch (id) {
+			case 'epub':
+				return $user !== undefined && $user !== null;
 			case 'notes':
 				return (
 					($config?.features?.enable_notes ?? false) &&
@@ -156,6 +158,7 @@
 
 	const getMenuItemMeta = (id) => {
 		const items = {
+			epub: { label: 'EPUB Library', href: '/epub', iconType: 'epub' },
 			glossary: { label: 'Glossary', href: '/glossary', iconType: 'glossary' },
 			notes: { label: 'Notes', href: '/notes', iconType: 'note' },
 			workspace: { label: 'Workspace', href: '/workspace', iconType: 'workspace' },
@@ -922,10 +925,10 @@
 									aria-label={$i18n.t(meta.label)}
 								>
 									<div class=" self-center flex items-center justify-center size-9">
-										{#if itemId === 'notes'}
-											<Note className="size-4.5" />
-										{:else if itemId === 'glossary'}
+										{#if itemId === 'epub' || itemId === 'glossary'}
 											<BookOpen className="size-4.5" />
+										{:else if itemId === 'notes'}
+											<Note className="size-4.5" />
 										{:else if itemId === 'workspace'}
 											<svg
 												xmlns="http://www.w3.org/2000/svg"
@@ -1173,10 +1176,10 @@
 										aria-label={$i18n.t(meta.label)}
 									>
 										<div class="self-center">
-											{#if itemId === 'notes'}
-												<Note className="size-4.5" strokeWidth="2" />
-											{:else if itemId === 'glossary'}
+											{#if itemId === 'epub' || itemId === 'glossary'}
 												<BookOpen className="size-4.5" strokeWidth="2" />
+											{:else if itemId === 'notes'}
+												<Note className="size-4.5" strokeWidth="2" />
 											{:else if itemId === 'workspace'}
 												<svg
 													xmlns="http://www.w3.org/2000/svg"

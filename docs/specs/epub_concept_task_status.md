@@ -45,7 +45,7 @@ this file and `epub_concept_sdd.md` before making changes.
 | T-050 | Local-only inference adapters and derived vector index | in_progress | T-030 | Local/private endpoint policy, embedding/reranker/concept-resolver interfaces, explicit availability/degraded behavior, and exact parent-window vector binding are implemented. Python 3.12: `test_epub_local_inference.py` — 8 tests passed. Search-pipeline integration remains T-060. |
 | T-060 | Search pipeline, exact excerpt contract, and pagination | completed | T-020, T-030, T-050 | Dependency-free local-only search orchestration now uses a trie multi-pattern Tier-1 matcher (Latin boundaries/CJK direct phrase), explicit degraded Tier-2 resolver, exhaustive graph count/offset pagination, verified full-passage excerpts, derived-vector recall, cross-encoder reranking, and MMR. Python 3.12: `test_epub_search.py` — 5 tests passed; store read-surface coverage is included in `test_epub_store.py` — 6 tests passed. |
 | T-070 | Authenticated REST API and admin authorization | planned | T-040, T-060 | Ordinary-user read/search and administrator-write authorization tests pass. |
-| T-080 | AuraPro-WebUI frontend and Desktop WebView integration | planned | T-070 | Admin workflow and ordinary-user search UI tests pass in WebUI and Desktop WebView. |
+| T-080 | AuraPro-WebUI frontend and Desktop WebView integration | in_progress | T-070 | Typed `/api/v1/epub` client plus `/epub` verified-user browse/search and `/admin/epub` admin workflow are implemented. The shared EPUB library is discoverable from the WebUI sidebar and the admin layout exposes the admin route; no Desktop-specific code was added. Client endpoint/authorization tests were added, but cannot be executed in this workspace because no Node.js runtime or installed frontend dependencies are available. `git diff --check` passes. |
 | T-090 | End-to-end, migration, resilience, and operational validation | planned | T-020, T-040, T-060, T-070, T-080 | Full acceptance suite, recovery scenarios, observability, and deployment docs pass review. |
 
 ## Phase delivery
@@ -58,6 +58,6 @@ this file and `epub_concept_sdd.md` before making changes.
 
 ## Active-session handoff
 
-- **Current focus:** T-070 — implement authenticated read APIs and administrator-only writes over the completed parser/store/Batch/search services.
-- **Current implementation state:** T-060 never returns a derived window as the citation: every graph/vector hit carries the complete immutable source passage, SHA-256, and a validated code-point excerpt. Search has no cloud fallback; unavailable local resolver/embedding/reranker states are explicit degraded results.
-- **Next action:** Add API authorization tests first, then route ordinary-user browse/search reads through `get_verified_user` and import/Batch/index writes through `get_admin_user`.
+- **Current focus:** T-080 — finish and verify the AuraPro-WebUI feature surface.
+- **Current implementation state:** The frontend keeps reads on authenticated `/epub` routes and renders complete passages plus explicit exact excerpts. The administrator route is separate, presents imports, Batch controls, concept review, and derived-index operations, and sends no provider credentials. Backend authorization remains authoritative.
+- **Next action:** Run the added Vitest client tests and Svelte type checks in a provisioned Node frontend environment; then perform authenticated browser acceptance before marking T-080 complete.

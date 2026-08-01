@@ -553,13 +553,14 @@ class SQLiteEpubStore:
         return ids
 
     def get_passage(self, passage_id: str) -> dict[str, Any] | None:
-        return self._row(
-            self._connection().execute("SELECT * FROM passages WHERE passage_id = ?", (passage_id,)).fetchone()
-        )
+        row = self._connection().execute(
+            "SELECT * FROM passages WHERE passage_id = ?", (passage_id,)
+        ).fetchone()
+        return self._search_row_with_toc(dict(row)) if row is not None else None
 
     def list_passages(self, version_id: str) -> list[dict[str, Any]]:
         return [
-            dict(row)
+            self._search_row_with_toc(dict(row))
             for row in self._connection()
             .execute(
                 "SELECT * FROM passages WHERE version_id = ? ORDER BY spine_index, ordinal", (version_id,)
