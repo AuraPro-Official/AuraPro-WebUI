@@ -61,6 +61,8 @@ class EpubApiRepository(Protocol):
         end_codepoint: int,
         **metadata: Any,
     ) -> str: ...
+    def list_retrieval_units_for_version(self, version_id: str) -> list[dict[str, Any]]: ...
+    def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
     def set_version_status(self, version_id: str, status: str, *, failure_reason: str | None = None) -> None: ...
     def upsert_concept(self, canonical_name: str, **kwargs: Any) -> str: ...
 
@@ -329,6 +331,77 @@ class EpubConceptService:
 
     async def index_retrieval_unit_async(self, retrieval_unit_id: str) -> dict[str, Any]:
         return await asyncio.to_thread(self.index_retrieval_unit, retrieval_unit_id)
+
+    def index_version_retrieval_units(self, version_id: str, *, rebuild: bool = False) -> dict[str, Any]:
+        """Index one EPUB version's derived windows with isolated outcomes.
+
+        A normal run retries every non-ready unit, while a rebuild deliberately
+        re-embeds all units for the version.  Individual failures are recorded
+        and returned without abandoning the remaining source windows.  A
+        degraded local embedding runtime leaves the existing state untouched:
+        a previously ready vector remains usable and a pending unit can be
+        retried after the private runtime recovers.
+        """
+        if self._vector_indexer is None:
+            raise EpubServiceUnavailable("the server has no private EPUB vector indexer configured")
+        if self._store.get_version(version_id) is None:
+            raise EpubServiceError("unknown EPUB version")
+
+        all_units = self._store.list_retrieval_units_for_version(version_id)
+        selected = all_units if rebuild else [
+            unit for unit in all_units if unit.get("vector_state") != "READY"
+        ]
+        errors: list[dict[str, str]] = []
+        ready = degraded = failed = 0
+        for unit in selected:
+            retrieval_unit_id = str(unit["retrieval_unit_id"])
+            try:
+                result = self._vector_indexer.index(retrieval_unit_id)
+                if result.state == "READY":
+                    self._store.set_retrieval_unit_vector_state(retrieval_unit_id, "READY")
+                    ready += 1
+                elif result.state == "DEGRADED":
+                    degraded += 1
+                    errors.append(
+                        {
+                            "retrieval_unit_id": retrieval_unit_id,
+                            "reason": result.reason or "private embedding runtime is unavailable",
+                        }
+                    )
+                else:
+                    self._store.set_retrieval_unit_vector_state(retrieval_unit_id, "FAILED")
+                    failed += 1
+                    errors.append(
+                        {
+                            "retrieval_unit_id": retrieval_unit_id,
+                            "reason": result.reason or f"unexpected index state: {result.state}",
+                        }
+                    )
+            except Exception as error:
+                self._store.set_retrieval_unit_vector_state(retrieval_unit_id, "FAILED")
+                failed += 1
+                errors.append({"retrieval_unit_id": retrieval_unit_id, "reason": _safe_reason(error)})
+
+        return {
+            "version_id": version_id,
+            "mode": "REBUILD" if rebuild else "PENDING",
+            "total_retrieval_units": len(all_units),
+            "selected_retrieval_units": len(selected),
+            "skipped_ready": len(all_units) - len(selected),
+            "ready": ready,
+            "degraded": degraded,
+            "failed": failed,
+            # The count is present even when individual details are capped so
+            # a large malformed EPUB cannot turn an operational response into
+            # an unbounded payload.
+            "error_count": len(errors),
+            "errors": errors[:20],
+        }
+
+    async def index_version_retrieval_units_async(
+        self, version_id: str, *, rebuild: bool = False
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(self.index_version_retrieval_units, version_id, rebuild=rebuild)
 
     def _provider_for_job(self, batch_job_id: str) -> BatchProvider:
         job = self._batch.get_job(batch_job_id)

@@ -31,6 +31,7 @@ INFERENCE = _load("inference")
 VECTOR_INDEX = _load("vector_index")
 
 LocalConceptResolverAdapter = INFERENCE.LocalConceptResolverAdapter
+LlamaCppConceptResolver = INFERENCE.LlamaCppConceptResolver
 LocalEmbeddingAdapter = INFERENCE.LocalEmbeddingAdapter
 LocalEndpointRejected = INFERENCE.LocalEndpointRejected
 LocalRerankerAdapter = INFERENCE.LocalRerankerAdapter
@@ -53,6 +54,29 @@ class FakeTransport:
     def post_json(self, url: str, payload: object):
         self.calls.append((url, payload))
         response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class FakeLlamaCppTransport:
+    def __init__(self, *, health: object, completions: list[object] | None = None):
+        self.health = health
+        self.completions = list(completions or [])
+        self.calls: list[tuple[str, str, object | None]] = []
+        self.thread_ids: list[int] = []
+
+    def get_json(self, url: str):
+        self.thread_ids.append(threading.get_ident())
+        self.calls.append(("GET", url, None))
+        if isinstance(self.health, Exception):
+            raise self.health
+        return self.health
+
+    def post_json(self, url: str, payload: object):
+        self.thread_ids.append(threading.get_ident())
+        self.calls.append(("POST", url, payload))
+        response = self.completions.pop(0)
         if isinstance(response, Exception):
             raise response
         return response
@@ -188,6 +212,57 @@ class LocalOnlyInferenceTest(unittest.TestCase):
         self.assertEqual(reranker.score("TCP 是什么", ["TCP", "HTTP"]), [0.9, 0.1])
         self.assertIsNone(resolver.resolve("tcp", ["TCP", "HTTP"]))
         self.assertEqual([call[1]["op"] for call in transport.calls], ["rerank", "resolve_concept"])
+
+    def test_llama_cpp_resolver_uses_desktop_openai_endpoint_and_strict_json(self) -> None:
+        transport = FakeLlamaCppTransport(
+            health={"status": "ok"},
+            completions=[{"choices": [{"message": {"content": '{"concept":"拥塞控制"}'}}]}],
+        )
+        resolver = LlamaCppConceptResolver(
+            endpoint=PrivateModelEndpoint("http://127.0.0.1:18881/v1"),
+            transport=transport,
+            profile="qwen-local.gguf",
+        )
+        self.assertTrue(resolver.availability().available)
+        self.assertEqual(resolver.resolve("网络为什么变慢", ["拥塞控制", "流量整形"]), "拥塞控制")
+        self.assertEqual(transport.calls[0][:2], ("GET", "http://127.0.0.1:18881/health"))
+        method, url, payload = transport.calls[1]
+        self.assertEqual((method, url), ("POST", "http://127.0.0.1:18881/v1/chat/completions"))
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["temperature"], 0)
+
+    def test_llama_cpp_resolver_fails_closed_for_bad_json_unknown_concept_and_transport_error(self) -> None:
+        invalid = LlamaCppConceptResolver(
+            endpoint=PrivateModelEndpoint("http://127.0.0.1:18881"),
+            transport=FakeLlamaCppTransport(health={"status": "ok"}, completions=[{"choices": [{"message": {"content": "not json"}}]}]),
+            profile="qwen-local.gguf",
+        )
+        with self.assertRaisesRegex(LocalInferenceUnavailable, "invalid concept JSON"):
+            invalid.resolve("查询", ["已有概念"])
+        unknown = LlamaCppConceptResolver(
+            endpoint=PrivateModelEndpoint("http://127.0.0.1:18881"),
+            transport=FakeLlamaCppTransport(health={"status": "ok"}, completions=[{"choices": [{"message": {"content": '{"concept":"新概念"}'}}]}]),
+            profile="qwen-local.gguf",
+        )
+        with self.assertRaisesRegex(LocalInferenceUnavailable, "outside"):
+            unknown.resolve("查询", ["已有概念"])
+        unavailable = LlamaCppConceptResolver(
+            endpoint=PrivateModelEndpoint("http://127.0.0.1:18881"),
+            transport=FakeLlamaCppTransport(health=ConnectionError("offline")),
+            profile="qwen-local.gguf",
+        )
+        self.assertFalse(unavailable.availability().available)
+
+    def test_llama_cpp_resolve_async_runs_blocking_transport_off_the_event_loop(self) -> None:
+        transport = FakeLlamaCppTransport(
+            health={"status": "ok"},
+            completions=[{"choices": [{"message": {"content": '{"concept":null}'}}]}],
+        )
+        resolver = LlamaCppConceptResolver(
+            endpoint=PrivateModelEndpoint("http://127.0.0.1:18881"), transport=transport, profile="qwen-local.gguf"
+        )
+        self.assertIsNone(asyncio.run(resolver.resolve_async("没有对应概念", ["已有概念"])))
+        self.assertNotEqual(transport.thread_ids, [threading.get_ident()])
 
     def test_index_binds_embedding_to_exact_parent_window_and_never_cites_a_vector_text(self) -> None:
         source = FakeSource()

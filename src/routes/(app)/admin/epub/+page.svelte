@@ -9,6 +9,7 @@
 		getEpubBook,
 		getEpubBooks,
 		importEpub,
+		indexEpubVersion,
 		indexEpubRetrievalUnit,
 		pollEpubBatch,
 		retryEpubBatch,
@@ -16,7 +17,8 @@
 		upsertEpubConcept,
 		type BatchStatus,
 		type EpubBook,
-		type EpubBookDetail
+		type EpubBookDetail,
+		type EpubVersionIndexResult
 	} from '$lib/apis/epub';
 
 	const token = () => localStorage.token ?? '';
@@ -38,6 +40,7 @@
 	let conceptDefinition = '';
 	let conceptStatus: 'PROVISIONAL' | 'APPROVED' | 'REJECTED' = 'APPROVED';
 	let retrievalUnitId = '';
+	let versionIndexState: EpubVersionIndexResult | null = null;
 
 	const chooseFile = (event: Event) => {
 		selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
@@ -147,6 +150,24 @@
 		}
 	};
 
+	const indexVersion = async (rebuild: boolean) => {
+		if (!selectedVersionId) return;
+		busy = true;
+		try {
+			versionIndexState = await indexEpubVersion(token(), selectedVersionId, rebuild);
+			const { ready, degraded, failed, selected_retrieval_units: selected } = versionIndexState;
+			if (degraded || failed) {
+				toast.error(`索引完成 ${selected} 项：就绪 ${ready}，降级 ${degraded}，失败 ${failed}。请查看下方详情。`);
+			} else {
+				toast.success(selected ? `已建立 ${ready} 个派生向量索引。` : '所有派生向量均已就绪。');
+			}
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
 	onMount(async () => {
 		if ($user?.role !== 'admin') {
 			await goto('/epub');
@@ -167,5 +188,5 @@
 
 	<section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"><h2 class="font-medium">离线概念 Batch</h2><p class="mt-1 text-xs text-gray-500">先创建可审阅草稿，再显式提交。轮询和失败项重试不会从浏览器接收凭证。</p><div class="mt-3 grid gap-3 sm:grid-cols-2"><label class="text-sm">服务器配置的模型 Profile<input bind:value={profileName} class="mt-1 w-full rounded border bg-transparent px-2 py-1" placeholder="例如 server-batch-profile" /></label><label class="text-sm">样本上限<input bind:value={sampleLimit} min="1" max="500" type="number" class="mt-1 w-full rounded border bg-transparent px-2 py-1" /></label></div><label class="mt-3 flex items-center gap-2 text-sm"><input bind:checked={sampleOnly} type="checkbox" />仅创建样本任务</label><button class="mt-3 rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" disabled={busy || !selectedVersionId || !profileName.trim()} on:click={createBatch}>创建 Batch 草稿</button>{#if batchJobId}<div class="mt-4 rounded bg-gray-50 p-3 text-sm dark:bg-gray-800"><p>任务：<code>{batchJobId}</code></p>{#if batchState}<pre class="mt-2 overflow-auto text-xs">{JSON.stringify(batchState, null, 2)}</pre>{/if}<div class="mt-3 flex flex-wrap gap-2"><button class="rounded border px-2 py-1 text-xs disabled:opacity-50" disabled={busy} on:click={() => runBatchAction('submit')}>提交</button><button class="rounded border px-2 py-1 text-xs disabled:opacity-50" disabled={busy} on:click={() => runBatchAction('poll')}>轮询状态</button><button class="rounded border px-2 py-1 text-xs disabled:opacity-50" disabled={busy} on:click={() => runBatchAction('retry')}>重试失败项</button></div></div>{/if}</section>
 
-	<section class="grid gap-6 lg:grid-cols-2"><form class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900" on:submit|preventDefault={saveConcept}><h2 class="font-medium">概念审核与维护</h2><label class="mt-3 block text-sm">标准名称<input bind:value={conceptName} required class="mt-1 w-full rounded border bg-transparent px-2 py-1" /></label><label class="mt-3 block text-sm">别名（逗号或换行分隔）<textarea bind:value={conceptAliases} class="mt-1 w-full rounded border bg-transparent px-2 py-1"></textarea></label><label class="mt-3 block text-sm">定义<textarea bind:value={conceptDefinition} class="mt-1 w-full rounded border bg-transparent px-2 py-1"></textarea></label><label class="mt-3 block text-sm">状态<select bind:value={conceptStatus} class="mt-1 w-full rounded border bg-transparent px-2 py-1"><option value="APPROVED">已批准</option><option value="PROVISIONAL">待审核</option><option value="REJECTED">已拒绝</option></select></label><button class="mt-3 rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" disabled={busy || !conceptName.trim()}>保存概念</button></form><form class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900" on:submit|preventDefault={indexUnit}><h2 class="font-medium">派生向量索引</h2><p class="mt-1 text-xs text-gray-500">只接受已有的派生 retrieval unit ID；原文 passage 不会被向量窗口替代。</p><label class="mt-3 block text-sm">Retrieval unit ID<input bind:value={retrievalUnitId} required class="mt-1 w-full rounded border bg-transparent px-2 py-1" /></label><button class="mt-3 rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" disabled={busy || !retrievalUnitId.trim()}>建立索引</button></form></section>
+	<section class="grid gap-6 lg:grid-cols-2"><form class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900" on:submit|preventDefault={saveConcept}><h2 class="font-medium">概念审核与维护</h2><label class="mt-3 block text-sm">标准名称<input bind:value={conceptName} required class="mt-1 w-full rounded border bg-transparent px-2 py-1" /></label><label class="mt-3 block text-sm">别名（逗号或换行分隔）<textarea bind:value={conceptAliases} class="mt-1 w-full rounded border bg-transparent px-2 py-1"></textarea></label><label class="mt-3 block text-sm">定义<textarea bind:value={conceptDefinition} class="mt-1 w-full rounded border bg-transparent px-2 py-1"></textarea></label><label class="mt-3 block text-sm">状态<select bind:value={conceptStatus} class="mt-1 w-full rounded border bg-transparent px-2 py-1"><option value="APPROVED">已批准</option><option value="PROVISIONAL">待审核</option><option value="REJECTED">已拒绝</option></select></label><button class="mt-3 rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" disabled={busy || !conceptName.trim()}>保存概念</button></form><section class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"><h2 class="font-medium">派生向量索引</h2><p class="mt-1 text-xs text-gray-500">按当前书籍版本批量建立向量索引；只处理派生 retrieval unit，原文 passage 永远不会被替代。</p><div class="mt-3 flex flex-wrap gap-2"><button class="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" disabled={busy || !selectedVersionId} on:click={() => indexVersion(false)}>索引未就绪项</button><button class="rounded border px-3 py-2 text-sm disabled:opacity-50" disabled={busy || !selectedVersionId} on:click={() => indexVersion(true)}>重建当前版本</button></div>{#if versionIndexState}<div class="mt-3 rounded bg-gray-50 p-3 text-sm dark:bg-gray-800"><p>模式：{versionIndexState.mode === 'REBUILD' ? '重建全部' : '仅未就绪项'}；共 {versionIndexState.total_retrieval_units} 项，本次 {versionIndexState.selected_retrieval_units} 项，就绪 {versionIndexState.ready}，降级 {versionIndexState.degraded}，失败 {versionIndexState.failed}。</p>{#if versionIndexState.errors.length}<ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-red-700 dark:text-red-300">{#each versionIndexState.errors as error (error.retrieval_unit_id)}<li><code>{error.retrieval_unit_id}</code>：{error.reason}</li>{/each}</ul>{/if}</div>{/if}<details class="mt-4 border-t pt-3"><summary class="cursor-pointer text-xs text-gray-500">按 retrieval unit ID 单项诊断</summary><form class="mt-2" on:submit|preventDefault={indexUnit}><label class="block text-sm">Retrieval unit ID<input bind:value={retrievalUnitId} required class="mt-1 w-full rounded border bg-transparent px-2 py-1" /></label><button class="mt-3 rounded border px-3 py-2 text-sm disabled:opacity-50" disabled={busy || !retrievalUnitId.trim()}>建立单项索引</button></form></details></section></section>
 </main>

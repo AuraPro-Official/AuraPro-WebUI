@@ -89,6 +89,10 @@ class SQLiteVecDerivedVectorBackendTest(unittest.TestCase):
         with self.assertRaisesRegex(VectorIndexError, "cannot be rebound"):
             self.backend.upsert(changed)
 
+    def test_healthcheck_proves_the_active_connection_still_has_sqlite_vec(self) -> None:
+        health = self.backend.healthcheck()
+        self.assertTrue(health.version)
+
 
 if __name__ == "__main__":
     unittest.main()

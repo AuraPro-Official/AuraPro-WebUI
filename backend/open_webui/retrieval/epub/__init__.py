@@ -17,6 +17,8 @@ from .inference import (
     EmbeddingService,
     JsonTransport,
     LocalConceptResolverAdapter,
+    LlamaCppConceptResolver,
+    LlamaCppTransport,
     LocalEmbeddingAdapter,
     LocalEndpointRejected,
     LocalInferenceError,
@@ -26,6 +28,7 @@ from .inference import (
     PrivateModelEndpoint,
     RerankerService,
     UrllibJsonTransport,
+    UrllibLlamaCppTransport,
 )
 from .vector_index import (
     DerivedVectorBackend,
@@ -77,6 +80,8 @@ __all__ = [
     "IndexingResult",
     "JsonTransport",
     "LocalConceptResolverAdapter",
+    "LlamaCppConceptResolver",
+    "LlamaCppTransport",
     "LocalEmbeddingAdapter",
     "LocalEndpointRejected",
     "LocalInferenceError",
@@ -88,6 +93,7 @@ __all__ = [
     "RerankerService",
     "RetrievalWindow",
     "UrllibJsonTransport",
+    "UrllibLlamaCppTransport",
     "SearchError",
     "SearchExcerpt",
     "SearchHit",

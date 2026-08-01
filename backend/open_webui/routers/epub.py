@@ -49,6 +49,10 @@ class ConceptUpsertForm(BaseModel):
     status: str = Field(default="APPROVED", pattern="^(PROVISIONAL|APPROVED|REJECTED)$")
 
 
+class VersionIndexForm(BaseModel):
+    rebuild: bool = False
+
+
 def get_epub_concept_service(request: Request) -> EpubConceptService:
     """Fetch the server-configured service without silently creating storage.
 
@@ -204,3 +208,43 @@ async def index_retrieval_unit(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
     except EpubServiceError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.post("/admin/versions/{version_id}/index")
+async def index_epub_version(
+    version_id: str,
+    form_data: VersionIndexForm,
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+) -> dict[str, Any]:
+    """Build or rebuild all derived vectors for a single immutable version."""
+    try:
+        return await service.index_version_retrieval_units_async(version_id, rebuild=form_data.rebuild)
+    except EpubServiceUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+    except EpubServiceError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.get("/admin/runtime-status")
+async def epub_runtime_status(request: Request, user=Depends(get_admin_user)) -> dict[str, Any]:
+    """Expose server-owned EPUB runtime readiness to administrators only."""
+    status_reader = getattr(request.app.state, "EPUB_CONCEPT_RUNTIME_STATUS", None)
+    if not callable(status_reader):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="EPUB runtime health status is not configured on this server",
+        )
+    try:
+        result = status_reader()
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"EPUB runtime health status is unavailable: {type(error).__name__}",
+        ) from error
+    if not isinstance(result, dict):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="EPUB runtime health status returned an invalid response",
+        )
+    return result

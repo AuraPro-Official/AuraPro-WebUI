@@ -170,5 +170,96 @@ class RetrievalUnitPersistenceTest(unittest.TestCase):
         self.assertEqual(len(self.store.list_retrieval_units(passage["passage_id"])), 3)
 
 
+class VersionBulkIndexTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.store = SQLiteEpubStore(str(Path(self.temporary.name) / "epub.db"))
+        book_id = self.store.create_book("批量索引测试书", book_id="book")
+        self.store.create_book_version(book_id, epub_bytes=b"epub", version_id="version")
+        self.store.add_passages(
+            "version",
+            [
+                {
+                    "passage_id": f"passage-{ordinal}",
+                    "source_href": "chapter.xhtml",
+                    "spine_index": 0,
+                    "ordinal": ordinal,
+                    "content_kind": "paragraph",
+                    "content": f"第{ordinal + 1}个不可变原文段落。",
+                }
+                for ordinal in range(3)
+            ],
+        )
+        self.pending_id = self.store.add_retrieval_unit("passage-0", 0, len("第1个不可变原文段落。"))
+        self.ready_id = self.store.add_retrieval_unit(
+            "passage-1", 0, len("第2个不可变原文段落。"), vector_state="READY"
+        )
+        self.failed_id = self.store.add_retrieval_unit(
+            "passage-2", 0, len("第3个不可变原文段落。"), vector_state="FAILED"
+        )
+        self.outcomes: dict[str, object] = {
+            self.pending_id: SimpleNamespace(state="READY", reason=None),
+            self.failed_id: ValueError("embedding output is invalid"),
+        }
+
+        class FakeIndexer:
+            def __init__(inner_self) -> None:
+                inner_self.calls: list[str] = []
+
+            def index(inner_self, retrieval_unit_id: str):
+                inner_self.calls.append(retrieval_unit_id)
+                outcome = self.outcomes[retrieval_unit_id]
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+
+        self.indexer = FakeIndexer()
+        self.service = EpubConceptService(store=self.store, vector_indexer=self.indexer)
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.temporary.cleanup()
+
+    def test_pending_run_isolated_failures_and_persists_outcomes(self) -> None:
+        result = self.service.index_version_retrieval_units("version")
+
+        self.assertEqual(result["mode"], "PENDING")
+        self.assertEqual(result["total_retrieval_units"], 3)
+        self.assertEqual(result["selected_retrieval_units"], 2)
+        self.assertEqual(result["skipped_ready"], 1)
+        self.assertEqual(result["ready"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["error_count"], 1)
+        self.assertEqual(self.indexer.calls, [self.pending_id, self.failed_id])
+        self.assertEqual(self.store.get_retrieval_unit(self.pending_id)["vector_state"], "READY")
+        self.assertEqual(self.store.get_retrieval_unit(self.ready_id)["vector_state"], "READY")
+        self.assertEqual(self.store.get_retrieval_unit(self.failed_id)["vector_state"], "FAILED")
+        self.assertIn("embedding output is invalid", result["errors"][0]["reason"])
+
+    def test_rebuild_retries_ready_units_and_preserves_ready_state_when_degraded(self) -> None:
+        self.store.set_retrieval_unit_vector_state(self.pending_id, "READY")
+        self.store.set_retrieval_unit_vector_state(self.failed_id, "READY")
+        self.outcomes = {
+            self.pending_id: SimpleNamespace(state="READY", reason=None),
+            self.ready_id: SimpleNamespace(state="DEGRADED", reason="private model is stopped"),
+            self.failed_id: SimpleNamespace(state="READY", reason=None),
+        }
+
+        result = self.service.index_version_retrieval_units("version", rebuild=True)
+
+        self.assertEqual(result["mode"], "REBUILD")
+        self.assertEqual(result["selected_retrieval_units"], 3)
+        self.assertEqual(result["ready"], 2)
+        self.assertEqual(result["degraded"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(self.store.get_retrieval_unit(self.ready_id)["vector_state"], "READY")
+        self.assertEqual(result["errors"], [{"retrieval_unit_id": self.ready_id, "reason": "private model is stopped"}])
+
+    def test_unknown_version_is_rejected_before_any_indexing(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown EPUB version"):
+            self.service.index_version_retrieval_units("missing")
+        self.assertEqual(self.indexer.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
