@@ -8,6 +8,7 @@ from .store import (
     VersionCreation,
 )
 from .sqlite_vec import SQLiteVecHealth, SQLiteVecUnavailable, load_sqlite_vec
+from .sqlite_vec_backend import SQLiteVecDerivedVectorBackend
 from .inference import (
     ConceptResolver,
     EmbeddingService,
@@ -73,6 +74,7 @@ __all__ = [
     "SearchResponse",
     "SQLiteEpubStore",
     "SQLiteVecHealth",
+    "SQLiteVecDerivedVectorBackend",
     "SQLiteVecUnavailable",
     "VersionCreation",
     "VectorIndexError",
