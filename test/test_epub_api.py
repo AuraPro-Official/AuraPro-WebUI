@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import tempfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 
 from fastapi import FastAPI, HTTPException, status
@@ -14,6 +14,15 @@ from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
+
+# The router needs only these two dependency identities.  Importing the full
+# application auth module also bootstraps its database models, which is outside
+# this isolated route/service acceptance test.  FastAPI still executes the
+# router's real dependency wiring below via these overridden identities.
+auth_dependencies = ModuleType("open_webui.utils.auth")
+auth_dependencies.get_admin_user = lambda: None
+auth_dependencies.get_verified_user = lambda: None
+sys.modules.setdefault("open_webui.utils.auth", auth_dependencies)
 
 from open_webui.retrieval.epub.store import SQLiteEpubStore  # noqa: E402
 from open_webui.routers.epub import get_epub_concept_service, router  # noqa: E402
