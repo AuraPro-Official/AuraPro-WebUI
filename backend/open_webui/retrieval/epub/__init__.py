@@ -10,6 +10,9 @@ from .store import (
 from .sqlite_vec import SQLiteVecHealth, SQLiteVecUnavailable, load_sqlite_vec
 from .sqlite_vec_backend import SQLiteVecDerivedVectorBackend
 from .inference import (
+    AuraProEmbeddingAdapter,
+    AuraProRerankDocument,
+    AuraProRerankerAdapter,
     ConceptResolver,
     EmbeddingService,
     JsonTransport,
@@ -54,6 +57,9 @@ from .retrieval_units import (
 
 __all__ = [
     "DuplicateEpubError",
+    "AuraProEmbeddingAdapter",
+    "AuraProRerankDocument",
+    "AuraProRerankerAdapter",
     "ConceptResolver",
     "CHINESE_SENTENCE_ENDINGS",
     "ConceptTerm",

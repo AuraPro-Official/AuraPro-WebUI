@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from pathlib import Path
 import sys
+import threading
 import types
 import unittest
 
@@ -32,6 +34,10 @@ LocalConceptResolverAdapter = INFERENCE.LocalConceptResolverAdapter
 LocalEmbeddingAdapter = INFERENCE.LocalEmbeddingAdapter
 LocalEndpointRejected = INFERENCE.LocalEndpointRejected
 LocalRerankerAdapter = INFERENCE.LocalRerankerAdapter
+AuraProEmbeddingAdapter = INFERENCE.AuraProEmbeddingAdapter
+AuraProRerankDocument = INFERENCE.AuraProRerankDocument
+AuraProRerankerAdapter = INFERENCE.AuraProRerankerAdapter
+LocalInferenceUnavailable = INFERENCE.LocalInferenceUnavailable
 ModelAvailability = INFERENCE.ModelAvailability
 PrivateModelEndpoint = INFERENCE.PrivateModelEndpoint
 DerivedVectorIndexer = VECTOR_INDEX.DerivedVectorIndexer
@@ -90,6 +96,31 @@ class FakeSource:
 
     def get_passage(self, passage_id: str):
         return self.passage if passage_id == "passage-1" else None
+
+
+class RunningLoop:
+    """A dedicated application-loop stand-in for synchronous bridge tests."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.started = threading.Event()
+
+    def _run(self) -> None:
+        asyncio.set_event_loop(self.loop)
+        self.started.set()
+        self.loop.run_forever()
+
+    def __enter__(self):
+        self.thread.start()
+        if not self.started.wait(timeout=2):
+            raise RuntimeError("test application loop did not start")
+        return self
+
+    def __exit__(self, *_unused) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=2)
+        self.loop.close()
 
 
 class LocalOnlyInferenceTest(unittest.TestCase):
@@ -189,6 +220,98 @@ class LocalOnlyInferenceTest(unittest.TestCase):
         self.assertEqual(result.state, "DEGRADED")
         self.assertEqual(embeddings.calls, [])
         self.assertEqual(backend.records, {})
+
+    def test_aurapro_embedding_bridge_runs_the_async_rag_function_on_its_application_loop(self) -> None:
+        called_on: list[int] = []
+
+        async def embeddings(texts):
+            called_on.append(threading.get_ident())
+            self.assertEqual(texts, ["第一段", "第二段"])
+            return [[0.1, 0.2], [0.3, 0.4]]
+
+        with RunningLoop() as running:
+            adapter = AuraProEmbeddingAdapter(
+                embedding_function=embeddings,
+                event_loop=running.loop,
+                profile="bge-m3-local",
+                local_permitted=True,
+            )
+            self.assertTrue(adapter.availability().available)
+            self.assertEqual(adapter.embed(["第一段", "第二段"]), [[0.1, 0.2], [0.3, 0.4]])
+            self.assertEqual(called_on, [running.thread.ident])
+
+    def test_aurapro_embedding_fails_closed_without_explicit_local_permission(self) -> None:
+        calls: list[list[str]] = []
+
+        async def embeddings(texts):
+            calls.append(list(texts))
+            return [[0.1, 0.2]]
+
+        with RunningLoop() as running:
+            adapter = AuraProEmbeddingAdapter(
+                embedding_function=embeddings,
+                event_loop=running.loop,
+                profile="configured-but-not-proven-local",
+                local_permitted=False,
+            )
+            availability = adapter.availability()
+            self.assertFalse(availability.available)
+            self.assertIn("not explicitly", availability.reason or "")
+            with self.assertRaises(LocalInferenceUnavailable):
+                adapter.embed(["不会发送"])
+        self.assertEqual(calls, [])
+
+    def test_aurapro_embedding_rejects_sync_bridge_from_its_own_event_loop(self) -> None:
+        async def embeddings(_texts):
+            return [[0.1, 0.2]]
+
+        with RunningLoop() as running:
+            adapter = AuraProEmbeddingAdapter(
+                embedding_function=embeddings,
+                event_loop=running.loop,
+                profile="bge-m3-local",
+                local_permitted=True,
+            )
+
+            async def invoke_from_loop():
+                with self.assertRaisesRegex(LocalInferenceUnavailable, "cannot synchronously bridge"):
+                    adapter.embed(["同一事件循环"])
+
+            asyncio.run_coroutine_threadsafe(invoke_from_loop(), running.loop).result(timeout=2)
+
+    def test_aurapro_reranker_wraps_immutable_strings_as_page_content_documents(self) -> None:
+        received: list[object] = []
+
+        def rerank(query, documents):
+            self.assertEqual(query, "什么是红楼梦")
+            received.extend(documents)
+            return (0.9, 0.2)
+
+        adapter = AuraProRerankerAdapter(
+            reranking_function=rerank,
+            profile="bge-reranker-local",
+            local_permitted=True,
+        )
+        self.assertEqual(adapter.score("什么是红楼梦", ["贾宝玉", "林黛玉"]), [0.9, 0.2])
+        self.assertEqual([document.page_content for document in received], ["贾宝玉", "林黛玉"])
+        self.assertTrue(all(isinstance(document, AuraProRerankDocument) for document in received))
+
+    def test_aurapro_reranker_fails_closed_without_local_permission(self) -> None:
+        calls: list[object] = []
+
+        def rerank(_query, _documents):
+            calls.append(True)
+            return [1.0]
+
+        adapter = AuraProRerankerAdapter(
+            reranking_function=rerank,
+            profile="configured-but-not-proven-local",
+            local_permitted=False,
+        )
+        self.assertFalse(adapter.availability().available)
+        with self.assertRaises(LocalInferenceUnavailable):
+            adapter.score("查询", ["不会发送"])
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

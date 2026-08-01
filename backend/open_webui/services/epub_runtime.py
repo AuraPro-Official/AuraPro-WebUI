@@ -16,11 +16,8 @@ from urllib.parse import urlparse
 
 from open_webui.retrieval.epub.batch import BatchProvider, OpenAIBatchProvider
 from open_webui.retrieval.epub.inference import (
-    LocalConceptResolverAdapter,
-    LocalEmbeddingAdapter,
-    LocalRerankerAdapter,
-    PrivateModelEndpoint,
-    UrllibJsonTransport,
+    AuraProEmbeddingAdapter,
+    AuraProRerankerAdapter,
 )
 from open_webui.retrieval.epub.search import EpubSearchService
 from open_webui.retrieval.epub.store import SQLiteEpubStore
@@ -54,7 +51,7 @@ def initialize_epub_concept_service(
     database_path = _sqlite_path(values, Path(data_dir))
     store = SQLiteEpubStore(database_path)
     providers = _batch_providers(values)
-    embeddings, reranker, resolver = _local_models(values)
+    embeddings, reranker = _aurapro_rag_models(app, values)
     vector_backend = None
     if embeddings is not None:
         try:
@@ -66,7 +63,7 @@ def initialize_epub_concept_service(
         vector_backend=vector_backend,
         embeddings=embeddings,
         reranker=reranker,
-        concept_resolver=resolver,
+        concept_resolver=None,
     )
     indexer = (
         DerivedVectorIndexer(source=store, embeddings=embeddings, backend=vector_backend)
@@ -144,25 +141,29 @@ def _batch_providers(values: Mapping[str, str]) -> dict[str, BatchProvider]:
     return {provider.name: provider}
 
 
-def _local_models(values: Mapping[str, str]):
-    endpoint_url = values.get("EPUB_CONCEPT_LOCAL_MODEL_ENDPOINT", "").strip()
-    trusted = frozenset(
-        item.strip() for item in values.get("EPUB_CONCEPT_LOCAL_TRUSTED_HOSTNAMES", "").split(",") if item.strip()
+def _aurapro_rag_models(app: Any, values: Mapping[str, str]):
+    state = app.state
+    embedding_profile = getattr(state, "EPUB_RAG_EMBEDDING_PROFILE", None)
+    reranker_profile = getattr(state, "EPUB_RAG_RERANKER_PROFILE", None)
+    timeout = float(values.get("EPUB_CONCEPT_LOCAL_MODEL_TIMEOUT_SECONDS", "30"))
+    embeddings = (
+        AuraProEmbeddingAdapter.from_app_state(
+            app_state=state,
+            event_loop=getattr(state, "main_loop", None),
+            profile=embedding_profile,
+            local_permitted=bool(getattr(state, "EPUB_RAG_EMBEDDING_LOCAL", False)),
+            timeout_seconds=timeout,
+        )
+        if isinstance(embedding_profile, str) and embedding_profile
+        else None
     )
-    if not endpoint_url:
-        return None, None, None
-    endpoint = PrivateModelEndpoint(endpoint_url, trusted_hostnames=trusted)
-    transport = UrllibJsonTransport(
-        timeout_seconds=float(values.get("EPUB_CONCEPT_LOCAL_MODEL_TIMEOUT_SECONDS", "15"))
+    reranker = (
+        AuraProRerankerAdapter.from_app_state(
+            app_state=state,
+            profile=reranker_profile,
+            local_permitted=bool(getattr(state, "EPUB_RAG_RERANKER_LOCAL", False)),
+        )
+        if isinstance(reranker_profile, str) and reranker_profile
+        else None
     )
-    embedding_profile = values.get("EPUB_CONCEPT_LOCAL_EMBEDDING_PROFILE", "").strip()
-    reranker_profile = values.get("EPUB_CONCEPT_LOCAL_RERANKER_PROFILE", "").strip()
-    resolver_profile = values.get("EPUB_CONCEPT_LOCAL_RESOLVER_PROFILE", "").strip()
-    return (
-        LocalEmbeddingAdapter(endpoint=endpoint, transport=transport, profile=embedding_profile)
-        if embedding_profile else None,
-        LocalRerankerAdapter(endpoint=endpoint, transport=transport, profile=reranker_profile)
-        if reranker_profile else None,
-        LocalConceptResolverAdapter(endpoint=endpoint, transport=transport, profile=resolver_profile)
-        if resolver_profile else None,
-    )
+    return embeddings, reranker

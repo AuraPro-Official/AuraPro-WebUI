@@ -739,6 +739,13 @@ async def initialize_runtime_config(app: FastAPI):
         reranking_function=app.state.rf,
         reranking_batch_size=rag_config.get('rag.reranking_batch_size'),
     )
+    # EPUB's independent store uses these identifiers only to keep derived
+    # vectors isolated by the actual AuraPro RAG model configuration.  Secrets
+    # and provider URLs remain in the normal RAG configuration boundary.
+    app.state.EPUB_RAG_EMBEDDING_PROFILE = rag_config.get('rag.embedding_model') or None
+    app.state.EPUB_RAG_RERANKER_PROFILE = rag_config.get('rag.reranking_model') or None
+    app.state.EPUB_RAG_EMBEDDING_LOCAL = embedding_engine in {'', 'ollama'}
+    app.state.EPUB_RAG_RERANKER_LOCAL = rag_config.get('rag.reranking_engine') != 'external'
 
 
 ########################################
