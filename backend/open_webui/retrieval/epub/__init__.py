@@ -22,6 +22,7 @@ from .inference import (
     ModelAvailability,
     PrivateModelEndpoint,
     RerankerService,
+    UrllibJsonTransport,
 )
 from .vector_index import (
     DerivedVectorBackend,
@@ -68,6 +69,7 @@ __all__ = [
     "ModelAvailability",
     "PrivateModelEndpoint",
     "RerankerService",
+    "UrllibJsonTransport",
     "SearchError",
     "SearchExcerpt",
     "SearchHit",

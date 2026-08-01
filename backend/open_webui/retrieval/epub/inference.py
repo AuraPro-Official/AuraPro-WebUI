@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ipaddress
+import json
 import math
 from typing import Any, Mapping, Protocol, Sequence
+from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
 
@@ -54,6 +56,26 @@ class JsonTransport(Protocol):
     """Private transport injection seam. It must never select a fallback URL."""
 
     def post_json(self, url: str, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
+class UrllibJsonTransport:
+    """Small server-side JSON transport for an already-approved private URL."""
+
+    def __init__(self, *, timeout_seconds: float = 15.0):
+        self._timeout_seconds = timeout_seconds
+
+    def post_json(self, url: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        request = Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=self._timeout_seconds) as response:  # nosec B310: endpoint policy is enforced above
+            value = json.loads(response.read().decode("utf-8"))
+        if not isinstance(value, Mapping):
+            raise LocalInferenceUnavailable("local model endpoint returned a non-object JSON response")
+        return value
 
 
 class EmbeddingService(Protocol):
