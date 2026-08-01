@@ -147,6 +147,7 @@ from open_webui.routers import (
     channels,
     chats,
     configs,
+    epub,
     epub_concept,
     files,
     folders,
@@ -836,6 +837,7 @@ app.include_router(groups.router, prefix='/api/v1/groups', tags=['groups'])
 app.include_router(files.router, prefix='/api/v1/files', tags=['files'])
 app.include_router(functions.router, prefix='/api/v1/functions', tags=['functions'])
 app.include_router(glossary.router, prefix='/api/v1/glossary', tags=['glossary'])
+app.include_router(epub.router)
 app.include_router(epub_concept.router)
 if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix='/api/v1/analytics', tags=['analytics'])

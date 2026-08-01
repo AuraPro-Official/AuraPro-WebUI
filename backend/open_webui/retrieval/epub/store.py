@@ -353,6 +353,52 @@ class SQLiteEpubStore:
             self._connection().execute("SELECT * FROM books WHERE book_id = ?", (book_id,)).fetchone()
         )
 
+    def list_books(self) -> list[dict[str, Any]]:
+        """Return the shared EPUB catalogue without exposing archive bytes."""
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                """SELECT b.book_id, b.title, b.current_version_id, b.created_at, b.updated_at,
+                           v.status AS current_version_status, v.epub_sha256 AS current_epub_sha256
+                     FROM books AS b
+                     LEFT JOIN book_versions AS v ON v.version_id = b.current_version_id
+                     ORDER BY b.title COLLATE NOCASE, b.book_id"""
+            )
+            .fetchall()
+        ]
+
+    def list_versions(self, book_id: str) -> list[dict[str, Any]]:
+        """List one book's versions in a stable order, excluding raw EPUB blobs."""
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                """SELECT version_id, book_id, epub_sha256, source_locator, status,
+                           parser_version, created_at, ready_at, failure_reason
+                     FROM book_versions
+                     WHERE book_id = ?
+                     ORDER BY created_at, version_id""",
+                (book_id,),
+            )
+            .fetchall()
+        ]
+
+    def find_version_by_sha256(self, epub_sha256: str) -> dict[str, Any] | None:
+        """Look up an already-ingested complete archive by its full SHA-256."""
+        if len(epub_sha256) != 64:
+            raise IntegrityError("EPUB SHA-256 must be a complete 64-character digest")
+        return self._row(
+            self._connection()
+            .execute(
+                """SELECT v.version_id, v.book_id, v.epub_sha256, v.status, b.title AS book_title
+                     FROM book_versions AS v JOIN books AS b ON b.book_id = v.book_id
+                     WHERE v.epub_sha256 = ?""",
+                (epub_sha256,),
+            )
+            .fetchone()
+        )
+
     def create_book_version(
         self,
         book_id: str,
