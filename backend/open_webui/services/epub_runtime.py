@@ -67,8 +67,13 @@ def _sqlite_path(values: Mapping[str, str], data_dir: Path) -> Path:
                 "do not fall back to the main WebUI database"
             )
         if parsed.scheme == "sqlite":
-            # sqlite:///absolute/path and sqlite://relative/path are accepted;
-            # in-memory storage is forbidden for a shared library.
+            # Accept the ordinary absolute sqlite:///path form only.  Ambiguous
+            # host-qualified forms are not a safe configuration for a shared
+            # source library.
+            if parsed.netloc not in {"", "localhost"}:
+                raise EpubRuntimeConfigurationError(
+                    "EPUB_CONCEPT_DATABASE_URL must use an absolute sqlite:/// path"
+                )
             candidate = Path(parsed.path)
         else:
             candidate = Path(database_url)

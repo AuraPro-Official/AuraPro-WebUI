@@ -27,6 +27,7 @@ sys.modules.setdefault("open_webui.utils.auth", auth_dependencies)
 from open_webui.retrieval.epub.store import SQLiteEpubStore  # noqa: E402
 from open_webui.routers.epub import get_epub_concept_service, router  # noqa: E402
 from open_webui.services.epub_concept import EpubConceptService  # noqa: E402
+from open_webui.services.epub_runtime import initialize_epub_concept_service  # noqa: E402
 from open_webui.utils.auth import get_admin_user, get_verified_user  # noqa: E402
 
 
@@ -142,6 +143,16 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         app.dependency_overrides[get_verified_user] = _ordinary_user
         response = TestClient(app).get("/api/v1/epub/books")
         self.assertEqual(response.status_code, 503)
+
+    def test_initialized_runtime_makes_the_real_router_available(self) -> None:
+        app = FastAPI()
+        app.include_router(router)
+        initialize_epub_concept_service(app, data_dir=self.temporary.name, environment={})
+        app.dependency_overrides[get_verified_user] = _ordinary_user
+        response = TestClient(app).get("/api/v1/epub/books")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+        app.state.EPUB_CONCEPT_STORE.close()
 
 
 if __name__ == "__main__":
