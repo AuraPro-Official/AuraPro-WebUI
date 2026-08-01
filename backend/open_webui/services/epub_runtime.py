@@ -15,7 +15,18 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from open_webui.retrieval.epub.batch import BatchProvider, OpenAIBatchProvider
+from open_webui.retrieval.epub.inference import (
+    LocalConceptResolverAdapter,
+    LocalEmbeddingAdapter,
+    LocalRerankerAdapter,
+    PrivateModelEndpoint,
+    UrllibJsonTransport,
+)
+from open_webui.retrieval.epub.search import EpubSearchService
 from open_webui.retrieval.epub.store import SQLiteEpubStore
+from open_webui.retrieval.epub.sqlite_vec import SQLiteVecUnavailable
+from open_webui.retrieval.epub.sqlite_vec_backend import SQLiteVecDerivedVectorBackend
+from open_webui.retrieval.epub.vector_index import DerivedVectorIndexer
 from open_webui.services.epub_concept import EpubConceptService
 
 
@@ -43,7 +54,26 @@ def initialize_epub_concept_service(
     database_path = _sqlite_path(values, Path(data_dir))
     store = SQLiteEpubStore(database_path)
     providers = _batch_providers(values)
-    service = EpubConceptService(store=store, providers=providers)
+    embeddings, reranker, resolver = _local_models(values)
+    vector_backend = None
+    if embeddings is not None:
+        try:
+            vector_backend = SQLiteVecDerivedVectorBackend(store)
+        except SQLiteVecUnavailable as error:
+            log.warning("EPUB vector search is degraded: %s", error)
+    search = EpubSearchService(
+        source=store,
+        vector_backend=vector_backend,
+        embeddings=embeddings,
+        reranker=reranker,
+        concept_resolver=resolver,
+    )
+    indexer = (
+        DerivedVectorIndexer(source=store, embeddings=embeddings, backend=vector_backend)
+        if embeddings is not None and vector_backend is not None
+        else None
+    )
+    service = EpubConceptService(store=store, providers=providers, search=search, vector_indexer=indexer)
     app.state.EPUB_CONCEPT_STORE = store
     app.state.EPUB_CONCEPT_SERVICE = service
     log.info("Initialized independent EPUB concept store at %s", database_path)
@@ -104,3 +134,27 @@ def _batch_providers(values: Mapping[str, str]) -> dict[str, BatchProvider]:
         log.error("EPUB OpenAI Batch provider is unavailable: %s", type(error).__name__)
         return {}
     return {provider.name: provider}
+
+
+def _local_models(values: Mapping[str, str]):
+    endpoint_url = values.get("EPUB_CONCEPT_LOCAL_MODEL_ENDPOINT", "").strip()
+    trusted = frozenset(
+        item.strip() for item in values.get("EPUB_CONCEPT_LOCAL_TRUSTED_HOSTNAMES", "").split(",") if item.strip()
+    )
+    if not endpoint_url:
+        return None, None, None
+    endpoint = PrivateModelEndpoint(endpoint_url, trusted_hostnames=trusted)
+    transport = UrllibJsonTransport(
+        timeout_seconds=float(values.get("EPUB_CONCEPT_LOCAL_MODEL_TIMEOUT_SECONDS", "15"))
+    )
+    embedding_profile = values.get("EPUB_CONCEPT_LOCAL_EMBEDDING_PROFILE", "").strip()
+    reranker_profile = values.get("EPUB_CONCEPT_LOCAL_RERANKER_PROFILE", "").strip()
+    resolver_profile = values.get("EPUB_CONCEPT_LOCAL_RESOLVER_PROFILE", "").strip()
+    return (
+        LocalEmbeddingAdapter(endpoint=endpoint, transport=transport, profile=embedding_profile)
+        if embedding_profile else None,
+        LocalRerankerAdapter(endpoint=endpoint, transport=transport, profile=reranker_profile)
+        if reranker_profile else None,
+        LocalConceptResolverAdapter(endpoint=endpoint, transport=transport, profile=resolver_profile)
+        if resolver_profile else None,
+    )
