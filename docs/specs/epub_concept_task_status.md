@@ -30,6 +30,7 @@ this file and `epub_concept_sdd.md` before making changes.
 | D-005 | The feature UI lives in AuraPro-WebUI and is displayed by Desktop's WebView. | confirmed |
 | D-006 | Normal HTML flow whitespace collapses per visible-text semantics; `<pre>` whitespace is preserved. | confirmed |
 | D-007 | First release targets textual EPUBs. Preserve typed text blocks; images and tables are out of scope and warn. | confirmed |
+| D-008 | Keep Batch prompt generic initially. Add only passage-relevant seed-term context if review proves the remote model misses established proper nouns; deterministic seed matching remains authoritative. | deferred optimization |
 
 ## Work breakdown
 
