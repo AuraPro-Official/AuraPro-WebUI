@@ -119,6 +119,21 @@ class SQLiteVecDerivedVectorBackend:
             for row in rows
         ]
 
+    def healthcheck(self) -> SQLiteVecHealth:
+        """Prove sqlite-vec remains available on the store's active connection.
+
+        sqlite-vec is connection-scoped.  Startup success is therefore not a
+        durable guarantee if a store implementation rotates connections.  The
+        admin runtime-status surface calls this inexpensive SQL check and can
+        report a degraded vector subsystem without a cloud fallback.
+        """
+        try:
+            return self._ensure_loaded(self._store._connection())
+        except SQLiteVecUnavailable:
+            raise
+        except Exception as error:
+            raise SQLiteVecUnavailable(f"sqlite-vec failed its SQL health check: {error}") from error
+
     def _load_and_migrate(self) -> SQLiteVecHealth:
         connection = self._connection()
         health = self._ensure_loaded(connection)
@@ -160,7 +175,12 @@ class SQLiteVecDerivedVectorBackend:
             health = load_sqlite_vec(connection)
             self._loaded_connection_ids.add(marker)
             return health
-        row = connection.execute("SELECT vec_version()").fetchone()
+        try:
+            row = connection.execute("SELECT vec_version()").fetchone()
+        except Exception as error:
+            raise SQLiteVecUnavailable(f"sqlite-vec failed its SQL health check: {error}") from error
+        if row is None or not isinstance(row[0], str):
+            raise SQLiteVecUnavailable("sqlite-vec did not return a version")
         return SQLiteVecHealth(version=str(row[0]))
 
     def _table_exists(self, table: str) -> bool:

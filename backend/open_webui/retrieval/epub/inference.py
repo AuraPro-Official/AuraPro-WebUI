@@ -271,6 +271,158 @@ class LocalConceptResolverAdapter(_LocalJsonModel):
         return resolved or None
 
 
+class LlamaCppTransport(Protocol):
+    """The narrow HTTP surface exposed by ``llama-server``.
+
+    It is intentionally separate from the generic EPUB JSON transport: llama.cpp
+    exposes ``GET /health`` and OpenAI-compatible ``POST /v1/chat/completions``.
+    Keeping these requests explicit prevents a resolver from accidentally
+    inheriting an OpenAI cloud endpoint or a generic chat-client fallback.
+    """
+
+    def get_json(self, url: str) -> Mapping[str, Any]: ...
+
+    def post_json(self, url: str, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
+class UrllibLlamaCppTransport:
+    """Blocking transport used only behind the EPUB worker-thread boundary."""
+
+    def __init__(self, *, timeout_seconds: float = 15.0) -> None:
+        if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+            raise LocalInferenceError("llama.cpp timeout_seconds must be positive")
+        self._timeout_seconds = float(timeout_seconds)
+
+    def get_json(self, url: str) -> Mapping[str, Any]:
+        return self._request(Request(url, method="GET"))
+
+    def post_json(self, url: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._request(
+            Request(
+                url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+        )
+
+    def _request(self, request: Request) -> Mapping[str, Any]:
+        with urlopen(request, timeout=self._timeout_seconds) as response:  # nosec B310: endpoint is policy-validated by resolver
+            decoded = json.loads(response.read().decode("utf-8"))
+        if not isinstance(decoded, Mapping):
+            raise LocalInferenceUnavailable("llama.cpp returned a non-object JSON response")
+        return decoded
+
+
+class LlamaCppConceptResolver:
+    """Tier-2 resolver for AuraPro Desktop's local ``llama-server``.
+
+    The synchronous search service is always called through
+    :meth:`EpubConceptService.search_async`, which runs it in a worker thread.
+    ``resolve_async`` is supplied for future native async orchestration and
+    similarly moves the blocking stdlib transport off the event loop.  Neither
+    method can select any endpoint other than the validated private one.
+    """
+
+    component = "llama.cpp-concept-resolver"
+
+    def __init__(
+        self,
+        *,
+        endpoint: PrivateModelEndpoint,
+        transport: LlamaCppTransport | None = None,
+        profile: str,
+        max_tokens: int = 96,
+    ) -> None:
+        if not profile or not profile.strip():
+            raise LocalInferenceError("model profile cannot be empty")
+        if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or not 1 <= max_tokens <= 512:
+            raise LocalInferenceError("llama.cpp max_tokens must be an integer between 1 and 512")
+        self._endpoint = endpoint
+        self._transport = transport or UrllibLlamaCppTransport()
+        self.profile = profile
+        self._max_tokens = max_tokens
+        # Desktop registers `${result.url}/v1` with Open WebUI.  Administrators
+        # can use either that familiar form or the llama-server root URL here.
+        self._base_url = endpoint.url.rstrip("/")
+        if self._base_url.endswith("/v1"):
+            self._base_url = self._base_url[:-3]
+
+    def availability(self) -> ModelAvailability:
+        try:
+            response = self._transport.get_json(f"{self._base_url}/health")
+        except Exception as error:
+            return ModelAvailability.degraded(self.component, _safe_reason(error))
+        if not isinstance(response, Mapping):
+            return ModelAvailability.degraded(self.component, "llama.cpp health endpoint returned a non-object response")
+        status = response.get("status")
+        # llama-server reports `no slot available` while it is otherwise a
+        # healthy local process.  A request may still fail closed later.
+        if status in {"ok", "no slot available"}:
+            return ModelAvailability.ready(self.component)
+        return ModelAvailability.degraded(
+            self.component, str(response.get("error") or response.get("reason") or f"unexpected health status: {status!r}")[:240]
+        )
+
+    def resolve(self, query: str, candidates: Sequence[str]) -> str | None:
+        if not isinstance(query, str) or not query.strip():
+            raise LocalInferenceError("concept query cannot be empty")
+        _require_nonempty_texts(candidates, "concept candidates")
+        unique_candidates = tuple(dict.fromkeys(candidates))
+        payload = {
+            "model": self.profile,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You resolve a user query to one existing EPUB concept. "
+                        "Return only a JSON object with exactly one key, `concept`. "
+                        "Its value must be one exact candidate string or null. Do not explain."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps({"query": query, "candidates": unique_candidates}, ensure_ascii=False),
+                },
+            ],
+            "temperature": 0,
+            "max_tokens": self._max_tokens,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            response = self._transport.post_json(f"{self._base_url}/v1/chat/completions", payload)
+        except Exception as error:
+            raise LocalInferenceUnavailable(f"{self.component} is unavailable: {_safe_reason(error)}") from error
+        if not isinstance(response, Mapping):
+            raise LocalInferenceUnavailable("llama.cpp returned a non-object completion response")
+        return self._parse_completion(response, unique_candidates)
+
+    async def resolve_async(self, query: str, candidates: Sequence[str]) -> str | None:
+        """Async-safe facade that never blocks the calling ASGI event loop."""
+        return await asyncio.to_thread(self.resolve, query, candidates)
+
+    def _parse_completion(self, response: Mapping[str, Any], candidates: Sequence[str]) -> str | None:
+        choices = response.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+            raise LocalInferenceUnavailable("llama.cpp returned no completion choices")
+        message = choices[0].get("message")
+        if not isinstance(message, Mapping) or not isinstance(message.get("content"), str):
+            raise LocalInferenceUnavailable("llama.cpp returned a completion without text content")
+        try:
+            decoded = json.loads(message["content"])
+        except (TypeError, json.JSONDecodeError) as error:
+            raise LocalInferenceUnavailable("llama.cpp returned invalid concept JSON") from error
+        if not isinstance(decoded, Mapping) or set(decoded) != {"concept"}:
+            raise LocalInferenceUnavailable("llama.cpp concept JSON has an invalid schema")
+        resolved = decoded.get("concept")
+        if resolved is None:
+            return None
+        if not isinstance(resolved, str) or resolved not in candidates:
+            raise LocalInferenceUnavailable("llama.cpp returned a concept outside the supplied candidates")
+        return resolved
+
+
 class AuraProEmbeddingAdapter:
     """Synchronously consume AuraPro's already-configured local embedding function.
 

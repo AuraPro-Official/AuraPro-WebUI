@@ -109,6 +109,7 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             ("post", "/api/v1/epub/admin/batches/missing/poll", None),
             ("post", "/api/v1/epub/admin/batches/missing/retry", None),
             ("post", "/api/v1/epub/admin/retrieval-units/missing/index", None),
+            ("post", "/api/v1/epub/admin/versions/version-1/index", {"rebuild": False}),
         ]
         for method, url, payload in mutations:
             response = getattr(self.client, method)(url, json=payload)
@@ -136,6 +137,29 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         )
         self.assertEqual(draft.status_code, 201)
         self.assertEqual(draft.json()["item_count"], 1)
+
+    def test_admin_can_bulk_index_a_version_without_exposing_unit_ids(self) -> None:
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        unit_id = self.service._store.add_retrieval_unit(
+            "passage-1", 0, len("TCP 是传输控制协议。原文必须完整返回。")
+        )
+        indexed: list[str] = []
+
+        class ReadyIndexer:
+            def index(self, retrieval_unit_id: str):
+                indexed.append(retrieval_unit_id)
+                return SimpleNamespace(state="READY", reason=None)
+
+        self.service._vector_indexer = ReadyIndexer()
+
+        response = self.client.post(
+            "/api/v1/epub/admin/versions/version-1/index", json={"rebuild": False}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["ready"], 1)
+        self.assertEqual(indexed, [unit_id])
+        self.assertEqual(self.service._store.get_retrieval_unit(unit_id)["vector_state"], "READY")
 
     def test_service_is_fail_closed_when_startup_did_not_configure_it(self) -> None:
         app = FastAPI()

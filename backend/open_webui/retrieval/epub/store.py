@@ -73,6 +73,10 @@ class EpubStore(Protocol):
 
     def list_retrieval_units(self, passage_id: str) -> list[dict[str, Any]]: ...
 
+    def list_retrieval_units_for_version(self, version_id: str) -> list[dict[str, Any]]: ...
+
+    def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
+
 
 _MIGRATION_1: tuple[str, ...] = (
     """
@@ -637,6 +641,41 @@ class SQLiteEpubStore:
             )
             .fetchall()
         ]
+
+    def list_retrieval_units_for_version(self, version_id: str) -> list[dict[str, Any]]:
+        """Return a version's derived windows in stable source order.
+
+        This is intentionally a derived-index read surface: it joins through
+        immutable passages but never exposes a way to replace their source
+        content.  Administrators use it to run a version-level indexing job
+        without having to discover opaque retrieval-unit identifiers.
+        """
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                """SELECT units.*
+                   FROM retrieval_units AS units
+                   JOIN passages AS passages ON passages.passage_id = units.passage_id
+                   WHERE passages.version_id = ?
+                   ORDER BY passages.spine_index, passages.ordinal,
+                            units.start_codepoint, units.end_codepoint, units.retrieval_unit_id""",
+                (version_id,),
+            )
+            .fetchall()
+        ]
+
+    def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None:
+        """Persist an indexing outcome without changing source-window fields."""
+        if vector_state not in {"PENDING", "READY", "FAILED"}:
+            raise IntegrityError(f"invalid vector state: {vector_state}")
+        with self._write() as connection:
+            changed = connection.execute(
+                "UPDATE retrieval_units SET vector_state = ? WHERE retrieval_unit_id = ?",
+                (vector_state, retrieval_unit_id),
+            ).rowcount
+            if changed != 1:
+                raise IntegrityError(f"unknown retrieval_unit_id: {retrieval_unit_id}")
 
     def get_retrieval_unit(self, retrieval_unit_id: str) -> dict[str, Any] | None:
         return self._row(

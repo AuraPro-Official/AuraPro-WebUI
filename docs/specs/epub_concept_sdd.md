@@ -90,6 +90,27 @@ Offline OpenAI Batch is enabled only by the server-side
 `EPUB_CONCEPT_BATCH_OPENAI_COMPLETION_WINDOW`). It deliberately does not reuse
 generic OpenAI/RAG credentials and no browser request can set it.
 
+The online EPUB inference policy is stricter than generic RAG.  The built-in
+AuraPro embedding and Cross-Encoder engines are accepted as in-process local
+execution.  An AuraPro Ollama embedding configuration is accepted only when
+its actual URL is loopback/private, or its private DNS hostname is explicitly
+listed in the server-only comma-separated
+`EPUB_CONCEPT_TRUSTED_MODEL_HOSTNAMES`; OpenAI, Azure, and external reranker
+engines are disabled for EPUB rather than falling back.  Tier-2 concept
+resolution is optional only while it is unconfigured: when enabled it requires
+`EPUB_CONCEPT_LOCAL_LLM_ENDPOINT` and `EPUB_CONCEPT_LOCAL_LLM_MODEL`, validates
+the llama.cpp endpoint with the same private-address policy, and accepts an
+explicit private-DNS allowlist through
+`EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`.  Optional llama.cpp timeout and
+output limit settings are `EPUB_CONCEPT_LOCAL_LLM_TIMEOUT_SECONDS` and
+`EPUB_CONCEPT_LOCAL_LLM_MAX_TOKENS`.
+
+Startup and the administrator runtime-status endpoint report the independent
+vector extension, embedding, reranker, and resolver separately.  The response
+contains no model URL, database path, or credentials.  A failed sqlite-vec SQL
+health check or model policy validation remains degraded/fail-closed and never
+substitutes a cloud service.
+
 ## 4. Functional requirements
 
 ### 4.1 Import and parsing
