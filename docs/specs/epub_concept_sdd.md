@@ -1,0 +1,148 @@
+# EPUB Concept Wiki — SDD Specification
+
+**Status:** Draft for implementation
+**Last updated:** 2026-08-01
+**Task tracker:** [`epub_concept_task_status.md`](./epub_concept_task_status.md)
+
+This document is the implementation-level source of truth for the EPUB Concept
+Wiki. It records decisions confirmed with the product owner and takes precedence
+over earlier planning documents when they conflict. Read this document and the
+task tracker before starting or resuming work.
+
+## 1. Product scope
+
+The system imports EPUB books into a shared private-server library, builds a
+concept graph offline, and lets every authenticated user retrieve faithful source
+paragraphs. EPUB ingestion and Batch work are administrator-only. Reading books,
+viewing concepts, and searching are available to every authenticated user.
+
+The primary UI belongs in the AuraPro-WebUI frontend. AuraPro Desktop displays
+that same UI in its authenticated WebView; it is not a separate feature client.
+
+## 2. Non-negotiable invariants
+
+1. `passage` is the immutable source unit. One visible EPUB paragraph becomes
+   one passage and is never split, synthesized, or transformed after extraction.
+2. `content` is visible reading text, not XHTML markup. It preserves the
+   extracted characters and punctuation exactly. The stable reading-text rule is:
+   XHTML reading order; entity decoding; `<br>` as newline; ignore scripts,
+   styles, and metadata; do not execute CSS or JavaScript.
+3. A query response always includes the complete source `content`. An optional
+   `excerpt` must be a continuous substring of it and carries Unicode-code-point,
+   end-exclusive offsets. The service verifies the substring before returning it.
+4. Retrieval windows, sentence ranges, and vectors are derived indexes only.
+   Each points back to one immutable parent passage and can never replace it as
+   the citation or storage unit.
+5. Online search must use local/private-network inference only. It must never
+   fall back to a cloud LLM, embedding API, or reranker. Cloud Batch use is
+   allowed only as an explicit administrator-triggered offline task.
+6. A complete EPUB SHA-256 is the duplicate identity. A same-title book is not
+   automatically merged; a content change requires an explicit new-version or
+   new-book administrator action.
+
+### 2.1 Confirmed text-extraction rules
+
+- Normal HTML flow text uses default visible-text whitespace semantics: runs of
+  source indentation, line breaks, and spaces collapse to one U+0020 space.
+- `<pre>` preserves its whitespace exactly.
+- The first release targets textual EPUBs. Images and tables are out of scope;
+  they produce parser warnings rather than synthetic text.
+- Besides `<p>`, non-overlapping headings, list items, block quotes, and `pre`
+  blocks are retained as typed evidence units (`content_kind`). Text outside a
+  typed element is retained in an ordered `fallback` unit rather than dropped;
+  malformed XHTML additionally produces a recovery warning.
+
+## 3. Deployment model
+
+| Profile | Canonical store | Derived vector index | Inference |
+|---|---|---|---|
+| Desktop / local server | Independent SQLite database | `sqlite-vec` in that database | Desktop-managed llama.cpp/Ollama or local model runtime |
+| Private remote server | Independent PostgreSQL database | `pgvector` plus `pg_trgm` | Model service on the server/private network |
+
+The EPUB store must not use the main `webui.db` or the generic OpenWebUI RAG
+collection as its source of truth. Existing OpenWebUI model adapters may be
+reused behind an EPUB-specific policy that permits only local/private endpoints.
+
+## 4. Functional requirements
+
+### 4.1 Import and parsing
+
+- Validate EPUB archives against size, entry-count, expansion-ratio, duplicate
+  member names, and path traversal limits before parsing.
+- Parse OPF spine order and both EPUB2 NCX and EPUB3 NAV trees.
+- Preserve hierarchy and fragment anchors, including multiple TOC entries in one
+  XHTML document.
+- Retain the original EPUB object and full hash for reproducible re-parsing;
+  raw-file download is administrator-only.
+
+The parser is a pure, versioned component. It uses safe XML/XHTML parsing (no
+external entities or network), honors declared encodings, and returns warnings
+or an explicit failure rather than silently dropping malformed content. NAV takes
+precedence over NCX; disagreement is retained as an auditable warning.
+
+### 4.2 Offline concept build
+
+- Persist each Batch job and item before submission; do not use an untracked
+  temporary JSONL file as the job record.
+- Support sample validation, JSONL construction, provider submission, polling,
+  output retrieval, idempotent ingest, per-item retry, and restart recovery.
+- Provider credentials are administrator server configuration and are never sent
+  to or supplied by the client.
+- Seed glossary aliases are authoritative. Only deterministic normalized-name or
+  alias matches merge automatically. Model-suggested semantic merges are review
+  candidates, not irreversible automatic graph mutations.
+
+### 4.3 Search
+
+- Tier 1 uses an in-memory multi-pattern matcher (Aho-Corasick or equivalent),
+  with Latin-token boundary handling and direct CJK phrase matching.
+- Tier 2 uses a local/private small LLM to resolve a concept only when Tier 1
+  has no useful match. If unavailable, return an explicit degraded state rather
+  than calling a cloud fallback.
+- Channel A enumerates all graph occurrences and exposes an exhaustive count and
+  pagination. Channel B returns vector candidates from derived retrieval units.
+- Candidate windows are locally cross-encoder reranked, then diversified with
+  MMR before their parent passages are rendered.
+
+## 5. Result contract
+
+Every result includes `passage_id`, `book_title`, `toc_path`, complete `content`,
+`content_sha256`, `matched_concepts`, retrieval provenance, and this optional
+object:
+
+```json
+{
+  "excerpt": {
+    "content": "a continuous source substring",
+    "start_codepoint": 42,
+    "end_codepoint": 86
+  }
+}
+```
+
+`end_codepoint` is exclusive. When no precise extractive span is available, the
+excerpt is the full passage (`0` to the code-point length), never a generated
+summary.
+
+## 6. Implementation boundaries
+
+- Place the parser under `backend/open_webui/retrieval/parsers/epub/` with
+  separate archive, package/OPF, TOC, XHTML, TOC-mapping, and model modules.
+  The current loader-path parser may only be a temporary compatibility shim.
+- Use versioned repository/service interfaces for the EPUB data domain; business
+  services must not invoke `sqlite3` or the generic `VECTOR_DB_CLIENT` directly.
+- The WebUI frontend owns the feature page and its typed API client. Desktop
+  receives no EPUB-specific IPC, credentials, or write privileges.
+- Public read APIs require `get_verified_user`; every import, destructive,
+  glossary, indexing, and Batch command requires `get_admin_user`.
+
+## 7. Required acceptance evidence
+
+- Fixture tests prove NCX/NAV and fragment breadcrumb correctness.
+- Fidelity tests cover normal-flow whitespace collapsing, nested XHTML elements,
+  entities, `<br>`, CJK punctuation, emoji, short paragraphs, typed text blocks,
+  and long passages with derived windows.
+- Integration tests cover duplicated imports, explicit versioning, foreign-key
+  integrity, interrupted/retried Batch jobs, and idempotent output ingest.
+- Search tests prove graph exhaustiveness, local-only inference, vector recall,
+  reranking/MMR, exact excerpt offsets, and admin/read-only authorization.
