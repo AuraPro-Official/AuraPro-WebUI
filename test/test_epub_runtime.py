@@ -125,6 +125,33 @@ class EpubRuntimeTest(unittest.TestCase):
         self.assertIn("neither local/private", status["concept_resolver"]["reason"])
         close_epub_concept_service(self.app)
 
+    def test_desktop_runtime_handoff_is_authoritative_over_static_development_settings(self) -> None:
+        missing_descriptor = Path(self.temporary.name, "desktop-llama-runtime.json")
+        initialize_epub_concept_service(
+            self.app,
+            data_dir=self.temporary.name,
+            environment={
+                "AURAPRO_DESKTOP_LLM_RUNTIME_FILE": str(missing_descriptor),
+                "EPUB_CONCEPT_LOCAL_LLM_ENDPOINT": "http://127.0.0.1:18881",
+                "EPUB_CONCEPT_LOCAL_LLM_MODEL": "stale-development-model",
+            },
+        )
+        status = self.app.state.EPUB_CONCEPT_RUNTIME_STATUS()
+        self.assertFalse(status["concept_resolver"]["available"])
+        self.assertEqual(status["concept_resolver"]["reason"], "Desktop local runtime is not running")
+        close_epub_concept_service(self.app)
+
+    def test_invalid_desktop_runtime_descriptor_path_is_degraded_without_startup_failure(self) -> None:
+        initialize_epub_concept_service(
+            self.app,
+            data_dir=self.temporary.name,
+            environment={"AURAPRO_DESKTOP_LLM_RUNTIME_FILE": "relative-runtime.json"},
+        )
+        status = self.app.state.EPUB_CONCEPT_RUNTIME_STATUS()
+        self.assertFalse(status["concept_resolver"]["available"])
+        self.assertEqual(status["concept_resolver"]["reason"], "Desktop runtime descriptor path must be absolute")
+        close_epub_concept_service(self.app)
+
 
 if __name__ == "__main__":
     unittest.main()
