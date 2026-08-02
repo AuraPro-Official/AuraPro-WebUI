@@ -30,6 +30,7 @@ from .inference import (
     UrllibJsonTransport,
     UrllibLlamaCppTransport,
 )
+from .desktop_runtime import DesktopManagedLlamaCppConceptResolver, DesktopRuntimeDescriptorError
 from .vector_index import (
     DerivedVectorBackend,
     DerivedVectorIndexer,
@@ -70,6 +71,8 @@ __all__ = [
     "DerivedVectorBackend",
     "DerivedVectorIndexer",
     "DerivedVectorRecord",
+    "DesktopManagedLlamaCppConceptResolver",
+    "DesktopRuntimeDescriptorError",
     "EmbeddingService",
     "ENGLISH_SENTENCE_ENDINGS",
     "EpubSearchRepository",

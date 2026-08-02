@@ -97,12 +97,19 @@ its actual URL is loopback/private, or its private DNS hostname is explicitly
 listed in the server-only comma-separated
 `EPUB_CONCEPT_TRUSTED_MODEL_HOSTNAMES`; OpenAI, Azure, and external reranker
 engines are disabled for EPUB rather than falling back.  Tier-2 concept
-resolution is optional only while it is unconfigured: when enabled it requires
-`EPUB_CONCEPT_LOCAL_LLM_ENDPOINT` and `EPUB_CONCEPT_LOCAL_LLM_MODEL`, validates
-the llama.cpp endpoint with the same private-address policy, and accepts an
-explicit private-DNS allowlist through
-`EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`.  Optional llama.cpp timeout and
-output limit settings are `EPUB_CONCEPT_LOCAL_LLM_TIMEOUT_SECONDS` and
+resolution is optional only while it is unconfigured.  Administrator-managed
+or development deployments may configure `EPUB_CONCEPT_LOCAL_LLM_ENDPOINT`
+and `EPUB_CONCEPT_LOCAL_LLM_MODEL`; the endpoint is validated with the same
+private-address policy and accepts an explicit private-DNS allowlist through
+`EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`.  In a Desktop-managed local
+deployment, WebUI instead receives an absolute
+`AURAPRO_DESKTOP_LLM_RUNTIME_FILE` path. Desktop atomically writes the
+versioned, credential-free JSON descriptor containing its current loopback
+endpoint and selected model identifier. WebUI re-reads it for every resolver
+operation and validates the endpoint; a missing or malformed descriptor is
+degraded/fail-closed and does not fall back to static settings. Optional
+llama.cpp timeout and output limit settings are
+`EPUB_CONCEPT_LOCAL_LLM_TIMEOUT_SECONDS` and
 `EPUB_CONCEPT_LOCAL_LLM_MAX_TOKENS`.
 
 Startup and the administrator runtime-status endpoint report the independent
@@ -123,9 +130,11 @@ server.
 AuraPro Desktop is the owner of the local runtime lifecycle: it installs and
 updates its compatible llama.cpp binary, selects an available loopback port,
 downloads/selects the approved GGUF model, starts/stops the process, and
-reports health.  It must expose the currently managed local endpoint and model
-identifier to WebUI through an authenticated Desktop-to-WebUI integration;
-WebUI must not require an end user to edit `EPUB_CONCEPT_LOCAL_LLM_*` variables.
+reports health. It must atomically publish the current endpoint and model
+identifier to an absolute local JSON descriptor, pass only that descriptor's
+path through `AURAPRO_DESKTOP_LLM_RUNTIME_FILE`, and remove or invalidate the
+descriptor when the runtime stops. WebUI must not require an end user to edit
+`EPUB_CONCEPT_LOCAL_LLM_*` variables.
 The first-run UI must show model download progress, disk requirements, and a
 recoverable failure state.  This requirement does not mean models are embedded
 in the application installer: initial online model download is acceptable.  A

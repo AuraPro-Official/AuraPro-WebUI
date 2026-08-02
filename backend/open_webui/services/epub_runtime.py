@@ -24,6 +24,10 @@ from open_webui.retrieval.epub.inference import (
     PrivateModelEndpoint,
     UrllibLlamaCppTransport,
 )
+from open_webui.retrieval.epub.desktop_runtime import (
+    DesktopManagedLlamaCppConceptResolver,
+    DesktopRuntimeDescriptorError,
+)
 from open_webui.retrieval.epub.search import EpubSearchService
 from open_webui.retrieval.epub.store import SQLiteEpubStore
 from open_webui.retrieval.epub.sqlite_vec import SQLiteVecUnavailable
@@ -36,6 +40,7 @@ log = logging.getLogger(__name__)
 
 _TRUSTED_MODEL_HOSTS_ENV = "EPUB_CONCEPT_TRUSTED_MODEL_HOSTNAMES"
 _LLAMA_CPP_TRUSTED_MODEL_HOSTS_ENV = "EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES"
+_DESKTOP_LLM_RUNTIME_FILE_ENV = "AURAPRO_DESKTOP_LLM_RUNTIME_FILE"
 
 
 class EpubRuntimeConfigurationError(ValueError):
@@ -202,7 +207,7 @@ def _runtime_status(
     vector_availability: ModelAvailability,
     embeddings: AuraProEmbeddingAdapter | None,
     reranker: AuraProRerankerAdapter | None,
-    concept_resolver: LlamaCppConceptResolver | None,
+    concept_resolver: LlamaCppConceptResolver | DesktopManagedLlamaCppConceptResolver | None,
     resolver_availability: ModelAvailability,
 ) -> dict[str, Any]:
     """Return a fresh, credential-free runtime health snapshot."""
@@ -323,8 +328,30 @@ def _aurapro_rag_models(app: Any, values: Mapping[str, str]):
 
 def _llama_cpp_concept_resolver(
     values: Mapping[str, str],
-) -> tuple[LlamaCppConceptResolver | None, ModelAvailability]:
+) -> tuple[LlamaCppConceptResolver | DesktopManagedLlamaCppConceptResolver | None, ModelAvailability]:
     """Build the Tier-2 resolver only from server-owned private settings."""
+    desktop_runtime_file = values.get(_DESKTOP_LLM_RUNTIME_FILE_ENV, "").strip()
+    if desktop_runtime_file:
+        # A configured Desktop handoff is authoritative. If Desktop is still
+        # downloading or has stopped the runtime, do not fall back to stale
+        # development-only static settings.
+        try:
+            timeout = _positive_timeout(values.get("EPUB_CONCEPT_LOCAL_LLM_TIMEOUT_SECONDS", "30"))
+            max_tokens = _positive_int(
+                values.get("EPUB_CONCEPT_LOCAL_LLM_MAX_TOKENS", "96"), minimum=1, maximum=512
+            )
+            return (
+                DesktopManagedLlamaCppConceptResolver(
+                    descriptor_path=desktop_runtime_file,
+                    trusted_hostnames=_trusted_hostnames(values, _LLAMA_CPP_TRUSTED_MODEL_HOSTS_ENV),
+                    timeout_seconds=timeout,
+                    max_tokens=max_tokens,
+                ),
+                ModelAvailability.ready(LlamaCppConceptResolver.component),
+            )
+        except (DesktopRuntimeDescriptorError, ValueError) as error:
+            log.warning("EPUB Desktop Tier-2 resolver is disabled: %s", _safe_reason(error))
+            return None, ModelAvailability.degraded(LlamaCppConceptResolver.component, _safe_reason(error))
     endpoint = values.get("EPUB_CONCEPT_LOCAL_LLM_ENDPOINT", "").strip()
     profile = values.get("EPUB_CONCEPT_LOCAL_LLM_MODEL", "").strip()
     component = LlamaCppConceptResolver.component
