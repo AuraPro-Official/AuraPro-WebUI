@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from open_webui.retrieval.epub.desktop_runtime import (  # noqa: E402
     DesktopManagedLlamaCppConceptResolver,
 )
+from open_webui.retrieval.epub.calibration import LocalConceptCalibrationRunner  # noqa: E402
 from open_webui.retrieval.epub.inference import LocalEndpointRejected  # noqa: E402
 
 
@@ -31,6 +32,24 @@ class FakeLlamaCppTransport:
         self.urls.append(url)
         self.payloads.append(payload)
         return {"choices": [{"message": {"content": '{"concept":"候选"}'}}]}
+
+
+class FakeCalibrationTransport(FakeLlamaCppTransport):
+    def post_json(self, url: str, payload: dict[str, object]) -> dict[str, object]:
+        self.urls.append(url)
+        self.payloads.append(payload)
+        content = payload["messages"][1]["content"]  # type: ignore[index]
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"concepts":[{"name":"词","aliases":[],"definition":"段中术语。","mentions":[{"start_codepoint":0,"end_codepoint":1,"evidence":"词"}]}]}'
+                        if content == "词条"
+                        else '{"concepts":[]}'
+                    }
+                }
+            ]
+        }
 
 
 class DesktopRuntimeResolverTest(unittest.TestCase):
@@ -77,6 +96,25 @@ class DesktopRuntimeResolverTest(unittest.TestCase):
         self.assertIn("neither local/private", public.reason or "")
         with self.assertRaises(LocalEndpointRejected):
             resolver.resolve("问题", ["候选"])
+
+    def test_local_calibration_returns_content_free_schema_and_offset_metrics(self) -> None:
+        self._write_descriptor("http://127.0.0.1:18881", "desktop-model")
+        runner = LocalConceptCalibrationRunner(
+            descriptor_path=self.path,
+            transport=FakeCalibrationTransport(),
+        )
+        report = runner.run(
+            passages=[
+                {"passage_id": "p1", "ordinal": 1, "toc_path": ["第一章"], "content": "词条"},
+                {"passage_id": "p2", "ordinal": 2, "toc_path": ["第二章"], "content": "普通句子"},
+            ],
+            prompt_profile="zh-glossary-v1",
+            sample_limit=2,
+        )
+        self.assertEqual(report["mode"], "LOCAL_QWEN")
+        self.assertEqual((report["sample_count"], report["chapter_count"]), (2, 2))
+        self.assertEqual((report["valid_items"], report["invalid_items"]), (2, 0))
+        self.assertNotIn("词条", repr(report))
 
 
 if __name__ == "__main__":

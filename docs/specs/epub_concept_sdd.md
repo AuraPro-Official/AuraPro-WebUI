@@ -183,6 +183,33 @@ precedence over NCX; disagreement is retained as an auditable warning.
   normalized-name/alias ingestion checks authoritative; prompt context must
   never itself create a semantic merge or bypass administrator review.
 
+### 4.2.1 Local-first prompt calibration
+
+Before an administrator submits any passage to a cloud Batch provider, the
+administrator can run a deterministic cross-chapter sample through the
+Desktop-managed local Qwen runtime. A calibration profile has a stable ID and
+defines the system instruction, output contract, decoding limits, and whether
+passage-relevant seed terms are included. Local calibration records only
+aggregate quality metrics in its administrator-facing report: schema-valid
+rate, exact mention-offset/evidence rate, failure count, chapter coverage, and
+candidate concept counts. It must not expose passage text through a report or
+commit test-book content to the repository.
+
+The local model is used to quickly reject malformed or low-signal prompt
+profiles; its scores are not evidence that a cloud model will have equivalent
+semantic quality. In particular, a small local model may identify a visible
+evidence string while counting Unicode code points unreliably. Local calibration
+may deterministically derive the start/end offsets only when that evidence has
+exactly one literal occurrence in the immutable passage; missing or ambiguous
+evidence remains a hard failure. This never changes source text or permits an
+unverified citation. Remote Batch output must continue to satisfy its complete
+strict schema directly.
+
+A cloud calibration Batch must reuse the selected profile and the same
+deterministic sample selection, pin a provider model snapshot, and be explicitly
+authorized by the administrator before submission. Only after the cloud sample
+is reviewed may a full-version Batch be created.
+
 ### 4.3 Search
 
 - Tier 1 uses an in-memory multi-pattern matcher (Aho-Corasick or equivalent),
