@@ -231,10 +231,13 @@ second, relation layer before its full-version offline Batch is accepted.
    `PRECEDES`, `PREREQUISITE`, `CAUSES`, `CONTRASTS`, and `ELABORATES`.
    Deterministic TOC parent/child edges remain structurally distinct from
    model-suggested semantic edges.
-5. Every model-suggested relation is `PROVISIONAL`, names one or more exact
-   immutable-source evidence spans, and is accepted only after endpoint,
-   predicate, version ownership, and evidence validation. Ambiguous or invalid
-   output is a failed Batch item with no partial graph mutation.
+5. A concept-relation identity is global across the shared library, while every
+   model or administrator assertion of that relation is scoped to one EPUB
+   version and names one or more exact immutable-source evidence spans. This
+   permits the same grounded relationship to accumulate support across books
+   without turning it into an unproven universal fact. Assertions are
+   `PROVISIONAL` until reviewed; ambiguous or invalid output is a failed Batch
+   item with no partial graph mutation.
 
 At query time, direct concept mentions and bounded relation traversal form the
 graph candidate set. `HAS_PART` expands a resolved parent concept to its child

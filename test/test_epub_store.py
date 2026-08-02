@@ -140,6 +140,32 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         self.assertEqual(relation[0]["relation_id"], relation_id)
         self.assertEqual(relation[0]["object_concept_id"], child)
 
+        self.store.create_book_version(
+            self.book_id, epub_bytes=b"a second complete test epub", version_id="version-b"
+        )
+        self.store.add_passages("version-b", [self._passage(passage_id="passage-b")])
+        self.store.add_concept_mention(parent, "passage-b", start_codepoint=0, end_codepoint=2, evidence="原文")
+        self.store.add_concept_mention(child, "passage-b", start_codepoint=4, end_codepoint=6, evidence="标点")
+        same_relation = self.store.add_concept_relation(
+            "version-b",
+            parent,
+            "HAS_PART",
+            child,
+            evidence=[
+                {
+                    "passage_id": "passage-b",
+                    "start_codepoint": 0,
+                    "end_codepoint": 2,
+                    "evidence": "原文",
+                }
+            ],
+        )
+        self.assertEqual(same_relation, relation_id)
+        assertion_count = self.store._connection().execute(
+            "SELECT COUNT(*) FROM concept_relation_assertions WHERE relation_id = ?", (relation_id,)
+        ).fetchone()[0]
+        self.assertEqual(assertion_count, 2)
+
         with self.assertRaisesRegex(IntegrityError, "immutable source substring"):
             self.store.add_concept_relation(
                 "version-a",
