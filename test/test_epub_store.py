@@ -115,6 +115,47 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         with self.assertRaisesRegex(IntegrityError, "already an alias"):
             self.store.upsert_concept("Transmission Control Protocol")
 
+    def test_concept_relations_are_version_scoped_and_evidence_bound(self) -> None:
+        self.store.add_passages("version-a", [self._passage()])
+        parent = self.store.upsert_concept("父概念")
+        child = self.store.upsert_concept("子概念")
+        self.store.add_concept_mention(parent, "passage-a", start_codepoint=0, end_codepoint=2, evidence="原文")
+        self.store.add_concept_mention(child, "passage-a", start_codepoint=4, end_codepoint=6, evidence="标点")
+
+        relation_id = self.store.add_concept_relation(
+            "version-a",
+            parent,
+            "HAS_PART",
+            child,
+            evidence=[
+                {
+                    "passage_id": "passage-a",
+                    "start_codepoint": 0,
+                    "end_codepoint": 2,
+                    "evidence": "原文",
+                }
+            ],
+        )
+        relation = self.store.list_concept_relation_neighbors([parent])
+        self.assertEqual(relation[0]["relation_id"], relation_id)
+        self.assertEqual(relation[0]["object_concept_id"], child)
+
+        with self.assertRaisesRegex(IntegrityError, "immutable source substring"):
+            self.store.add_concept_relation(
+                "version-a",
+                parent,
+                "ELABORATES",
+                child,
+                evidence=[
+                    {
+                        "passage_id": "passage-a",
+                        "start_codepoint": 0,
+                        "end_codepoint": 2,
+                        "evidence": "改写",
+                    }
+                ],
+            )
+
     def test_batch_item_cannot_cross_book_versions(self) -> None:
         self.store.add_passages("version-a", [self._passage()])
         job_id = self.store.create_batch_job("version-a", provider="provider", profile_name="concept-v1")

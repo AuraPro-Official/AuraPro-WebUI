@@ -52,12 +52,17 @@ class FakeSource:
             {"concept_id": "tcp", "canonical_name": "TCP", "term": "TCP"},
             {"concept_id": "tcp", "canonical_name": "TCP", "term": "Transmission Control Protocol"},
             {"concept_id": "中文", "canonical_name": "检索", "term": "检索"},
+            {"concept_id": "parent", "canonical_name": "父主题", "term": "父主题"},
+            {"concept_id": "child", "canonical_name": "子主题", "term": "子主题"},
         ]
         self.occurrences = [
-            {**self.passages["p1"], "canonical_name": "TCP", "start_codepoint": 0, "end_codepoint": 3},
-            {**self.passages["p2"], "canonical_name": "TCP", "start_codepoint": 7, "end_codepoint": 10},
-            {**self.passages["p2"], "canonical_name": "TCP", "start_codepoint": None, "end_codepoint": None},
+            {**self.passages["p1"], "concept_id": "tcp", "canonical_name": "TCP", "start_codepoint": 0, "end_codepoint": 3},
+            {**self.passages["p2"], "concept_id": "tcp", "canonical_name": "TCP", "start_codepoint": 7, "end_codepoint": 10},
+            {**self.passages["p2"], "concept_id": "tcp", "canonical_name": "TCP", "start_codepoint": None, "end_codepoint": None},
+            {**self.passages["p1"], "concept_id": "parent", "canonical_name": "父主题", "start_codepoint": 0, "end_codepoint": 3},
+            {**self.passages["p3"], "concept_id": "child", "canonical_name": "子主题", "start_codepoint": 0, "end_codepoint": 2},
         ]
+        self.relations = [{"subject_concept_id": "parent", "predicate": "HAS_PART", "object_concept_id": "child"}]
         self.units = {
             "u1": self._unit("u1", "p1", 0, 8),
             "u2": self._unit("u2", "p2", 0, 9),
@@ -89,12 +94,11 @@ class FakeSource:
         return self.terms
 
     def count_concept_occurrences(self, concept_ids):
-        return len(self.occurrences) if "tcp" in concept_ids else 0
+        return sum(row["concept_id"] in concept_ids for row in self.occurrences)
 
     def list_concept_occurrences(self, concept_ids, *, offset, limit):
-        if "tcp" not in concept_ids:
-            return []
-        return self.occurrences[offset : offset + limit]
+        rows = [row for row in self.occurrences if row["concept_id"] in concept_ids]
+        return rows[offset : offset + limit]
 
     def get_search_passage(self, passage_id):
         return self.passages.get(passage_id)
@@ -104,6 +108,13 @@ class FakeSource:
 
     def matched_concept_names(self, passage_id, concept_ids):
         return ["TCP"] if passage_id in {"p1", "p2"} and "tcp" in concept_ids else []
+
+    def list_concept_relation_neighbors(self, concept_ids, *, predicates=("HAS_PART",)):
+        return [
+            relation
+            for relation in self.relations
+            if relation["subject_concept_id"] in concept_ids and relation["predicate"] in predicates
+        ]
 
 
 class FakeEmbeddings:
@@ -225,6 +236,16 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(response.resolved_concepts, ())
         self.assertEqual(unavailable.calls, [])
         self.assertIn("runtime stopped", response.degraded[0].reason or "")
+
+    def test_graph_expands_grounded_has_part_children_with_relation_provenance(self) -> None:
+        source = FakeSource()
+        response = EpubSearchService(source=source).search("父主题", graph_limit=10)
+
+        self.assertEqual(response.resolved_concepts, ("父主题",))
+        self.assertEqual(response.graph_total, 2)
+        self.assertEqual([hit.passage_id for hit in response.graph_results], ["p1", "p3"])
+        self.assertEqual(response.graph_results[0].provenance, ("graph",))
+        self.assertEqual(response.graph_results[1].provenance, ("graph", "relation:HAS_PART:1"))
 
     def test_vector_candidates_are_cross_encoder_reranked_then_mmr_diversified(self) -> None:
         source = FakeSource()

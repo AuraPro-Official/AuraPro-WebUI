@@ -22,7 +22,7 @@ from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class IntegrityError(ValueError):
@@ -76,6 +76,22 @@ class EpubStore(Protocol):
     def list_retrieval_units_for_version(self, version_id: str) -> list[dict[str, Any]]: ...
 
     def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
+
+    def add_concept_relation(
+        self,
+        version_id: str,
+        subject_concept_id: str,
+        predicate: str,
+        object_concept_id: str,
+        *,
+        evidence: Sequence[Mapping[str, Any]],
+        status: str = "PROVISIONAL",
+        source: str = "MODEL",
+    ) -> str: ...
+
+    def list_concept_relation_neighbors(
+        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+    ) -> list[dict[str, Any]]: ...
 
 
 _MIGRATION_1: tuple[str, ...] = (
@@ -256,6 +272,50 @@ _MIGRATION_1: tuple[str, ...] = (
 )
 
 
+_RELATION_PREDICATES = (
+    "HAS_PART",
+    "PRECEDES",
+    "PREREQUISITE",
+    "CAUSES",
+    "CONTRASTS",
+    "ELABORATES",
+)
+
+_MIGRATION_2: tuple[str, ...] = (
+    f"""
+    CREATE TABLE concept_relations (
+        relation_id TEXT PRIMARY KEY,
+        version_id TEXT NOT NULL REFERENCES book_versions(version_id) ON DELETE RESTRICT,
+        subject_concept_id TEXT NOT NULL REFERENCES concepts(concept_id) ON DELETE RESTRICT,
+        predicate TEXT NOT NULL CHECK (predicate IN ({", ".join(repr(value) for value in _RELATION_PREDICATES)})),
+        object_concept_id TEXT NOT NULL REFERENCES concepts(concept_id) ON DELETE RESTRICT,
+        status TEXT NOT NULL DEFAULT 'PROVISIONAL'
+            CHECK (status IN ('PROVISIONAL', 'APPROVED', 'REJECTED')),
+        source TEXT NOT NULL DEFAULT 'MODEL'
+            CHECK (source IN ('MODEL', 'ADMIN')),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (subject_concept_id <> object_concept_id),
+        UNIQUE(version_id, subject_concept_id, predicate, object_concept_id)
+    )
+    """,
+    "CREATE INDEX idx_concept_relations_subject ON concept_relations(subject_concept_id, status, predicate)",
+    "CREATE INDEX idx_concept_relations_object ON concept_relations(object_concept_id, status, predicate)",
+    """
+    CREATE TABLE concept_relation_evidence (
+        relation_evidence_id TEXT PRIMARY KEY,
+        relation_id TEXT NOT NULL REFERENCES concept_relations(relation_id) ON DELETE CASCADE,
+        passage_id TEXT NOT NULL REFERENCES passages(passage_id) ON DELETE RESTRICT,
+        start_codepoint INTEGER NOT NULL CHECK (start_codepoint >= 0),
+        end_codepoint INTEGER NOT NULL CHECK (end_codepoint > start_codepoint),
+        evidence TEXT NOT NULL,
+        UNIQUE(relation_id, passage_id, start_codepoint, end_codepoint)
+    )
+    """,
+    "CREATE INDEX idx_concept_relation_evidence_relation ON concept_relation_evidence(relation_id)",
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
@@ -317,17 +377,20 @@ class SQLiteEpubStore:
                 row[0]
                 for row in connection.execute("SELECT version FROM schema_migrations")
             }
-            if 1 not in applied:
-                try:
-                    connection.execute("BEGIN")
-                    for statement in _MIGRATION_1[1:]:
+            migrations = ((1, _MIGRATION_1), (2, _MIGRATION_2))
+            try:
+                connection.execute("BEGIN")
+                for version, statements in migrations:
+                    if version in applied:
+                        continue
+                    for statement in statements[1:] if version == 1 else statements:
                         connection.execute(statement)
-                    connection.execute("INSERT INTO schema_migrations(version) VALUES (?)", (1,))
-                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                    connection.commit()
-                except Exception:
-                    connection.rollback()
-                    raise
+                    connection.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
@@ -695,6 +758,118 @@ class SQLiteEpubStore:
                    JOIN concept_aliases AS a ON a.concept_id = c.concept_id
                    WHERE c.status != 'REJECTED'
                    ORDER BY c.canonical_name, a.alias"""
+            )
+            .fetchall()
+        ]
+
+    def add_concept_relation(
+        self,
+        version_id: str,
+        subject_concept_id: str,
+        predicate: str,
+        object_concept_id: str,
+        *,
+        evidence: Sequence[Mapping[str, Any]],
+        status: str = "PROVISIONAL",
+        source: str = "MODEL",
+        relation_id: str | None = None,
+    ) -> str:
+        """Persist a version-scoped relationship with exact source evidence.
+
+        The relation's endpoints must already be concepts mentioned in this
+        immutable EPUB version.  This prevents a model result from introducing
+        a free-floating node or connecting concepts from unrelated books.
+        """
+        if predicate not in _RELATION_PREDICATES:
+            raise IntegrityError(f"unsupported concept relation predicate: {predicate}")
+        if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError(f"invalid concept relation status: {status}")
+        if source not in {"MODEL", "ADMIN"}:
+            raise IntegrityError(f"invalid concept relation source: {source}")
+        if not subject_concept_id or not object_concept_id or subject_concept_id == object_concept_id:
+            raise IntegrityError("concept relation needs two distinct concept endpoints")
+        if not evidence:
+            raise IntegrityError("concept relation needs at least one source evidence span")
+        with self._write() as connection:
+            if connection.execute(
+                "SELECT 1 FROM book_versions WHERE version_id = ?", (version_id,)
+            ).fetchone() is None:
+                raise IntegrityError(f"unknown version_id: {version_id}")
+            for concept_id in (subject_concept_id, object_concept_id):
+                mentioned = connection.execute(
+                    """SELECT 1 FROM concept_mentions AS m
+                       JOIN passages AS p ON p.passage_id = m.passage_id
+                       WHERE m.concept_id = ? AND p.version_id = ?""",
+                    (concept_id, version_id),
+                ).fetchone()
+                if mentioned is None:
+                    raise IntegrityError("relation endpoint has no mention in this EPUB version")
+            existing = connection.execute(
+                """SELECT relation_id FROM concept_relations
+                   WHERE version_id = ? AND subject_concept_id = ? AND predicate = ? AND object_concept_id = ?""",
+                (version_id, subject_concept_id, predicate, object_concept_id),
+            ).fetchone()
+            resolved_id = str(existing["relation_id"]) if existing is not None else (relation_id or str(uuid4()))
+            if existing is None:
+                connection.execute(
+                    """INSERT INTO concept_relations(
+                           relation_id, version_id, subject_concept_id, predicate, object_concept_id, status, source
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (resolved_id, version_id, subject_concept_id, predicate, object_concept_id, status, source),
+                )
+            for item in evidence:
+                if not isinstance(item, Mapping):
+                    raise IntegrityError("concept relation evidence must be an object")
+                passage_id = item.get("passage_id")
+                start = item.get("start_codepoint")
+                end = item.get("end_codepoint")
+                supplied = item.get("evidence")
+                if not isinstance(passage_id, str) or not isinstance(start, int) or not isinstance(end, int):
+                    raise IntegrityError("concept relation evidence needs passage_id and integer offsets")
+                passage = connection.execute(
+                    "SELECT content FROM passages WHERE passage_id = ? AND version_id = ?",
+                    (passage_id, version_id),
+                ).fetchone()
+                if passage is None or start < 0 or end <= start or end > len(passage["content"]):
+                    raise IntegrityError("concept relation evidence does not belong to this EPUB version")
+                expected = passage["content"][start:end]
+                if not isinstance(supplied, str) or supplied != expected:
+                    raise IntegrityError("concept relation evidence must equal the immutable source substring")
+                exists = connection.execute(
+                    """SELECT 1 FROM concept_relation_evidence
+                       WHERE relation_id = ? AND passage_id = ? AND start_codepoint = ? AND end_codepoint = ?""",
+                    (resolved_id, passage_id, start, end),
+                ).fetchone()
+                if exists is None:
+                    connection.execute(
+                        """INSERT INTO concept_relation_evidence(
+                               relation_evidence_id, relation_id, passage_id, start_codepoint, end_codepoint, evidence
+                           ) VALUES (?, ?, ?, ?, ?, ?)""",
+                        (str(uuid4()), resolved_id, passage_id, start, end, expected),
+                    )
+        return resolved_id
+
+    def list_concept_relation_neighbors(
+        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+    ) -> list[dict[str, Any]]:
+        """Return non-rejected outbound graph edges in a stable source-neutral order."""
+        if not concept_ids or not predicates:
+            return []
+        if any(predicate not in _RELATION_PREDICATES for predicate in predicates):
+            raise IntegrityError("unsupported concept relation predicate")
+        concept_placeholders = ", ".join("?" for _ in concept_ids)
+        predicate_placeholders = ", ".join("?" for _ in predicates)
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                f"""SELECT relation_id, version_id, subject_concept_id, predicate, object_concept_id, status, source
+                    FROM concept_relations
+                    WHERE subject_concept_id IN ({concept_placeholders})
+                      AND predicate IN ({predicate_placeholders})
+                      AND status != 'REJECTED'
+                    ORDER BY subject_concept_id, predicate, object_concept_id, relation_id""",
+                (*concept_ids, *predicates),
             )
             .fetchall()
         ]
