@@ -70,6 +70,7 @@ this file and `epub_concept_sdd.md` before making changes.
 | WebUI workflow (T-080) | `abff971`, `363e226` | pending | Vitest client suite 3/3 passes; new EPUB page has no strict-check findings. Push remains pending repository administrator approval. |
 | Persistent local vector backend (T-025/T-050) | pending commit | pending | Real sqlite-vec backend KNN, source-identity, and active-connection health checks pass 3/3 in the healthy temporary extension runtime; runtime status is fail-closed on degraded vector/model health. |
 | Automatic retrieval-unit derivation (T-100) | pending commit | pending | Chinese-window planning, source fidelity, import ordering, and retry idempotency pass in 7 focused tests. |
+| Desktop runtime handoff (T-110) | WebUI `d98bd80`; Desktop `3bb52fa` | [WebUI #8](https://github.com/AuraPro-Official/AuraPro-WebUI/pull/8); [Desktop #11](https://github.com/AuraPro-Official/AuraPro-Desktop/pull/11) | Both PRs are ready for review. WebUI descriptor unit/runtime tests plus full compatible Python EPUB suite pass (74 tests); Desktop managed Python loads `sqlite-vec v0.1.9`. Fresh-install and release/OS-matrix evidence remains. |
 
 ## Active-session handoff
 
