@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>
+  <navPoint id="chapter"><navLabel><text>错误的 NCX 标题</text></navLabel><content src="text/chapter.xhtml"/>
+    <navPoint id="first"><navLabel><text>错误的子节</text></navLabel><content src="text/chapter.xhtml#first"/></navPoint>
+  </navPoint>
+</navMap></ncx>
