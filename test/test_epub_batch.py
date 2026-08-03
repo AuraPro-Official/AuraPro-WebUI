@@ -45,6 +45,7 @@ class FakeProvider:
         self.jsonl: dict[str, str] = {}
         self.snapshots: dict[str, ProviderSnapshot] = {}
         self.results: dict[str, list[ProviderItemResult]] = {}
+        self.fetch_error: Exception | None = None
 
     def submit(self, *, jsonl: str, idempotency_key: str) -> str:
         self.submit_calls += 1
@@ -57,6 +58,8 @@ class FakeProvider:
         return self.snapshots[provider_job_id]
 
     def fetch_results(self, provider_job_id: str):
+        if self.fetch_error is not None:
+            raise self.fetch_error
         return list(self.results.get(provider_job_id, []))
 
 
@@ -400,6 +403,63 @@ class EpubBatchServiceTest(unittest.TestCase):
         item = self.repository.list_items("job")[0]
         self.assertEqual(item["status"], "SUCCEEDED")
 
+    def test_terminal_batch_without_output_marks_only_missing_items_failed_for_retry(self) -> None:
+        self._draft()
+        remote_id = self.service.submit("job", self.provider)
+        self.provider.snapshots[remote_id] = ProviderSnapshot("failed")
+
+        result = self.service.poll_and_ingest("job", self.provider)
+
+        self.assertEqual(result, {"job_id": "job", "state": "FAILED", "ingested": 0, "failed": 2})
+        self.assertEqual(
+            [item["status"] for item in self.repository.list_items("job")], ["FAILED", "FAILED"]
+        )
+        retry_id = self.service.retry_failed_items("job")
+        self.assertEqual(len(self.repository.list_items(retry_id)), 2)
+
+    def test_terminal_partial_output_retries_only_unreported_items(self) -> None:
+        self._draft()
+        remote_id = self.service.submit("job", self.provider)
+        # FakeProvider already returns normalized lifecycle states.
+        self.provider.snapshots[remote_id] = ProviderSnapshot("failed")
+        self.provider.results[remote_id] = [ProviderItemResult("p1", payload={"concepts": []})]
+
+        result = self.service.poll_and_ingest("job", self.provider)
+
+        self.assertEqual(result, {"job_id": "job", "state": "FAILED", "ingested": 1, "failed": 1})
+        items = self.repository.list_items("job")
+        self.assertEqual([item["status"] for item in items], ["SUCCEEDED", "FAILED"])
+        retry_id = self.service.retry_failed_items("job")
+        retry_items = self.repository.list_items(retry_id)
+        self.assertEqual(len(retry_items), 1)
+        self.assertEqual(retry_items[0]["passage_id"], "p2")
+
+    def test_fetch_failure_keeps_terminal_items_pending_until_a_safe_repoll(self) -> None:
+        self._draft()
+        remote_id = self.service.submit("job", self.provider)
+        self.provider.snapshots[remote_id] = ProviderSnapshot("cancelled")
+        self.provider.fetch_error = OSError("simulated provider output download failure")
+
+        result = self.service.poll_and_ingest("job", self.provider)
+
+        self.assertEqual(result["results_pending_retrieval"], True)
+        self.assertEqual(
+            [item["status"] for item in self.repository.list_items("job")], ["SUBMITTED", "SUBMITTED"]
+        )
+        summary = self.service.get_job_summary("job")
+        self.assertTrue(summary["results_pending_retrieval"])
+        self.assertNotIn("simulated", repr(summary))
+        with self.assertRaisesRegex(BatchServiceError, "no failed items"):
+            self.service.retry_failed_items("job")
+
+        # A later readable terminal result makes p1 conclusive and leaves only
+        # p2 eligible for a successor job.
+        self.provider.fetch_error = None
+        self.provider.results[remote_id] = [ProviderItemResult("p1", payload={"concepts": []})]
+        recovered = self.service.poll_and_ingest("job", self.provider)
+        self.assertEqual(recovered, {"job_id": "job", "state": "CANCELLED", "ingested": 1, "failed": 1})
+        self.assertFalse(self.service.get_job_summary("job")["results_pending_retrieval"])
+
     def test_invalid_output_is_persisted_as_failed_without_graph_mutation(self) -> None:
         self._draft()
         remote_id = self.service.submit("job", self.provider)
@@ -411,8 +471,12 @@ class EpubBatchServiceTest(unittest.TestCase):
             )
         ]
         result = self.service.poll_and_ingest("job", self.provider)
-        self.assertEqual(result["failed"], 1)
-        self.assertEqual(self.repository.list_items("job")[0]["status"], "FAILED")
+        # p1 failed schema validation and p2 was absent from a complete output
+        # stream, so both are safe, known failures eligible for retry.
+        self.assertEqual(result["failed"], 2)
+        self.assertEqual(
+            [item["status"] for item in self.repository.list_items("job")], ["FAILED", "FAILED"]
+        )
         self.assertEqual(
             self.store._connection().execute("SELECT COUNT(*) FROM concepts").fetchone()[0], 0
         )
@@ -538,10 +602,11 @@ class EpubBatchServiceTest(unittest.TestCase):
         retry_job = self.service.retry_failed_items("job")
         self.assertEqual(retry_job, self.service.retry_failed_items("job"))
         retry_items = self.repository.list_items(retry_job)
-        self.assertEqual(len(retry_items), 1)
-        self.assertEqual(retry_items[0]["passage_id"], "p2")
-        self.assertEqual(retry_items[0]["custom_id"], "retry:job:p2")
-        self.assertEqual(retry_items[0]["attempt_count"], 1)
+        self.assertEqual(len(retry_items), 2)
+        self.assertEqual(
+            [(item["passage_id"], item["custom_id"], item["attempt_count"]) for item in retry_items],
+            [("p1", "retry:job:p1", 1), ("p2", "retry:job:p2", 1)],
+        )
 
     def test_terminal_job_state_cannot_regress_and_recovery_is_repeatable(self) -> None:
         self._draft()

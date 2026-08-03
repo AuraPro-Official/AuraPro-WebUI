@@ -124,6 +124,8 @@ export type EpubBatchSummary = {
 	created_at: string | null;
 	updated_at: string | null;
 	has_error: boolean;
+	/** A terminal provider job whose output/error files must be polled again. */
+	results_pending_retrieval: boolean;
 	item_count: number;
 	item_status_counts: Record<string, number>;
 	items?: EpubBatchItemSummary[];
