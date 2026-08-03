@@ -219,14 +219,17 @@ second, relation layer before its full-version offline Batch is accepted.
 1. The parser writes the EPUB TOC hierarchy deterministically. A mention is
    already bound to one passage and therefore to one TOC node; this structural
    provenance is never inferred by a model.
-2. The first offline pass extracts only concepts, aliases, definitions, and
-   exact passage mentions. All mention evidence/offset invariants remain as in
-   section 4.2.
-3. The second offline pass runs on bounded TOC-subtree packets. Each packet
-   supplies stable TOC-node IDs/titles, already accepted or provisional concept
-   IDs/names in that subtree, and the relevant source evidence. It may create
-   only relations whose endpoints already exist. It cannot invent a concept,
-   a TOC node, or an ungrounded relation endpoint.
+2. A bounded TOC-subtree packet can extract concepts, aliases, definitions,
+   exact passage mentions, and its intra-packet relations in one strict
+   response. The system first resolves/creates the response's grounded
+   concepts and mentions, then persists relations only between those resolved
+   packet-local endpoints. Thus a relation cannot introduce a free-floating
+   endpoint, while one remote request has enough local context to recognize a
+   section-level concept and its parts together. All mention evidence/offset
+   invariants remain as in section 4.2.
+3. Follow-up relation-only packets remain available for later cross-section or
+   cross-book analysis. They use existing concepts and exact evidence, but
+   cannot invent a concept, a TOC node, or an ungrounded relation endpoint.
 4. Initial relation predicates are controlled vocabulary: `HAS_PART`,
    `PRECEDES`, `PREREQUISITE`, `CAUSES`, `CONTRASTS`, and `ELABORATES`.
    Deterministic TOC parent/child edges remain structurally distinct from

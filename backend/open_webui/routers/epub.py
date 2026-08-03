@@ -43,6 +43,13 @@ class BatchDraftForm(BaseModel):
     sample_limit: int = Field(default=20, ge=1, le=500)
 
 
+class SectionGraphBatchDraftForm(BaseModel):
+    version_id: str = Field(min_length=1, max_length=128)
+    profile_name: str = Field(min_length=1, max_length=200)
+    is_sample: bool = False
+    sample_limit: int = Field(default=20, ge=1, le=500)
+
+
 class LocalCalibrationForm(BaseModel):
     version_id: str = Field(min_length=1, max_length=128)
     prompt_profile: str = Field(default="zh-glossary-v3", min_length=1, max_length=100)
@@ -156,6 +163,22 @@ async def create_batch_draft(
             version_id=form_data.version_id,
             profile_name=form_data.profile_name,
             prompt_profile=form_data.prompt_profile,
+            is_sample=form_data.is_sample,
+            sample_limit=form_data.sample_limit,
+        )
+    except (EpubServiceError, BatchServiceError, IntegrityError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.post("/admin/section-graph-batches", status_code=status.HTTP_201_CREATED)
+async def create_section_graph_batch_draft(
+    form_data: SectionGraphBatchDraftForm, service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, Any]:
+    """Create a server-owned offline Batch job for grounded TOC section graphs."""
+    try:
+        return service.create_section_graph_batch_draft(
+            version_id=form_data.version_id,
+            profile_name=form_data.profile_name,
             is_sample=form_data.is_sample,
             sample_limit=form_data.sample_limit,
         )

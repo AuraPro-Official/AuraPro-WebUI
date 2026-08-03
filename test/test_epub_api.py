@@ -107,6 +107,11 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             ),
             (
                 "post",
+                "/api/v1/epub/admin/section-graph-batches",
+                {"version_id": "version-1", "profile_name": "server-batch-profile"},
+            ),
+            (
+                "post",
                 "/api/v1/epub/admin/calibrations/local",
                 {"version_id": "version-1"},
             ),
@@ -143,6 +148,15 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(draft.status_code, 201)
         self.assertEqual(draft.json()["item_count"], 1)
         self.assertEqual(draft.json()["prompt_profile"], "zh-glossary-v3")
+
+        section_graph_draft = self.client.post(
+            "/api/v1/epub/admin/section-graph-batches",
+            json={"version_id": "version-1", "profile_name": "server-batch-profile", "is_sample": True},
+        )
+        self.assertEqual(section_graph_draft.status_code, 201)
+        self.assertEqual(section_graph_draft.json()["item_count"], 1)
+        self.assertEqual(section_graph_draft.json()["job_kind"], "SECTION_GRAPH")
+        self.assertEqual(section_graph_draft.json()["prompt_profile"], "zh-section-graph-v1")
 
     def test_admin_can_run_local_calibration_without_exposing_source_text(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user

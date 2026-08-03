@@ -31,6 +31,13 @@ from open_webui.retrieval.epub.prompt_profiles import (
 )
 from open_webui.retrieval.epub.retrieval_units import plan_retrieval_windows
 from open_webui.retrieval.epub.search import EpubSearchService, SearchResponse
+from open_webui.retrieval.epub.section_graph import (
+    SECTION_GRAPH_MAX_CHARACTERS,
+    SECTION_GRAPH_PROFILE,
+    SectionGraphError,
+    build_section_graph_completion_request,
+    build_section_graph_packets,
+)
 from open_webui.retrieval.epub.store import IntegrityError, SQLiteEpubStore
 from open_webui.retrieval.parsers.epub.parser import EPUBParser
 
@@ -319,6 +326,60 @@ class EpubConceptService:
             "prompt_profile": prompt_profile,
         }
 
+    def create_section_graph_batch_draft(
+        self,
+        *,
+        version_id: str,
+        profile_name: str,
+        is_sample: bool,
+        sample_limit: int,
+    ) -> dict[str, Any]:
+        """Create one durable cloud item per bounded TOC section packet.
+
+        Each item is anchored to an actual passage only for Batch lifecycle
+        lineage.  Its request contains all immutable passages in the packet;
+        response mentions and relation evidence must still name their exact
+        source passage and character span.
+        """
+        if not profile_name.strip():
+            raise EpubServiceError("Batch profile_name cannot be empty")
+        if not 1 <= sample_limit <= 500:
+            raise EpubServiceError("sample_limit must be between 1 and 500")
+        passages = self._store.list_passages(version_id)
+        if not passages:
+            raise EpubServiceError("EPUB version contains no passages")
+        if is_sample:
+            selected = select_stratified_passages(passages, limit=sample_limit)
+        else:
+            selected = passages
+        try:
+            packets = build_section_graph_packets(selected, max_characters=SECTION_GRAPH_MAX_CHARACTERS)
+        except SectionGraphError as error:
+            raise EpubServiceError(str(error)) from error
+        items = [
+            BatchItemInput(
+                passage_id=packet.anchor_passage_id,
+                custom_id=f"{version_id}:section-graph:{index}",
+                request=self._section_graph_batch_request(model=profile_name, packet=packet),
+            )
+            for index, packet in enumerate(packets)
+        ]
+        job_id = self._batch.create_draft(
+            version_id=version_id,
+            provider="openai-batch",
+            profile_name=profile_name,
+            job_kind="SECTION_GRAPH",
+            items=items,
+            is_sample=is_sample,
+        )
+        return {
+            "batch_job_id": job_id,
+            "item_count": len(items),
+            "status": "DRAFT",
+            "job_kind": "SECTION_GRAPH",
+            "prompt_profile": SECTION_GRAPH_PROFILE,
+        }
+
     def submit_batch(self, batch_job_id: str) -> dict[str, Any]:
         provider = self._provider_for_job(batch_job_id)
         provider_job_id = self._batch.submit(batch_job_id, provider)
@@ -501,6 +562,14 @@ class EpubConceptService:
             "method": "POST",
             "url": "/v1/chat/completions",
             "body": body,
+        }
+
+    @staticmethod
+    def _section_graph_batch_request(*, model: str, packet: Any) -> dict[str, Any]:
+        return {
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": build_section_graph_completion_request(model=model, packet=packet),
         }
 
     @staticmethod

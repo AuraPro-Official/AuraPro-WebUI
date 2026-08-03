@@ -310,6 +310,117 @@ class EpubBatchServiceTest(unittest.TestCase):
             self.store._connection().execute("SELECT COUNT(*) FROM concepts").fetchone()[0], 0
         )
 
+    def test_section_graph_output_is_atomic_and_grounded_across_packet_passages(self) -> None:
+        job_id = self.service.create_draft(
+            version_id="version",
+            provider="fake-batch",
+            profile_name="section-graph-v1",
+            job_kind="SECTION_GRAPH",
+            items=[BatchItemInput("p1", "section-1", {"body": {"packet": True}})],
+        )
+        remote_id = self.service.submit(job_id, self.provider)
+        self.provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        self.provider.results[remote_id] = [
+            ProviderItemResult(
+                "section-1",
+                payload={
+                    "concepts": [
+                        {
+                            "local_id": "parent",
+                            "name": "TCP",
+                            "aliases": [],
+                            "definition": "A protocol",
+                            "mentions": [
+                                {
+                                    "passage_id": "p1",
+                                    "start_codepoint": 0,
+                                    "end_codepoint": 3,
+                                    "evidence": "TCP",
+                                }
+                            ],
+                        },
+                        {
+                            "local_id": "child",
+                            "name": "UDP",
+                            "aliases": [],
+                            "definition": "A protocol",
+                            "mentions": [
+                                {
+                                    "passage_id": "p2",
+                                    "start_codepoint": 0,
+                                    "end_codepoint": 3,
+                                    "evidence": "UDP",
+                                }
+                            ],
+                        },
+                    ],
+                    "relations": [
+                        {
+                            "subject_local_id": "parent",
+                            "predicate": "HAS_PART",
+                            "object_local_id": "child",
+                            "evidence": [
+                                {
+                                    "passage_id": "p1",
+                                    "start_codepoint": 0,
+                                    "end_codepoint": 3,
+                                    "evidence": "TCP",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+        ]
+
+        result = self.service.poll_and_ingest(job_id, self.provider)
+        self.assertEqual(result["ingested"], 1)
+        connection = self.store._connection()
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concept_mentions").fetchone()[0], 2)
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concept_relations").fetchone()[0], 1)
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concept_relation_evidence").fetchone()[0], 1)
+
+    def test_invalid_section_graph_rolls_back_all_graph_writes(self) -> None:
+        job_id = self.service.create_draft(
+            version_id="version",
+            provider="fake-batch",
+            profile_name="section-graph-v1",
+            job_kind="SECTION_GRAPH",
+            items=[BatchItemInput("p1", "section-1", {"body": {"packet": True}})],
+        )
+        remote_id = self.service.submit(job_id, self.provider)
+        self.provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        self.provider.results[remote_id] = [
+            ProviderItemResult(
+                "section-1",
+                payload={
+                    "concepts": [
+                        {
+                            "local_id": "only",
+                            "name": "TCP",
+                            "aliases": [],
+                            "definition": "A protocol",
+                            "mentions": [
+                                {
+                                    "passage_id": "p1",
+                                    "start_codepoint": 0,
+                                    "end_codepoint": 3,
+                                    "evidence": "TCP",
+                                }
+                            ],
+                        }
+                    ],
+                    "relations": [],
+                    "unexpected": True,
+                },
+            )
+        ]
+
+        self.assertEqual(self.service.poll_and_ingest(job_id, self.provider)["failed"], 1)
+        connection = self.store._connection()
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concepts").fetchone()[0], 0)
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concept_mentions").fetchone()[0], 0)
+
     def test_failed_items_create_one_durable_retry_successor(self) -> None:
         self._draft()
         remote_id = self.service.submit("job", self.provider)
