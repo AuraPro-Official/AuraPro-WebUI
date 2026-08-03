@@ -326,6 +326,8 @@ class EpubConceptService:
             "batch_job_id": job_id,
             "item_count": len(items),
             "status": "DRAFT",
+            "job_kind": "CONCEPT_MENTIONS",
+            "is_sample": is_sample,
             "prompt_profile": prompt_profile,
         }
 
@@ -380,6 +382,7 @@ class EpubConceptService:
             "item_count": len(items),
             "status": "DRAFT",
             "job_kind": "SECTION_GRAPH",
+            "is_sample": is_sample,
             "prompt_profile": SECTION_GRAPH_PROFILE,
         }
 
@@ -387,6 +390,56 @@ class EpubConceptService:
         provider = self._provider_for_job(batch_job_id)
         provider_job_id = self._batch.submit(batch_job_id, provider)
         return {"batch_job_id": batch_job_id, "provider_job_id": provider_job_id}
+
+    def list_batch_jobs(
+        self, *, version_id: str | None = None, offset: int = 0, limit: int = 50
+    ) -> dict[str, Any]:
+        """Return safe operator history, excluding prompts, results and raw errors."""
+        try:
+            return self._batch.list_job_summaries(version_id=version_id, offset=offset, limit=limit)
+        except BatchServiceError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def get_batch_job(self, batch_job_id: str) -> dict[str, Any]:
+        try:
+            return self._batch.get_job_summary(batch_job_id)
+        except BatchServiceError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def review_sample_batch(
+        self, *, batch_job_id: str, status: str, reviewed_by: str
+    ) -> dict[str, Any]:
+        """Persist an administrator quality decision for a completed cloud sample."""
+        try:
+            return self._batch.review_sample_job(
+                batch_job_id, status=status, reviewed_by=reviewed_by
+            )
+        except BatchServiceError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def list_sample_batch_reviews(
+        self, *, version_id: str | None, job_kind: str | None
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "items": self._batch.list_sample_reviews(
+                    version_id=version_id, job_kind=job_kind
+                )
+            }
+        except BatchServiceError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def recover_batches(self) -> dict[str, list[dict[str, Any]]]:
+        """Poll all durable active jobs using only server-configured providers.
+
+        This deliberately does not call ``submit`` and therefore cannot create
+        cloud work or costs after a restart.  An absent provider is reported
+        as skipped so administrators can repair configuration before retrying.
+        """
+        try:
+            return self._batch.recover_all(self._providers)
+        except (BatchServiceError, BatchPayloadError) as error:
+            raise EpubServiceError(str(error)) from error
 
     def list_relation_assertions(
         self, *, status: str | None, version_id: str | None, offset: int, limit: int
