@@ -63,6 +63,10 @@ class ConceptUpsertForm(BaseModel):
     status: str = Field(default="APPROVED", pattern="^(PROVISIONAL|APPROVED|REJECTED)$")
 
 
+class RelationAssertionReviewForm(BaseModel):
+    status: str = Field(pattern="^(APPROVED|REJECTED|PROVISIONAL)$")
+
+
 class VersionIndexForm(BaseModel):
     rebuild: bool = False
 
@@ -243,6 +247,36 @@ async def upsert_concept(
             status=form_data.status,
         )
     except (EpubServiceError, IntegrityError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.get("/admin/relation-assertions")
+async def list_relation_assertions(
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+    relation_status: str | None = Query(default="PROVISIONAL", alias="status", pattern="^(PROVISIONAL|APPROVED|REJECTED)$"),
+    version_id: str | None = Query(default=None, min_length=1, max_length=128),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    try:
+        return service.list_relation_assertions(
+            status=relation_status, version_id=version_id, offset=offset, limit=limit
+        )
+    except EpubServiceError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.put("/admin/relation-assertions/{assertion_id}")
+async def review_relation_assertion(
+    assertion_id: str,
+    form_data: RelationAssertionReviewForm,
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+) -> dict[str, str]:
+    try:
+        return service.review_relation_assertion(assertion_id=assertion_id, status=form_data.status)
+    except EpubServiceError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 

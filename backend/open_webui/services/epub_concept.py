@@ -79,6 +79,9 @@ class EpubApiRepository(Protocol):
     def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
     def set_version_status(self, version_id: str, status: str, *, failure_reason: str | None = None) -> None: ...
     def upsert_concept(self, canonical_name: str, **kwargs: Any) -> str: ...
+    def list_concept_relation_assertions(self, **kwargs: Any) -> list[dict[str, Any]]: ...
+    def count_concept_relation_assertions(self, **kwargs: Any) -> int: ...
+    def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
 
 
 class EpubConceptService:
@@ -384,6 +387,29 @@ class EpubConceptService:
         provider = self._provider_for_job(batch_job_id)
         provider_job_id = self._batch.submit(batch_job_id, provider)
         return {"batch_job_id": batch_job_id, "provider_job_id": provider_job_id}
+
+    def list_relation_assertions(
+        self, *, status: str | None, version_id: str | None, offset: int, limit: int
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "total": self._store.count_concept_relation_assertions(
+                    status=status, version_id=version_id
+                ),
+                "offset": offset,
+                "items": self._store.list_concept_relation_assertions(
+                    status=status, version_id=version_id, offset=offset, limit=limit
+                ),
+            }
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def review_relation_assertion(self, *, assertion_id: str, status: str) -> dict[str, str]:
+        try:
+            self._store.set_concept_relation_assertion_status(assertion_id, status)
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
+        return {"assertion_id": assertion_id, "status": status}
 
     def run_local_calibration(
         self, *, version_id: str, prompt_profile: str, sample_limit: int

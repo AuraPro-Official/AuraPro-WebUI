@@ -93,6 +93,21 @@ class EpubStore(Protocol):
         self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
     ) -> list[dict[str, Any]]: ...
 
+    def list_concept_relation_assertions(
+        self,
+        *,
+        status: str | None = None,
+        version_id: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+
+    def count_concept_relation_assertions(
+        self, *, status: str | None = None, version_id: str | None = None
+    ) -> int: ...
+
+    def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
+
 
 _MIGRATION_1: tuple[str, ...] = (
     """
@@ -948,6 +963,84 @@ class SQLiteEpubStore:
             )
             .fetchall()
         ]
+
+    def list_concept_relation_assertions(
+        self,
+        *,
+        status: str | None = None,
+        version_id: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Page administrator-review rows together with immutable evidence."""
+        if status is not None and status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError("invalid concept relation assertion status")
+        if offset < 0 or not 1 <= limit <= 200:
+            raise IntegrityError("concept relation assertion pagination values are invalid")
+        conditions: list[str] = []
+        parameters: list[Any] = []
+        if status is not None:
+            conditions.append("a.status = ?")
+            parameters.append(status)
+        if version_id is not None:
+            conditions.append("a.version_id = ?")
+            parameters.append(version_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._connection().execute(
+            f"""SELECT a.assertion_id, a.relation_id, a.version_id, a.status, a.source, a.created_at,
+                       r.predicate, subject.canonical_name AS subject_name,
+                       object.canonical_name AS object_name
+                FROM concept_relation_assertions AS a
+                JOIN concept_relations AS r ON r.relation_id = a.relation_id
+                JOIN concepts AS subject ON subject.concept_id = r.subject_concept_id
+                JOIN concepts AS object ON object.concept_id = r.object_concept_id
+                {where}
+                ORDER BY a.created_at DESC, a.assertion_id DESC
+                LIMIT ? OFFSET ?""",
+            (*parameters, limit, offset),
+        ).fetchall()
+        result = [dict(row) for row in rows]
+        for assertion in result:
+            evidence_rows = self._connection().execute(
+                """SELECT passage_id, start_codepoint, end_codepoint, evidence
+                   FROM concept_relation_evidence
+                   WHERE assertion_id = ?
+                   ORDER BY passage_id, start_codepoint, end_codepoint""",
+                (assertion["assertion_id"],),
+            ).fetchall()
+            assertion["evidence"] = [dict(row) for row in evidence_rows]
+        return result
+
+    def count_concept_relation_assertions(
+        self, *, status: str | None = None, version_id: str | None = None
+    ) -> int:
+        if status is not None and status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError("invalid concept relation assertion status")
+        conditions: list[str] = []
+        parameters: list[Any] = []
+        if status is not None:
+            conditions.append("status = ?")
+            parameters.append(status)
+        if version_id is not None:
+            conditions.append("version_id = ?")
+            parameters.append(version_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        row = self._connection().execute(
+            f"SELECT COUNT(*) AS count FROM concept_relation_assertions {where}", parameters
+        ).fetchone()
+        return int(row["count"])
+
+    def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None:
+        if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError("invalid concept relation assertion status")
+        with self._write() as connection:
+            changed = connection.execute(
+                """UPDATE concept_relation_assertions
+                   SET status = ? WHERE assertion_id = ?""",
+                (status, assertion_id),
+            ).rowcount
+            if changed != 1:
+                raise IntegrityError("unknown concept relation assertion")
 
     def count_concept_occurrences(self, concept_ids: Sequence[str]) -> int:
         if not concept_ids:
