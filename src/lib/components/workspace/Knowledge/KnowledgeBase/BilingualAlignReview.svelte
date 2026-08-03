@@ -201,13 +201,16 @@
 		try {
 			const res = await updateSentenceTranslation(token, {
 				collection_name: collectionName,
-				id: activeSentence.id,
+				align_group_id: activeSentence.align_group_id,
 				lang,
 				text: editingText
 			});
 
 			activeSentence.langs[lang] = editingText;
-			activeSentence.langs_modified = res.langs_modified;
+            activeSentence.langs_modified = {
+                ...activeSentence.langs_modified,
+                [lang]: res.is_modified
+            };
 			data = data;
 
 			toast.success($i18n?.t('Saved') ?? '已保存');

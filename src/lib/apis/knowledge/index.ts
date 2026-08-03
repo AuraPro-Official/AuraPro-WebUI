@@ -1262,6 +1262,7 @@ export function parseFileName(name: string): { base: string; lang: string } | nu
 
 export type SentenceAlignItem = {
 	id: string;
+	align_group_id: string;
 	para_index: number;
 	sentence_index: number;
 	primary_text: string;
@@ -1304,7 +1305,7 @@ export const getBilingualAlign = async (
 
 export const updateSentenceTranslation = async (
 	token: string,
-	payload: { collection_name: string; id: string; lang: string; text: string }
+	payload: { collection_name: string; align_group_id: string; lang: string; text: string }
 ): Promise<{
 	status: boolean;
 	id: string;

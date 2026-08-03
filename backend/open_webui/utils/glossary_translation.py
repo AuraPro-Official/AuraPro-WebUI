@@ -1690,6 +1690,7 @@ class BilingualKnowledgeReader:
         self,
         collection_name: str,
         fetch_fn,
+        query_lang: str | None = None,
     ) -> Optional[dict]:
         from rank_bm25 import BM25Okapi
 
@@ -1709,8 +1710,23 @@ class BilingualKnowledgeReader:
             if not collection_result or not collection_result.documents or not collection_result.documents[0]:
                 return None
 
-            texts = collection_result.documents[0]
-            metadatas = collection_result.metadatas[0]
+            all_texts = collection_result.documents[0]
+            all_metadatas = collection_result.metadatas[0]
+
+            if query_lang:
+                filtered = [
+                    (t, m) for t, m in zip(all_texts, all_metadatas)
+                    if m.get('lang') == query_lang
+                ]
+                texts = [t for t, _ in filtered]
+                metadatas = [m for _, m in filtered]
+            else:
+                texts = all_texts
+                metadatas = all_metadatas
+
+            if not texts:
+                return None
+
             tokenized = [self._tokenize(t) for t in texts]
             entry = {
                 'bm25': BM25Okapi(tokenized),
@@ -1864,8 +1880,9 @@ class BilingualKnowledgeReader:
         query: str,
         k: int,
         fetch_fn,
+        query_lang: str | None = None,
     ) -> list[tuple[float, str, dict]]:
-        entry = await self._get_or_build_bm25_index(collection_name, fetch_fn)
+        entry = await self._get_or_build_bm25_index(collection_name, fetch_fn, query_lang)
         if entry is None:
             return []
 
@@ -1886,11 +1903,13 @@ class BilingualKnowledgeReader:
         query: str,
         embedding_function,
         k: int,
+        query_lang: str | None = None,
     ) -> list[tuple[float, str, dict]]:
         retriever = VectorSearchRetriever(
             collection_name=collection_name,
             embedding_function=embedding_function,
             top_k=k,
+            filter={'lang': query_lang} if query_lang else None,
         )
         docs = await retriever.ainvoke(query)
         return [
@@ -1985,12 +2004,13 @@ class BilingualKnowledgeReader:
         k_final: int,
         r: float,
         hybrid_bm25_weight: float,
+        query_lang: str | None = None,
     ) -> list[tuple[float, str, dict]]:
         bm25_results = (
-            await self._bm25_recall(collection_name, query, k_recall, fetch_fn) if hybrid_bm25_weight > 0 else []
+            await self._bm25_recall(collection_name, query, k_recall, fetch_fn, query_lang=query_lang) if hybrid_bm25_weight > 0 else []
         )
         embedding_results = (
-            await self._embedding_recall(collection_name, query, embedding_function, k_recall)
+            await self._embedding_recall(collection_name, query, embedding_function, k_recall, query_lang=query_lang)
             if hybrid_bm25_weight < 1
             else []
         )
@@ -2014,6 +2034,7 @@ class BilingualKnowledgeReader:
         k_final: int,
         r: float,
         hybrid_bm25_weight: float,
+        query_lang: str | None = None,
     ) -> dict:
         async def fetch_fn(name: str):
             try:
@@ -2034,6 +2055,7 @@ class BilingualKnowledgeReader:
                     k_final=k_final,
                     r=r,
                     hybrid_bm25_weight=hybrid_bm25_weight,
+                    query_lang=query_lang,
                 )
             except Exception as e:
                 log.exception(f'Error retrieving from {collection_name}: {e}')
@@ -2061,6 +2083,21 @@ class BilingualKnowledgeReader:
             'documents': [list(documents)],
             'metadatas': [list(metadatas)],
         }
+
+    @staticmethod
+    def _meta_load(value, default=None):
+        if value is None:
+            return default
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                try:
+                    return ast.literal_eval(value)
+                except Exception:
+                    return default if default is not None else value
+        return value
+
 
     async def find_matches(self, request, queries, source_lang, target_lang, user):
         try:
@@ -2095,6 +2132,7 @@ class BilingualKnowledgeReader:
             for collection_name in collection_names:
                 await self.cleanup_duplicate_collection_content(collection_name)
 
+            source_lang_code = self.name_to_langcode(source_lang)
             raw_result = await self.retrieve(
                 collection_names=collection_names,
                 queries=[queries],
@@ -2104,6 +2142,7 @@ class BilingualKnowledgeReader:
                 k_final=k_final,
                 r=retrieval_config.get('rag.relevance_threshold', 0.0),
                 hybrid_bm25_weight=retrieval_config.get('rag.hybrid_bm25_weight', 0.5),
+                query_lang=source_lang_code
             )
 
             metadatas = raw_result.get('metadatas', [[]])[0]
@@ -2111,8 +2150,8 @@ class BilingualKnowledgeReader:
 
             # 判断当前字符是否和搜索出来的字符重叠
             for metadata in metadatas:
-                source = metadata.get('parent_content', '')
-                score = self.combined_similarity(queries, source)
+                source = self._meta_load(metadata.get('parent_langs', ''), {})
+                score = self.combined_similarity(queries, source.get(source_lang_code, ''))
                 if score >= 99:
                     is_match = True
                     break
@@ -2131,6 +2170,21 @@ class BilingualKnowledgeReader:
             log.warning('BilingualKnowledgeReader: 查询知识库失败: %s', e)
             return []
 
+    def _find_collection_for_bilingual_id(self, bilingual_id: str, collection_names: list[str]) -> str | None:
+        for collection_name in collection_names:
+            try:
+                collection = VECTOR_DB_CLIENT.client.get_collection(collection_name)  # noqa: F821
+                result = collection.get(
+                    where={'bilingual_id': {'$eq': bilingual_id}},
+                    include=['metadatas'],
+                    limit=1,
+                )
+                if result.get('ids'):
+                    return collection_name
+            except Exception:
+                continue
+        return None
+
     async def find_matches_words(self, raw_result, source_lang, target_lang, collection_names, knowledge_name_by_id):
         documents = raw_result.get('documents', [[]])[0]
         metadatas = raw_result.get('metadatas', [[]])[0]
@@ -2138,75 +2192,49 @@ class BilingualKnowledgeReader:
         source_lang_code = self.name_to_langcode(source_lang)
         target_lang_code = self.name_to_langcode(target_lang)
 
-        sentence_collection = []
-        for collection_name in collection_names:
-            for _, meta in zip(documents, metadatas):
-                bilingual_id = meta.get('bilingual_id')
-                para_idx = meta.get('para_index')
-                sentence_index = meta.get('sentence_index')
-
-                collection = VECTOR_DB_CLIENT.client.get_collection(collection_name)  # noqa: F821
-                result = collection.get(
-                    where={
-                        '$and': [
-                            {'bilingual_id': {'$eq': bilingual_id}},
-                            {'para_index': {'$eq': para_idx}},
-                            {'sentence_index': {'$eq': sentence_index}},
-                        ]
-                    },
-                    include=['metadatas'],
-                )
-
-                if result:
-                    sentence_collection.append((collection_name, result))
-                    break
-
+        seen_bilingual_ids: set[str] = set()
         words_list = []
         sources_by_collection: dict[str, dict] = {}
-        for collection_name, result in sentence_collection:
-            metadatas = result.get('metadatas', [])
-            for meta in metadatas:
-                word_langs = meta.get('words', {})
-                if isinstance(word_langs, str):
-                    word_langs = ast.literal_eval(word_langs)
-                words = word_langs.get(target_lang_code, '')
-                words_list.extend(words)
 
-                bilingual_id = meta.get('bilingual_id')
-                para_idx = meta.get('para_index')
-                align_score = meta.get('align_score', 0)
-                langs = meta.get('langs', {})
-                if isinstance(langs, str):
-                    langs = ast.literal_eval(langs)
+        for meta in metadatas:
+            bilingual_id = meta.get('bilingual_id')
+            if not bilingual_id or bilingual_id in seen_bilingual_ids:
+                continue
+            seen_bilingual_ids.add(bilingual_id)
 
-                src_text = langs.get(source_lang_code, '')
-                tgt_text = langs.get(target_lang_code, '')
-                if not collection_name:
-                    continue
+            word_langs = meta.get('words', {})
+            if isinstance(word_langs, str):
+                word_langs = ast.literal_eval(word_langs)
+            words = word_langs.get(target_lang_code, [])
+            words_list.extend(words)
 
-                knowledge_name = knowledge_name_by_id.get(collection_name, collection_name)
-                bucket = sources_by_collection.setdefault(
-                    collection_name,
-                    {
-                        'source': {
-                            'id': collection_name,
-                            'name': knowledge_name,
-                            'type': 'bilingual',
-                        },
-                        'document': [],
-                        'metadata': [],
-                    },
-                )
-                bucket['document'].append(f'{src_text} -> {tgt_text}')
-                bucket['metadata'].append(
-                    {
-                        'source': knowledge_name,
+            collection_name = self._find_collection_for_bilingual_id(bilingual_id, collection_names)
+            if not collection_name:
+                continue
+
+            knowledge_name = knowledge_name_by_id.get(collection_name, collection_name)
+            bucket = sources_by_collection.setdefault(
+                collection_name,
+                {
+                    'source': {
+                        'id': collection_name,
                         'name': knowledge_name,
-                        'bilingual_id': bilingual_id,
-                        'para_index': para_idx,
-                        'align_score': align_score,
-                    }
-                )
+                        'type': 'bilingual',
+                    },
+                    'document': [],
+                    'metadata': [],
+                },
+            )
+            for source_word, target_word in words:
+                bucket['document'].append(f'{source_word} -> {target_word}')
+            bucket['metadata'].append(
+                {
+                    'source': knowledge_name,
+                    'name': knowledge_name,
+                    'bilingual_id': bilingual_id,
+                }
+            )
+
         return words_list, list(sources_by_collection.values()), False
 
     async def find_matches_sentence(
@@ -2219,86 +2247,85 @@ class BilingualKnowledgeReader:
         metadatas = raw_result.get('metadatas', [[]])[0]
         distances = raw_result.get('distances', [[]])[0]
 
-        para_list = set()
+        para_list: set[tuple] = set()
         for _, meta, _ in zip(documents, metadatas, distances):
             bilingual_id = meta.get('bilingual_id')
             para_idx = meta.get('para_index')
             if para_idx is None:
                 continue
-            key = (bilingual_id, para_idx)
-            if key not in para_list:
-                para_list.add(key)
+            para_list.add((bilingual_id, para_idx))
 
-        para_source_collection: dict[tuple, str] = {}
-        full_para_map = {}
+        all_source_sentences: list[dict] = []
         for key in list(para_list):
+            bilingual_id, para_idx = key
             per_collection = await self._fetch_paragraph_sentences(
-                key,
-                collection_names,
-                source_lang_code,
-                target_lang_code,
+                key, collection_names, source_lang_code
             )
-            full_para_map[key] = []
-            for collection_name, sent_map, _ in per_collection:
-                filtered = {}
+            for collection_name, sent_map in per_collection:
                 for sent_idx, item in sent_map.items():
-                    best_sim = self.combined_similarity(queries, item['source'])
-                    if best_sim < 50:
-                        continue
-                    filtered[sent_idx] = item
-                if filtered:
-                    full_para_map[key].append(filtered)
-                    para_source_collection[key] = collection_name
+                    all_source_sentences.append({
+                        'collection_name': collection_name,
+                        'bilingual_id': bilingual_id,
+                        'para_index': para_idx,
+                        'sentence_index': sent_idx,
+                        'text': item['text'],
+                        'align_group_id': item['align_group_id'],
+                        'align_score': item['align_score'],
+                    })
+
+        matched_sentences = [
+            s for s in all_source_sentences
+            if self.combined_similarity(queries, s['text']) >= 50
+        ]
+        if not matched_sentences:
+            return [], [], True
+
+        align_group_ids = [s['align_group_id'] for s in matched_sentences if s['align_group_id']]
+        translations = await self._fetch_translations_by_group_ids(
+            align_group_ids, collection_names, target_lang_code
+        )
 
         bilingual_tuple = []
         sources_by_collection: dict[str, dict] = {}
-        for key, para_items in full_para_map.items():
-            collection_name = para_source_collection.get(key)
-            knowledge_name = (
-                knowledge_name_by_id.get(collection_name, collection_name) if collection_name else '双语知识库'
+        for s in matched_sentences:
+            src_text = s['text']
+            tgt_text = translations.get(s['align_group_id'], '')
+            if not tgt_text:
+                continue
+
+            bilingual_tuple.append((src_text, tgt_text))
+            collection_name = s['collection_name']
+            knowledge_name = knowledge_name_by_id.get(collection_name, collection_name)
+            bucket = sources_by_collection.setdefault(
+                collection_name,
+                {
+                    'source': {
+                        'id': collection_name,
+                        'name': knowledge_name,
+                        'type': 'bilingual',
+                    },
+                    'document': [],
+                    'metadata': [],
+                },
             )
-
-            for sentence_items in para_items:
-                for _, item in sentence_items.items():
-                    src_text = item['source']
-                    tgt_text = item['target']
-                    bilingual_tuple.append((src_text, tgt_text))
-
-                    if not collection_name:
-                        continue
-
-                    bucket = sources_by_collection.setdefault(
-                        collection_name,
-                        {
-                            'source': {
-                                'id': collection_name,
-                                'name': knowledge_name,
-                                'type': 'bilingual',
-                            },
-                            'document': [],
-                            'metadata': [],
-                        },
-                    )
-                    bucket['document'].append(f'{src_text} -> {tgt_text}')
-                    bucket['metadata'].append(
-                        {
-                            'source': knowledge_name,
-                            'name': knowledge_name,
-                            'bilingual_id': key[0],
-                            'para_index': key[1],
-                            'align_score': item.get('align_score'),
-                        }
-                    )
-
+            bucket['document'].append(f'{src_text} -> {tgt_text}')
+            bucket['metadata'].append(
+                {
+                    'source': knowledge_name,
+                    'name': knowledge_name,
+                    'bilingual_id': s['bilingual_id'],
+                    'para_index': s['para_index'],
+                    'align_score': s['align_score'],
+                }
+            )
         return bilingual_tuple, list(sources_by_collection.values()), True
 
     async def _fetch_paragraph_sentences(
         self,
         key: tuple,
         collection_names: list[str],
-        source_lang_code: str,
-        target_lang_code: str,
-    ) -> list[tuple[str, dict, dict]]:
+        lang_code: str,
+    ) -> list[tuple[str, dict]]:
         """
         取出某个段落在各 collection 下的全部句子（不做相似度过滤），
         返回 [(collection_name, sent_map), ...]，sent_map: {sentence_index: {'source','target','align_score'}}
@@ -2313,25 +2340,56 @@ class BilingualKnowledgeReader:
                     '$and': [
                         {'bilingual_id': {'$eq': bilingual_id}},
                         {'para_index': {'$eq': para_idx}},
+                        {'lang': {'$eq': lang_code}},
                     ]
                 },
-                include=['metadatas'],
+                include=['metadatas', 'documents'],
             )
             sent_map = {}
-            for meta in result.get('metadatas', []):
+            documents = result.get('documents', [])
+            metadatas = result.get('metadatas', [])
+            for text, meta in zip(documents, metadatas):
                 sent_idx = meta.get('sentence_index')
                 if sent_idx is None:
                     continue
-                langs = meta.get('langs', {})
-                if isinstance(langs, str):
-                    langs = ast.literal_eval(langs)
-                source = langs.get(source_lang_code, '')
-                target = langs.get(target_lang_code, '')
-                align_score = meta.get('align_score', 0)
-                sent_map[sent_idx] = {'source': source, 'target': target, 'align_score': align_score}
+                sent_map[sent_idx] = {
+                    'text': text,
+                    'align_group_id': meta.get('align_group_id'),
+                    'align_score': meta.get('align_score', 0),
+                }
             if sent_map:
-                per_collection.append((collection_name, sent_map, result.get('metadatas', [])))
+                per_collection.append((collection_name, sent_map))
         return per_collection
+
+    async def _fetch_translations_by_group_ids(
+            self,
+            align_group_ids: list[str],
+            collection_names: list[str],
+            target_lang_code: str,
+    ) -> dict[str, str]:
+        if not align_group_ids:
+            return {}
+
+        translations: dict[str, str] = {}
+        for collection_name in collection_names:
+            collection = VECTOR_DB_CLIENT.client.get_collection(collection_name)  # noqa: F821
+            result = collection.get(
+                where={
+                    '$and': [
+                        {'align_group_id': {'$in': align_group_ids}},
+                        {'lang': {'$eq': target_lang_code}},
+                    ]
+                },
+                include=['metadatas', 'documents'],
+            )
+            documents = result.get('documents', [])
+            metadatas = result.get('metadatas', [])
+            for text, meta in zip(documents, metadatas):
+                group_id = meta.get('align_group_id')
+                if group_id:
+                    translations[group_id] = text
+        return translations
+
 
     def combined_similarity(self, a: str, b: str) -> float:
         partial = fuzz.partial_ratio(a, b)
