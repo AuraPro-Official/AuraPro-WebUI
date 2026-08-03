@@ -1,0 +1,63 @@
+# EPUB Concept Wiki — Persistent Task Status
+
+**Purpose:** Durable implementation state for SDD work. A new session must read
+this file and `epub_concept_sdd.md` before making changes.
+
+## Update rules
+
+- Each task has one state: `planned`, `in_progress`, `blocked`, `completed`, or
+  `superseded`.
+- Update this file in the same change as the implementation or verification that
+  moves a task forward. Record evidence (test name, command, or review link).
+- Do not mark a task `completed` until its listed acceptance evidence passes.
+- Add newly discovered work as a numbered task; do not silently fold it into an
+  existing task.
+- At the completion of each implementation phase, commit only that phase's
+  reviewed files. Do not include pre-existing or unrelated working-tree edits.
+- After each completed phase's acceptance evidence passes, push that phase's
+  focused commit(s) and open one GitHub Pull Request. Keep subsequent phases on
+  a new branch based on the accepted phase, so review remains small and
+  independently mergeable.
+
+## Confirmed product decisions
+
+| ID | Decision | Status |
+|---|---|---|
+| D-001 | Source content is stable visible EPUB text, not XHTML markup; preserve text and punctuation exactly. | confirmed |
+| D-002 | Store complete paragraphs; responses include full content plus verified continuous excerpts and offsets. | confirmed |
+| D-003 | Cloud Batch is an administrator-configured, one-time offline process; online inference remains local/private. | confirmed |
+| D-004 | All authenticated users can browse and search; administration is the only write/cost-bearing role. | confirmed |
+| D-005 | The feature UI lives in AuraPro-WebUI and is displayed by Desktop's WebView. | confirmed |
+| D-006 | Normal HTML flow whitespace collapses per visible-text semantics; `<pre>` whitespace is preserved. | confirmed |
+| D-007 | First release targets textual EPUBs. Preserve typed text blocks; images and tables are out of scope and warn. | confirmed |
+
+## Work breakdown
+
+| ID | Task | State | Depends on | Acceptance evidence / notes |
+|---|---|---|---|---|
+| T-000 | Baseline audit of existing prototype | completed | — | Existing parser, DB, Batch, search, UI, and tests reviewed. Critical concept-occurrence foreign-key ordering failure reproduced. |
+| T-010 | Finalize SDD specification and persistent task process | completed | T-000 | SDD decisions D-001 through D-007 are recorded; parser, storage/search, and UI reviews completed. |
+| T-015 | Provision a supported Python test environment | completed | T-010 | Repository declares Python >=3.11 and <3.13. The Homebrew 3.12/3.14 XML extensions remain faulty, but a compatible temporary source build of Python 3.12.13 at `/private/var/folders/dt/y5fzlt453wd9ypxfr29rxvcc0000gn/T/python-build.20260801153902.35544/Python-3.12.13/python.exe` successfully imports `xml.parsers.expat` and runs acceptance tests. |
+| T-020 | EPUB parser and faithful passage fixtures | completed | T-010, T-015 | Archive limits/duplicate-member rejection, OPF spine, NAV/NCX fragment paths, typed visible-text passages, ordered fallback text, and warnings for excluded tables/images are implemented. Python 3.12 acceptance: `test_epub_parser_sdd.py` — 5 tests passed. |
+| T-025 | Provision independent storage migration and local vector extension | in_progress | T-010 | `sqlite-vec==0.1.9` was verified in an in-memory SQLite `vec0` nearest-neighbor query on the host Python, then pinned in `pyproject.toml` and `uv.lock` (`uv lock --check` passes). `load_sqlite_vec` now disables dynamic loading after load and proves `vec_version()`; its no-extension failure test and a real v0.1.9 health check pass. The temporary source Python 3.12 build lacks `sqlite3.Connection.enable_load_extension`, so production startup must enforce this health check; SQLite/PG migration runners remain. |
+| T-030 | Independent store, migrations, versioning, and source integrity | in_progress | T-010, T-025 | SQLite canonical-store baseline implemented, including immutable passages, verified derived offsets, full-file hash dedupe, FK-safe concepts, and durable Batch job/item records. `/opt/homebrew/bin/python3.14 -m unittest discover -s AuraPro-WebUI/test -p 'test_epub_store.py' -v` passes 5 isolated-store tests; SQLite vector extension and PostgreSQL parity remain. |
+| T-040 | Durable Batch job service and glossary-concept ingest | in_progress | T-030 | Provider-neutral SQLite service baseline now persists draft requests before submit, idempotent provider submission/poll/recovery, atomic concept/mention ingest, failed-item successor jobs, and credential-field rejection. `OpenAIBatchProvider` now uploads validated OpenAI JSONL, uses idempotency headers, normalizes lifecycle states, and translates output/error JSONL without persisting credentials. Python 3.12: `test_epub_batch.py` — 10 tests passed. PostgreSQL adapter remains. |
+| T-050 | Local-only inference adapters and derived vector index | planned | T-030 | No-cloud policy, embedding, reranker, and local LLM availability tests pass. |
+| T-060 | Search pipeline, exact excerpt contract, and pagination | planned | T-020, T-030, T-050 | Graph exhaustiveness, excerpt offsets, vector/rerank/MMR tests pass. |
+| T-070 | Authenticated REST API and admin authorization | planned | T-040, T-060 | Ordinary-user read/search and administrator-write authorization tests pass. |
+| T-080 | AuraPro-WebUI frontend and Desktop WebView integration | planned | T-070 | Admin workflow and ordinary-user search UI tests pass in WebUI and Desktop WebView. |
+| T-090 | End-to-end, migration, resilience, and operational validation | planned | T-020, T-040, T-060, T-070, T-080 | Full acceptance suite, recovery scenarios, observability, and deployment docs pass review. |
+
+## Phase delivery
+
+| Phase | Commit | Pull request | State / evidence |
+|---|---|---|---|
+| Parser baseline (T-010/T-020) | `796c763` | pending | Branch `feat/epub-concept-wiki` is ready locally. Push to `origin` was rejected because SSH identity `mikdw` lacks write permission to `AuraPro-Official/AuraPro-WebUI`; create the PR after repository write access is granted. |
+| Source store and vector boundary (T-025/T-030 baseline) | `6a6f1d2` | pending | Isolated store tests 5/5 and sqlite-vec boundary tests pass. Push remains pending repository administrator approval. |
+| Durable OpenAI Batch workflow (T-040 baseline) | current branch head | pending | Batch lifecycle and mocked OpenAI provider tests 10/10 pass; no real API key or network call. Push remains pending repository administrator approval. |
+
+## Active-session handoff
+
+- **Current focus:** T-025/T-030 — finish the independent SQLite/PG migration and vector-index boundary before adding Batch, search, API, or UI services.
+- **Current implementation state:** Parser baseline is committed as `d5f8d97`. SQLite canonical-store and sqlite-vec health-check work remain uncommitted until their phase acceptance is complete.
+- **Next action:** Add repository-level SQLite/PG migration runners and the derived vector-index mapping, then run supported-runtime validation and commit the completed storage/vector phase.
