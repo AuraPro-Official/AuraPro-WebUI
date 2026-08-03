@@ -211,8 +211,20 @@ evidence string while counting Unicode code points unreliably. Local calibration
 may deterministically derive the start/end offsets only when that evidence has
 exactly one literal occurrence in the immutable passage; missing or ambiguous
 evidence remains a hard failure. This never changes source text or permits an
-unverified citation. Remote Batch output must continue to satisfy its complete
-strict schema directly.
+unverified citation.
+
+Cloud Batch concept ingest uses the same immutable-source standard. A legacy
+profile response with an invalid numeric offset may be repaired only when its
+exact non-empty evidence has one literal occurrence in the item passage. The
+current cloud profile additionally requires bounded (at most 48 Unicode code
+points each) `context_before` and `context_after` anchors immediately adjacent
+to the evidence. For repeated evidence, the service derives an offset only if
+those anchors select exactly one source occurrence; absent, malformed, or still
+ambiguous anchors are a hard item failure. A correct direct offset is still
+verified against the source and its supplied anchors. The service persists the
+canonical grounded payload, not an unverified raw provider result; a later poll
+may re-ingest a previously failed item if it becomes safely normalizable, but a
+different output can never overwrite a durable success.
 
 A cloud calibration Batch must reuse the selected profile and the same
 deterministic sample selection, pin a provider model snapshot, and be explicitly
