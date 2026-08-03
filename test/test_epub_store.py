@@ -114,6 +114,37 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         with self.assertRaises(IntegrityError):
             self.store.add_batch_item(job_id, "passage-b", custom_id="passage-b", request={})
 
+    def test_search_read_surface_returns_stable_graph_rows_and_toc_hierarchy(self) -> None:
+        self.store.add_toc_nodes(
+            "version-a",
+            [
+                {
+                    "toc_node_id": "chapter", "title": "第一章", "href": "chapter-1.xhtml",
+                    "spine_index": 0, "ordinal": 0,
+                },
+                {
+                    "toc_node_id": "section", "parent_toc_node_id": "chapter", "title": "概述",
+                    "href": "chapter-1.xhtml", "fragment": "overview", "spine_index": 0, "ordinal": 1,
+                },
+            ],
+        )
+        self.store.add_passages("version-a", [self._passage(toc_node_id="section")])
+        concept_id = self.store.upsert_concept("TCP", aliases=["Transmission Control Protocol"])
+        self.store.add_concept_mention(concept_id, "passage-a", start_codepoint=0, end_codepoint=2)
+
+        self.assertEqual(self.store.count_concept_occurrences([concept_id]), 1)
+        row = self.store.list_concept_occurrences([concept_id], offset=0, limit=20)[0]
+        self.assertEqual(row["book_title"], "A faithful book")
+        self.assertEqual(row["toc_path"], ("第一章", "概述"))
+        self.assertEqual(row["content"][0:2], "原文")
+        self.assertEqual(
+            self.store.matched_concept_names("passage-a", [concept_id]), ["TCP"]
+        )
+        self.assertEqual(
+            {entry["term"] for entry in self.store.list_concept_terms()},
+            {"TCP", "Transmission Control Protocol"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
