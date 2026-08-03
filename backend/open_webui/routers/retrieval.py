@@ -2406,6 +2406,25 @@ class ProcessBilingualForm(BaseModel):
     totalFiles: Optional[int] = None
 
 
+def _meta_dump(value):
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def _meta_load(value, default=None):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            try:
+                return ast.literal_eval(value)
+            except Exception:
+                return default if default is not None else value
+    return value
+
 @router.post('/process/bilingual')
 async def process_bilingual(
     request: Request,
@@ -2481,7 +2500,7 @@ async def process_bilingual(
             'collection_name': collection_name,
             'total_chunks': 0,
             'skipped': len(skipped_files),
-            'languages': form_data.languages,
+            'languages': _meta_dump(form_data.languages),
             'primaryLang': form_data.primaryLang,
         }
 
@@ -2489,14 +2508,13 @@ async def process_bilingual(
     for file in files_to_process:
         primary_lang = file.primaryLang
         primary_text = file.langs.get(primary_lang, '')
-
         base_meta = {
             'name': file.baseName,
             'created_by': user.id,
             'bilingual_id': file.id,
             'base_name': file.baseName,
             'primary_lang': primary_lang,
-            'languages': form_data.languages,
+            'languages': _meta_dump(form_data.languages),
         }
         other_langs = {k: v for k, v in file.langs.items() if k != primary_lang}
         items.append(
@@ -2511,27 +2529,41 @@ async def process_bilingual(
     docs_per_file = await bilingual_aligner.align_batch_to_documents(items)
     all_docs = [doc for docs in docs_per_file for doc in docs]
 
-    _langs = docs_per_file[0][0].metadata.get('langs', {})
     prim_lang = docs_per_file[0][0].metadata.get('primary_lang')
 
     for docs in docs_per_file:
-        sent_langs = {lang: [] for lang in _langs.keys() if lang != prim_lang}
+        if not docs:
+            continue
+
+        languages_meta = _meta_load(docs[0].metadata.get('languages'), default=[])
+        tgt_langs = [l for l in languages_meta if l != prim_lang]
+
+        groups: dict[str, dict[str, str]] = {}
+        for doc in docs:
+            group_id = doc.metadata.get('align_group_id')
+            lang = doc.metadata.get('lang')
+            if not group_id or not lang:
+                continue
+            groups.setdefault(group_id, {})[lang] = doc.page_content
+
+        sent_langs = {lang: [] for lang in tgt_langs}
         builders = {
             lang: GlossaryBuilder(
                 src_lang=prim_lang,
                 tgt_lang=lang,
                 aligner=WordAligner.get_instance(),
             )
-            for lang in _langs.keys()
-            if lang != prim_lang
+            for lang in tgt_langs
         }
 
-        for doc in docs:
-            langs = doc.metadata.get('langs', {})
-            for lang, _ in langs.items():
-                if lang == prim_lang:
-                    continue
-                sent_langs[lang].append((langs.get(prim_lang), langs.get(lang)))
+        for group_id, lang_texts in groups.items():
+            src_text = lang_texts.get(prim_lang)
+            if not src_text:
+                continue
+            for lang in tgt_langs:
+                tgt_text = lang_texts.get(lang)
+                if tgt_text:
+                    sent_langs[lang].append((src_text, tgt_text))
 
         words_dict = {}
         for lang, sent_pairs in sent_langs.items():
@@ -2565,7 +2597,7 @@ async def process_bilingual(
             'status': True,
             'collection_name': collection_name,
             'total_chunks': len(all_docs),
-            'languages': form_data.languages,
+            'languages': _meta_dump(form_data.languages),
             'primaryLang': form_data.primaryLang,
         }
     else:
@@ -2645,13 +2677,7 @@ async def list_bilingual_files(
                                 continue
 
                             if bilingual_id not in grouped:
-                                languages = meta.get('languages', [])
-                                if isinstance(languages, str):
-                                    try:
-                                        languages = ast.literal_eval(languages)
-                                    except:
-                                        languages = [languages] if languages else []
-
+                                languages = _meta_load(meta.get('languages'), default=[])
                                 grouped[bilingual_id] = {
                                     'bilingual_id': bilingual_id,
                                     'base_name': meta.get('base_name') or meta.get('name', ''),
@@ -2726,6 +2752,7 @@ async def delete_bilingual_file(
 
 class SentenceAlignItem(BaseModel):
     id: str
+    align_group_id: str
     para_index: int
     sentence_index: int
     primary_text: str
@@ -2782,58 +2809,65 @@ async def get_bilingual_align(
     ids = result['ids']
     documents = result['documents']
     metadatas = result['metadatas']
-    rows = sorted(
-        zip(ids, documents, metadatas),
-        key=lambda r: (r[2].get('para_index', 0), r[2].get('sentence_index', 0)),
-    )
 
     primary_lang = metadatas[0].get('primary_lang', '') if metadatas else ''
-    languages = metadatas[0].get('languages', []) if metadatas else []
-    if isinstance(languages, str):
-        languages = ast.literal_eval(languages)
+    languages = _meta_load(metadatas[0].get('languages') if metadatas else None, default=[])
+
+    groups: dict[str, dict] = {}
+    for doc_id, doc_text, meta in zip(ids, documents, metadatas):
+        group_id = meta.get('align_group_id')
+        if group_id is None:
+            continue
+        if group_id not in groups:
+            groups[group_id] = {
+                'para_index': meta.get('para_index', 0),
+                'sentence_index': meta.get('sentence_index', 0),
+                'parent_content': meta.get('parent_content', ''),
+                'align_score': meta.get('align_score', 0.0),
+                'langs': {},
+                'langs_modified': {},
+                'primary_doc_id': None,
+                'primary_text': None,
+            }
+        lang = meta.get('lang', meta.get('primary_lang'))
+        groups[group_id]['langs'][lang] = doc_text
+        groups[group_id]['langs_modified'][lang] = bool(meta.get('is_modified', False))
+        if lang == primary_lang:
+            groups[group_id]['primary_doc_id'] = doc_id
+            groups[group_id]['primary_text'] = doc_text
+
 
     paragraphs_map: dict[int, ParagraphAlignItem] = {}
     para_cursor: dict[int, int] = {}
-
-    for doc_id, doc_text, meta in rows:
-        para_index = meta.get('para_index', 0)
-        para_text = meta.get('parent_content', '')
-
+    for group_id, g in sorted(groups.items(), key=lambda kv: (kv[1]['para_index'], kv[1]['sentence_index'])):
+        para_index = g['para_index']
+        para_text = g['parent_content']
         if para_index not in paragraphs_map:
             paragraphs_map[para_index] = ParagraphAlignItem(
-                para_index=para_index,
-                para_text=para_text,
-                sentences=[],
+                para_index=para_index, para_text=para_text, sentences=[],
             )
             para_cursor[para_index] = 0
 
         cursor = para_cursor[para_index]
-        start, end = _locate_offset(para_text, doc_text, cursor)
+        primary_text = g['primary_text'] or ''
+        start, end = _locate_offset(para_text, primary_text, cursor)
         para_cursor[para_index] = end
-
-        langs = meta.get('langs', {})
-        if isinstance(langs, str):
-            langs = ast.literal_eval(langs)
-        langs_modified = meta.get('langs_modified', {lang: False for lang in langs.keys()})
-        if isinstance(langs_modified, str):
-            langs_modified = ast.literal_eval(langs_modified)
-
         paragraphs_map[para_index].sentences.append(
             SentenceAlignItem(
-                id=doc_id,
+                id=g['primary_doc_id'] or group_id,
+                align_group_id=group_id,
                 para_index=para_index,
-                sentence_index=meta.get('sentence_index', 0),
-                primary_text=doc_text,
+                sentence_index=g['sentence_index'],
+                primary_text=primary_text,
                 start=start,
                 end=end,
-                langs=langs,
-                langs_modified=langs_modified,
-                align_score=meta.get('align_score', 0.0),
+                langs=g['langs'],
+                langs_modified=g['langs_modified'],
+                align_score=g['align_score'],
             )
         )
 
     paragraphs = sorted(paragraphs_map.values(), key=lambda p: p.para_index)
-
     return GetBilingualAlignResponse(
         bilingual_id=bilingual_id,
         primary_lang=primary_lang,
@@ -2844,13 +2878,14 @@ async def get_bilingual_align(
 
 class UpdateSentenceTranslationForm(BaseModel):
     collection_name: str
-    id: str
+    align_group_id: str
     lang: str
     text: str
 
 
 @router.put('/process/bilingual/sentence')
 async def update_sentence_translation(
+    request: Request,
     form_data: UpdateSentenceTranslationForm,
     user=Depends(get_verified_user),
 ):
@@ -2859,48 +2894,58 @@ async def update_sentence_translation(
     # 取出原记录
     collection_name = form_data.collection_name
     collection = VECTOR_DB_CLIENT.client.get_collection(collection_name)
-    result = collection.get(ids=[form_data.id], include=['metadatas', 'documents', 'embeddings'])
+    result = collection.get(
+        where={'align_group_id': {'$eq': form_data.align_group_id}},
+        include=['metadatas', 'documents', 'embeddings'],
+    )
 
     if result is None:
         raise HTTPException(status_code=404, detail='Sentence not found')
 
     doc_id = result['ids'][0]
-    doc_text = result['documents'][0]
-    metadata = result['metadatas'][0]
-    embedding = result['embeddings'][0]
-
-    langs = metadata.get('langs', {})
-    if isinstance(langs, str):
-        langs = ast.literal_eval(langs)
-
-    langs_modified = metadata.get('langs_modified', {})
-    if isinstance(langs_modified, str):
-        langs_modified = ast.literal_eval(langs_modified)
-
-    if form_data.lang not in langs:
-        raise HTTPException(status_code=400, detail=f'Language {form_data.lang} not found in this sentence')
-
-    # 更新 metadata
-    langs[form_data.lang] = form_data.text
-    langs_modified[form_data.lang] = True
-
-    new_metadata = {
-        **metadata,
-        'langs': langs,
-        'langs_modified': langs_modified,
-    }
-
-    # upsert 回写
+    metadata = dict(result['metadatas'][0])
+    metadata['is_modified'] = True
+    config = await get_retrieval_config()
+    embedding_function = get_embedding_function(
+        config.RAG_EMBEDDING_ENGINE,
+        config.RAG_EMBEDDING_MODEL,
+        request.app.state.ef,
+        (
+            config.RAG_OPENAI_API_BASE_URL
+            if config.RAG_EMBEDDING_ENGINE == 'openai'
+            else (
+                config.RAG_OLLAMA_BASE_URL
+                if config.RAG_EMBEDDING_ENGINE == 'ollama'
+                else config.RAG_AZURE_OPENAI_BASE_URL
+            )
+        ),
+        (
+            config.RAG_OPENAI_API_KEY
+            if config.RAG_EMBEDDING_ENGINE == 'openai'
+            else (
+                config.RAG_OLLAMA_API_KEY
+                if config.RAG_EMBEDDING_ENGINE == 'ollama'
+                else config.RAG_AZURE_OPENAI_API_KEY
+            )
+        ),
+        config.RAG_EMBEDDING_BATCH_SIZE,
+        azure_api_version=(
+            config.RAG_AZURE_OPENAI_API_VERSION if config.RAG_EMBEDDING_ENGINE == 'azure_openai' else None
+        ),
+        enable_async=config.ENABLE_ASYNC_EMBEDDING,
+        concurrent_requests=config.RAG_EMBEDDING_CONCURRENT_REQUESTS,
+    )
+    new_embedding = (await embedding_function([form_data.text], prefix=RAG_EMBEDDING_CONTENT_PREFIX, user=user))[0]
     VECTOR_DB_CLIENT.upsert(
-        collection_name=form_data.collection_name,
-        items=[{'id': doc_id, 'text': doc_text, 'vector': embedding, 'metadata': new_metadata}],
+        collection_name=collection_name,
+        items=[{'id': doc_id, 'text': form_data.text, 'vector': new_embedding, 'metadata': metadata}],
     )
 
     return {
         'status': True,
-        'id': doc_id,
+        'align_group_id': form_data.align_group_id,
         'lang': form_data.lang,
-        'langs_modified': langs_modified,
+        'langs_modified': True,
     }
 
 
@@ -2942,12 +2987,8 @@ async def get_bilingual_words(
         raise HTTPException(status_code=404, detail='未找到该双语文件对应的数据')
 
     primary_lang = metadata.get('primary_lang', '')
-    words_raw = metadata.get('words', {}) or {}
-    if isinstance(words_raw, str):
-        words_raw = ast.literal_eval(words_raw)
-    languages = metadata.get('langs', [])
-    if isinstance(languages, str):
-        languages = ast.literal_eval(languages)
+    words_raw = _meta_load(metadata.get('words'), default={})
+    languages = _meta_load(metadata.get('languages'), default=[])
 
     terms: dict[str, list[dict]] = {}
     for lang, pairs in words_raw.items():
@@ -2968,7 +3009,7 @@ async def get_bilingual_words(
     return {
         'bilingual_id': bilingual_id,
         'primary_lang': primary_lang,
-        'languages': list(languages.keys()),
+        'languages': languages,
         'terms': terms,
     }
 
@@ -3005,13 +3046,9 @@ async def update_bilingual_words(
         new_metadatas = []
         for m in metadatas:
             m = dict(m or {})
-
-            words = m.get('words', {}) or {}
-            if isinstance(words, str):
-                words = ast.literal_eval(words)
-
+            words = _meta_load(m.get('words'), default={})
             words[form_data.lang] = new_pairs
-            m['words'] = json.dumps(words, ensure_ascii=False)
+            m['words'] = _meta_dump(words)
             new_metadatas.append(m)
 
         collection.update(ids=ids, metadatas=new_metadatas)
