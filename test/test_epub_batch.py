@@ -204,7 +204,7 @@ class EpubBatchServiceTest(unittest.TestCase):
                     "spine_index": 0,
                     "ordinal": 0,
                     "content_kind": "paragraph",
-                    "content": "TCP connects endpoints.",
+                    "content": "TCP connects TCP endpoints.",
                 },
                 {
                     "passage_id": "p2",
@@ -228,7 +228,7 @@ class EpubBatchServiceTest(unittest.TestCase):
     @staticmethod
     def _items() -> list[BatchItemInput]:
         return [
-            BatchItemInput("p1", "p1", {"model": "batch-model", "body": {"text": "TCP connects endpoints."}}),
+            BatchItemInput("p1", "p1", {"model": "batch-model", "body": {"text": "TCP connects TCP endpoints."}}),
             BatchItemInput("p2", "p2", {"model": "batch-model", "body": {"text": "UDP is datagram based."}}),
         ]
 
@@ -411,6 +411,171 @@ class EpubBatchServiceTest(unittest.TestCase):
         )
         item = self.repository.list_items("job")[0]
         self.assertEqual(item["status"], "SUCCEEDED")
+
+    def test_openai_cloud_ingest_repairs_only_uniquely_locatable_evidence(self) -> None:
+        job_id = self.service.create_draft(
+            version_id="version",
+            provider="openai-batch",
+            profile_name="cloud-model-snapshot",
+            items=[self._items()[1]],
+            is_sample=True,
+            batch_job_id="openai-unique-evidence",
+        )
+        provider = FakeProvider()
+        provider.name = "openai-batch"
+        remote_id = self.service.submit(job_id, provider)
+        provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        provider.results[remote_id] = [
+            ProviderItemResult(
+                "p2",
+                payload={
+                    "concepts": [
+                        {
+                            "name": "UDP",
+                            "aliases": [],
+                            "definition": "A protocol",
+                            "mentions": [
+                                {"start_codepoint": 77, "end_codepoint": 80, "evidence": "UDP"}
+                            ],
+                        }
+                    ]
+                },
+            )
+        ]
+
+        self.assertEqual(self.service.poll_and_ingest(job_id, provider)["ingested"], 1)
+        mention = self.store._connection().execute(
+            "SELECT start_codepoint, end_codepoint, evidence FROM concept_mentions"
+        ).fetchone()
+        self.assertEqual(tuple(mention), (0, 3, "UDP"))
+        stored = json.loads(self.repository.list_items(job_id)[0]["response_json"])
+        self.assertEqual(stored["concepts"][0]["mentions"][0]["start_codepoint"], 0)
+
+    def test_openai_cloud_ingest_uses_bounded_context_only_to_disambiguate_repeated_evidence(self) -> None:
+        job_id = self.service.create_draft(
+            version_id="version",
+            provider="openai-batch",
+            profile_name="cloud-model-snapshot",
+            items=[self._items()[0]],
+            is_sample=True,
+            batch_job_id="openai-anchored-evidence",
+        )
+        provider = FakeProvider()
+        provider.name = "openai-batch"
+        remote_id = self.service.submit(job_id, provider)
+        provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        provider.results[remote_id] = [
+            ProviderItemResult(
+                "p1",
+                payload={
+                    "concepts": [
+                        {
+                            "name": "TCP",
+                            "aliases": [],
+                            "definition": "A protocol",
+                            "mentions": [
+                                {"start_codepoint": 99, "end_codepoint": 102, "evidence": "TCP"}
+                            ],
+                        }
+                    ]
+                },
+            )
+        ]
+        self.assertEqual(self.service.poll_and_ingest(job_id, provider)["failed"], 1)
+        self.assertEqual(self.repository.list_items(job_id)[0]["status"], "FAILED")
+
+        provider.results[remote_id] = [
+            ProviderItemResult(
+                "p1",
+                payload={
+                    "concepts": [
+                        {
+                            "name": "TCP",
+                            "aliases": [],
+                            "definition": "A protocol",
+                            "mentions": [
+                                {
+                                    "start_codepoint": 99,
+                                    "end_codepoint": 102,
+                                    "evidence": "TCP",
+                                    "context_before": "connects ",
+                                    "context_after": " endpoints.",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+        ]
+
+        self.assertEqual(self.service.poll_and_ingest(job_id, provider)["ingested"], 1)
+        mention = self.store._connection().execute(
+            "SELECT start_codepoint, end_codepoint FROM concept_mentions"
+        ).fetchone()
+        self.assertEqual(tuple(mention), (13, 16))
+
+    def test_openai_repeat_poll_can_reingest_a_previously_failed_item_without_rewriting_success(self) -> None:
+        job_id = self.service.create_draft(
+            version_id="version",
+            provider="openai-batch",
+            profile_name="cloud-model-snapshot",
+            items=self._items(),
+            is_sample=True,
+            batch_job_id="openai-reingest-failed",
+        )
+        provider = FakeProvider()
+        provider.name = "openai-batch"
+        remote_id = self.service.submit(job_id, provider)
+        provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        provider.results[remote_id] = [
+            ProviderItemResult("p1", payload={"concepts": []}),
+            ProviderItemResult(
+                "p2",
+                payload={
+                    "concepts": [
+                        {
+                            "name": "UDP",
+                            "aliases": [],
+                            "definition": "A protocol",
+                            "mentions": [
+                                {"start_codepoint": 0, "end_codepoint": 1, "evidence": "absent"}
+                            ],
+                        }
+                    ]
+                },
+            ),
+        ]
+        self.assertEqual(self.service.poll_and_ingest(job_id, provider)["failed"], 1)
+        self.assertEqual([item["status"] for item in self.repository.list_items(job_id)], ["SUCCEEDED", "FAILED"])
+
+        # The same durable remote job can be polled again after a grounding
+        # protocol upgrade.  The known success is byte-for-byte identical and
+        # remains immutable; the former failure is newly, safely normalizable.
+        provider.results[remote_id] = [
+            ProviderItemResult("p1", payload={"concepts": []}),
+            ProviderItemResult(
+                "p2",
+                payload={
+                    "concepts": [
+                        {
+                            "name": "UDP",
+                            "aliases": [],
+                            "definition": "A protocol",
+                            "mentions": [
+                                {"start_codepoint": 100, "end_codepoint": 103, "evidence": "UDP"}
+                            ],
+                        }
+                    ]
+                },
+            ),
+        ]
+        self.assertEqual(self.service.poll_and_ingest(job_id, provider)["ingested"], 1)
+        self.assertEqual([item["status"] for item in self.repository.list_items(job_id)], ["SUCCEEDED", "SUCCEEDED"])
+
+        provider.results[remote_id][0] = ProviderItemResult("p1", payload={"concepts": [{"unexpected": True}]})
+        with self.assertRaisesRegex(BatchPayloadError, "succeeded Batch item cannot be overwritten"):
+            self.service.poll_and_ingest(job_id, provider)
+        self.assertEqual([item["status"] for item in self.repository.list_items(job_id)], ["SUCCEEDED", "SUCCEEDED"])
 
     def test_terminal_batch_without_output_marks_only_missing_items_failed_for_retry(self) -> None:
         self._draft()
