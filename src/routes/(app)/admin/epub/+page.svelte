@@ -437,6 +437,7 @@
 									{job.job_kind} · {job.status} · {job.is_sample ? '样本' : '全量'} · {job.item_count}
 									项
 									{#if job.has_error}· 有错误{/if}
+									{#if job.results_pending_retrieval}· 结果待重新获取{/if}
 								</p>
 							</div>
 							<button
@@ -451,6 +452,11 @@
 				<p>
 					任务 <code>{batchDetail.batch_job_id}</code>：{batchDetail.status}，项目 {batchDetail.item_count}。
 				</p>
+				{#if batchDetail.results_pending_retrieval}<p
+						class="mt-2 text-xs text-amber-700 dark:text-amber-300"
+					>
+						云端任务已终态，但结果尚未完整读取。请先再次轮询；在确认每个项目结果前，不会自动创建重试任务。
+					</p>{/if}
 				{#if batchDetail.items?.length}<ul class="mt-2 space-y-1 text-xs">
 						{#each batchDetail.items as item (item.batch_item_id)}<li>
 								<code>{item.custom_id}</code> · {item.status} · 尝试 {item.attempt_count}
@@ -606,7 +612,7 @@
 						on:click={() => runBatchAction('poll')}>轮询状态</button
 					><button
 						class="rounded border px-2 py-1 text-xs disabled:opacity-50"
-						disabled={busy}
+						disabled={busy || batchDetail?.results_pending_retrieval}
 						on:click={() => runBatchAction('retry')}>重试失败项</button
 					>
 					{#if batchDetail?.is_sample}<button
@@ -619,6 +625,9 @@
 							on:click={() => reviewSampleBatch('REJECTED')}>拒绝已完成样本</button
 						>{/if}
 				</div>
+				<p class="mt-2 text-xs text-gray-500">
+					重试只会复制已确认失败且未成功导入的项目；若显示“结果待重新获取”，请先轮询确认，避免重复调用。
+				</p>
 				{#if batchDetail?.is_sample && batchDetail.status !== 'SUCCEEDED'}<p
 						class="mt-2 text-xs text-gray-500"
 					>

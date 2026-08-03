@@ -388,6 +388,10 @@ class BatchRepository(Protocol):
 
     def record_item_failure(self, batch_job_id: str, custom_id: str, error: str) -> bool: ...
 
+    def mark_results_pending_retrieval(self, batch_job_id: str) -> None: ...
+
+    def reconcile_terminal_missing_results(self, batch_job_id: str) -> int: ...
+
     def create_retry_child(self, batch_job_id: str) -> str: ...
 
     def list_recoverable_jobs(self, provider: str | None = None) -> list[str]: ...
@@ -420,6 +424,8 @@ _SENSITIVE_REQUEST_KEYS = {
     "x-api-key",
 }
 _SAMPLE_REVIEW_STATUSES = {"APPROVED", "REJECTED"}
+_RESULTS_PENDING_RETRIEVAL = "RESULTS_PENDING_RETRIEVAL"
+_TERMINAL_MISSING_RESULT = "TERMINAL_WITHOUT_ITEM_RESULT"
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -670,6 +676,9 @@ class SQLiteBatchRepository:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "has_error": bool(row["last_error"]),
+            # This is deliberately a boolean rather than durable error text.
+            # Provider errors and results can contain source material.
+            "results_pending_retrieval": row["last_error"] == _RESULTS_PENDING_RETRIEVAL,
             "item_count": sum(statuses.values()),
             "item_status_counts": statuses,
         }
@@ -1106,6 +1115,52 @@ class SQLiteBatchRepository:
             )
         return True
 
+    def mark_results_pending_retrieval(self, batch_job_id: str) -> None:
+        """Record that a terminal provider job must be polled again safely.
+
+        A terminal provider state does not prove this process read every
+        output/error line.  A transient download or parse failure must never
+        become local item failures: doing that could make a successor Batch
+        replay work whose outcome is unknown.  Persist only a controlled
+        marker, never a raw provider exception.
+        """
+        with self._store._write() as connection:
+            self._require_job(connection, batch_job_id)
+            connection.execute(
+                """UPDATE batch_jobs
+                   SET last_error = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE batch_job_id = ?""",
+                (_RESULTS_PENDING_RETRIEVAL, batch_job_id),
+            )
+
+    def reconcile_terminal_missing_results(self, batch_job_id: str) -> int:
+        """Fail only items absent from a complete, validated terminal result set.
+
+        This method is intentionally separate from result retrieval.  Its
+        caller must have fetched and validated the whole provider stream first;
+        otherwise an interrupted stream could cause duplicate paid work.
+        """
+        with self._store._write() as connection:
+            job = self._require_job(connection, batch_job_id)
+            if job["status"] not in _TERMINAL_JOB_STATES:
+                raise BatchServiceError("only a terminal Batch job can reconcile missing results")
+            cursor = connection.execute(
+                """UPDATE batch_items
+                   SET status = 'FAILED', error_text = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE batch_job_id = ?
+                     AND status <> 'SUCCEEDED'
+                     AND response_json IS NULL
+                     AND error_text IS NULL""",
+                (_TERMINAL_MISSING_RESULT, batch_job_id),
+            )
+            if job["last_error"] == _RESULTS_PENDING_RETRIEVAL:
+                connection.execute(
+                    """UPDATE batch_jobs SET last_error = NULL, updated_at = CURRENT_TIMESTAMP
+                       WHERE batch_job_id = ?""",
+                    (batch_job_id,),
+                )
+        return int(cursor.rowcount)
+
     def create_retry_child(self, batch_job_id: str) -> str:
         """Create one durable successor job containing exactly this job's failures."""
         with self._store._write() as connection:
@@ -1254,7 +1309,7 @@ class BatchJobService:
         self._repository.mark_submitted(batch_job_id, provider_job_id)
         return provider_job_id
 
-    def poll_and_ingest(self, batch_job_id: str, provider: BatchProvider) -> dict[str, int | str]:
+    def poll_and_ingest(self, batch_job_id: str, provider: BatchProvider) -> dict[str, int | str | bool]:
         job = self._repository.get_job(batch_job_id)
         if job["provider"] != provider.name:
             raise BatchServiceError("provider implementation does not match durable Batch job provider")
@@ -1268,11 +1323,45 @@ class BatchJobService:
         self._repository.set_provider_state(batch_job_id, state, snapshot.error)
         added = failed = 0
         if state in {"SUCCEEDED", "FAILED", "CANCELLED"}:
-            for result in provider.fetch_results(str(provider_job_id)):
-                if not result.custom_id:
-                    raise BatchPayloadError("provider result custom_id cannot be empty")
-                if (result.payload is None) == (result.error is None):
-                    raise BatchPayloadError("provider result needs exactly one of payload or error")
+            # Read and validate the complete result set before reconciling
+            # missing items.  A provider output iterator can fail halfway
+            # through a download, in which case no absence is conclusive.
+            try:
+                results = list(provider.fetch_results(str(provider_job_id)))
+                known_custom_ids = {
+                    item["custom_id"] for item in self._repository.list_items(batch_job_id)
+                }
+                seen_custom_ids: set[str] = set()
+                for result in results:
+                    if not result.custom_id:
+                        raise BatchPayloadError("provider result custom_id cannot be empty")
+                    if result.custom_id in seen_custom_ids:
+                        raise BatchPayloadError("provider returned duplicate item output")
+                    if result.custom_id not in known_custom_ids:
+                        raise BatchPayloadError("provider result has unknown custom_id")
+                    if (result.payload is None) == (result.error is None):
+                        raise BatchPayloadError("provider result needs exactly one of payload or error")
+                    if result.payload is not None and not isinstance(result.payload, Mapping):
+                        raise BatchPayloadError("provider success payload must be an object")
+                    if result.error is not None and (
+                        not isinstance(result.error, str) or not result.error.strip()
+                    ):
+                        raise BatchPayloadError("provider item failure must be a non-empty string")
+                    seen_custom_ids.add(result.custom_id)
+            except Exception:
+                # The API summary exposes only this controlled boolean.  An
+                # administrator may poll again; a retry child is impossible
+                # until an item is known to have no terminal result.
+                self._repository.mark_results_pending_retrieval(batch_job_id)
+                return {
+                    "job_id": batch_job_id,
+                    "state": state,
+                    "ingested": 0,
+                    "failed": 0,
+                    "results_pending_retrieval": True,
+                }
+
+            for result in results:
                 if result.error is not None:
                     failed += int(self._repository.record_item_failure(batch_job_id, result.custom_id, result.error))
                     continue
@@ -1281,9 +1370,15 @@ class BatchJobService:
                     added += int(self._repository.ingest_success(batch_job_id, result.custom_id, result.payload))
                 except BatchPayloadError as exc:
                     failed += int(self._repository.record_item_failure(batch_job_id, result.custom_id, str(exc)))
-        return {"job_id": batch_job_id, "state": state, "ingested": added, "failed": failed}
+            failed += self._repository.reconcile_terminal_missing_results(batch_job_id)
+        return {
+            "job_id": batch_job_id,
+            "state": state,
+            "ingested": added,
+            "failed": failed,
+        }
 
-    def recover(self, provider: BatchProvider) -> list[dict[str, int | str]]:
+    def recover(self, provider: BatchProvider) -> list[dict[str, int | str | bool]]:
         """Poll all non-terminal work after a process restart; safe to repeat."""
         return [self.poll_and_ingest(job_id, provider) for job_id in self._repository.list_recoverable_jobs(provider.name)]
 
