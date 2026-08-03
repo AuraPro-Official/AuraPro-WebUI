@@ -7,16 +7,14 @@ import os
 import re
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Optional
 
 import langcodes
-import unicodedata
-from rapidfuzz import fuzz
 from langchain_core.documents import Document
-
 from open_webui.config import DATA_DIR
 from open_webui.internal.db import get_async_db
 from open_webui.models.config import Config
@@ -24,7 +22,15 @@ from open_webui.models.knowledge import Knowledges
 from open_webui.retrieval.utils import VectorSearchRetriever
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
+from open_webui.utils.glossary_routing import (
+    GlossaryDataset,
+    SmartGlossaryResult,
+    language_key,
+    resolve_smart_glossary,
+    same_language,
+)
 from open_webui.utils.lazy_model import LazyModel
+from rapidfuzz import fuzz
 
 log = logging.getLogger(__name__)
 
@@ -507,6 +513,9 @@ SETTINGS_PATH = Path(DATA_DIR) / 'glossary.settings.json'
 DEFAULT_SETTINGS: dict[str, Any] = {
     'active_glossary_id': DEFAULT_GLOSSARY_ID,
     'glossaries': [],
+    'glossary_mode': 'smart',
+    'smart_source_lang': '',
+    'smart_target_lang': '',
     'glossary_path': DEFAULT_GLOSSARY_RELATIVE_PATH,
     'glossary_version': '1.0.0',
     'source_lang': '\u4e2d\u6587',
@@ -515,13 +524,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'max_terms_injected': 10,
     'max_turns': 3,
     'token_limit': 16384,
+    'mtp_enabled': False,
+    'multimodal_enabled': True,
     'debug': False,
 }
 
 _cache_lock = asyncio.Lock()
-_cache_path: Optional[str] = None
-_cache_signature: Optional[tuple[float, int]] = None
-_cache_entries: dict[str, str] = {}
+_entries_cache: dict[str, tuple[tuple[int, int], dict[str, str], float]] = {}
+_smart_route_cache: dict[str, tuple[SmartGlossaryResult, Optional[float]]] = {}
 _official_configs_cache_marker = object()
 _official_configs_cache_signature: object | tuple[int, int] | None = _official_configs_cache_marker
 _official_configs_cache: list[dict[str, str]] = []
@@ -681,11 +691,27 @@ def _personal_glossary_item() -> dict[str, Any]:
     }
 
 
+def _normalize_bool_setting(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'true', '1', 'yes', 'on'}:
+            return True
+        if normalized in {'false', '0', 'no', 'off'}:
+            return False
+    return default
+
+
 def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     legacy_path = settings.get('glossary_path') or DEFAULT_GLOSSARY_PATH
     legacy_source_lang = settings.get('source_lang') or DEFAULT_SETTINGS['source_lang']
     legacy_glossary_lang = settings.get('glossary_lang') or DEFAULT_SETTINGS['glossary_lang']
     legacy_target_lang = settings.get('target_lang') or DEFAULT_SETTINGS['target_lang']
+    legacy_smart_source_lang = settings.get('smart_source_lang') or legacy_source_lang
+    legacy_smart_target_lang = settings.get('smart_target_lang') or legacy_target_lang
     glossaries = settings.get('glossaries')
 
     available_official = _official_glossary_items()
@@ -739,6 +765,7 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
                         (official_config or {}).get('target_lang') or glossary.get('target_lang') or legacy_target_lang
                     ),
                     'official': is_official,
+                    'user_override': bool(glossary.get('user_override')),
                 }
             )
         for item in _available_official_glossary_configs():
@@ -766,6 +793,14 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     settings['source_lang'] = active['source_lang']
     settings['glossary_lang'] = active['glossary_lang']
     settings['target_lang'] = active['target_lang']
+    mode = str(settings.get('glossary_mode') or 'smart').strip().lower()
+    settings['glossary_mode'] = mode if mode in {'smart', 'fixed'} else 'smart'
+    settings['smart_source_lang'] = normalize_term(str(legacy_smart_source_lang or active['source_lang']))
+    settings['smart_target_lang'] = normalize_term(str(legacy_smart_target_lang or active['target_lang']))
+    settings['mtp_enabled'] = _normalize_bool_setting(settings.get('mtp_enabled'), False)
+    settings['multimodal_enabled'] = _normalize_bool_setting(
+        settings.get('multimodal_enabled'), True
+    )
     return settings
 
 
@@ -910,11 +945,9 @@ async def ensure_glossary_settings_persisted() -> dict[str, Any]:
 
 
 async def invalidate_cache() -> None:
-    global _cache_path, _cache_signature, _cache_entries
     async with _cache_lock:
-        _cache_path = None
-        _cache_signature = None
-        _cache_entries = {}
+        _entries_cache.clear()
+        _smart_route_cache.clear()
 
 
 def _parse_glossary(raw: Any) -> dict[str, str]:
@@ -936,34 +969,42 @@ def _parse_glossary(raw: Any) -> dict[str, str]:
     return entries
 
 
-async def read_entries(settings: Optional[dict[str, Any]] = None) -> tuple[dict[str, str], Optional[float]]:
-    global _cache_path, _cache_signature, _cache_entries
+def _path_for_glossary(glossary: dict[str, Any]) -> Path:
+    configured = glossary.get('path') or glossary.get('glossary_path') or DEFAULT_GLOSSARY_RELATIVE_PATH
+    path = resolve_glossary_path(configured)
+    if is_official_glossary_path(configured) and not path.exists() and LEGACY_OFFICIAL_GLOSSARY_PATH.exists():
+        return LEGACY_OFFICIAL_GLOSSARY_PATH
+    return path
 
-    settings = settings or await read_settings()
-    path = get_effective_glossary_path(settings)
+
+async def read_glossary_entries(
+    glossary: dict[str, Any],
+) -> tuple[dict[str, str], Optional[float], Optional[tuple[int, int]]]:
+    path = _path_for_glossary(glossary)
     if not path.exists():
-        return {}, None
+        return {}, None, None
 
     stat = await asyncio.to_thread(path.stat)
-    signature = (stat.st_mtime, stat.st_size)
+    signature = (stat.st_mtime_ns, stat.st_size)
     path_key = str(path.resolve())
 
     async with _cache_lock:
-        if _cache_path == path_key and _cache_signature == signature:
-            return dict(_cache_entries), stat.st_mtime
+        cached = _entries_cache.get(path_key)
+        if cached and cached[0] == signature:
+            return dict(cached[1]), cached[2], signature
 
-        raw_text = await asyncio.to_thread(path.read_text, encoding='utf-8')
-        raw = json.loads(raw_text)
-        entries = _parse_glossary(raw)
-        _cache_path = path_key
-        _cache_signature = signature
-        _cache_entries = entries
-        return dict(entries), stat.st_mtime
+    raw_text = await asyncio.to_thread(path.read_text, encoding='utf-8')
+    entries = _parse_glossary(json.loads(raw_text))
+    async with _cache_lock:
+        _entries_cache[path_key] = (signature, dict(entries), stat.st_mtime)
+    return dict(entries), stat.st_mtime, signature
 
 
-async def write_entries(entries: dict[str, str], settings: Optional[dict[str, Any]] = None) -> None:
-    settings = settings or await read_settings()
-    path = get_effective_glossary_path(settings)
+async def write_glossary_entries(
+    entries: dict[str, str],
+    glossary: dict[str, Any],
+) -> None:
+    path = _path_for_glossary(glossary)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     fd, tmp_name = tempfile.mkstemp(prefix='glossary-', suffix='.json', dir=str(path.parent))
@@ -979,21 +1020,217 @@ async def write_entries(entries: dict[str, str], settings: Optional[dict[str, An
     await invalidate_cache()
 
 
+async def _resolve_smart_glossary(
+    settings: dict[str, Any],
+) -> tuple[SmartGlossaryResult, Optional[float]]:
+    settings = normalize_settings(settings)
+    source_lang, target_lang = _glossary_language_pair(settings)
+    glossaries = [item for item in settings.get('glossaries', []) if isinstance(item, dict)]
+    loaded = await asyncio.gather(*(read_glossary_entries(glossary) for glossary in glossaries))
+
+    datasets: list[GlossaryDataset] = []
+    fingerprints: list[tuple[object, ...]] = []
+    updated_at: Optional[float] = None
+    for glossary, (entries, modified_at, signature) in zip(glossaries, loaded, strict=True):
+        glossary_source = str(glossary.get('source_lang') or DEFAULT_SETTINGS['source_lang'])
+        glossary_target = str(
+            glossary.get('target_lang') or glossary.get('glossary_lang') or DEFAULT_SETTINGS['target_lang']
+        )
+        official = bool(glossary.get('official')) or is_official_glossary_path(glossary.get('path') or '')
+        datasets.append(
+            GlossaryDataset(
+                id=str(glossary.get('id') or ''),
+                name=str(glossary.get('name') or glossary.get('id') or ''),
+                source_lang=glossary_source,
+                target_lang=glossary_target,
+                entries=entries,
+                official=official,
+                user_override=bool(glossary.get('user_override')),
+                version=str(glossary.get('version') or '1.0.0'),
+            )
+        )
+        fingerprints.append(
+            (
+                glossary.get('id'),
+                glossary.get('path'),
+                glossary_source,
+                glossary_target,
+                official,
+                bool(glossary.get('user_override')),
+                signature,
+            )
+        )
+        if modified_at is not None:
+            updated_at = max(updated_at or modified_at, modified_at)
+
+    cache_payload = json.dumps(
+        [source_lang, target_lang, fingerprints],
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    cache_key = hashlib.sha256(cache_payload.encode('utf-8')).hexdigest()
+    async with _cache_lock:
+        cached = _smart_route_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    result = resolve_smart_glossary(datasets, source_lang, target_lang)
+    async with _cache_lock:
+        if len(_smart_route_cache) >= 8:
+            _smart_route_cache.pop(next(iter(_smart_route_cache)))
+        _smart_route_cache[cache_key] = (result, updated_at)
+    return result, updated_at
+
+
+async def get_glossary_view(
+    settings: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    settings = normalize_settings(settings or await read_settings())
+    if settings.get('glossary_mode') == 'smart':
+        result, updated_at = await _resolve_smart_glossary(settings)
+        return {
+            'entries': dict(result.entries),
+            'entry_origins': dict(result.entry_origins),
+            'routes': [route.as_dict() for route in result.routes],
+            'languages': list(result.available_languages),
+            'mode': 'smart',
+            'updated_at': updated_at,
+        }
+
+    active = active_glossary(settings)
+    entries, updated_at, _signature = await read_glossary_entries(active)
+    official = bool(active.get('official')) or is_official_glossary_path(active.get('path') or '')
+    source_lang = str(active.get('source_lang') or settings.get('source_lang') or '')
+    target_lang = str(active.get('target_lang') or active.get('glossary_lang') or settings.get('target_lang') or '')
+    languages = sorted(
+        {
+            str(language)
+            for glossary in settings.get('glossaries', [])
+            if isinstance(glossary, dict)
+            for language in (
+                glossary.get('source_lang'),
+                glossary.get('target_lang') or glossary.get('glossary_lang'),
+            )
+            if language
+        },
+        key=str.casefold,
+    )
+    routes = []
+    if entries:
+        routes.append(
+            {
+                'kind': 'direct',
+                'source_lang': source_lang,
+                'target_lang': target_lang,
+                'pivot_lang': None,
+                'glossary_ids': [active.get('id')],
+                'glossary_names': [active.get('name')],
+                'coverage': len(entries),
+            }
+        )
+    return {
+        'entries': entries,
+        'entry_origins': {source: 'direct' if official else 'user' for source in entries},
+        'routes': routes,
+        'languages': languages,
+        'mode': 'fixed',
+        'updated_at': updated_at,
+    }
+
+
+async def read_entries(
+    settings: Optional[dict[str, Any]] = None,
+) -> tuple[dict[str, str], Optional[float]]:
+    view = await get_glossary_view(settings)
+    return dict(view['entries']), view.get('updated_at')
+
+
+async def write_entries(
+    entries: dict[str, str],
+    settings: Optional[dict[str, Any]] = None,
+) -> None:
+    settings = normalize_settings(settings or await read_settings())
+    await write_glossary_entries(entries, active_glossary(settings))
+
+
 def _language_key(value: str) -> str:
-    return re.sub(r'\s+', '', str(value or '').strip().casefold())
+    return language_key(value)
 
 
 def _is_chinese_language(value: str) -> bool:
-    key = _language_key(value)
-    return key in {'中文', '汉语', '简体中文', '繁体中文', '普通话', 'chinese', 'mandarin', 'zh', 'zh-cn', 'zh_cn'}
+    return _language_key(value).split('-', 1)[0] == 'zh'
 
 
 def _glossary_language_pair(settings: dict[str, Any]) -> tuple[str, str]:
+    if settings.get('glossary_mode') == 'smart':
+        source_lang = str(settings.get('smart_source_lang') or DEFAULT_SETTINGS['smart_source_lang']).strip()
+        target_lang = str(settings.get('smart_target_lang') or DEFAULT_SETTINGS['smart_target_lang']).strip()
+        return source_lang, target_lang
+
     source_lang = str(settings.get('source_lang') or DEFAULT_SETTINGS['source_lang']).strip()
     target_lang = str(
         settings.get('target_lang') or settings.get('glossary_lang') or DEFAULT_SETTINGS['target_lang']
     ).strip()
     return source_lang, target_lang
+
+
+async def get_editable_glossary(
+    settings: Optional[dict[str, Any]] = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    settings = normalize_settings(settings or await read_settings())
+    if settings.get('glossary_mode') != 'smart':
+        settings = await fork_official_glossary_for_edit(settings)
+        return settings, active_glossary(settings)
+
+    source_lang, target_lang = _glossary_language_pair(settings)
+    glossaries = [item for item in settings.get('glossaries', []) if isinstance(item, dict)]
+    existing = next(
+        (
+            item
+            for item in glossaries
+            if item.get('user_override')
+            and same_language(str(item.get('source_lang') or ''), source_lang)
+            and same_language(str(item.get('target_lang') or ''), target_lang)
+        ),
+        None,
+    )
+    if existing is not None:
+        return settings, existing
+
+    pair_hash = hashlib.sha256(f'{language_key(source_lang)}->{language_key(target_lang)}'.encode('utf-8')).hexdigest()[
+        :12
+    ]
+    base_id = f'user-{pair_hash}'
+    glossary_id = base_id
+    existing_ids = {str(item.get('id') or '') for item in glossaries}
+    suffix = 2
+    while glossary_id in existing_ids:
+        glossary_id = f'{base_id}-{suffix}'
+        suffix += 1
+
+    relative_path = make_relative_glossary_path(f'glossaries/{glossary_id}.json')
+    path = resolve_glossary_path(relative_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        await asyncio.to_thread(path.write_text, '{}\n', encoding='utf-8')
+
+    glossaries.append(
+        {
+            'id': glossary_id,
+            'name': f'{source_lang}-{target_lang} 个人词条',
+            'path': relative_path,
+            'version': '1.0.0',
+            'source_lang': source_lang,
+            'glossary_lang': target_lang,
+            'target_lang': target_lang,
+            'official': False,
+            'user_override': True,
+        }
+    )
+    settings = await write_settings({'glossaries': glossaries})
+    editable = next(item for item in settings['glossaries'] if item.get('id') == glossary_id)
+    return settings, editable
 
 
 def _lang_to_code(lang_name: str) -> str:

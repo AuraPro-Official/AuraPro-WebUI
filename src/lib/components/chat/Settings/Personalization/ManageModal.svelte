@@ -5,7 +5,13 @@
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import MemoryModal from './MemoryModal.svelte';
-	import { deleteMemoriesByUserId, deleteMemoryById, getMemories } from '$lib/apis/memories';
+	import {
+		deleteMemoriesByUserId,
+		deleteMemoryById,
+		getMemories,
+		restoreMemoryVersion,
+		setMemoryPinned
+	} from '$lib/apis/memories';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import localizedFormat from 'dayjs/plugin/localizedFormat';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
@@ -15,6 +21,9 @@
 	import Pencil from '$lib/components/icons/Pencil.svelte';
 	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
 	import Search from '$lib/components/icons/Search.svelte';
+	import Pin from '$lib/components/icons/Pin.svelte';
+	import PinSlash from '$lib/components/icons/PinSlash.svelte';
+	import ClockRotateRight from '$lib/components/icons/ClockRotateRight.svelte';
 
 	const i18n = getContext('i18n');
 	dayjs.extend(localizedFormat);
@@ -27,6 +36,10 @@
 		type?: string;
 		path?: string;
 		updated_at?: number;
+		meta?: {
+			pinned?: boolean;
+			revisions?: Array<Record<string, unknown>>;
+		};
 	};
 
 	let memories: Memory[] = [];
@@ -74,9 +87,33 @@
 			})
 		: memories;
 
-	$: sortedMemories = [...filteredMemories].sort(
-		(a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0)
-	);
+	$: sortedMemories = [...filteredMemories].sort((a, b) => {
+		const pinOrder = Number(Boolean(b.meta?.pinned)) - Number(Boolean(a.meta?.pinned));
+		return pinOrder || (b.updated_at ?? 0) - (a.updated_at ?? 0);
+	});
+
+	const togglePinned = async (memory: Memory) => {
+		const pinned = !memory.meta?.pinned;
+		const result = await setMemoryPinned(localStorage.token, memory.id, pinned).catch((error) => {
+			toast.error(`${error}`);
+			return null;
+		});
+		if (result) {
+			toast.success($i18n.t(pinned ? 'Memory pinned' : 'Memory unpinned'));
+			await loadMemories();
+		}
+	};
+
+	const restorePreviousVersion = async (memory: Memory) => {
+		const result = await restoreMemoryVersion(localStorage.token, memory.id).catch((error) => {
+			toast.error(`${error}`);
+			return null;
+		});
+		if (result) {
+			toast.success($i18n.t('Memory version restored'));
+			await loadMemories();
+		}
+	};
 
 	let onClearConfirmed = async () => {
 		const res = await deleteMemoriesByUserId(localStorage.token).catch((error) => {
@@ -167,6 +204,9 @@
 										class="flex-1 min-w-0 text-left flex items-center gap-1.5 pr-2 text-gray-900 dark:text-gray-100 hover:text-black dark:hover:text-white transition leading-5"
 										on:click={() => editMemory(memory)}
 									>
+										{#if memory.meta?.pinned}
+											<Pin className="size-3.5 shrink-0 text-yellow-500 dark:text-yellow-300" />
+										{/if}
 										<div class="truncate leading-5">
 											{memory.content}
 										</div>
@@ -193,6 +233,36 @@
 										<div
 											class="flex items-center text-gray-500 dark:text-gray-400 opacity-70 group-hover:opacity-100 focus-within:opacity-100 transition"
 										>
+											<Tooltip content={$i18n.t(memory.meta?.pinned ? 'Unpin' : 'Pin')}>
+												<button
+													class="self-center w-fit text-sm p-1 leading-none hover:text-gray-900 dark:hover:text-gray-100 transition"
+													on:click={(e) => {
+														e.stopPropagation();
+														togglePinned(memory);
+													}}
+												>
+													{#if memory.meta?.pinned}
+														<PinSlash className="size-4" />
+													{:else}
+														<Pin className="size-4" />
+													{/if}
+												</button>
+											</Tooltip>
+
+											{#if (memory.meta?.revisions?.length ?? 0) > 0}
+												<Tooltip content={$i18n.t('Restore previous version')}>
+													<button
+														class="self-center w-fit text-sm p-1 leading-none hover:text-gray-900 dark:hover:text-gray-100 transition"
+														on:click={(e) => {
+															e.stopPropagation();
+															restorePreviousVersion(memory);
+														}}
+													>
+														<ClockRotateRight className="size-4" />
+													</button>
+												</Tooltip>
+											{/if}
+
 											<Tooltip content={$i18n.t('Edit')}>
 												<button
 													class="self-center w-fit text-sm p-1 leading-none hover:text-gray-900 dark:hover:text-gray-100 transition"

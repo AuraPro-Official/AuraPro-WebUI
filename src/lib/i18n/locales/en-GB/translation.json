@@ -1,4 +1,4 @@
-{
+﻿{
 	"'s', 'm', 'h', 'd', 'w' or '-1' for no expiration.": "",
 	"(e.g. `sh webui.sh --api --api-auth username_password`)": "",
 	"(e.g. `sh webui.sh --api`)": "",
@@ -2426,5 +2426,25 @@
 	"JSON Base64": "",
 	"Memory System Context": "",
 	"Multipart Upload": "",
-	"Request Format": ""
+	"Request Format": "",
+	"Glossary mode": "Glossary mode",
+	"Language 1": "Language 1",
+	"Language 2": "Language 2",
+	"Smart glossary": "Smart glossary",
+	"Specific glossary": "Specific glossary",
+	"Enter or select a language": "Enter or select a language",
+	"Enter a custom language": "Enter a custom language",
+	"Smart mode uses a direct glossary first, then combines compatible glossaries through a shared language.": "Smart mode uses a direct glossary first, then combines compatible glossaries through a shared language.",
+	"Direct glossary": "Direct glossary",
+	"Combined glossary": "Combined glossary",
+	"via {{language}}": "via {{language}}",
+	"{{count}} terms": "{{count}} terms",
+	"No compatible glossary was found. Translation will continue without glossary terms.": "No compatible glossary was found. Translation will continue without glossary terms.",
+	"Create a glossary if the required language is unavailable.": "Create a glossary if the required language is unavailable.",
+	"Personal term": "Personal term",
+	"Personal correction": "Personal correction",
+	"MTP acceleration": "MTP acceleration",
+	"MTP improves AI inference speed by about 20%, but uses about 2 GB more RAM or VRAM. Leave it off on memory-constrained systems.": "MTP improves AI inference speed by about 20%, but uses about 2 GB more RAM or VRAM. Leave it off on memory-constrained systems.",
+	"Multimodal input": "Multimodal input",
+	"Multimodal input supports images and audio and uses about 1 GB more RAM or VRAM. Turn it off if you do not need it on a memory-constrained system.": "Multimodal input supports images and audio and uses about 1 GB more RAM or VRAM. Turn it off if you do not need it on a memory-constrained system."
 }
