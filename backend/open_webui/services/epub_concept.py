@@ -620,6 +620,7 @@ class EpubConceptService:
             "graph_offset": response.graph_offset,
             "graph_results": [hit(value) for value in response.graph_results],
             "vector_results": [hit(value) for value in response.vector_results],
+            "fused_results": [hit(value) for value in response.fused_results],
             "degraded": [asdict(value) for value in response.degraded],
         }
 

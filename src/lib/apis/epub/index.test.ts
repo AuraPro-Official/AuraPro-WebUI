@@ -34,6 +34,7 @@ describe('EPUB concept API client', () => {
 					graph_offset: 0,
 					graph_results: [],
 					vector_results: [],
+					fused_results: [],
 					degraded: []
 				})
 			);

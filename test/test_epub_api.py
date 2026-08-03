@@ -119,6 +119,9 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         hit = result.json()["graph_results"][0]
         self.assertEqual(hit["content"], "TCP 是传输控制协议。原文必须完整返回。")
         self.assertEqual(hit["excerpt"], {"content": "TCP", "start_codepoint": 0, "end_codepoint": 3})
+        # The added unified rank channel is API-compatible with the existing
+        # graph/vector fields and is empty when no local vector runtime exists.
+        self.assertEqual(result.json()["fused_results"], [])
 
     def test_ordinary_user_cannot_mutate_epub_domain(self) -> None:
         mutations = [
