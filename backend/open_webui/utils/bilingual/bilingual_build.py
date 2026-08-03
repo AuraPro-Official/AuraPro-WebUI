@@ -1,5 +1,7 @@
 import re
 import gc
+import uuid
+
 import numpy as np
 import asyncio
 import threading
@@ -128,7 +130,7 @@ class BilingualSplitter:
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        except ImportError:
+        except Exception:
             pass
 
     def reload(self, model_name: str = 'sat-3l-sm'):
@@ -571,21 +573,33 @@ class BilingualAligner:
             for idx, pair in enumerate(all_pairs_list[i]):
                 if not pair.source.strip():
                     continue
-                docs.append(
-                    Document(
-                        page_content=pair.source,
-                        metadata={
-                            **base_meta,
-                            'type': 'sentence',
-                            'para_index': pair.para_index,
-                            'sentence_index': idx,
-                            'align_score': pair.score,
-                            'parent_content': pair.para_source,
-                            'parent_langs': {src_lang: pair.para_source, **pair.para_target},
-                            'langs': {src_lang: pair.source, **pair.extra_targets},
-                        },
+
+                all_lang_texts = {src_lang: pair.source, **pair.extra_targets}
+                align_group_id = str(uuid.uuid4())
+                shared_metadata = {
+                    **base_meta,
+                    'type': 'sentence',
+                    'align_group_id': align_group_id,
+                    'para_index': pair.para_index,
+                    'sentence_index': idx,
+                    'align_score': pair.score,
+                    'parent_content': pair.para_source,
+                    'parent_langs': {src_lang: pair.para_source, **pair.para_target},
+                    'primary_lang': src_lang,
+                }
+
+                for lang_code, text in all_lang_texts.items():
+                    if not text.strip():
+                        continue
+                    docs.append(
+                        Document(
+                            page_content=text,
+                            metadata={
+                                **shared_metadata,
+                                'lang': lang_code,
+                            },
+                        )
                     )
-                )
             result.append(docs)
 
         return result
