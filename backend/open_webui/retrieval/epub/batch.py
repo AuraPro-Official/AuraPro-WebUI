@@ -426,6 +426,15 @@ _SENSITIVE_REQUEST_KEYS = {
 _SAMPLE_REVIEW_STATUSES = {"APPROVED", "REJECTED"}
 _RESULTS_PENDING_RETRIEVAL = "RESULTS_PENDING_RETRIEVAL"
 _TERMINAL_MISSING_RESULT = "TERMINAL_WITHOUT_ITEM_RESULT"
+_LEGACY_CONCEPT_MENTION_FIELDS = {"start_codepoint", "end_codepoint", "evidence"}
+_GROUNDED_CONCEPT_MENTION_FIELDS = {
+    "start_codepoint",
+    "end_codepoint",
+    "evidence",
+    "context_before",
+    "context_after",
+}
+_MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -950,6 +959,112 @@ class SQLiteBatchRepository:
         return concept_id
 
     @staticmethod
+    def _ground_openai_concept_payload(
+        connection: Any, *, item: Any, payload: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Canonically ground a cloud concept payload against immutable text.
+
+        OpenAI Structured Outputs constrains the response shape, but a model
+        can still count Unicode code points incorrectly.  A bad numeric offset
+        is never trusted: it can be repaired only from an exact evidence string
+        whose literal occurrence is unique, or (for v4) whose short adjacent
+        context anchor selects exactly one occurrence.  Legacy v1-v3 output is
+        retained for replay compatibility, but it has no ambiguity escape hatch.
+        """
+        if set(payload) != {"concepts"} or not isinstance(payload.get("concepts"), list):
+            raise BatchPayloadError("OpenAI concept output must contain only a concepts list")
+        passage = connection.execute(
+            "SELECT content FROM passages WHERE passage_id = ?", (item["passage_id"],)
+        ).fetchone()
+        if passage is None:
+            raise BatchPayloadError("Batch item passage is unavailable")
+        content = passage["content"]
+        grounded_concepts: list[dict[str, Any]] = []
+        for concept in payload["concepts"]:
+            if not isinstance(concept, Mapping) or set(concept) != {
+                "name", "aliases", "definition", "mentions"
+            }:
+                raise BatchPayloadError("OpenAI concept has an invalid schema")
+            mentions = concept.get("mentions")
+            if not isinstance(mentions, list) or not mentions:
+                raise BatchPayloadError("OpenAI concept needs a visible mention")
+            grounded_mentions: list[dict[str, Any]] = []
+            for mention in mentions:
+                if not isinstance(mention, Mapping):
+                    raise BatchPayloadError("OpenAI concept mention has an invalid schema")
+                fields = set(mention)
+                if fields != _LEGACY_CONCEPT_MENTION_FIELDS and fields != _GROUNDED_CONCEPT_MENTION_FIELDS:
+                    raise BatchPayloadError("OpenAI concept mention has an invalid schema")
+                start = mention.get("start_codepoint")
+                end = mention.get("end_codepoint")
+                evidence = mention.get("evidence")
+                if (
+                    isinstance(start, bool)
+                    or isinstance(end, bool)
+                    or not isinstance(start, int)
+                    or not isinstance(end, int)
+                    or not isinstance(evidence, str)
+                    or not evidence
+                ):
+                    raise BatchPayloadError("OpenAI concept mention has invalid offsets or evidence")
+                before = after = ""
+                if fields == _GROUNDED_CONCEPT_MENTION_FIELDS:
+                    before = mention["context_before"]
+                    after = mention["context_after"]
+                    if (
+                        not isinstance(before, str)
+                        or not isinstance(after, str)
+                        or len(before) > _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
+                        or len(after) > _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
+                    ):
+                        raise BatchPayloadError("OpenAI evidence context anchor is invalid")
+
+                occurrences: list[int] = []
+                cursor = content.find(evidence)
+                while cursor >= 0:
+                    occurrences.append(cursor)
+                    # Advance one code point so overlapping literals cannot be
+                    # misclassified as a unique source occurrence.
+                    cursor = content.find(evidence, cursor + 1)
+                if not occurrences:
+                    raise BatchPayloadError("OpenAI evidence is absent from the immutable source")
+                if len(occurrences) > 1 and fields == _GROUNDED_CONCEPT_MENTION_FIELDS and not (before or after):
+                    raise BatchPayloadError("repeated OpenAI evidence needs a non-empty context anchor")
+
+                direct_is_exact = 0 <= start < end <= len(content) and content[start:end] == evidence
+                if direct_is_exact and fields == _GROUNDED_CONCEPT_MENTION_FIELDS:
+                    if (
+                        content[max(0, start - len(before)):start] != before
+                        or content[end:end + len(after)] != after
+                    ):
+                        raise BatchPayloadError("OpenAI evidence context anchor does not match the immutable source")
+                if not direct_is_exact:
+                    candidates = occurrences
+                    if fields == _GROUNDED_CONCEPT_MENTION_FIELDS:
+                        candidates = [
+                            occurrence
+                            for occurrence in occurrences
+                            if content[max(0, occurrence - len(before)):occurrence] == before
+                            and content[
+                                occurrence + len(evidence):occurrence + len(evidence) + len(after)
+                            ] == after
+                        ]
+                    if len(candidates) != 1:
+                        raise BatchPayloadError(
+                            "OpenAI evidence cannot be uniquely located in the immutable source"
+                        )
+                    start = candidates[0]
+                    end = start + len(evidence)
+                normalized = dict(mention)
+                normalized["start_codepoint"] = start
+                normalized["end_codepoint"] = end
+                grounded_mentions.append(normalized)
+            grounded = dict(concept)
+            grounded["mentions"] = grounded_mentions
+            grounded_concepts.append(grounded)
+        return {"concepts": grounded_concepts}
+
+    @staticmethod
     def _add_mentions(
         connection: Any,
         concept_id: str,
@@ -1077,10 +1192,12 @@ class SQLiteBatchRepository:
         already succeeded item is rejected rather than silently rewriting the
         graph, preserving reproducibility of an offline Batch run.
         """
-        serialized = _canonical_json(payload)
         with self._store._write() as connection:
             job = self._require_job(connection, batch_job_id)
             item = self._item_for_update(connection, batch_job_id, custom_id)
+            if job["provider"] == "openai-batch" and job["job_kind"] == "CONCEPT_MENTIONS":
+                payload = self._ground_openai_concept_payload(connection, item=item, payload=payload)
+            serialized = _canonical_json(payload)
             if item["status"] == "SUCCEEDED":
                 if item["response_json"] == serialized:
                     return False
