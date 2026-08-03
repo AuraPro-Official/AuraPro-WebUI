@@ -67,6 +67,10 @@ class RelationAssertionReviewForm(BaseModel):
     status: str = Field(pattern="^(APPROVED|REJECTED|PROVISIONAL)$")
 
 
+class SampleBatchReviewForm(BaseModel):
+    status: str = Field(pattern="^(APPROVED|REJECTED)$")
+
+
 class VersionIndexForm(BaseModel):
     rebuild: bool = False
 
@@ -171,6 +175,76 @@ async def create_batch_draft(
             sample_limit=form_data.sample_limit,
         )
     except (EpubServiceError, BatchServiceError, IntegrityError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.get("/admin/batches")
+async def list_batch_jobs(
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+    version_id: str | None = Query(default=None, min_length=1, max_length=128),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    """List lifecycle-only Batch history; prompts/results never leave the server."""
+    try:
+        return service.list_batch_jobs(version_id=version_id, offset=offset, limit=limit)
+    except EpubServiceError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.get("/admin/batches/{batch_job_id}")
+async def get_batch_job(
+    batch_job_id: str, service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, Any]:
+    """Show safe per-item operational status without source-bearing JSON."""
+    try:
+        return service.get_batch_job(batch_job_id)
+    except EpubServiceError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+
+@router.get("/admin/sample-batch-reviews")
+async def list_sample_batch_reviews(
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+    version_id: str | None = Query(default=None, min_length=1, max_length=128),
+    job_kind: str | None = Query(default=None, pattern="^(CONCEPT_MENTIONS|SECTION_GRAPH)$"),
+) -> dict[str, Any]:
+    """List identifier-only administrator decisions for completed cloud samples."""
+    try:
+        return service.list_sample_batch_reviews(version_id=version_id, job_kind=job_kind)
+    except EpubServiceError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.put("/admin/sample-batches/{batch_job_id}/review")
+async def review_sample_batch(
+    batch_job_id: str,
+    form_data: SampleBatchReviewForm,
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+) -> dict[str, Any]:
+    """Approve/reject a fully ingested OpenAI sample before full cloud work."""
+    try:
+        reviewed_by = str(getattr(user, "id", "")).strip()
+        return service.review_sample_batch(
+            batch_job_id=batch_job_id, status=form_data.status, reviewed_by=reviewed_by
+        )
+    except EpubServiceError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.post("/admin/batches/recover")
+async def recover_batch_jobs(
+    service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, list[dict[str, Any]]]:
+    """Resume persisted submitted/running jobs; never submits a draft."""
+    try:
+        return service.recover_batches()
+    except EpubServiceUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+    except EpubServiceError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 

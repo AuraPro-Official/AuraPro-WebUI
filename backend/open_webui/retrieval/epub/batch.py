@@ -370,6 +370,12 @@ class BatchRepository(Protocol):
 
     def get_job(self, batch_job_id: str) -> dict[str, Any]: ...
 
+    def get_job_summary(self, batch_job_id: str) -> dict[str, Any]: ...
+
+    def list_job_summaries(
+        self, *, version_id: str | None, offset: int, limit: int
+    ) -> tuple[int, list[dict[str, Any]]]: ...
+
     def list_items(self, batch_job_id: str) -> list[dict[str, Any]]: ...
 
     def jsonl_for_job(self, batch_job_id: str) -> str: ...
@@ -384,7 +390,15 @@ class BatchRepository(Protocol):
 
     def create_retry_child(self, batch_job_id: str) -> str: ...
 
-    def list_recoverable_jobs(self, provider: str) -> list[str]: ...
+    def list_recoverable_jobs(self, provider: str | None = None) -> list[str]: ...
+
+    def review_sample_job(
+        self, batch_job_id: str, *, status: str, reviewed_by: str
+    ) -> dict[str, Any]: ...
+
+    def list_sample_reviews(
+        self, *, version_id: str | None = None, job_kind: str | None = None
+    ) -> list[dict[str, Any]]: ...
 
 
 _ACTIVE_JOB_STATES = {"DRAFT", "SUBMITTED", "RUNNING"}
@@ -405,6 +419,7 @@ _SENSITIVE_REQUEST_KEYS = {
     "token",
     "x-api-key",
 }
+_SAMPLE_REVIEW_STATUSES = {"APPROVED", "REJECTED"}
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -463,6 +478,25 @@ class SQLiteBatchRepository:
                     UNIQUE(parent_batch_job_id, reason)
                 )"""
             )
+            # This audit table deliberately holds only durable identifiers and
+            # the review decision.  It never copies source passages, model
+            # output, request JSON, or provider credentials.
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS epub_batch_sample_reviews (
+                    sample_batch_job_id TEXT PRIMARY KEY
+                        REFERENCES batch_jobs(batch_job_id) ON DELETE RESTRICT,
+                    version_id TEXT NOT NULL REFERENCES book_versions(version_id) ON DELETE RESTRICT,
+                    job_kind TEXT NOT NULL CHECK (job_kind IN ('CONCEPT_MENTIONS', 'SECTION_GRAPH')),
+                    status TEXT NOT NULL CHECK (status IN ('APPROVED', 'REJECTED')),
+                    reviewed_by TEXT NOT NULL,
+                    reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            connection.execute(
+                """CREATE INDEX IF NOT EXISTS idx_epub_batch_sample_reviews_gate
+                   ON epub_batch_sample_reviews(version_id, job_kind, status, reviewed_at)"""
+            )
 
     @staticmethod
     def _require_job(connection: Any, batch_job_id: str) -> Any:
@@ -495,7 +529,7 @@ class SQLiteBatchRepository:
         provider: str,
         profile_name: str,
         job_kind: str = "CONCEPT_MENTIONS",
-        is_sample: bool,
+        is_sample: bool = False,
         items: Sequence[BatchItemInput],
         batch_job_id: str | None = None,
     ) -> str:
@@ -547,6 +581,8 @@ class SQLiteBatchRepository:
             unknown = [item.passage_id for item in items if item.passage_id not in passages]
             if unknown:
                 raise BatchServiceError("every Batch item must belong to the job's ready book version")
+            if provider == "openai-batch" and not is_sample:
+                self._require_approved_sample(connection, version_id=version_id, job_kind=job_kind)
             connection.execute(
                 """INSERT INTO batch_jobs(batch_job_id, version_id, provider, profile_name, job_kind, is_sample)
                    VALUES (?, ?, ?, ?, ?, ?)""",
@@ -561,9 +597,204 @@ class SQLiteBatchRepository:
                 )
         return job_id
 
+    @staticmethod
+    def _require_approved_sample(connection: Any, *, version_id: str, job_kind: str) -> None:
+        """Keep the cloud quality gate inside the durable creation transaction.
+
+        An OpenAI Batch can reach the provider's successful terminal state
+        while an individual item fails schema validation or ingestion.  A full
+        job is therefore permitted only after an administrator approves a
+        sample whose every item was durably ingested.
+        """
+        approved = connection.execute(
+            """SELECT review.sample_batch_job_id
+                 FROM epub_batch_sample_reviews AS review
+                 JOIN batch_jobs AS job ON job.batch_job_id = review.sample_batch_job_id
+                WHERE review.version_id = ?
+                  AND review.job_kind = ?
+                  AND review.status = 'APPROVED'
+                  AND job.provider = 'openai-batch'
+                  AND job.is_sample = 1
+                  AND job.status = 'SUCCEEDED'
+                  AND EXISTS (
+                      SELECT 1 FROM batch_items AS item
+                       WHERE item.batch_job_id = job.batch_job_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM batch_items AS item
+                       WHERE item.batch_job_id = job.batch_job_id
+                         AND item.status <> 'SUCCEEDED'
+                  )
+                ORDER BY review.reviewed_at DESC, review.sample_batch_job_id DESC
+                LIMIT 1""",
+            (version_id, job_kind),
+        ).fetchone()
+        if approved is None:
+            raise BatchServiceError(
+                "creating a full OpenAI EPUB Batch requires an administrator-approved sample "
+                "for the same version and job kind; the sample must be SUCCEEDED with every item ingested"
+            )
+
     def get_job(self, batch_job_id: str) -> dict[str, Any]:
         row = self._require_job(self._store._connection(), batch_job_id)
         return dict(row)
+
+    @staticmethod
+    def _summary(connection: Any, row: Any, *, include_items: bool) -> dict[str, Any]:
+        """Return operator-safe state only, never durable request/result text.
+
+        Cloud prompts and model responses can contain source material.  The
+        history UI therefore exposes identifiers, lifecycle timestamps and
+        aggregate counts, but intentionally omits ``request_json``,
+        ``response_json``, raw item errors, and raw provider errors.
+        """
+        statuses = {
+            str(count["status"]): int(count["count"])
+            for count in connection.execute(
+                """SELECT status, COUNT(*) AS count FROM batch_items
+                   WHERE batch_job_id = ? GROUP BY status""",
+                (row["batch_job_id"],),
+            )
+        }
+        summary: dict[str, Any] = {
+            "batch_job_id": row["batch_job_id"],
+            "version_id": row["version_id"],
+            "provider": row["provider"],
+            "provider_job_id": row["provider_job_id"],
+            "profile_name": row["profile_name"],
+            "job_kind": row["job_kind"],
+            "status": row["status"],
+            "is_sample": bool(row["is_sample"]),
+            "submitted_at": row["submitted_at"],
+            "completed_at": row["completed_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "has_error": bool(row["last_error"]),
+            "item_count": sum(statuses.values()),
+            "item_status_counts": statuses,
+        }
+        if include_items:
+            summary["items"] = [
+                {
+                    "batch_item_id": item["batch_item_id"],
+                    "passage_id": item["passage_id"],
+                    "custom_id": item["custom_id"],
+                    "status": item["status"],
+                    "attempt_count": item["attempt_count"],
+                    "has_response": bool(item["response_json"]),
+                    "has_error": bool(item["error_text"]),
+                    "updated_at": item["updated_at"],
+                }
+                for item in connection.execute(
+                    """SELECT batch_item_id, passage_id, custom_id, status, attempt_count,
+                              response_json, error_text, updated_at
+                       FROM batch_items WHERE batch_job_id = ? ORDER BY custom_id""",
+                    (row["batch_job_id"],),
+                )
+            ]
+        return summary
+
+    def get_job_summary(self, batch_job_id: str) -> dict[str, Any]:
+        connection = self._store._connection()
+        return self._summary(connection, self._require_job(connection, batch_job_id), include_items=True)
+
+    def list_job_summaries(
+        self, *, version_id: str | None, offset: int, limit: int
+    ) -> tuple[int, list[dict[str, Any]]]:
+        if offset < 0 or not 1 <= limit <= 200:
+            raise BatchServiceError("Batch history pagination values are invalid")
+        connection = self._store._connection()
+        where = ""
+        parameters: tuple[Any, ...] = ()
+        if version_id is not None:
+            where = " WHERE version_id = ?"
+            parameters = (version_id,)
+        total = int(connection.execute(f"SELECT COUNT(*) FROM batch_jobs{where}", parameters).fetchone()[0])
+        rows = connection.execute(
+            f"""SELECT * FROM batch_jobs{where}
+                ORDER BY created_at DESC, batch_job_id DESC LIMIT ? OFFSET ?""",
+            parameters + (limit, offset),
+        ).fetchall()
+        return total, [self._summary(connection, row, include_items=False) for row in rows]
+
+    def review_sample_job(
+        self, batch_job_id: str, *, status: str, reviewed_by: str
+    ) -> dict[str, Any]:
+        """Persist an administrator review of a fully ingested cloud sample.
+
+        The audit record intentionally contains only identifiers, decision,
+        and time.  It cannot become an alternate copy of the EPUB source,
+        model output, request envelope, or server credential.
+        """
+        if status not in _SAMPLE_REVIEW_STATUSES:
+            raise BatchServiceError("sample review status must be APPROVED or REJECTED")
+        reviewer = reviewed_by.strip()
+        if not reviewer or len(reviewer) > 200:
+            raise BatchServiceError(
+                "sample reviewer identity must be a non-empty value of at most 200 characters"
+            )
+        with self._store._write() as connection:
+            job = self._require_job(connection, batch_job_id)
+            if job["provider"] != "openai-batch" or not bool(job["is_sample"]):
+                raise BatchServiceError("only an OpenAI EPUB sample Batch can be reviewed")
+            item_counts = connection.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN status = 'SUCCEEDED' THEN 1 ELSE 0 END) AS succeeded
+                     FROM batch_items WHERE batch_job_id = ?""",
+                (batch_job_id,),
+            ).fetchone()
+            if (
+                job["status"] != "SUCCEEDED"
+                or item_counts is None
+                or item_counts["total"] == 0
+                or item_counts["total"] != item_counts["succeeded"]
+            ):
+                raise BatchServiceError(
+                    "a sample can be reviewed only after it is SUCCEEDED and every item was ingested"
+                )
+            connection.execute(
+                """INSERT INTO epub_batch_sample_reviews(
+                       sample_batch_job_id, version_id, job_kind, status, reviewed_by, reviewed_at
+                   ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(sample_batch_job_id) DO UPDATE SET
+                       status = excluded.status,
+                       reviewed_by = excluded.reviewed_by,
+                       reviewed_at = CURRENT_TIMESTAMP""",
+                (batch_job_id, job["version_id"], job["job_kind"], status, reviewer),
+            )
+            row = connection.execute(
+                """SELECT sample_batch_job_id, version_id, job_kind, status, reviewed_by, reviewed_at
+                     FROM epub_batch_sample_reviews WHERE sample_batch_job_id = ?""",
+                (batch_job_id,),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def list_sample_reviews(
+        self, *, version_id: str | None = None, job_kind: str | None = None
+    ) -> list[dict[str, Any]]:
+        if job_kind is not None and job_kind not in _JOB_KINDS:
+            raise BatchServiceError(f"unsupported EPUB Batch job kind: {job_kind}")
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if version_id is not None:
+            clauses.append("review.version_id = ?")
+            parameters.append(version_id)
+        if job_kind is not None:
+            clauses.append("review.job_kind = ?")
+            parameters.append(job_kind)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._store._connection().execute(
+            f"""SELECT review.sample_batch_job_id, review.version_id, review.job_kind,
+                       review.status, review.reviewed_by, review.reviewed_at,
+                       job.status AS batch_status
+                  FROM epub_batch_sample_reviews AS review
+                  JOIN batch_jobs AS job ON job.batch_job_id = review.sample_batch_job_id
+                  {where}
+                 ORDER BY review.reviewed_at DESC, review.sample_batch_job_id DESC""",
+            parameters,
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_items(self, batch_job_id: str) -> list[dict[str, Any]]:
         self.get_job(batch_job_id)
@@ -933,15 +1164,20 @@ class SQLiteBatchRepository:
             )
         return child_id
 
-    def list_recoverable_jobs(self, provider: str) -> list[str]:
+    def list_recoverable_jobs(self, provider: str | None = None) -> list[str]:
+        where = "status IN ('SUBMITTED', 'RUNNING')"
+        parameters: tuple[Any, ...] = ()
+        if provider is not None:
+            where = "provider = ? AND " + where
+            parameters = (provider,)
         return [
             row[0]
             for row in self._store._connection()
             .execute(
-                """SELECT batch_job_id FROM batch_jobs
-                   WHERE provider = ? AND status IN ('SUBMITTED', 'RUNNING')
+                f"""SELECT batch_job_id FROM batch_jobs
+                   WHERE {where}
                    ORDER BY created_at, batch_job_id""",
-                (provider,),
+                parameters,
             )
             .fetchall()
         ]
@@ -975,8 +1211,31 @@ class BatchJobService:
         )
 
     def get_job(self, batch_job_id: str) -> dict[str, Any]:
-        """Read durable job metadata without exposing request bodies or credentials."""
+        """Internal lifecycle lookup; API callers must use safe summaries."""
         return self._repository.get_job(batch_job_id)
+
+    def get_job_summary(self, batch_job_id: str) -> dict[str, Any]:
+        return self._repository.get_job_summary(batch_job_id)
+
+    def list_job_summaries(
+        self, *, version_id: str | None = None, offset: int = 0, limit: int = 50
+    ) -> dict[str, Any]:
+        total, items = self._repository.list_job_summaries(
+            version_id=version_id, offset=offset, limit=limit
+        )
+        return {"total": total, "offset": offset, "items": items}
+
+    def review_sample_job(
+        self, batch_job_id: str, *, status: str, reviewed_by: str
+    ) -> dict[str, Any]:
+        return self._repository.review_sample_job(
+            batch_job_id, status=status, reviewed_by=reviewed_by
+        )
+
+    def list_sample_reviews(
+        self, *, version_id: str | None = None, job_kind: str | None = None
+    ) -> list[dict[str, Any]]:
+        return self._repository.list_sample_reviews(version_id=version_id, job_kind=job_kind)
 
     def submit(self, batch_job_id: str, provider: BatchProvider) -> str:
         job = self._repository.get_job(batch_job_id)
@@ -1027,6 +1286,32 @@ class BatchJobService:
     def recover(self, provider: BatchProvider) -> list[dict[str, int | str]]:
         """Poll all non-terminal work after a process restart; safe to repeat."""
         return [self.poll_and_ingest(job_id, provider) for job_id in self._repository.list_recoverable_jobs(provider.name)]
+
+    def recover_all(self, providers: Mapping[str, BatchProvider]) -> dict[str, list[dict[str, Any]]]:
+        """Resume submitted/running jobs without submitting any new cloud work.
+
+        A restart may happen while a provider job is already executing.  This
+        method only polls its durable remote ID and ingests resulting output;
+        DRAFT jobs remain untouched.  Jobs whose provider is not configured
+        are reported, not silently advanced or submitted.
+        """
+        recovered: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        for batch_job_id in self._repository.list_recoverable_jobs():
+            job = self._repository.get_job(batch_job_id)
+            provider_name = str(job["provider"])
+            provider = providers.get(provider_name)
+            if provider is None:
+                skipped.append(
+                    {
+                        "job_id": batch_job_id,
+                        "provider": provider_name,
+                        "reason": "provider is not configured",
+                    }
+                )
+                continue
+            recovered.append(self.poll_and_ingest(batch_job_id, provider))
+        return {"recovered": recovered, "skipped": skipped}
 
     def retry_failed_items(self, batch_job_id: str) -> str:
         """Return an idempotently-created successor job; submit it normally."""

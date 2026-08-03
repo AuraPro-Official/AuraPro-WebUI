@@ -3,11 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	createEpubBatchDraft,
 	createEpubSectionGraphBatchDraft,
+	getEpubBatchJob,
+	getEpubBatchJobs,
 	getEpubBooks,
 	getEpubRelationAssertions,
+	getEpubSampleBatchReviews,
 	importEpub,
 	indexEpubVersion,
 	reviewEpubRelationAssertion,
+	reviewEpubSampleBatch,
+	recoverEpubBatches,
 	searchEpub
 } from './index';
 
@@ -112,6 +117,38 @@ describe('EPUB concept API client', () => {
 		expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'PUT' });
 	});
 
+	it('uses administrator-only sample review endpoints for the full Batch quality gate', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(jsonResponse({ items: [] }))
+			.mockResolvedValueOnce(
+				jsonResponse({
+					sample_batch_job_id: 'sample-1',
+					version_id: 'version-1',
+					job_kind: 'SECTION_GRAPH',
+					status: 'APPROVED',
+					reviewed_by: 'administrator',
+					reviewed_at: '2026-01-01T00:00:00Z',
+					batch_status: 'SUCCEEDED'
+				})
+			);
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getEpubSampleBatchReviews('admin-token', {
+			version_id: 'version-1',
+			job_kind: 'SECTION_GRAPH'
+		});
+		await reviewEpubSampleBatch('admin-token', 'sample-1', 'APPROVED');
+
+		expect(fetchMock.mock.calls[0][0]).toContain('/api/v1/epub/admin/sample-batch-reviews?');
+		expect(fetchMock.mock.calls[0][0]).toContain('version_id=version-1');
+		expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/epub/admin/sample-batches/sample-1/review');
+		expect(fetchMock.mock.calls[1][1]).toMatchObject({
+			method: 'PUT',
+			body: JSON.stringify({ status: 'APPROVED' })
+		});
+	});
+
 	it('surfaces an actionable API detail instead of hiding a failed authorization or configuration', async () => {
 		vi.stubGlobal(
 			'fetch',
@@ -143,5 +180,23 @@ describe('EPUB concept API client', () => {
 			'/api/v1/epub/admin/versions/version-1/index',
 			expect.objectContaining({ method: 'POST', body: JSON.stringify({ rebuild: true }) })
 		);
+	});
+
+	it('uses lifecycle-only Batch history and recovery endpoints', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(jsonResponse({ total: 1, offset: 0, items: [] }))
+			.mockResolvedValueOnce(jsonResponse({ batch_job_id: 'batch-1', items: [] }))
+			.mockResolvedValueOnce(jsonResponse({ recovered: [], skipped: [] }));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getEpubBatchJobs('admin-token', { version_id: 'version-1' });
+		await getEpubBatchJob('admin-token', 'batch-1');
+		await recoverEpubBatches('admin-token');
+
+		expect(fetchMock.mock.calls[0][0]).toContain('/api/v1/epub/admin/batches?');
+		expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/epub/admin/batches/batch-1');
+		expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/epub/admin/batches/recover');
+		expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST' });
 	});
 });

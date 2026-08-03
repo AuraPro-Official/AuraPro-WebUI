@@ -259,6 +259,113 @@ class EpubBatchServiceTest(unittest.TestCase):
                 items=[BatchItemInput("p1", "secret", {"api_key": "never persist this"})],
             )
 
+    def test_full_openai_job_requires_a_completed_and_approved_matching_sample(self) -> None:
+        with self.assertRaisesRegex(BatchServiceError, "administrator-approved sample"):
+            self.service.create_draft(
+                version_id="version",
+                provider="openai-batch",
+                profile_name="cloud-model-snapshot",
+                items=self._items(),
+                batch_job_id="full-without-sample",
+            )
+
+        sample_id = self.service.create_draft(
+            version_id="version",
+            provider="openai-batch",
+            profile_name="cloud-model-snapshot",
+            items=self._items(),
+            is_sample=True,
+            batch_job_id="openai-sample",
+        )
+        openai_provider = FakeProvider()
+        openai_provider.name = "openai-batch"
+        remote_id = self.service.submit(sample_id, openai_provider)
+        openai_provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        openai_provider.results[remote_id] = [
+            ProviderItemResult("p1", payload={"concepts": []}),
+            ProviderItemResult("p2", payload={"concepts": []}),
+        ]
+        self.assertEqual(self.service.poll_and_ingest(sample_id, openai_provider)["failed"], 0)
+
+        approved = self.service.review_sample_job(
+            sample_id, status="APPROVED", reviewed_by="administrator"
+        )
+        self.assertEqual(approved["version_id"], "version")
+        self.assertEqual(approved["job_kind"], "CONCEPT_MENTIONS")
+        self.assertEqual(approved["status"], "APPROVED")
+        self.assertTrue(approved["reviewed_at"])
+
+        full_id = self.service.create_draft(
+            version_id="version",
+            provider="openai-batch",
+            profile_name="cloud-model-snapshot",
+            items=self._items(),
+            batch_job_id="full-after-sample",
+        )
+        self.assertEqual(full_id, "full-after-sample")
+        reloaded = SQLiteBatchRepository(self.store).list_sample_reviews(version_id="version")
+        self.assertEqual(reloaded[0]["sample_batch_job_id"], sample_id)
+        self.assertEqual(reloaded[0]["reviewed_by"], "administrator")
+
+    def test_draft_or_partial_sample_cannot_be_approved(self) -> None:
+        sample_id = self.service.create_draft(
+            version_id="version",
+            provider="openai-batch",
+            profile_name="cloud-model-snapshot",
+            items=self._items(),
+            is_sample=True,
+            batch_job_id="unfinished-sample",
+        )
+        with self.assertRaisesRegex(BatchServiceError, "SUCCEEDED and every item was ingested"):
+            self.service.review_sample_job(sample_id, status="APPROVED", reviewed_by="administrator")
+
+        self.repository.mark_submitted(sample_id, "remote-unfinished-sample")
+        self.repository.set_provider_state(sample_id, "SUCCEEDED", None)
+        first_item = self.repository.list_items(sample_id)[0]
+        self.assertTrue(
+            self.repository.ingest_success(sample_id, first_item["custom_id"], {"concepts": []})
+        )
+        with self.assertRaisesRegex(BatchServiceError, "SUCCEEDED and every item was ingested"):
+            self.service.review_sample_job(sample_id, status="APPROVED", reviewed_by="administrator")
+
+    def test_operator_history_is_safe_and_recovery_never_submits_drafts(self) -> None:
+        self._draft()
+        history = self.service.list_job_summaries()
+        self.assertEqual(history["total"], 1)
+        summary = history["items"][0]
+        self.assertEqual(summary["batch_job_id"], "job")
+        self.assertEqual(summary["status"], "DRAFT")
+        self.assertEqual(summary["item_status_counts"], {"PENDING": 2})
+        self.assertNotIn("request_json", summary)
+        self.assertNotIn("response_json", summary)
+        self.assertNotIn("last_error", summary)
+
+        detail = self.service.get_job_summary("job")
+        self.assertEqual(len(detail["items"]), 2)
+        self.assertNotIn("request_json", detail["items"][0])
+        self.assertNotIn("error_text", detail["items"][0])
+
+        # A restart-recovery action is deliberately unable to create remote
+        # work from a durable DRAFT.
+        self.assertEqual(self.service.recover_all({self.provider.name: self.provider}), {"recovered": [], "skipped": []})
+        self.assertEqual(self.provider.submit_calls, 0)
+
+        remote_id = self.service.submit("job", self.provider)
+        self.provider.snapshots[remote_id] = ProviderSnapshot("running")
+        recovered = self.service.recover_all({self.provider.name: self.provider})
+        self.assertEqual(recovered["recovered"][0]["state"], "RUNNING")
+        self.assertEqual(self.provider.submit_calls, 1)
+
+    def test_recovery_reports_unconfigured_provider_without_contacting_it(self) -> None:
+        self._draft()
+        self.service.submit("job", self.provider)
+        result = self.service.recover_all({})
+        self.assertEqual(result["recovered"], [])
+        self.assertEqual(
+            result["skipped"],
+            [{"job_id": "job", "provider": "fake-batch", "reason": "provider is not configured"}],
+        )
+
     def test_completed_output_ingest_is_idempotent_and_exact(self) -> None:
         self._draft()
         remote_id = self.service.submit("job", self.provider)
