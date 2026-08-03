@@ -18,7 +18,7 @@ from pathlib import Path
 import json
 import sqlite3
 import threading
-from typing import Any, Iterable, Iterator, Mapping, Protocol
+from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 
@@ -571,6 +571,108 @@ class SQLiteEpubStore:
             .execute("SELECT * FROM retrieval_units WHERE retrieval_unit_id = ?", (retrieval_unit_id,))
             .fetchone()
         )
+
+    def list_concept_terms(self) -> list[dict[str, Any]]:
+        """Return canonical names and aliases for the in-memory Tier-1 matcher."""
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                """SELECT c.concept_id, c.canonical_name, a.alias AS term
+                   FROM concepts AS c
+                   JOIN concept_aliases AS a ON a.concept_id = c.concept_id
+                   WHERE c.status != 'REJECTED'
+                   ORDER BY c.canonical_name, a.alias"""
+            )
+            .fetchall()
+        ]
+
+    def count_concept_occurrences(self, concept_ids: Sequence[str]) -> int:
+        if not concept_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in concept_ids)
+        row = self._connection().execute(
+            f"SELECT COUNT(*) AS count FROM concept_mentions WHERE concept_id IN ({placeholders})",
+            tuple(concept_ids),
+        ).fetchone()
+        return int(row["count"])
+
+    def list_concept_occurrences(
+        self, concept_ids: Sequence[str], *, offset: int, limit: int
+    ) -> list[dict[str, Any]]:
+        """Page all matching graph occurrences in a stable source order."""
+        if not concept_ids:
+            return []
+        if offset < 0 or limit < 1:
+            raise IntegrityError("concept occurrence pagination values are invalid")
+        placeholders = ", ".join("?" for _ in concept_ids)
+        rows = self._connection().execute(
+            f"""SELECT m.mention_id, m.concept_id, m.passage_id, m.start_codepoint,
+                       m.end_codepoint, c.canonical_name, p.content, p.content_sha256,
+                       p.toc_node_id, b.title AS book_title
+                FROM concept_mentions AS m
+                JOIN concepts AS c ON c.concept_id = m.concept_id
+                JOIN passages AS p ON p.passage_id = m.passage_id
+                JOIN book_versions AS v ON v.version_id = p.version_id
+                JOIN books AS b ON b.book_id = v.book_id
+                WHERE m.concept_id IN ({placeholders})
+                ORDER BY p.spine_index, p.ordinal, m.start_codepoint, m.mention_id
+                LIMIT ? OFFSET ?""",
+            (*concept_ids, limit, offset),
+        ).fetchall()
+        return [self._search_row_with_toc(dict(row)) for row in rows]
+
+    def get_search_passage(self, passage_id: str) -> dict[str, Any] | None:
+        row = self._connection().execute(
+            """SELECT p.passage_id, p.content, p.content_sha256, p.toc_node_id,
+                       b.title AS book_title
+                FROM passages AS p
+                JOIN book_versions AS v ON v.version_id = p.version_id
+                JOIN books AS b ON b.book_id = v.book_id
+                WHERE p.passage_id = ?""",
+            (passage_id,),
+        ).fetchone()
+        return self._search_row_with_toc(dict(row)) if row is not None else None
+
+    def matched_concept_names(self, passage_id: str, concept_ids: Sequence[str]) -> list[str]:
+        if not concept_ids:
+            return []
+        placeholders = ", ".join("?" for _ in concept_ids)
+        rows = self._connection().execute(
+            f"""SELECT DISTINCT c.canonical_name
+                FROM concept_mentions AS m
+                JOIN concepts AS c ON c.concept_id = m.concept_id
+                WHERE m.passage_id = ? AND m.concept_id IN ({placeholders})
+                ORDER BY c.canonical_name""",
+            (passage_id, *concept_ids),
+        ).fetchall()
+        return [str(row["canonical_name"]) for row in rows]
+
+    def _search_row_with_toc(self, row: dict[str, Any]) -> dict[str, Any]:
+        row["toc_path"] = self._toc_path(row.pop("toc_node_id", None))
+        return row
+
+    def _toc_path(self, toc_node_id: str | None) -> tuple[str, ...]:
+        if not toc_node_id:
+            return ()
+        path: list[str] = []
+        current_id: str | None = toc_node_id
+        # The schema validates parent ownership.  The guard still protects a
+        # read path from an accidental legacy cycle without ever looping.
+        visited: set[str] = set()
+        while current_id is not None:
+            if current_id in visited:
+                raise IntegrityError("TOC hierarchy contains a cycle")
+            visited.add(current_id)
+            row = self._connection().execute(
+                "SELECT title, parent_toc_node_id FROM toc_nodes WHERE toc_node_id = ?", (current_id,)
+            ).fetchone()
+            if row is None:
+                raise IntegrityError("passage refers to a missing TOC node")
+            path.append(str(row["title"]))
+            current_id = row["parent_toc_node_id"]
+        path.reverse()
+        return tuple(path)
 
     def upsert_concept(
         self,
