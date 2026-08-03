@@ -298,6 +298,15 @@ class EpubBatchServiceTest(unittest.TestCase):
         self.assertEqual(approved["status"], "APPROVED")
         self.assertTrue(approved["reviewed_at"])
 
+        with self.assertRaisesRegex(BatchServiceError, "same model profile"):
+            self.service.create_draft(
+                version_id="version",
+                provider="openai-batch",
+                profile_name="other-cloud-model-snapshot",
+                items=self._items(),
+                batch_job_id="full-after-other-model-sample",
+            )
+
         full_id = self.service.create_draft(
             version_id="version",
             provider="openai-batch",
