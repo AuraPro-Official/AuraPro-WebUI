@@ -207,10 +207,10 @@
 			});
 
 			activeSentence.langs[lang] = editingText;
-            activeSentence.langs_modified = {
-                ...activeSentence.langs_modified,
-                [lang]: res.is_modified
-            };
+			activeSentence.langs_modified = {
+				...activeSentence.langs_modified,
+				[lang]: res.langs_modified
+			};
 			data = data;
 
 			toast.success($i18n?.t('Saved') ?? '已保存');
