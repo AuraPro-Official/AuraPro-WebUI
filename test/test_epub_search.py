@@ -155,6 +155,24 @@ class FakeReranker:
         return [0.80, 0.95, 0.70][: len(documents)]
 
 
+class FusionEmbeddings(FakeEmbeddings):
+    """Return one query vector and deterministic vectors for graph excerpts."""
+
+    def embed(self, texts):
+        self.calls.append(list(texts))
+        if len(texts) == 1 and texts[0] == "TCP":
+            return [[1.0, 0.0]]
+        return [[0.0, 1.0] for _ in texts]
+
+
+class FusionReranker(FakeReranker):
+    def score(self, query, documents):
+        self.calls.append((query, list(documents)))
+        # The first call serves the legacy vector channel.  The second call
+        # must contain candidates from both retrieval channels.
+        return [0.40] if len(documents) == 1 else [0.95, 0.80][: len(documents)]
+
+
 class FakeResolver:
     profile = "private-resolver-v1"
 
@@ -293,6 +311,51 @@ class EpubSearchTest(unittest.TestCase):
         response = EpubSearchService(source=source).search("TCP")
         self.assertEqual(response.vector_results, ())
         self.assertEqual(response.degraded[-1].component, "local-vector-search")
+
+    def test_graph_and_vector_candidates_share_local_cross_encoder_and_mmr_fusion(self) -> None:
+        source = FakeSource()
+        backend = FakeVectorBackend([_record(source, "u2", (1.0, 0.0))])
+        embeddings = FusionEmbeddings()
+        reranker = FusionReranker()
+
+        response = EpubSearchService(
+            source=source,
+            vector_backend=backend,
+            embeddings=embeddings,
+            reranker=reranker,
+            mmr_lambda=1.0,
+        ).search("TCP", graph_limit=1, vector_limit=2, vector_candidate_limit=2)
+
+        # The legacy fields stay independently usable, while fused_results
+        # ranks the exact graph excerpt and exact vector window together.
+        self.assertEqual([hit.passage_id for hit in response.graph_results], ["p1"])
+        self.assertEqual([hit.passage_id for hit in response.vector_results], ["p2"])
+        self.assertEqual([hit.passage_id for hit in response.fused_results], ["p1", "p2"])
+        graph_hit, vector_hit = response.fused_results
+        self.assertEqual(graph_hit.content, source.passages["p1"]["content"])
+        self.assertEqual(graph_hit.excerpt.content, "TCP")
+        self.assertEqual(graph_hit.provenance, ("graph", "cross-encoder", "mmr", "fused"))
+        self.assertEqual(vector_hit.content, source.passages["p2"]["content"])
+        self.assertEqual(vector_hit.excerpt.content, source.units["u2"]["content"])
+        self.assertEqual(vector_hit.provenance, ("vector", "cross-encoder", "mmr", "fused"))
+        self.assertEqual(reranker.calls[-1][1], ["TCP", source.units["u2"]["content"]])
+        self.assertEqual(embeddings.calls, [["TCP"], ["TCP"]])
+
+    def test_malformed_local_graph_embedding_fails_closed_for_fused_channel(self) -> None:
+        source = FakeSource()
+        response = EpubSearchService(
+            source=source,
+            vector_backend=FakeVectorBackend([]),
+            # This existing fake returns one vector for a two-excerpt graph
+            # batch.  It simulates a malformed local runtime response.
+            embeddings=FakeEmbeddings(),
+            reranker=FakeReranker(),
+        ).search("TCP", graph_limit=2)
+
+        self.assertEqual(response.graph_results[0].content, source.passages["p1"]["content"])
+        self.assertEqual(response.fused_results, ())
+        self.assertEqual(response.degraded[-1].component, "local-fused-search")
+        self.assertIn("every graph candidate", response.degraded[-1].reason or "")
 
 
 if __name__ == "__main__":

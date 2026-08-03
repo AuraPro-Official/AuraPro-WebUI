@@ -73,6 +73,7 @@ export type EpubSearchResponse = {
 	graph_offset: number;
 	graph_results: EpubSearchHit[];
 	vector_results: EpubSearchHit[];
+	fused_results: EpubSearchHit[];
 	degraded: EpubDegradedState[];
 };
 
