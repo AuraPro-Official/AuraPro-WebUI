@@ -243,6 +243,9 @@
 	};
 
 	let taskIds = null;
+	let pendingChatReconcileTimer: number | null = null;
+	let pendingChatReconcileInFlight = false;
+	const PENDING_CHAT_RECONCILE_INTERVAL_MS = 4000;
 
 	// Chat Input
 	let prompt = '';
@@ -685,12 +688,22 @@
 
 		if (event.chat_id === $chatId) {
 			await tick();
+			const type = event?.data?.type ?? null;
+			const data = event?.data?.data ?? null;
+
+			// chat:active is a chat-level event. It must not depend on the local
+			// message placeholder being present, otherwise a racing or missed message
+			// event can leave the UI spinning after the task has already finished.
+			if (type === 'chat:active') {
+				if (!data?.active) {
+					taskIds = null;
+					await reconcilePendingChat(true);
+				}
+				return;
+			}
+
 			let message = history.messages[event.message_id];
-
 			if (message) {
-				const type = event?.data?.type ?? null;
-				const data = event?.data?.data ?? null;
-
 				if (type === 'status') {
 					if (message?.statusHistory) {
 						message.statusHistory.push(data);
@@ -699,15 +712,8 @@
 					}
 				} else if (type === 'context_compaction') {
 					handleContextCompactionStatus(data);
-				} else if (type === 'chat:active') {
-					if (!data?.active) {
-						taskIds = null;
-						if (chatIdProp && !$temporaryChatEnabled && hasPendingAssistantLeaf()) {
-							await loadChat();
-						}
-					}
 				} else if (type === 'chat:completion') {
-					chatCompletionEventHandler(data, message, event.chat_id);
+					await chatCompletionEventHandler(data, message, event.chat_id);
 				} else if (type === 'chat:tasks:cancel') {
 					dismissContextCompactionToast();
 					if (event.message_id === history.currentId) {
@@ -845,6 +851,17 @@
 				}
 
 				history.messages[event.message_id] = message;
+				// Nested object mutations do not invalidate legacy Svelte reactivity.
+				// Reassigning the container exposes streamed deltas and the done state
+				// immediately without cloning the complete message history.
+				history = history;
+			} else if (
+				type === 'chat:completion' ||
+				type === 'chat:message:error' ||
+				type === 'chat:tasks:cancel'
+			) {
+				// A terminal event can race the local placeholder or arrive in another tab.
+				await reconcilePendingChat(true);
 			}
 		} else {
 			// Non-active chat completion: queue stays in the global store.
@@ -967,34 +984,73 @@
 				message?.role === 'assistant' && !message.done && (message.childrenIds?.length ?? 0) === 0
 		);
 
-	const handleSocketConnect = async () => {
-		if (!chatIdProp || $temporaryChatEnabled) {
+	const reconcilePendingChat = async (knownInactive = false) => {
+		if (
+			pendingChatReconcileInFlight ||
+			loading ||
+			!chatIdProp ||
+			!$chatId ||
+			$temporaryChatEnabled ||
+			!hasPendingAssistantLeaf()
+		) {
 			return;
 		}
 
-		if (!hasPendingAssistantLeaf()) {
-			return;
-		}
+		const activeChatId = $chatId;
+		pendingChatReconcileInFlight = true;
 
-		const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, $chatId)
-			.then((res) => res?.task_ids ?? [])
-			.catch(() => null);
+		try {
+			if (!knownInactive) {
+				const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, activeChatId)
+					.then((res) => res?.task_ids ?? [])
+					.catch(() => null);
 
-		if (pendingTaskIds?.length === 0) {
+				if (pendingTaskIds === null || pendingTaskIds.length > 0) {
+					return;
+				}
+			}
+
+			if ($chatId !== activeChatId || !hasPendingAssistantLeaf()) {
+				return;
+			}
+
 			await loadChat();
 
-			// 重连后确认任务已结束（无论成功失败），释放可能残留的锁并推进队列
-			processingQueueChats.delete($chatId);
-			await processNextInQueue($chatId);
+			if ($chatId === activeChatId) {
+				processingQueueChats.delete(activeChatId);
+				await processNextInQueue(activeChatId);
+			}
+		} finally {
+			pendingChatReconcileInFlight = false;
 		}
+	};
+
+	const handleVisibilityChange = () => {
+		if (document.visibilityState === 'visible') {
+			void reconcilePendingChat();
+		}
+	};
+
+	const handleWindowFocus = () => {
+		void reconcilePendingChat();
+	};
+
+	const handleSocketConnect = async () => {
+		await reconcilePendingChat();
 	};
 
 	onMount(() => {
 		loading = true;
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
+		window.addEventListener('focus', handleWindowFocus);
+		document.addEventListener('visibilitychange', handleVisibilityChange);
 		$socket?.on('events', chatEventHandler);
 		$socket?.on('connect', handleSocketConnect);
+		pendingChatReconcileTimer = window.setInterval(
+			() => void reconcilePendingChat(),
+			PENDING_CHAT_RECONCILE_INTERVAL_MS
+		);
 
 		$audioQueue?.destroy();
 
@@ -1113,6 +1169,12 @@
 				showControlsSubscribe();
 				selectedFolderSubscribe();
 				window.removeEventListener('message', onMessageHandler);
+				window.removeEventListener('focus', handleWindowFocus);
+				document.removeEventListener('visibilitychange', handleVisibilityChange);
+				if (pendingChatReconcileTimer !== null) {
+					window.clearInterval(pendingChatReconcileTimer);
+					pendingChatReconcileTimer = null;
+				}
 				$socket?.off('events', chatEventHandler);
 				$socket?.off('connect', handleSocketConnect);
 				dismissContextCompactionToast();
