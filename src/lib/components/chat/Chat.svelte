@@ -802,7 +802,7 @@
 					}
 				} else if (type === 'notification') {
 					const toastType = data?.type ?? 'info';
-					const toastContent = data?.content ?? '';
+					const toastContent = data?.key ? $i18n.t(data.key) : (data?.content ?? '');
 
 					if (toastType === 'success') {
 						toast.success(toastContent);
@@ -2492,8 +2492,13 @@
 				web_search: webSearchActive
 			};
 
-		if ($settings?.memory ?? $config?.features?.enable_memories ?? false) {
-			features = { ...features, memory: true };
+		const savedMemoryEnabled = $settings?.memory ?? $config?.features?.enable_memories ?? false;
+		if (!$temporaryChatEnabled && savedMemoryEnabled) {
+			features = {
+				...features,
+				memory: true,
+				chat_history_memory: $settings?.chatHistoryMemory ?? true
+			};
 		}
 
 		return features;

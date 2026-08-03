@@ -1,4 +1,4 @@
-{
+﻿{
 	"'s', 'm', 'h', 'd', 'w' or '-1' for no expiration.": "'s'、'm'、'h'、'd'、'w' ， '-1' 表示無到期時間。",
 	"(e.g. `sh webui.sh --api --api-auth username_password`)": "（例如：`sh webui.sh --api --api-auth username_password`）",
 	"(e.g. `sh webui.sh --api`)": "（例如：`sh webui.sh --api`）",
@@ -2415,5 +2415,25 @@
 	"Memory System Context": "記憶系統上下文",
 	"Memory Background Review": "自動審閱並寫入記憶",
 	"Multipart Upload": "",
-	"Request Format": ""
+	"Request Format": "",
+	"Glossary mode": "詞典模式",
+	"Language 1": "語言一",
+	"Language 2": "語言二",
+	"Smart glossary": "智慧詞典",
+	"Specific glossary": "指定詞典",
+	"Enter or select a language": "輸入或選擇語言",
+	"Enter a custom language": "輸入自訂語言",
+	"Smart mode uses a direct glossary first, then combines compatible glossaries through a shared language.": "智慧模式會優先使用直接詞典，沒有直接詞典時透過共同語言自動組合。",
+	"Direct glossary": "直接詞典",
+	"Combined glossary": "組合詞典",
+	"via {{language}}": "經由 {{language}}",
+	"{{count}} terms": "{{count}} 個詞條",
+	"No compatible glossary was found. Translation will continue without glossary terms.": "沒有找到可用的直接或組合詞典。翻譯仍會繼續，但不會注入詞典術語。",
+	"Create a glossary if the required language is unavailable.": "沒有需要的語言時，可以建立新詞典。",
+	"Personal term": "個人詞條",
+	"Personal correction": "個人修正",
+	"MTP acceleration": "MTP 推測解碼",
+	"MTP improves AI inference speed by about 20%, but uses about 2 GB more RAM or VRAM. Leave it off on memory-constrained systems.": "MTP 可提高約 20% 的 AI 推理速度，但會增加約 2GB 的記憶體或顯示記憶體占用，配置吃緊的使用者建議不要開啟。",
+	"Multimodal input": "多模態",
+	"Multimodal input supports images and audio and uses about 1 GB more RAM or VRAM. Turn it off if you do not need it on a memory-constrained system.": "多模態支援讀取圖片和音訊，開啟後會增加約 1GB 的記憶體或顯示記憶體占用。配置吃緊且用不到此功能時建議關閉；需要使用時建議開啟。"
 }
