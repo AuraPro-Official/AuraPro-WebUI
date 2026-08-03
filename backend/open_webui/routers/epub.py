@@ -292,7 +292,9 @@ async def submit_batch(batch_job_id: str, service: ServiceDep, user=Depends(get_
 
 
 @router.post("/admin/batches/{batch_job_id}/poll")
-async def poll_batch(batch_job_id: str, service: ServiceDep, user=Depends(get_admin_user)) -> dict[str, int | str]:
+async def poll_batch(
+    batch_job_id: str, service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, int | str | bool]:
     try:
         return service.poll_batch(batch_job_id)
     except EpubServiceUnavailable as error:
