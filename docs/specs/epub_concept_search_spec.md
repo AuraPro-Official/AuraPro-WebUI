@@ -46,6 +46,7 @@
 ## 一、 详细模块规范 (Detailed Component Specifications)
 
 ### 1. 离线解析与段落切片模块 (`epub_parser`)
+
 - **输入**：`.epub` 电子书文件。
 - **解析策略**：
   - 深度遍历 EPUB 标准目录结构（`NCX` / `NAV` 表）。
@@ -59,6 +60,7 @@
   - `parent_context`: 包含前后段落或小节标题的父上下文
 
 ### 2. Batch 批处理概念抽取与 Wiki 融合引擎 (`batch_concept_pipeline`)
+
 为了实现海量书籍（数千万字）的高效离线建库，并最大程度降低 LLM Token 成本（享受 50% 折扣与超高并发额度），离线建库采用 **Batch API 异步流水线**：
 
 - **阶段一：样本采样与 Prompt 调试 (Sample Prompt Tuning)**
@@ -82,6 +84,7 @@
   - `occurrences`: 出现的段落集合与关联权重 `[{"passage_id": "...", "book_title": "..."}]`
 
 ### 3. 存储层设计 (`storage_layer`) — 已实现
+
 - **独立 SQLite 数据库**：创建单独的 `epub_concept.db` 文件（位于 `DATA_DIR/epub_concept.db`），与主 `webui.db` 完全解耦，便于独立导入/导出/分享概念图谱数据。
 - **实现模块**：[epub_concept_db.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/utils/epub_concept_db.py)
 - **表结构**：
@@ -97,6 +100,7 @@
 - 保留 100% 原文，不存储任何篡改或加工后的段落内容。
 
 ### 4. 在线混合查询与重排流水线 (`query_pipeline`)
+
 - **Step 1: 极速概念定位 (Tiered Concept Lookup)**
   - **Tier 1 (0ms 判定)**：在内存 Trie/Automaton 匹配用户提问。若精准包含词条或别名，直接定位目标 `concept_id`。
   - **Tier 2 (本地轻量 LLM Fallback)**：未能在字典中精准命中时，调用**本地轻量开源模型**（如 `Qwen2.5-1.5B` / `Qwen2.5-3B` / `Llama-3.2-1B`，通过 AuraPro Desktop 现有的 `llama.cpp` 或 `Ollama` 本地推理引擎运行）。秒级（1s~2s）延迟完全可接受，保证客户端查询**完全免费、离线可用且零隐私泄露**。
@@ -120,6 +124,7 @@
 ## 二、 代码模块组织 (Code Architecture Plan)
 
 ### Backend Components (`AuraPro-WebUI/backend/open_webui`)
+
 1. [epub_parser.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/retrieval/loaders/epub_parser.py): EPUB NCX/NAV 结构化解析
 2. [epub_concept_db.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/utils/epub_concept_db.py): **独立 SQLite 持久化层** (books/passages/concepts/alias_index/occurrences 五张表)
 3. [batch_pipeline.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/utils/batch_pipeline.py): Batch API 批处理控制器
@@ -128,12 +133,14 @@
 6. [main.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/main.py): 路由注册
 
 ### Desktop Client Components (`AuraPro-Desktop`)
+
 1. [EpubConceptSearch.svelte](file:///Volumes/codes/workspace/aurapro_new/AuraPro-Desktop/src/renderer/src/components/EpubConceptSearch.svelte): 概念检索与解析 UI
 2. [preload/index.ts](file:///Volumes/codes/workspace/aurapro_new/AuraPro-Desktop/src/preload/index.ts): Preload 桥接
 
 ---
 
 ## 三、 验证与测试计划 (Verification Plan)
+
 1. EPUB 目录树解析单元测试。
 2. Batch JSONL 异步提交与回收落库测试。
 3. 本地轻量模型 NER 识别与延迟测试。
