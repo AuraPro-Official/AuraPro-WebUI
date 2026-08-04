@@ -85,6 +85,10 @@ class EpubSearchRepository(Protocol):
         self, passage_id: str, concept_ids: Sequence[str]
     ) -> list[str]: ...
 
+    def list_concept_relation_neighbors(
+        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+    ) -> list[Mapping[str, Any]]: ...
+
 
 class VectorCandidateBackend(Protocol):
     """Derived-vector query boundary.  Implementations may be sqlite-vec/pgvector."""
@@ -229,19 +233,20 @@ class EpubSearchService:
             matched = self._resolve_tier_two(query, matcher, degraded)
         concept_ids = tuple(term.concept_id for term in matched)
         resolved_names = tuple(dict.fromkeys(term.canonical_name for term in matched))
+        graph_concept_ids, relation_depths = self._expand_relation_concepts(concept_ids)
 
-        graph_total = self._source.count_concept_occurrences(concept_ids) if concept_ids else 0
+        graph_total = self._source.count_concept_occurrences(graph_concept_ids) if graph_concept_ids else 0
         graph_rows = (
-            self._source.list_concept_occurrences(concept_ids, offset=graph_offset, limit=graph_limit)
-            if concept_ids
+            self._source.list_concept_occurrences(graph_concept_ids, offset=graph_offset, limit=graph_limit)
+            if graph_concept_ids
             else []
         )
         graph_results = tuple(
-            self._graph_hit(row, resolved_names) for row in graph_rows
+            self._graph_hit(row, resolved_names, relation_depths) for row in graph_rows
         )
         vector_results = self._vector_hits(
             query,
-            concept_ids=concept_ids,
+            concept_ids=graph_concept_ids,
             candidate_limit=vector_candidate_limit,
             result_limit=vector_limit,
             degraded=degraded,
@@ -255,6 +260,26 @@ class EpubSearchService:
             vector_results=vector_results,
             degraded=tuple(degraded),
         )
+
+    def _expand_relation_concepts(
+        self, concept_ids: Sequence[str], *, max_depth: int = 2
+    ) -> tuple[tuple[str, ...], Mapping[str, int]]:
+        """Follow a bounded containment graph without turning relations into citations."""
+        depths = {concept_id: 0 for concept_id in concept_ids}
+        frontier = list(concept_ids)
+        for depth in range(1, max_depth + 1):
+            if not frontier:
+                break
+            edges = self._source.list_concept_relation_neighbors(frontier, predicates=("HAS_PART",))
+            next_frontier: list[str] = []
+            for edge in edges:
+                target = edge.get("object_concept_id")
+                if not isinstance(target, str) or not target or target in depths:
+                    continue
+                depths[target] = depth
+                next_frontier.append(target)
+            frontier = next_frontier
+        return tuple(depths), depths
 
     def _concept_terms(self) -> list[ConceptTerm]:
         terms: list[ConceptTerm] = []
@@ -298,13 +323,18 @@ class EpubSearchService:
             )
         return accepted
 
-    def _graph_hit(self, row: Mapping[str, Any], resolved_names: Sequence[str]) -> SearchHit:
+    def _graph_hit(
+        self, row: Mapping[str, Any], resolved_names: Sequence[str], relation_depths: Mapping[str, int]
+    ) -> SearchHit:
         passage = self._passage_from_row(row)
         start = row.get("start_codepoint")
         end = row.get("end_codepoint")
         excerpt = _verified_excerpt(passage["content"], passage["content_sha256"], start, end)
         name = row.get("canonical_name")
         matched = (str(name),) if isinstance(name, str) and name else tuple(resolved_names)
+        concept_id = row.get("concept_id")
+        relation_depth = relation_depths.get(concept_id) if isinstance(concept_id, str) else 0
+        provenance = ("graph",) if not relation_depth else ("graph", f"relation:HAS_PART:{relation_depth}")
         return SearchHit(
             passage_id=passage["passage_id"],
             book_title=passage["book_title"],
@@ -312,7 +342,7 @@ class EpubSearchService:
             content=passage["content"],
             content_sha256=passage["content_sha256"],
             matched_concepts=matched,
-            provenance=("graph",),
+            provenance=provenance,
             excerpt=excerpt,
         )
 
