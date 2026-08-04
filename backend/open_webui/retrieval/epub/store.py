@@ -22,7 +22,7 @@ from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 class IntegrityError(ValueError):
@@ -76,6 +76,37 @@ class EpubStore(Protocol):
     def list_retrieval_units_for_version(self, version_id: str) -> list[dict[str, Any]]: ...
 
     def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
+
+    def add_concept_relation(
+        self,
+        version_id: str,
+        subject_concept_id: str,
+        predicate: str,
+        object_concept_id: str,
+        *,
+        evidence: Sequence[Mapping[str, Any]],
+        status: str = "PROVISIONAL",
+        source: str = "MODEL",
+    ) -> str: ...
+
+    def list_concept_relation_neighbors(
+        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+    ) -> list[dict[str, Any]]: ...
+
+    def list_concept_relation_assertions(
+        self,
+        *,
+        status: str | None = None,
+        version_id: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+
+    def count_concept_relation_assertions(
+        self, *, status: str | None = None, version_id: str | None = None
+    ) -> int: ...
+
+    def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
 
 
 _MIGRATION_1: tuple[str, ...] = (
@@ -256,6 +287,69 @@ _MIGRATION_1: tuple[str, ...] = (
 )
 
 
+_RELATION_PREDICATES = (
+    "HAS_PART",
+    "PRECEDES",
+    "PREREQUISITE",
+    "CAUSES",
+    "CONTRASTS",
+    "ELABORATES",
+)
+
+_MIGRATION_2: tuple[str, ...] = (
+    f"""
+    CREATE TABLE concept_relations (
+        relation_id TEXT PRIMARY KEY,
+        subject_concept_id TEXT NOT NULL REFERENCES concepts(concept_id) ON DELETE RESTRICT,
+        predicate TEXT NOT NULL CHECK (predicate IN ({", ".join(repr(value) for value in _RELATION_PREDICATES)})),
+        object_concept_id TEXT NOT NULL REFERENCES concepts(concept_id) ON DELETE RESTRICT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (subject_concept_id <> object_concept_id),
+        UNIQUE(subject_concept_id, predicate, object_concept_id)
+    )
+    """,
+    "CREATE INDEX idx_concept_relations_subject ON concept_relations(subject_concept_id, predicate)",
+    "CREATE INDEX idx_concept_relations_object ON concept_relations(object_concept_id, predicate)",
+    """
+    CREATE TABLE concept_relation_assertions (
+        assertion_id TEXT PRIMARY KEY,
+        relation_id TEXT NOT NULL REFERENCES concept_relations(relation_id) ON DELETE CASCADE,
+        version_id TEXT NOT NULL REFERENCES book_versions(version_id) ON DELETE RESTRICT,
+        status TEXT NOT NULL DEFAULT 'PROVISIONAL'
+            CHECK (status IN ('PROVISIONAL', 'APPROVED', 'REJECTED')),
+        source TEXT NOT NULL DEFAULT 'MODEL'
+            CHECK (source IN ('MODEL', 'ADMIN')),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(relation_id, version_id, source)
+    )
+    """,
+    "CREATE INDEX idx_relation_assertions_relation ON concept_relation_assertions(relation_id, status)",
+    "CREATE INDEX idx_relation_assertions_version ON concept_relation_assertions(version_id, status)",
+    """
+    CREATE TABLE concept_relation_evidence (
+        relation_evidence_id TEXT PRIMARY KEY,
+        assertion_id TEXT NOT NULL REFERENCES concept_relation_assertions(assertion_id) ON DELETE CASCADE,
+        passage_id TEXT NOT NULL REFERENCES passages(passage_id) ON DELETE RESTRICT,
+        start_codepoint INTEGER NOT NULL CHECK (start_codepoint >= 0),
+        end_codepoint INTEGER NOT NULL CHECK (end_codepoint > start_codepoint),
+        evidence TEXT NOT NULL,
+        UNIQUE(assertion_id, passage_id, start_codepoint, end_codepoint)
+    )
+    """,
+    "CREATE INDEX idx_concept_relation_evidence_assertion ON concept_relation_evidence(assertion_id)",
+)
+
+
+_MIGRATION_3: tuple[str, ...] = (
+    """
+    ALTER TABLE batch_jobs ADD COLUMN job_kind TEXT NOT NULL DEFAULT 'CONCEPT_MENTIONS'
+        CHECK (job_kind IN ('CONCEPT_MENTIONS', 'SECTION_GRAPH'))
+    """,
+    "CREATE INDEX idx_batch_jobs_kind ON batch_jobs(job_kind, status)",
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
@@ -317,17 +411,20 @@ class SQLiteEpubStore:
                 row[0]
                 for row in connection.execute("SELECT version FROM schema_migrations")
             }
-            if 1 not in applied:
-                try:
-                    connection.execute("BEGIN")
-                    for statement in _MIGRATION_1[1:]:
+            migrations = ((1, _MIGRATION_1), (2, _MIGRATION_2), (3, _MIGRATION_3))
+            try:
+                connection.execute("BEGIN")
+                for version, statements in migrations:
+                    if version in applied:
+                        continue
+                    for statement in statements[1:] if version == 1 else statements:
                         connection.execute(statement)
-                    connection.execute("INSERT INTO schema_migrations(version) VALUES (?)", (1,))
-                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                    connection.commit()
-                except Exception:
-                    connection.rollback()
-                    raise
+                    connection.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
@@ -698,6 +795,252 @@ class SQLiteEpubStore:
             )
             .fetchall()
         ]
+
+    def add_concept_relation(
+        self,
+        version_id: str,
+        subject_concept_id: str,
+        predicate: str,
+        object_concept_id: str,
+        *,
+        evidence: Sequence[Mapping[str, Any]],
+        status: str = "PROVISIONAL",
+        source: str = "MODEL",
+        relation_id: str | None = None,
+    ) -> str:
+        """Persist a global relation assertion with version-scoped evidence.
+
+        The relation's endpoints must already be concepts mentioned in this
+        immutable EPUB version.  This prevents a model result from introducing
+        a free-floating node or connecting concepts from unrelated books.
+        """
+        if predicate not in _RELATION_PREDICATES:
+            raise IntegrityError(f"unsupported concept relation predicate: {predicate}")
+        if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError(f"invalid concept relation status: {status}")
+        if source not in {"MODEL", "ADMIN"}:
+            raise IntegrityError(f"invalid concept relation source: {source}")
+        if not subject_concept_id or not object_concept_id or subject_concept_id == object_concept_id:
+            raise IntegrityError("concept relation needs two distinct concept endpoints")
+        if not evidence:
+            raise IntegrityError("concept relation needs at least one source evidence span")
+        with self._write() as connection:
+            return self._add_concept_relation(
+                connection,
+                version_id=version_id,
+                subject_concept_id=subject_concept_id,
+                predicate=predicate,
+                object_concept_id=object_concept_id,
+                evidence=evidence,
+                status=status,
+                source=source,
+                relation_id=relation_id,
+            )
+
+    def _add_concept_relation(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        version_id: str,
+        subject_concept_id: str,
+        predicate: str,
+        object_concept_id: str,
+        evidence: Sequence[Mapping[str, Any]],
+        status: str = "PROVISIONAL",
+        source: str = "MODEL",
+        relation_id: str | None = None,
+    ) -> str:
+        """Write one grounded relation using an existing store transaction.
+
+        ``SQLiteBatchRepository`` uses this deliberately private primitive so a
+        section-graph result, its mentions, relations, and item status commit
+        (or roll back) together.  Public callers should use
+        :meth:`add_concept_relation` instead.
+        """
+        if predicate not in _RELATION_PREDICATES:
+            raise IntegrityError(f"unsupported concept relation predicate: {predicate}")
+        if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError(f"invalid concept relation status: {status}")
+        if source not in {"MODEL", "ADMIN"}:
+            raise IntegrityError(f"invalid concept relation source: {source}")
+        if not subject_concept_id or not object_concept_id or subject_concept_id == object_concept_id:
+            raise IntegrityError("concept relation needs two distinct concept endpoints")
+        if not evidence:
+            raise IntegrityError("concept relation needs at least one source evidence span")
+        if connection.execute(
+            "SELECT 1 FROM book_versions WHERE version_id = ?", (version_id,)
+        ).fetchone() is None:
+            raise IntegrityError(f"unknown version_id: {version_id}")
+        for concept_id in (subject_concept_id, object_concept_id):
+            mentioned = connection.execute(
+                """SELECT 1 FROM concept_mentions AS m
+                   JOIN passages AS p ON p.passage_id = m.passage_id
+                   WHERE m.concept_id = ? AND p.version_id = ?""",
+                (concept_id, version_id),
+            ).fetchone()
+            if mentioned is None:
+                raise IntegrityError("relation endpoint has no mention in this EPUB version")
+        existing = connection.execute(
+                """SELECT relation_id FROM concept_relations
+                   WHERE subject_concept_id = ? AND predicate = ? AND object_concept_id = ?""",
+                (subject_concept_id, predicate, object_concept_id),
+        ).fetchone()
+        resolved_id = str(existing["relation_id"]) if existing is not None else (relation_id or str(uuid4()))
+        if existing is None:
+            connection.execute(
+                    """INSERT INTO concept_relations(
+                           relation_id, subject_concept_id, predicate, object_concept_id
+                       ) VALUES (?, ?, ?, ?)""",
+                    (resolved_id, subject_concept_id, predicate, object_concept_id),
+            )
+        assertion = connection.execute(
+                """SELECT assertion_id FROM concept_relation_assertions
+                   WHERE relation_id = ? AND version_id = ? AND source = ?""",
+                (resolved_id, version_id, source),
+        ).fetchone()
+        assertion_id = str(assertion["assertion_id"]) if assertion is not None else str(uuid4())
+        if assertion is None:
+            connection.execute(
+                    """INSERT INTO concept_relation_assertions(
+                           assertion_id, relation_id, version_id, status, source
+                       ) VALUES (?, ?, ?, ?, ?)""",
+                    (assertion_id, resolved_id, version_id, status, source),
+            )
+        for item in evidence:
+            if not isinstance(item, Mapping):
+                raise IntegrityError("concept relation evidence must be an object")
+            passage_id = item.get("passage_id")
+            start = item.get("start_codepoint")
+            end = item.get("end_codepoint")
+            supplied = item.get("evidence")
+            if not isinstance(passage_id, str) or not isinstance(start, int) or not isinstance(end, int):
+                raise IntegrityError("concept relation evidence needs passage_id and integer offsets")
+            passage = connection.execute(
+                "SELECT content FROM passages WHERE passage_id = ? AND version_id = ?",
+                (passage_id, version_id),
+            ).fetchone()
+            if passage is None or start < 0 or end <= start or end > len(passage["content"]):
+                raise IntegrityError("concept relation evidence does not belong to this EPUB version")
+            expected = passage["content"][start:end]
+            if not isinstance(supplied, str) or supplied != expected:
+                raise IntegrityError("concept relation evidence must equal the immutable source substring")
+            exists = connection.execute(
+                    """SELECT 1 FROM concept_relation_evidence
+                       WHERE assertion_id = ? AND passage_id = ? AND start_codepoint = ? AND end_codepoint = ?""",
+                    (assertion_id, passage_id, start, end),
+            ).fetchone()
+            if exists is None:
+                connection.execute(
+                        """INSERT INTO concept_relation_evidence(
+                               relation_evidence_id, assertion_id, passage_id, start_codepoint, end_codepoint, evidence
+                           ) VALUES (?, ?, ?, ?, ?, ?)""",
+                        (str(uuid4()), assertion_id, passage_id, start, end, expected),
+                )
+        return resolved_id
+
+    def list_concept_relation_neighbors(
+        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+    ) -> list[dict[str, Any]]:
+        """Return edges with at least one non-rejected grounded assertion."""
+        if not concept_ids or not predicates:
+            return []
+        if any(predicate not in _RELATION_PREDICATES for predicate in predicates):
+            raise IntegrityError("unsupported concept relation predicate")
+        concept_placeholders = ", ".join("?" for _ in concept_ids)
+        predicate_placeholders = ", ".join("?" for _ in predicates)
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                f"""SELECT DISTINCT r.relation_id, r.subject_concept_id, r.predicate, r.object_concept_id
+                    FROM concept_relations AS r
+                    JOIN concept_relation_assertions AS a ON a.relation_id = r.relation_id
+                    WHERE r.subject_concept_id IN ({concept_placeholders})
+                      AND r.predicate IN ({predicate_placeholders})
+                      AND a.status != 'REJECTED'
+                    ORDER BY r.subject_concept_id, r.predicate, r.object_concept_id, r.relation_id""",
+                (*concept_ids, *predicates),
+            )
+            .fetchall()
+        ]
+
+    def list_concept_relation_assertions(
+        self,
+        *,
+        status: str | None = None,
+        version_id: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Page administrator-review rows together with immutable evidence."""
+        if status is not None and status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError("invalid concept relation assertion status")
+        if offset < 0 or not 1 <= limit <= 200:
+            raise IntegrityError("concept relation assertion pagination values are invalid")
+        conditions: list[str] = []
+        parameters: list[Any] = []
+        if status is not None:
+            conditions.append("a.status = ?")
+            parameters.append(status)
+        if version_id is not None:
+            conditions.append("a.version_id = ?")
+            parameters.append(version_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = self._connection().execute(
+            f"""SELECT a.assertion_id, a.relation_id, a.version_id, a.status, a.source, a.created_at,
+                       r.predicate, subject.canonical_name AS subject_name,
+                       object.canonical_name AS object_name
+                FROM concept_relation_assertions AS a
+                JOIN concept_relations AS r ON r.relation_id = a.relation_id
+                JOIN concepts AS subject ON subject.concept_id = r.subject_concept_id
+                JOIN concepts AS object ON object.concept_id = r.object_concept_id
+                {where}
+                ORDER BY a.created_at DESC, a.assertion_id DESC
+                LIMIT ? OFFSET ?""",
+            (*parameters, limit, offset),
+        ).fetchall()
+        result = [dict(row) for row in rows]
+        for assertion in result:
+            evidence_rows = self._connection().execute(
+                """SELECT passage_id, start_codepoint, end_codepoint, evidence
+                   FROM concept_relation_evidence
+                   WHERE assertion_id = ?
+                   ORDER BY passage_id, start_codepoint, end_codepoint""",
+                (assertion["assertion_id"],),
+            ).fetchall()
+            assertion["evidence"] = [dict(row) for row in evidence_rows]
+        return result
+
+    def count_concept_relation_assertions(
+        self, *, status: str | None = None, version_id: str | None = None
+    ) -> int:
+        if status is not None and status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError("invalid concept relation assertion status")
+        conditions: list[str] = []
+        parameters: list[Any] = []
+        if status is not None:
+            conditions.append("status = ?")
+            parameters.append(status)
+        if version_id is not None:
+            conditions.append("version_id = ?")
+            parameters.append(version_id)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        row = self._connection().execute(
+            f"SELECT COUNT(*) AS count FROM concept_relation_assertions {where}", parameters
+        ).fetchone()
+        return int(row["count"])
+
+    def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None:
+        if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError("invalid concept relation assertion status")
+        with self._write() as connection:
+            changed = connection.execute(
+                """UPDATE concept_relation_assertions
+                   SET status = ? WHERE assertion_id = ?""",
+                (status, assertion_id),
+            ).rowcount
+            if changed != 1:
+                raise IntegrityError("unknown concept relation assertion")
 
     def count_concept_occurrences(self, concept_ids: Sequence[str]) -> int:
         if not concept_ids:

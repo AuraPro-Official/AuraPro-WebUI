@@ -183,6 +183,73 @@ precedence over NCX; disagreement is retained as an auditable warning.
   normalized-name/alias ingestion checks authoritative; prompt context must
   never itself create a semantic merge or bypass administrator review.
 
+### 4.2.1 Local-first prompt calibration
+
+Before an administrator submits any passage to a cloud Batch provider, the
+administrator can run a deterministic cross-chapter sample through the
+Desktop-managed local Qwen runtime. A calibration profile has a stable ID and
+defines the system instruction, output contract, decoding limits, and whether
+passage-relevant seed terms are included. Local calibration records only
+aggregate quality metrics in its administrator-facing report: schema-valid
+rate, exact mention-offset/evidence rate, failure count, chapter coverage, and
+candidate concept counts. It must not expose passage text through a report or
+commit test-book content to the repository.
+
+The local model is used to quickly reject malformed or low-signal prompt
+profiles; its scores are not evidence that a cloud model will have equivalent
+semantic quality. In particular, a small local model may identify a visible
+evidence string while counting Unicode code points unreliably. Local calibration
+may deterministically derive the start/end offsets only when that evidence has
+exactly one literal occurrence in the immutable passage; missing or ambiguous
+evidence remains a hard failure. This never changes source text or permits an
+unverified citation. Remote Batch output must continue to satisfy its complete
+strict schema directly.
+
+A cloud calibration Batch must reuse the selected profile and the same
+deterministic sample selection, pin a provider model snapshot, and be explicitly
+authorized by the administrator before submission. Only after the cloud sample
+is reviewed may a full-version Batch be created.
+
+### 4.2.2 Concept-relation graph (required first-release capability)
+
+Passage-level concept mentions alone are an evidence-backed terminology index,
+not a sufficient concept graph. The first release must therefore build a
+second, relation layer before its full-version offline Batch is accepted.
+
+1. The parser writes the EPUB TOC hierarchy deterministically. A mention is
+   already bound to one passage and therefore to one TOC node; this structural
+   provenance is never inferred by a model.
+2. A bounded TOC-subtree packet can extract concepts, aliases, definitions,
+   exact passage mentions, and its intra-packet relations in one strict
+   response. The system first resolves/creates the response's grounded
+   concepts and mentions, then persists relations only between those resolved
+   packet-local endpoints. Thus a relation cannot introduce a free-floating
+   endpoint, while one remote request has enough local context to recognize a
+   section-level concept and its parts together. All mention evidence/offset
+   invariants remain as in section 4.2.
+3. Follow-up relation-only packets remain available for later cross-section or
+   cross-book analysis. They use existing concepts and exact evidence, but
+   cannot invent a concept, a TOC node, or an ungrounded relation endpoint.
+4. Initial relation predicates are controlled vocabulary: `HAS_PART`,
+   `PRECEDES`, `PREREQUISITE`, `CAUSES`, `CONTRASTS`, and `ELABORATES`.
+   Deterministic TOC parent/child edges remain structurally distinct from
+   model-suggested semantic edges.
+5. A concept-relation identity is global across the shared library, while every
+   model or administrator assertion of that relation is scoped to one EPUB
+   version and names one or more exact immutable-source evidence spans. This
+   permits the same grounded relationship to accumulate support across books
+   without turning it into an unproven universal fact. Assertions are
+   `PROVISIONAL` until reviewed; ambiguous or invalid output is a failed Batch
+   item with no partial graph mutation.
+
+At query time, direct concept mentions and bounded relation traversal form the
+graph candidate set. `HAS_PART` expands a resolved parent concept to its child
+concepts; TOC provenance orders the resulting passages in book order. The
+graph candidate set is combined with local vector candidates, locally
+Cross-Encoder reranked, and MMR diversified. A graph-derived result always
+returns its complete immutable passage and a verified source excerpt; the
+relationship affects retrieval provenance and ranking, never citation text.
+
 ### 4.3 Search
 
 - Tier 1 uses an in-memory multi-pattern matcher (Aho-Corasick or equivalent),

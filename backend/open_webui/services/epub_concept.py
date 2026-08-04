@@ -22,8 +22,22 @@ from open_webui.retrieval.epub.batch import (
     BatchProvider,
     SQLiteBatchRepository,
 )
+from open_webui.retrieval.epub.calibration import LocalConceptCalibrationRunner
+from open_webui.retrieval.epub.prompt_profiles import (
+    DEFAULT_CONCEPT_PROMPT_PROFILE,
+    PromptProfileError,
+    build_concept_completion_request,
+    select_stratified_passages,
+)
 from open_webui.retrieval.epub.retrieval_units import plan_retrieval_windows
 from open_webui.retrieval.epub.search import EpubSearchService, SearchResponse
+from open_webui.retrieval.epub.section_graph import (
+    SECTION_GRAPH_MAX_CHARACTERS,
+    SECTION_GRAPH_PROFILE,
+    SectionGraphError,
+    build_section_graph_completion_request,
+    build_section_graph_packets,
+)
 from open_webui.retrieval.epub.store import IntegrityError, SQLiteEpubStore
 from open_webui.retrieval.parsers.epub.parser import EPUBParser
 
@@ -65,6 +79,9 @@ class EpubApiRepository(Protocol):
     def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
     def set_version_status(self, version_id: str, status: str, *, failure_reason: str | None = None) -> None: ...
     def upsert_concept(self, canonical_name: str, **kwargs: Any) -> str: ...
+    def list_concept_relation_assertions(self, **kwargs: Any) -> list[dict[str, Any]]: ...
+    def count_concept_relation_assertions(self, **kwargs: Any) -> int: ...
+    def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
 
 
 class EpubConceptService:
@@ -83,6 +100,7 @@ class EpubConceptService:
         batch: BatchJobService | None = None,
         providers: Mapping[str, BatchProvider] | None = None,
         vector_indexer: Any | None = None,
+        calibration_runner: LocalConceptCalibrationRunner | None = None,
         retrieval_embedding_profile: str | None = None,
     ) -> None:
         self._store = store
@@ -96,6 +114,7 @@ class EpubConceptService:
         self._batch = batch
         self._providers = dict(providers or {})
         self._vector_indexer = vector_indexer
+        self._calibration_runner = calibration_runner
         self._retrieval_embedding_profile = retrieval_embedding_profile or None
 
     def list_books(self) -> list[dict[str, Any]]:
@@ -267,6 +286,7 @@ class EpubConceptService:
         *,
         version_id: str,
         profile_name: str,
+        prompt_profile: str = DEFAULT_CONCEPT_PROMPT_PROFILE,
         is_sample: bool,
         sample_limit: int,
     ) -> dict[str, Any]:
@@ -277,15 +297,24 @@ class EpubConceptService:
         passages = self._store.list_passages(version_id)
         if not passages:
             raise EpubServiceError("EPUB version contains no passages")
-        selected = passages[:sample_limit] if is_sample else passages
-        items = [
-            BatchItemInput(
-                passage_id=str(passage["passage_id"]),
-                custom_id=f"{version_id}:{passage['passage_id']}",
-                request=self._batch_request(profile_name, str(passage["content"])),
+        try:
+            selected = (
+                select_stratified_passages(passages, limit=sample_limit) if is_sample else passages
             )
-            for passage in selected
-        ]
+            items = [
+                BatchItemInput(
+                    passage_id=str(passage["passage_id"]),
+                    custom_id=f"{version_id}:{passage['passage_id']}",
+                    request=self._batch_request(
+                        model=profile_name,
+                        prompt_profile=prompt_profile,
+                        content=str(passage["content"]),
+                    ),
+                )
+                for passage in selected
+            ]
+        except PromptProfileError as error:
+            raise EpubServiceError(str(error)) from error
         job_id = self._batch.create_draft(
             version_id=version_id,
             provider="openai-batch",
@@ -293,12 +322,120 @@ class EpubConceptService:
             items=items,
             is_sample=is_sample,
         )
-        return {"batch_job_id": job_id, "item_count": len(items), "status": "DRAFT"}
+        return {
+            "batch_job_id": job_id,
+            "item_count": len(items),
+            "status": "DRAFT",
+            "prompt_profile": prompt_profile,
+        }
+
+    def create_section_graph_batch_draft(
+        self,
+        *,
+        version_id: str,
+        profile_name: str,
+        is_sample: bool,
+        sample_limit: int,
+    ) -> dict[str, Any]:
+        """Create one durable cloud item per bounded TOC section packet.
+
+        Each item is anchored to an actual passage only for Batch lifecycle
+        lineage.  Its request contains all immutable passages in the packet;
+        response mentions and relation evidence must still name their exact
+        source passage and character span.
+        """
+        if not profile_name.strip():
+            raise EpubServiceError("Batch profile_name cannot be empty")
+        if not 1 <= sample_limit <= 500:
+            raise EpubServiceError("sample_limit must be between 1 and 500")
+        passages = self._store.list_passages(version_id)
+        if not passages:
+            raise EpubServiceError("EPUB version contains no passages")
+        if is_sample:
+            selected = select_stratified_passages(passages, limit=sample_limit)
+        else:
+            selected = passages
+        try:
+            packets = build_section_graph_packets(selected, max_characters=SECTION_GRAPH_MAX_CHARACTERS)
+        except SectionGraphError as error:
+            raise EpubServiceError(str(error)) from error
+        items = [
+            BatchItemInput(
+                passage_id=packet.anchor_passage_id,
+                custom_id=f"{version_id}:section-graph:{index}",
+                request=self._section_graph_batch_request(model=profile_name, packet=packet),
+            )
+            for index, packet in enumerate(packets)
+        ]
+        job_id = self._batch.create_draft(
+            version_id=version_id,
+            provider="openai-batch",
+            profile_name=profile_name,
+            job_kind="SECTION_GRAPH",
+            items=items,
+            is_sample=is_sample,
+        )
+        return {
+            "batch_job_id": job_id,
+            "item_count": len(items),
+            "status": "DRAFT",
+            "job_kind": "SECTION_GRAPH",
+            "prompt_profile": SECTION_GRAPH_PROFILE,
+        }
 
     def submit_batch(self, batch_job_id: str) -> dict[str, Any]:
         provider = self._provider_for_job(batch_job_id)
         provider_job_id = self._batch.submit(batch_job_id, provider)
         return {"batch_job_id": batch_job_id, "provider_job_id": provider_job_id}
+
+    def list_relation_assertions(
+        self, *, status: str | None, version_id: str | None, offset: int, limit: int
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "total": self._store.count_concept_relation_assertions(
+                    status=status, version_id=version_id
+                ),
+                "offset": offset,
+                "items": self._store.list_concept_relation_assertions(
+                    status=status, version_id=version_id, offset=offset, limit=limit
+                ),
+            }
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def review_relation_assertion(self, *, assertion_id: str, status: str) -> dict[str, str]:
+        try:
+            self._store.set_concept_relation_assertion_status(assertion_id, status)
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
+        return {"assertion_id": assertion_id, "status": status}
+
+    def run_local_calibration(
+        self, *, version_id: str, prompt_profile: str, sample_limit: int
+    ) -> dict[str, Any]:
+        if self._calibration_runner is None:
+            raise EpubServiceUnavailable("the Desktop-managed local calibration runtime is not configured")
+        if self._store.get_version(version_id) is None:
+            raise EpubServiceError("unknown EPUB version")
+        try:
+            return self._calibration_runner.run(
+                passages=self._store.list_passages(version_id),
+                prompt_profile=prompt_profile,
+                sample_limit=sample_limit,
+            )
+        except (PromptProfileError, ValueError) as error:
+            raise EpubServiceError(str(error)) from error
+
+    async def run_local_calibration_async(
+        self, *, version_id: str, prompt_profile: str, sample_limit: int
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self.run_local_calibration,
+            version_id=version_id,
+            prompt_profile=prompt_profile,
+            sample_limit=sample_limit,
+        )
 
     def poll_batch(self, batch_job_id: str) -> dict[str, int | str]:
         return self._batch.poll_and_ingest(batch_job_id, self._provider_for_job(batch_job_id))
@@ -439,26 +576,26 @@ class EpubConceptService:
         return ids
 
     @staticmethod
-    def _batch_request(profile_name: str, content: str) -> dict[str, Any]:
+    def _batch_request(*, model: str, prompt_profile: str, content: str) -> dict[str, Any]:
         """Build a server-owned OpenAI Batch request with no credential fields."""
+        body = build_concept_completion_request(
+            model=model,
+            profile_id=prompt_profile,
+            passage=content,
+            remote_structured_output=True,
+        )
         return {
             "method": "POST",
             "url": "/v1/chat/completions",
-            "body": {
-                "model": profile_name,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Extract glossary concepts from the supplied immutable EPUB passage. "
-                            "Return JSON: {concepts:[{name,aliases,definition,mentions:[{start_codepoint,end_codepoint,evidence}]}]}. "
-                            "Mention offsets and evidence must exactly identify source text."
-                        ),
-                    },
-                    {"role": "user", "content": content},
-                ],
-            },
+            "body": body,
+        }
+
+    @staticmethod
+    def _section_graph_batch_request(*, model: str, packet: Any) -> dict[str, Any]:
+        return {
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": build_section_graph_completion_request(model=model, packet=packet),
         }
 
     @staticmethod
@@ -483,6 +620,7 @@ class EpubConceptService:
             "graph_offset": response.graph_offset,
             "graph_results": [hit(value) for value in response.graph_results],
             "vector_results": [hit(value) for value in response.vector_results],
+            "fused_results": [hit(value) for value in response.fused_results],
             "degraded": [asdict(value) for value in response.degraded],
         }
 
