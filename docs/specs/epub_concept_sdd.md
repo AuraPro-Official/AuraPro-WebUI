@@ -63,6 +63,22 @@ The EPUB store must not use the main `webui.db` or the generic OpenWebUI RAG
 collection as its source of truth. Existing OpenWebUI model adapters may be
 reused behind an EPUB-specific policy that permits only local/private endpoints.
 
+### 3.1 Current runtime configuration
+
+On a local server, startup creates and attaches an independent SQLite source
+store at `${DATA_DIR}/epub_concept_v1.db` by default. The administrator may
+set `EPUB_CONCEPT_DB_PATH` to another persistent file. The optional
+`EPUB_CONCEPT_DATABASE_URL` is reserved for the remote-store implementation;
+until the PostgreSQL repository is delivered, a PostgreSQL URL is rejected at
+startup and EPUB routes remain fail-closed rather than writing to the main
+WebUI database. `:memory:` is never valid for the shared library.
+
+Offline OpenAI Batch is enabled only by the server-side
+`EPUB_CONCEPT_BATCH_OPENAI_API_KEY` (with optional
+`EPUB_CONCEPT_BATCH_OPENAI_ENDPOINT` and
+`EPUB_CONCEPT_BATCH_OPENAI_COMPLETION_WINDOW`). It deliberately does not reuse
+generic OpenAI/RAG credentials and no browser request can set it.
+
 ## 4. Functional requirements
 
 ### 4.1 Import and parsing
