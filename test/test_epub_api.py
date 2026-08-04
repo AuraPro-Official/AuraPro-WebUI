@@ -105,6 +105,11 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
                 "/api/v1/epub/admin/batches",
                 {"version_id": "version-1", "profile_name": "server-batch-profile"},
             ),
+            (
+                "post",
+                "/api/v1/epub/admin/calibrations/local",
+                {"version_id": "version-1"},
+            ),
             ("post", "/api/v1/epub/admin/batches/missing/submit", None),
             ("post", "/api/v1/epub/admin/batches/missing/poll", None),
             ("post", "/api/v1/epub/admin/batches/missing/retry", None),
@@ -137,6 +142,48 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         )
         self.assertEqual(draft.status_code, 201)
         self.assertEqual(draft.json()["item_count"], 1)
+        self.assertEqual(draft.json()["prompt_profile"], "zh-glossary-v3")
+
+    def test_admin_can_run_local_calibration_without_exposing_source_text(self) -> None:
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        test_case = self
+
+        class FakeCalibrationRunner:
+            def run(self, *, passages, prompt_profile, sample_limit):
+                test_case.assertEqual(len(passages), 1)
+                test_case.assertEqual(prompt_profile, "zh-glossary-v3")
+                test_case.assertEqual(sample_limit, 20)
+                return {
+                    "mode": "LOCAL_QWEN",
+                    "prompt_profile": prompt_profile,
+                    "model": "test-local-model",
+                    "sample_count": 1,
+                    "chapter_count": 1,
+                    "valid_items": 1,
+                    "invalid_items": 0,
+                    "schema_valid_rate": 1.0,
+                    "concept_count": 1,
+                    "mention_count": 1,
+                    "items": [
+                        {
+                            "passage_id": "passage-1",
+                            "ordinal": 0,
+                            "toc_path": [],
+                            "valid": True,
+                            "concept_count": 1,
+                            "mention_count": 1,
+                            "reason": None,
+                        }
+                    ],
+                }
+
+        self.service._calibration_runner = FakeCalibrationRunner()
+        response = self.client.post(
+            "/api/v1/epub/admin/calibrations/local", json={"version_id": "version-1"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["valid_items"], 1)
+        self.assertNotIn("完整返回", response.text)
 
     def test_admin_can_bulk_index_a_version_without_exposing_unit_ids(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
