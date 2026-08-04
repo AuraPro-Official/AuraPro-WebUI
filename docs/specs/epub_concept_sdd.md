@@ -111,6 +111,33 @@ contains no model URL, database path, or credentials.  A failed sqlite-vec SQL
 health check or model policy validation remains degraded/fail-closed and never
 substitutes a cloud service.
 
+### 3.2 End-user local packaging requirement (D-010)
+
+The development and acceptance-test path may run a separately installed
+Homebrew `llama-server`, but this is not an end-user prerequisite.  For the
+desktop/local-server profile, a user must be able to install only AuraPro
+Desktop and AuraPro-WebUI, then use the EPUB feature without manually
+installing Homebrew, llama.cpp, Python model tooling, or a separate model
+server.
+
+AuraPro Desktop is the owner of the local runtime lifecycle: it installs and
+updates its compatible llama.cpp binary, selects an available loopback port,
+downloads/selects the approved GGUF model, starts/stops the process, and
+reports health.  It must expose the currently managed local endpoint and model
+identifier to WebUI through an authenticated Desktop-to-WebUI integration;
+WebUI must not require an end user to edit `EPUB_CONCEPT_LOCAL_LLM_*` variables.
+The first-run UI must show model download progress, disk requirements, and a
+recoverable failure state.  This requirement does not mean models are embedded
+in the application installer: initial online model download is acceptable.  A
+fully offline first run requires a separately distributed, versioned model
+bundle.
+
+For a shared remote WebUI server, user Desktop runtimes cannot execute
+server-side EPUB retrieval.  That deployment instead requires an
+administrator-owned private model runtime on the server/network.  Validate the
+current Homebrew acceptance path first, then validate the Desktop-managed path
+with no external user installation.
+
 ## 4. Functional requirements
 
 ### 4.1 Import and parsing
