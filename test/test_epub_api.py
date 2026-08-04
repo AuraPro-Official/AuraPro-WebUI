@@ -67,6 +67,29 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         store.add_concept_mention(
             concept_id, "passage-1", start_codepoint=0, end_codepoint=3, evidence="TCP", source="ADMIN"
         )
+        related_concept_id = store.upsert_concept("传输控制协议", status="APPROVED")
+        store.add_concept_mention(
+            related_concept_id,
+            "passage-1",
+            start_codepoint=5,
+            end_codepoint=11,
+            evidence="传输控制协议",
+            source="ADMIN",
+        )
+        store.add_concept_relation(
+            "version-1",
+            concept_id,
+            "ELABORATES",
+            related_concept_id,
+            evidence=[
+                {
+                    "passage_id": "passage-1",
+                    "start_codepoint": 0,
+                    "end_codepoint": 3,
+                    "evidence": "TCP",
+                }
+            ],
+        )
         self.service = EpubConceptService(store=store)
         self.app = FastAPI()
         self.app.include_router(router)
@@ -96,6 +119,9 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         hit = result.json()["graph_results"][0]
         self.assertEqual(hit["content"], "TCP 是传输控制协议。原文必须完整返回。")
         self.assertEqual(hit["excerpt"], {"content": "TCP", "start_codepoint": 0, "end_codepoint": 3})
+        # The added unified rank channel is API-compatible with the existing
+        # graph/vector fields and is empty when no local vector runtime exists.
+        self.assertEqual(result.json()["fused_results"], [])
 
     def test_ordinary_user_cannot_mutate_epub_domain(self) -> None:
         mutations = [
@@ -107,17 +133,25 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             ),
             (
                 "post",
+                "/api/v1/epub/admin/section-graph-batches",
+                {"version_id": "version-1", "profile_name": "server-batch-profile"},
+            ),
+            (
+                "post",
                 "/api/v1/epub/admin/calibrations/local",
                 {"version_id": "version-1"},
             ),
             ("post", "/api/v1/epub/admin/batches/missing/submit", None),
             ("post", "/api/v1/epub/admin/batches/missing/poll", None),
             ("post", "/api/v1/epub/admin/batches/missing/retry", None),
+            ("get", "/api/v1/epub/admin/relation-assertions", None),
+            ("put", "/api/v1/epub/admin/relation-assertions/missing", {"status": "APPROVED"}),
             ("post", "/api/v1/epub/admin/retrieval-units/missing/index", None),
             ("post", "/api/v1/epub/admin/versions/version-1/index", {"rebuild": False}),
         ]
         for method, url, payload in mutations:
-            response = getattr(self.client, method)(url, json=payload)
+            kwargs = {"json": payload} if payload is not None else {}
+            response = getattr(self.client, method)(url, **kwargs)
             self.assertEqual(response.status_code, 401, url)
 
         upload = self.client.post(
@@ -143,6 +177,30 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(draft.status_code, 201)
         self.assertEqual(draft.json()["item_count"], 1)
         self.assertEqual(draft.json()["prompt_profile"], "zh-glossary-v3")
+
+        section_graph_draft = self.client.post(
+            "/api/v1/epub/admin/section-graph-batches",
+            json={"version_id": "version-1", "profile_name": "server-batch-profile", "is_sample": True},
+        )
+        self.assertEqual(section_graph_draft.status_code, 201)
+        self.assertEqual(section_graph_draft.json()["item_count"], 1)
+        self.assertEqual(section_graph_draft.json()["job_kind"], "SECTION_GRAPH")
+        self.assertEqual(section_graph_draft.json()["prompt_profile"], "zh-section-graph-v1")
+
+    def test_admin_can_review_version_scoped_relation_assertions(self) -> None:
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        listed = self.client.get("/api/v1/epub/admin/relation-assertions?version_id=version-1")
+        self.assertEqual(listed.status_code, 200)
+        assertion = listed.json()["items"][0]
+        self.assertEqual(assertion["predicate"], "ELABORATES")
+        self.assertEqual(assertion["evidence"][0]["evidence"], "TCP")
+
+        reviewed = self.client.put(
+            f"/api/v1/epub/admin/relation-assertions/{assertion['assertion_id']}",
+            json={"status": "APPROVED"},
+        )
+        self.assertEqual(reviewed.status_code, 200)
+        self.assertEqual(reviewed.json()["status"], "APPROVED")
 
     def test_admin_can_run_local_calibration_without_exposing_source_text(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
