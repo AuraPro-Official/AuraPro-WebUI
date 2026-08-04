@@ -15,11 +15,13 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from open_webui.retrieval.epub.batch import BatchProvider, OpenAIBatchProvider
+from open_webui.retrieval.epub.calibration import LocalConceptCalibrationRunner
 from open_webui.retrieval.epub.inference import (
     AuraProEmbeddingAdapter,
     AuraProRerankerAdapter,
     LlamaCppConceptResolver,
     LocalEndpointRejected,
+    LocalInferenceUnavailable,
     ModelAvailability,
     PrivateModelEndpoint,
     UrllibLlamaCppTransport,
@@ -66,6 +68,7 @@ def initialize_epub_concept_service(
     providers = _batch_providers(values)
     embeddings, reranker = _aurapro_rag_models(app, values)
     concept_resolver, resolver_availability = _llama_cpp_concept_resolver(values)
+    calibration_runner = _local_calibration_runner(values)
     vector_backend = None
     vector_availability: ModelAvailability
     if embeddings is not None:
@@ -96,6 +99,7 @@ def initialize_epub_concept_service(
         providers=providers,
         search=search,
         vector_indexer=indexer,
+        calibration_runner=calibration_runner,
         # Derived source windows bind to the configured local embedding profile
         # at import time.  This keeps later vector records profile-isolated.
         retrieval_embedding_profile=embeddings.profile if embeddings is not None else None,
@@ -382,6 +386,23 @@ def _llama_cpp_concept_resolver(
     except (LocalEndpointRejected, ValueError) as error:
         log.warning("EPUB Tier-2 resolver is disabled: %s", _safe_reason(error))
         return None, ModelAvailability.degraded(component, _safe_reason(error))
+
+
+def _local_calibration_runner(values: Mapping[str, str]) -> LocalConceptCalibrationRunner | None:
+    """Calibration is deliberately available only through Desktop's live descriptor."""
+    descriptor_path = values.get(_DESKTOP_LLM_RUNTIME_FILE_ENV, "").strip()
+    if not descriptor_path:
+        return None
+    try:
+        timeout = _positive_timeout(values.get("EPUB_CONCEPT_LOCAL_LLM_TIMEOUT_SECONDS", "30"))
+        return LocalConceptCalibrationRunner(
+            descriptor_path=descriptor_path,
+            trusted_hostnames=_trusted_hostnames(values, _LLAMA_CPP_TRUSTED_MODEL_HOSTS_ENV),
+            timeout_seconds=max(timeout, 120),
+        )
+    except (DesktopRuntimeDescriptorError, LocalInferenceUnavailable, ValueError) as error:
+        log.warning("EPUB local prompt calibration is disabled: %s", _safe_reason(error))
+        return None
 
 
 def _positive_timeout(value: str) -> float:
