@@ -66,21 +66,6 @@ class EPUBParser:
                     ))
         return EpubParseResult(PARSER_FORMAT_VERSION, title, opf_path, tuple(passages), tuple(toc_entries), tuple(warnings))
 
-    def parse(self) -> dict[str, object]:
-        """Temporary compatibility adapter for the legacy loader API."""
-        result = self.parse_book()
-        passages = [{
-            "passage_id": f"{result.book_title}_P{passage.ordinal:05d}", "book_title": result.book_title,
-            "toc_path": list(passage.toc_path), "content": passage.content, "content_kind": passage.content_kind,
-            "source_path": passage.source_path, "source_fragment": passage.source_fragment,
-            "parent_context": f"[{' > '.join(passage.toc_path)}] {passage.content}",
-        } for passage in result.passages]
-        return {
-            "book_title": result.book_title, "passages": passages, "total_passages": len(passages),
-            "warnings": [{"code": item.code, "message": item.message, "path": item.path} for item in result.warnings],
-            "parser_format_version": result.format_version,
-        }
-
     @staticmethod
     def _nav(archive, names, opf_path, item, title, warnings):
         if item is None:
