@@ -79,6 +79,7 @@ export type EpubSearchResponse = {
 export type BatchDraftInput = {
 	version_id: string;
 	profile_name: string;
+	prompt_profile?: string;
 	is_sample: boolean;
 	sample_limit: number;
 };
@@ -87,9 +88,38 @@ export type BatchDraft = {
 	batch_job_id: string;
 	item_count: number;
 	status: string;
+	prompt_profile?: string;
 };
 
 export type BatchStatus = Record<string, string | number | null | undefined>;
+
+export type LocalCalibrationInput = {
+	version_id: string;
+	prompt_profile: string;
+	sample_limit: number;
+};
+
+export type LocalCalibrationReport = {
+	mode: 'LOCAL_QWEN';
+	prompt_profile: string;
+	model: string;
+	sample_count: number;
+	chapter_count: number;
+	valid_items: number;
+	invalid_items: number;
+	schema_valid_rate: number;
+	concept_count: number;
+	mention_count: number;
+	items: Array<{
+		passage_id: string;
+		ordinal: number;
+		toc_path: string[];
+		valid: boolean;
+		concept_count: number;
+		mention_count: number;
+		reason?: string | null;
+	}>;
+};
 
 export type ConceptInput = {
 	canonical_name: string;
@@ -164,6 +194,13 @@ export const importEpub = (token: string, file: File) => {
 
 export const createEpubBatchDraft = (token: string, input: BatchDraftInput) =>
 	request<BatchDraft>(token, '/admin/batches', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(input)
+	});
+
+export const runEpubLocalCalibration = (token: string, input: LocalCalibrationInput) =>
+	request<LocalCalibrationReport>(token, '/admin/calibrations/local', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(input)
