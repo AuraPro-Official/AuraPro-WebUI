@@ -5,10 +5,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
+import sqlite3
 import sys
 import unittest
-
-import pysqlite3
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,10 +17,25 @@ from open_webui.retrieval.epub.sqlite_vec_backend import SQLiteVecDerivedVectorB
 from open_webui.retrieval.epub.vector_index import DerivedVectorRecord, VectorIndexError  # noqa: E402
 
 
-class PysqliteStore:
+# Production (open_webui.retrieval.epub.sqlite_vec.load_sqlite_vec) loads the
+# sqlite-vec extension through the *stdlib* sqlite3 module, so these tests use
+# stdlib sqlite3 too rather than a second, differently-built binding. Not every
+# CPython build enables loadable extensions (pyenv omits it unless configured
+# with --enable-loadable-sqlite-extensions); on those interpreters this module
+# skips instead of erroring. scripts/epub_test_env.sh provisions a runtime that
+# supports it.
+EXTENSION_LOADING_SUPPORTED = hasattr(sqlite3.Connection, "enable_load_extension")
+SKIP_REASON = (
+    "sqlite3.Connection.enable_load_extension is unavailable; this CPython was built "
+    "without loadable SQLite extension support. Provision a supported interpreter with "
+    "scripts/epub_test_env.sh."
+)
+
+
+class InMemorySQLiteStore:
     def __init__(self) -> None:
-        self.connection = pysqlite3.connect(":memory:")
-        self.connection.row_factory = pysqlite3.Row
+        self.connection = sqlite3.connect(":memory:")
+        self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("CREATE TABLE retrieval_units (retrieval_unit_id TEXT PRIMARY KEY)")
         self.connection.executemany(
@@ -56,9 +70,10 @@ def _record(unit_id: str, vector: tuple[float, ...], *, profile: str = "local-em
     )
 
 
+@unittest.skipUnless(EXTENSION_LOADING_SUPPORTED, SKIP_REASON)
 class SQLiteVecDerivedVectorBackendTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.store = PysqliteStore()
+        self.store = InMemorySQLiteStore()
         self.backend = SQLiteVecDerivedVectorBackend(self.store)
 
     def tearDown(self) -> None:
