@@ -310,6 +310,7 @@ class VectorSearchRetriever(BaseRetriever):
     collection_name: Any
     embedding_function: Any
     top_k: int
+    filter: Optional[dict] = None
 
     def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun) -> list[Document]:
         """Get documents relevant to a query.
@@ -334,6 +335,7 @@ class VectorSearchRetriever(BaseRetriever):
             collection_name=self.collection_name,
             vectors=[embedding],
             limit=self.top_k,
+            filter=self.filter,
         )
 
         return _search_result_to_documents(result)

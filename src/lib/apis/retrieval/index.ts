@@ -499,6 +499,61 @@ export interface BilingualEpubFile {
 	primaryLang: LangCode;
 }
 
+export interface KnowledgeImportProgress {
+	stage: string;
+	progress: number;
+	current?: number;
+	total?: number;
+	cold_start?: boolean;
+}
+
+export type KnowledgeImportProgressHandler = (progress: KnowledgeImportProgress) => void;
+
+export const readKnowledgeImportProgress = async (
+	response: Response,
+	onProgress: KnowledgeImportProgressHandler
+) => {
+	const reader = response.body?.getReader();
+	if (!reader) {
+		throw new Error('Knowledge import response is not readable');
+	}
+
+	const decoder = new TextDecoder();
+	let buffer = '';
+	let result: unknown = null;
+
+	const consumeLine = (line: string) => {
+		const trimmed = line.trim();
+		if (!trimmed) return;
+
+		const event = JSON.parse(trimmed);
+		if (event.type === 'progress') {
+			onProgress(event as KnowledgeImportProgress);
+		} else if (event.type === 'result') {
+			result = event.result;
+		} else if (event.type === 'error') {
+			throw new Error(event.error || 'Knowledge import failed');
+		}
+	};
+
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+
+		buffer += decoder.decode(value, { stream: true });
+		const lines = buffer.split('\n');
+		buffer = lines.pop() ?? '';
+		for (const line of lines) consumeLine(line);
+	}
+
+	buffer += decoder.decode();
+	if (buffer.trim()) consumeLine(buffer);
+	if (result === null) {
+		throw new Error('Knowledge import ended without a result');
+	}
+	return result;
+};
+
 /**
  * 处理EPUB文件 - 上传并分割为章节
  *
@@ -512,7 +567,8 @@ export interface BilingualEpubFile {
 export const processEpubFile = async (
 	token: string,
 	collection_name: string,
-	file: BilingualEpubFile
+	file: BilingualEpubFile,
+	onProgress?: KnowledgeImportProgressHandler
 ) => {
 	const formData = new FormData();
 	formData.append('collection_name', collection_name);
@@ -523,19 +579,25 @@ export const processEpubFile = async (
 		formData.append('langs', lang);
 	}
 
-	const response = await fetch(`${RETRIEVAL_API_BASE_URL}/process/bilingual/epub`, {
-		method: 'POST',
-		headers: {
-			Authorization: `Bearer ${token}`
-		},
-		body: formData
-	});
+	const response = await fetch(
+		`${RETRIEVAL_API_BASE_URL}/process/bilingual/epub${onProgress ? '?stream=true' : ''}`,
+		{
+			method: 'POST',
+			headers: {
+				Accept: onProgress ? 'application/x-ndjson' : 'application/json',
+				Authorization: `Bearer ${token}`
+			},
+			body: formData
+		}
+	);
 
 	if (!response.ok) {
 		const err = await response.json().catch(() => ({}));
 		throw new Error(err?.detail ?? `HTTP ${response.status}`);
 	}
-	return await response.json();
+	return onProgress
+		? await readKnowledgeImportProgress(response, onProgress)
+		: await response.json();
 };
 
 export type LangCode = string;
@@ -560,29 +622,36 @@ export const processBilingual = async (
 	collectionName: string | null,
 	files: BilingualFile[],
 	languages: string[],
-	primaryLang: string
+	primaryLang: string,
+	onProgress?: KnowledgeImportProgressHandler
 ) => {
-	const response = await fetch(`${RETRIEVAL_API_BASE_URL}/process/bilingual`, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${token}`
-		},
-		body: JSON.stringify({
-			collection_name: collectionName ?? null,
-			files,
-			languages,
-			primaryLang,
-			totalFiles: files.length
-		})
-	});
+	const response = await fetch(
+		`${RETRIEVAL_API_BASE_URL}/process/bilingual${onProgress ? '?stream=true' : ''}`,
+		{
+			method: 'POST',
+			headers: {
+				Accept: onProgress ? 'application/x-ndjson' : 'application/json',
+				'Content-Type': 'application/json',
+				Authorization: `Bearer ${token}`
+			},
+			body: JSON.stringify({
+				collection_name: collectionName ?? null,
+				files,
+				languages,
+				primaryLang,
+				totalFiles: files.length
+			})
+		}
+	);
 
 	if (!response.ok) {
 		const err = await response.json().catch(() => ({}));
 		throw new Error(err?.detail ?? `HTTP ${response.status}`);
 	}
 
-	return await response.json();
+	return onProgress
+		? await readKnowledgeImportProgress(response, onProgress)
+		: await response.json();
 };
 
 export const getBilingualFiles = async (

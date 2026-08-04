@@ -1,8 +1,11 @@
 import re
 import gc
+import uuid
+
 import numpy as np
 import asyncio
 import threading
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from langchain_core.documents import Document
 from open_webui.config import RAG_EMBEDDING_CONTENT_PREFIX
@@ -128,7 +131,7 @@ class BilingualSplitter:
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        except ImportError:
+        except Exception:
             pass
 
     def reload(self, model_name: str = 'sat-3l-sm'):
@@ -305,6 +308,16 @@ class BilingualAligner:
         self._user = user
         self._request = request
 
+    @staticmethod
+    async def _report_progress(
+        progress_callback: Callable[[dict], Awaitable[None]] | None,
+        stage: str,
+        progress: int,
+        **details,
+    ) -> None:
+        if progress_callback is not None:
+            await progress_callback({'stage': stage, 'progress': progress, **details})
+
     def split(self, text: str, lang: str) -> list[str]:
         return self.splitter.split(text, lang=lang)
 
@@ -462,11 +475,22 @@ class BilingualAligner:
         )
         return docs_list[0]
 
-    async def align_batch_to_documents(self, items: list[dict]) -> list[list[Document]]:
+    async def align_batch_to_documents(
+        self,
+        items: list[dict],
+        progress_callback: Callable[[dict], Awaitable[None]] | None = None,
+    ) -> list[list[Document]]:
         n = len(items)
         if n == 0:
             return []
 
+        await self._report_progress(
+            progress_callback,
+            'splitting',
+            12,
+            current=0,
+            total=n,
+        )
         self.splitter.reload()
 
         with StageTimer(f'分段+切句(批量,{n}个文件)'):
@@ -525,6 +549,13 @@ class BilingualAligner:
             if not all_texts:
                 return [[] for _ in range(n)]
 
+            await self._report_progress(
+                progress_callback,
+                'alignment_embeddings',
+                24,
+                current=0,
+                total=len(all_texts),
+            )
             logger.info(f'[Embedding] 总共 {len(all_texts)} 个句子，开始调用 embedding 函数')
             embeddings = await self._embed_fn(
                 all_texts,
@@ -552,15 +583,31 @@ class BilingualAligner:
         with StageTimer(f'DP对齐(批量,{n}个文件)'):
             # 4. 每个 item 独立做 DP 对齐（仍然并发，但不再重复切句/embedding）
             logger.info(f'[对齐] 开始 {n} 个文件的 DP 对齐')
-            all_pairs_list = [
-                await self._align_blocks(
-                    src_blocks_list[i],
-                    tgt_blocks_map_list[i],
-                    src_paras_list[i],
-                    tgt_paras_map_list[i],
+            all_pairs_list = []
+            for i in range(n):
+                await self._report_progress(
+                    progress_callback,
+                    'aligning_paragraphs',
+                    50 + round((i / max(n, 1)) * 12),
+                    current=i,
+                    total=n,
                 )
-                for i in range(n)
-            ]
+                all_pairs_list.append(
+                    await self._align_blocks(
+                        src_blocks_list[i],
+                        tgt_blocks_map_list[i],
+                        src_paras_list[i],
+                        tgt_paras_map_list[i],
+                    )
+                )
+
+        await self._report_progress(
+            progress_callback,
+            'assembling_chunks',
+            62,
+            current=n,
+            total=n,
+        )
 
         # 5. 组装成 Document
         result: list[list[Document]] = []
@@ -571,21 +618,33 @@ class BilingualAligner:
             for idx, pair in enumerate(all_pairs_list[i]):
                 if not pair.source.strip():
                     continue
-                docs.append(
-                    Document(
-                        page_content=pair.source,
-                        metadata={
-                            **base_meta,
-                            'type': 'sentence',
-                            'para_index': pair.para_index,
-                            'sentence_index': idx,
-                            'align_score': pair.score,
-                            'parent_content': pair.para_source,
-                            'parent_langs': {src_lang: pair.para_source, **pair.para_target},
-                            'langs': {src_lang: pair.source, **pair.extra_targets},
-                        },
+
+                all_lang_texts = {src_lang: pair.source, **pair.extra_targets}
+                align_group_id = str(uuid.uuid4())
+                shared_metadata = {
+                    **base_meta,
+                    'type': 'sentence',
+                    'align_group_id': align_group_id,
+                    'para_index': pair.para_index,
+                    'sentence_index': idx,
+                    'align_score': pair.score,
+                    'parent_content': pair.para_source,
+                    'parent_langs': {src_lang: pair.para_source, **pair.para_target},
+                    'primary_lang': src_lang,
+                }
+
+                for lang_code, text in all_lang_texts.items():
+                    if not text.strip():
+                        continue
+                    docs.append(
+                        Document(
+                            page_content=text,
+                            metadata={
+                                **shared_metadata,
+                                'lang': lang_code,
+                            },
+                        )
                     )
-                )
             result.append(docs)
 
         return result

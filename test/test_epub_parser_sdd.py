@@ -39,7 +39,8 @@ def build_fixture_epub(target: Path, *, with_nav: bool = True) -> None:
     }
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for destination, source in members.items():
-            content = (FIXTURES / source).read_bytes()
+            # Keep generated EPUB fixtures identical on Windows and Unix.
+            content = (FIXTURES / source).read_bytes().replace(b"\r\n", b"\n")
             if destination == "OPS/book.opf" and not with_nav:
                 content = content.replace(
                     b'    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>\n', b""

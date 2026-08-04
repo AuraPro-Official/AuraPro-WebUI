@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
 	import { createEventDispatcher, tick } from 'svelte';
 
 	import Check from '../icons/Check.svelte';
@@ -20,6 +20,7 @@
 		'w-full rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-850';
 	export let inputClassName = 'px-3 py-2.5';
 	export let disabled = false;
+	export let allowCustom = false;
 
 	const dispatch = createEventDispatcher<{ change: string }>();
 	const listboxId = `${id}-options`;
@@ -53,7 +54,7 @@
 	};
 
 	$: selectedItem = items.find((item) => item.value === value);
-	$: selectedLabel = selectedItem?.label ?? '';
+	$: selectedLabel = selectedItem?.label ?? value ?? '';
 	$: if (!open) {
 		inputValue = selectedLabel;
 	}
@@ -135,6 +136,19 @@
 		dispatch('change', value);
 	};
 
+	const commitCustomValue = () => {
+		const nextValue = inputValue.trim();
+		if (!allowCustom || !nextValue || (!hasTyped && nextValue === value)) return false;
+
+		value = nextValue;
+		inputValue = nextValue;
+		open = false;
+		hasTyped = false;
+		activeIndex = -1;
+		dispatch('change', value);
+		return true;
+	};
+
 	const moveActive = (direction: 1 | -1) => {
 		if (filteredItems.length === 0) return;
 
@@ -167,7 +181,11 @@
 		if (event.key === 'Enter' && open) {
 			event.preventDefault();
 			const item = filteredItems[activeIndex];
-			if (item) selectItem(item);
+			if (item) {
+				selectItem(item);
+			} else {
+				commitCustomValue();
+			}
 			return;
 		}
 
@@ -215,7 +233,7 @@
 		on:keydown={handleKeydown}
 		on:blur={() => {
 			setTimeout(() => {
-				if (!popupElement?.contains(document.activeElement)) closeList();
+				if (!popupElement?.contains(document.activeElement) && !commitCustomValue()) closeList();
 			}, 0);
 		}}
 	/>
@@ -258,7 +276,18 @@
 				{/if}
 			</button>
 		{:else}
-			<div class="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">{emptyText}</div>
+			{#if allowCustom && inputValue.trim()}
+				<button
+					type="button"
+					class="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800/60"
+					on:mousedown={(event) => event.preventDefault()}
+					on:click={commitCustomValue}
+				>
+					{inputValue.trim()}
+				</button>
+			{:else}
+				<div class="px-3 py-3 text-sm text-gray-500 dark:text-gray-400">{emptyText}</div>
+			{/if}
 		{/each}
 	</div>
 {/if}

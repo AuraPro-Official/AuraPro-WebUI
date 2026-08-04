@@ -2727,8 +2727,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     form_data['messages'],
                 )
 
-        if 'memory' in features and features['memory'] and await Config.get('memories.system_context.enable'):
-            form_data = await add_memory_context(request, form_data, user, model)
+        if (
+            (features.get('memory') or features.get('chat_history_memory'))
+            and await Config.get('memories.system_context.enable')
+        ):
+            form_data = await add_memory_context(
+                request,
+                form_data,
+                user,
+                model,
+                features=features,
+                chat_id=metadata.get('chat_id'),
+            )
 
         if 'web_search' in features and features['web_search']:
             # Skip forced RAG web search when native FC is enabled - model can use web_search tool

@@ -21,14 +21,14 @@ this file and `epub_concept_sdd.md` before making changes.
 
 ## Confirmed product decisions
 
-| ID | Decision | Status |
-|---|---|---|
-| D-001 | Source content is stable visible EPUB text, not XHTML markup; preserve text and punctuation exactly. | confirmed |
-| D-002 | Store complete paragraphs; responses include full content plus verified continuous excerpts and offsets. | confirmed |
+| ID    | Decision                                                                                                      | Status    |
+| ----- | ------------------------------------------------------------------------------------------------------------- | --------- |
+| D-001 | Source content is stable visible EPUB text, not XHTML markup; preserve text and punctuation exactly.          | confirmed |
+| D-002 | Store complete paragraphs; responses include full content plus verified continuous excerpts and offsets.      | confirmed |
 | D-003 | Cloud Batch is an administrator-configured, one-time offline process; online inference remains local/private. | confirmed |
-| D-004 | All authenticated users can browse and search; administration is the only write/cost-bearing role. | confirmed |
-| D-005 | The feature UI lives in AuraPro-WebUI and is displayed by Desktop's WebView. | confirmed |
-| D-006 | Normal HTML flow whitespace collapses per visible-text semantics; `<pre>` whitespace is preserved. | confirmed |
+| D-004 | All authenticated users can browse and search; administration is the only write/cost-bearing role.            | confirmed |
+| D-005 | The feature UI lives in AuraPro-WebUI and is displayed by Desktop's WebView.                                  | confirmed |
+| D-006 | Normal HTML flow whitespace collapses per visible-text semantics; `<pre>` whitespace is preserved.            | confirmed |
 | D-007 | First release targets textual EPUBs. Preserve typed text blocks; images and tables are out of scope and warn. | confirmed |
 
 ## Work breakdown

@@ -54,10 +54,10 @@ that same UI in its authenticated WebView; it is not a separate feature client.
 
 ## 3. Deployment model
 
-| Profile | Canonical store | Derived vector index | Inference |
-|---|---|---|---|
-| Desktop / local server | Independent SQLite database | `sqlite-vec` in that database | Desktop-managed llama.cpp/Ollama or local model runtime |
-| Private remote server | Independent PostgreSQL database | `pgvector` plus `pg_trgm` | Model service on the server/private network |
+| Profile                | Canonical store                 | Derived vector index          | Inference                                               |
+| ---------------------- | ------------------------------- | ----------------------------- | ------------------------------------------------------- |
+| Desktop / local server | Independent SQLite database     | `sqlite-vec` in that database | Desktop-managed llama.cpp/Ollama or local model runtime |
+| Private remote server  | Independent PostgreSQL database | `pgvector` plus `pg_trgm`     | Model service on the server/private network             |
 
 The EPUB store must not use the main `webui.db` or the generic OpenWebUI RAG
 collection as its source of truth. Existing OpenWebUI model adapters may be
@@ -128,11 +128,11 @@ object:
 
 ```json
 {
-  "excerpt": {
-    "content": "a continuous source substring",
-    "start_codepoint": 42,
-    "end_codepoint": 86
-  }
+	"excerpt": {
+		"content": "a continuous source substring",
+		"start_codepoint": 42,
+		"end_codepoint": 86
+	}
 }
 ```
 

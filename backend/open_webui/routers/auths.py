@@ -109,6 +109,9 @@ ADMIN_CONFIG_KEYS = {
     'ENABLE_MEMORIES': 'memories.enable',
     'ENABLE_MEMORY_SYSTEM_CONTEXT': 'memories.system_context.enable',
     'ENABLE_MEMORY_BACKGROUND_REVIEW': 'memories.background_review.enable',
+    'MEMORIES_REVIEW_INTERVAL_TURNS': 'memories.review_interval_turns',
+    'MEMORIES_REVIEW_MODEL': 'memories.review_model',
+    'ENABLE_MEMORY_UPDATE_NOTIFICATIONS': 'memories.update_notifications.enable',
     'ENABLE_NOTES': 'notes.enable',
     'ENABLE_USER_WEBHOOKS': 'ui.enable_user_webhooks',
     'ENABLE_USER_STATUS': 'users.enable_status',
@@ -1167,6 +1170,9 @@ class AdminConfig(BaseModel):
     ENABLE_MEMORIES: bool
     ENABLE_MEMORY_SYSTEM_CONTEXT: bool
     ENABLE_MEMORY_BACKGROUND_REVIEW: bool
+    MEMORIES_REVIEW_INTERVAL_TURNS: int = 6
+    MEMORIES_REVIEW_MODEL: str | None = None
+    ENABLE_MEMORY_UPDATE_NOTIFICATIONS: bool = True
     ENABLE_NOTES: bool
     ENABLE_USER_WEBHOOKS: bool
     ENABLE_USER_STATUS: bool
@@ -1183,6 +1189,8 @@ async def update_admin_config(request: Request, form_data: AdminConfig, user=Dep
     updates['automations.min_interval'] = (
         int(form_data.AUTOMATION_MIN_INTERVAL) if form_data.AUTOMATION_MIN_INTERVAL else ''
     )
+    updates['memories.review_interval_turns'] = max(1, min(form_data.MEMORIES_REVIEW_INTERVAL_TURNS, 50))
+    updates['memories.review_model'] = (form_data.MEMORIES_REVIEW_MODEL or '').strip()
 
     if form_data.DEFAULT_USER_ROLE not in ['pending', 'user', 'admin']:
         updates.pop('ui.default_user_role', None)
