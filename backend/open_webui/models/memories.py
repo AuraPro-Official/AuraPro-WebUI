@@ -46,6 +46,30 @@ class MemoriesTable:
     def normalize_memory_type(memory_type: str | None = None) -> str:
         return 'user' if memory_type == 'user' else 'context'
 
+    @staticmethod
+    def is_chat_history_record(memory: Memory) -> bool:
+        meta = memory.meta if isinstance(memory.meta, dict) else {}
+        return (
+            meta.get('created_by') == 'chat_history_review'
+            or memory.path == '_system/chat-history-summary'
+        )
+
+    @staticmethod
+    def append_revision(memory: Memory, now: int) -> None:
+        meta = dict(memory.meta or {})
+        revisions = list(meta.get('revisions') or [])
+        revisions.append(
+            {
+                'content': memory.content,
+                'type': memory.type,
+                'path': memory.path,
+                'updated_at': memory.updated_at,
+                'replaced_at': now,
+            }
+        )
+        meta['revisions'] = revisions[-20:]
+        memory.meta = meta
+
     async def insert_new_memory(
         self,
         user_id: str,
@@ -90,6 +114,12 @@ class MemoriesTable:
                 if not memory or memory.user_id != user_id:
                     return None
 
+                now = int(time.time())
+                if (
+                    (content is not None or memory_type is not None or update_path)
+                    and not self.is_chat_history_record(memory)
+                ):
+                    self.append_revision(memory, now)
                 if content is not None:
                     memory.content = content
                 if memory_type is not None:
@@ -98,7 +128,7 @@ class MemoriesTable:
                     memory.path = path
                 if meta is not None:
                     memory.meta = {**(memory.meta or {}), **meta}
-                memory.updated_at = int(time.time())
+                memory.updated_at = now
 
                 await db.commit()
                 await db.refresh(memory)
@@ -143,15 +173,41 @@ class MemoriesTable:
             except Exception:
                 return False
 
-    async def delete_memories_by_user_id(self, user_id: str, db: AsyncSession | None = None) -> bool:
+    async def delete_memories_by_user_id(
+        self,
+        user_id: str,
+        db: AsyncSession | None = None,
+        *,
+        preserve_chat_history: bool = False,
+    ) -> bool:
         async with get_async_db_context(db) as db:
             try:
-                await db.execute(delete(Memory).filter_by(user_id=user_id))
+                result = await db.execute(select(Memory).filter_by(user_id=user_id))
+                for memory in result.scalars().all():
+                    is_history = self.is_chat_history_record(memory)
+                    if preserve_chat_history and is_history:
+                        continue
+                    await db.delete(memory)
                 await db.commit()
-
                 return True
             except Exception:
                 return False
+
+    async def delete_chat_history_memories_by_user_id(
+        self,
+        user_id: str,
+        db: AsyncSession | None = None,
+    ) -> list[str]:
+        deleted_ids = []
+        async with get_async_db_context(db) as db:
+            result = await db.execute(select(Memory).filter_by(user_id=user_id))
+            for memory in result.scalars().all():
+                if not self.is_chat_history_record(memory):
+                    continue
+                deleted_ids.append(memory.id)
+                await db.delete(memory)
+            await db.commit()
+        return deleted_ids
 
     async def delete_memory_by_id_and_user_id(self, id: str, user_id: str, db: AsyncSession | None = None) -> bool:
         async with get_async_db_context(db) as db:
@@ -221,6 +277,8 @@ class MemoriesTable:
                     if not memory or memory.user_id != user_id:
                         raise ValueError(f'Memory not found: {memory_id}')
 
+                    if not self.is_chat_history_record(memory):
+                        self.append_revision(memory, now)
                     memory.content = content
                     if operation.get('type') is not None:
                         memory.type = self.normalize_memory_type(operation.get('type'))
@@ -240,6 +298,8 @@ class MemoriesTable:
                     if not memory or memory.user_id != user_id:
                         raise ValueError(f'Memory not found: {memory_id}')
 
+                    if not self.is_chat_history_record(memory):
+                        self.append_revision(memory, now)
                     memory.path = operation.get('path')
                     if operation.get('meta') is not None:
                         memory.meta = {**(memory.meta or {}), **operation.get('meta')}

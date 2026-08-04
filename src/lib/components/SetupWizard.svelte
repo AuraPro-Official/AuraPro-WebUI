@@ -55,6 +55,8 @@
 	let purpose: Purpose = 'other';
 	let defaultExtensionMode: ExtensionMode = '';
 	let contextSize = 16384;
+	let mtpEnabled = false;
+	let multimodalEnabled = true;
 	let glossarySettings: {
 		active_glossary_id?: string;
 		glossaries?: GlossaryOption[];
@@ -62,6 +64,8 @@
 		target_lang?: string;
 		glossary_lang?: string;
 		token_limit?: number;
+		mtp_enabled?: boolean;
+		multimodal_enabled?: boolean;
 	} = {};
 	let selectedGlossaryId = '';
 	let customSourceLanguage = '';
@@ -230,10 +234,14 @@
 				Number.isFinite(glossaryContextSize) && glossaryContextSize > 0
 					? glossaryContextSize
 					: 16384;
+			mtpEnabled = glossarySettings.mtp_enabled ?? false;
+			multimodalEnabled = glossarySettings.multimodal_enabled ?? true;
 		} catch (error) {
 			console.error('Failed to load glossary settings for setup wizard:', error);
 			glossarySettings = {};
 			selectedGlossaryId = '__other__';
+			mtpEnabled = false;
+			multimodalEnabled = true;
 		}
 
 		if ($user?.role === 'admin') {
@@ -345,9 +353,11 @@
 
 	const normalizedContextSize = (): number => Math.max(1, Math.trunc(Number(contextSize) || 16384));
 
-	const saveContextSize = async () => {
+	const saveLlamaRuntimeSettings = async () => {
 		glossarySettings = await updateGlossarySettings(localStorage.token, {
-			token_limit: normalizedContextSize()
+			token_limit: normalizedContextSize(),
+			mtp_enabled: mtpEnabled,
+			multimodal_enabled: multimodalEnabled
 		});
 	};
 
@@ -381,7 +391,7 @@
 		saving = true;
 		try {
 			await saveGlossarySelection();
-			await saveContextSize();
+			await saveLlamaRuntimeSettings();
 			await saveAdminSpeechMode();
 			await saveAdminFeatureToggles();
 
@@ -581,6 +591,34 @@
 						</div>
 					</section>
 				{/if}
+
+				<section
+					class="flex items-start justify-between gap-4 border-b border-gray-100 py-4 dark:border-gray-800"
+				>
+					<div>
+						<div class="text-sm font-medium">{$i18n.t('MTP acceleration')}</div>
+						<div class="mt-1 max-w-xl text-xs leading-5 text-gray-500">
+							{$i18n.t(
+								'MTP improves AI inference speed by about 20%, but uses about 2 GB more RAM or VRAM. Leave it off on memory-constrained systems.'
+							)}
+						</div>
+					</div>
+					<Switch bind:state={mtpEnabled} />
+				</section>
+
+				<section
+					class="flex items-start justify-between gap-4 border-b border-gray-100 py-4 dark:border-gray-800"
+				>
+					<div>
+						<div class="text-sm font-medium">{$i18n.t('Multimodal input')}</div>
+						<div class="mt-1 max-w-xl text-xs leading-5 text-gray-500">
+							{$i18n.t(
+								'Multimodal input supports images and audio and uses about 1 GB more RAM or VRAM. Turn it off if you do not need it on a memory-constrained system.'
+							)}
+						</div>
+					</div>
+					<Switch bind:state={multimodalEnabled} />
+				</section>
 
 				<section class="flex items-start justify-between gap-4 py-4">
 					<div>

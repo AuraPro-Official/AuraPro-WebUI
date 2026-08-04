@@ -1,12 +1,26 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { splitStream } from '$lib/utils';
 
+export interface FileProcessProgress {
+	status: string;
+	stage?: string;
+	progress?: number;
+	startedAt?: number;
+	current?: number;
+	total?: number;
+	coldStart?: boolean;
+	error?: string;
+}
+
+export type FileProcessProgressHandler = (progress: FileProcessProgress) => void;
+
 export const uploadFile = async (
 	token: string,
 	file: File,
 	metadata?: object | null,
 	process?: boolean | null,
-	stream: boolean = true
+	stream: boolean = true,
+	onProgress?: FileProcessProgressHandler
 ) => {
 	const data = new FormData();
 	data.append('file', file);
@@ -69,6 +83,17 @@ export const uploadFile = async (
 							} else {
 								let data = JSON.parse(line.replace(/^data: /, ''));
 								console.log(data);
+
+								onProgress?.({
+									status: data.status,
+									stage: data.progress_stage,
+									progress: data.progress,
+									startedAt: data.progress_started_at,
+									current: data.current,
+									total: data.total,
+									coldStart: data.cold_start,
+									error: data.error || data.progress_error
+								});
 
 								if (data?.error) {
 									console.error(data.error);

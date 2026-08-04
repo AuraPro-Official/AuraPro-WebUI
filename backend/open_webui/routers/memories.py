@@ -17,6 +17,8 @@ from open_webui.utils.auth import get_verified_user
 from open_webui.utils.memory import (
     clean_memory_content,
     clean_memory_path,
+    get_memory_review_status,
+    is_chat_history_memory,
     list_memory_path_groups,
     memory_vector_text,
     read_memory_path_rows,
@@ -61,7 +63,30 @@ async def get_memories(
 ):
     await check_memories_permission(user)
 
-    return await Memories.get_memories_by_user_id(user.id, db=db)
+    memories = await Memories.get_memories_by_user_id(user.id, db=db)
+    return [memory for memory in (memories or []) if not is_chat_history_memory(memory)]
+
+@router.get('/status')
+async def get_memory_status(
+    user=Depends(get_verified_user),
+):
+    await check_memories_permission(user)
+
+    memories = await Memories.get_memories_by_user_id(user.id) or []
+    saved_memories = [memory for memory in memories if not is_chat_history_memory(memory)]
+    history_memories = [memory for memory in memories if is_chat_history_memory(memory)]
+    history_memory = max(history_memories, key=lambda memory: memory.updated_at or 0) if history_memories else None
+    return {
+        'saved_count': len(saved_memories),
+        'pinned_count': sum(
+            1
+            for memory in saved_memories
+            if isinstance(memory.meta, dict) and memory.meta.get('pinned')
+        ),
+        'chat_history_summary': history_memory.content if history_memory else None,
+        'chat_history_updated_at': history_memory.updated_at if history_memory else None,
+        'review': get_memory_review_status(user.id),
+    }
 
 
 ############################
@@ -73,12 +98,18 @@ class AddMemoryForm(BaseModel):
     content: str
     type: Literal['user', 'context'] = 'context'
     path: str | None = None
+    pinned: bool = False
 
 
 class MemoryUpdateModel(BaseModel):
     content: str | None = None
     type: Literal['user', 'context'] | None = None
     path: str | None = None
+    pinned: bool | None = None
+
+
+class RestoreMemoryForm(BaseModel):
+    revision_index: int = -1
 
 
 class MemoryOperationModel(BaseModel):
@@ -91,7 +122,7 @@ class MemoryOperationModel(BaseModel):
 
 class UpdateMemoriesForm(BaseModel):
     operations: list[MemoryOperationModel]
-    source: Literal['tool', 'background_review'] | None = None
+    source: Literal['tool', 'background_review', 'chat_history_review'] | None = None
 
 
 class SearchMemoriesForm(BaseModel):
@@ -145,7 +176,10 @@ async def add_memory(
         content,
         memory_type=form_data.type,
         path=path,
-        meta={'created_by': 'manual'},
+        meta={
+            'created_by': 'manual',
+            **({'pinned': True} if form_data.pinned else {}),
+        },
     )
 
     vector = await request.app.state.EMBEDDING_FUNCTION(memory_vector_text(memory.content, memory.path), user=user)
@@ -190,6 +224,7 @@ async def update_memories(
                 'chat_id': metadata.get('chat_id'),
                 'message_id': metadata.get('message_id'),
                 'model': metadata.get('model'),
+                **({'kind': 'chat_history_summary'} if source == 'chat_history_review' else {}),
             }
 
     try:
@@ -274,58 +309,62 @@ async def query_memory(
     form_data: QueryMemoryForm,
     user=Depends(get_verified_user),
 ):
-    # NOTE: We intentionally do NOT use Depends(get_async_session) here.
-    # Database operations (get_memories_by_user_id) manage their own short-lived sessions.
-    # This prevents holding a connection during EMBEDDING_FUNCTION()
-    # which makes external embedding API calls (1-5+ seconds).
     await check_memories_permission(user)
 
-    memories = await Memories.get_memories_by_user_id(user.id)
-    if not memories:
+    memories = await Memories.get_memories_by_user_id(user.id) or []
+    saved_memories = [memory for memory in memories if not is_chat_history_memory(memory)]
+    if not saved_memories:
         raise HTTPException(status_code=404, detail='No memories found for user')
 
+    requested_limit = max(1, min(form_data.k or 1, 20))
     vector = await request.app.state.EMBEDDING_FUNCTION(form_data.content, RAG_EMBEDDING_QUERY_PREFIX, user=user)
-
     results = await ASYNC_VECTOR_DB_CLIENT.search(
         collection_name=f'user-memory-{user.id}',
         vectors=[vector],
-        limit=form_data.k,
+        limit=min(100, max(16, requested_limit * 3)),
     )
 
-    # Filter results by relevance threshold to avoid returning unrelated
-    # memories.  Vector similarity search always returns the top-K nearest
-    # neighbours even when they are completely irrelevant; applying the
-    # same RELEVANCE_THRESHOLD used by RAG ensures only genuinely matching
-    # memories are surfaced (distances are normalised to 0→1, higher is
-    # better).
+    from open_webui.retrieval.vector.main import SearchResult
+
+    allowed_ids = {memory.id for memory in saved_memories}
     relevance_threshold = await Config.get('rag.relevance_threshold', 0.0)
-    if results and relevance_threshold > 0.0 and results.distances and results.distances[0]:
-        from open_webui.retrieval.vector.main import SearchResult
+    filtered_ids = []
+    filtered_docs = []
+    filtered_metas = []
+    filtered_dists = []
 
-        filtered_ids = []
-        filtered_docs = []
-        filtered_metas = []
-        filtered_dists = []
-
-        for idx, score in enumerate(results.distances[0]):
-            if score >= relevance_threshold:
-                if results.ids and results.ids[0]:
-                    filtered_ids.append(results.ids[0][idx])
-                if results.documents and results.documents[0]:
-                    filtered_docs.append(results.documents[0][idx])
-                if results.metadatas and results.metadatas[0]:
-                    filtered_metas.append(results.metadatas[0][idx])
-                filtered_dists.append(score)
-
-        results = SearchResult(
-            ids=[filtered_ids] if filtered_ids else [[]],
-            documents=[filtered_docs] if filtered_docs else [[]],
-            metadatas=[filtered_metas] if filtered_metas else [[]],
-            distances=[filtered_dists] if filtered_dists else [[]],
+    result_ids = results.ids[0] if results and results.ids and results.ids[0] else []
+    for idx, memory_id in enumerate(result_ids):
+        if memory_id not in allowed_ids:
+            continue
+        score = (
+            results.distances[0][idx]
+            if results.distances and results.distances[0] and len(results.distances[0]) > idx
+            else 0.0
         )
+        if relevance_threshold > 0.0 and score < relevance_threshold:
+            continue
+        filtered_ids.append(memory_id)
+        filtered_docs.append(
+            results.documents[0][idx]
+            if results.documents and results.documents[0] and len(results.documents[0]) > idx
+            else ''
+        )
+        filtered_metas.append(
+            results.metadatas[0][idx]
+            if results.metadatas and results.metadatas[0] and len(results.metadatas[0]) > idx
+            else {}
+        )
+        filtered_dists.append(score)
+        if len(filtered_ids) >= requested_limit:
+            break
 
-    return results
-
+    return SearchResult(
+        ids=[filtered_ids],
+        documents=[filtered_docs],
+        metadatas=[filtered_metas],
+        distances=[filtered_dists],
+    )
 
 @router.post('/search', response_model=list[MemoryModel])
 async def search_memories(
@@ -335,6 +374,7 @@ async def search_memories(
     await check_memories_permission(user)
 
     memories = await Memories.get_memories_by_user_id(user.id)
+    memories = [memory for memory in (memories or []) if not is_chat_history_memory(memory)]
     return search_memory_rows(
         memories,
         query=form_data.query,
@@ -353,6 +393,7 @@ async def list_memory_paths(
     await check_memories_permission(user)
 
     memories = await Memories.get_memories_by_user_id(user.id)
+    memories = [memory for memory in (memories or []) if not is_chat_history_memory(memory)]
     return list_memory_path_groups(
         memories,
         query=form_data.query or '',
@@ -369,6 +410,7 @@ async def read_memory_path(
     await check_memories_permission(user)
 
     memories = await Memories.get_memories_by_user_id(user.id)
+    memories = [memory for memory in (memories or []) if not is_chat_history_memory(memory)]
     result = read_memory_path_rows(
         memories,
         path=form_data.path,
@@ -449,11 +491,51 @@ async def delete_memory_by_user_id(
 ):
     await check_memories_permission(user)
 
-    result = await Memories.delete_memories_by_user_id(user.id, db=db)
+    memories = await Memories.get_memories_by_user_id(user.id, db=db) or []
+    saved_ids = [memory.id for memory in memories if not is_chat_history_memory(memory)]
+    result = await Memories.delete_memories_by_user_id(
+        user.id,
+        db=db,
+        preserve_chat_history=True,
+    )
 
     if result:
+        if saved_ids:
+            try:
+                await ASYNC_VECTOR_DB_CLIENT.delete(
+                    collection_name=f'user-memory-{user.id}',
+                    ids=saved_ids,
+                )
+            except Exception as e:
+                log.error(e)
+        await publish_event(
+            request,
+            EVENTS.MEMORY_DELETED,
+            actor=user,
+            subject_id=user.id,
+            subject_type='user',
+            data={'scope': 'saved_memories', 'count': len(saved_ids)},
+        )
+        return True
+
+    return False
+
+
+@router.delete('/delete/chat-history', response_model=bool)
+async def delete_chat_history_memory(
+    request: Request,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    await check_memories_permission(user)
+
+    deleted_ids = await Memories.delete_chat_history_memories_by_user_id(user.id, db=db)
+    if deleted_ids:
         try:
-            await ASYNC_VECTOR_DB_CLIENT.delete_collection(f'user-memory-{user.id}')
+            await ASYNC_VECTOR_DB_CLIENT.delete(
+                collection_name=f'user-memory-{user.id}',
+                ids=deleted_ids,
+            )
         except Exception as e:
             log.error(e)
         await publish_event(
@@ -462,11 +544,9 @@ async def delete_memory_by_user_id(
             actor=user,
             subject_id=user.id,
             subject_type='user',
+            data={'scope': 'chat_history', 'count': len(deleted_ids)},
         )
-        return True
-
-    return False
-
+    return True
 
 ############################
 # UpdateMemoryById
@@ -488,7 +568,7 @@ async def update_memory_by_id(
 
     content = clean_memory_content(form_data.content) if form_data.content is not None else None
     path = clean_memory_path(form_data.path)
-    if content is None and form_data.type is None and form_data.path is None:
+    if content is None and form_data.type is None and form_data.path is None and form_data.pinned is None:
         raise HTTPException(status_code=400, detail='No memory update provided')
     memory = await Memories.update_memory_by_id_and_user_id(
         memory_id,
@@ -497,7 +577,10 @@ async def update_memory_by_id(
         memory_type=form_data.type,
         path=path,
         update_path=form_data.path is not None,
-        meta={'created_by': 'manual'},
+        meta={
+            'created_by': 'manual',
+            **({'pinned': form_data.pinned} if form_data.pinned is not None else {}),
+        },
     )
     if memory is None:
         raise HTTPException(status_code=404, detail=ERROR_MESSAGES.NOT_FOUND)
@@ -522,9 +605,46 @@ async def update_memory_by_id(
         EVENTS.MEMORY_UPDATED,
         actor=user,
         subject_id=memory.id,
-        data={'content_preview': memory.content[:300], 'type': memory.type, 'path': memory.path},
+        data={
+            'content_preview': memory.content[:300],
+            'type': memory.type,
+            'path': memory.path,
+            'pinned': bool((memory.meta or {}).get('pinned')),
+        },
     )
     return memory
+
+@router.post('/{memory_id}/restore', response_model=MemoryModel | None)
+async def restore_memory_version(
+    memory_id: str,
+    request: Request,
+    form_data: RestoreMemoryForm,
+    user=Depends(get_verified_user),
+):
+    await check_memories_permission(user)
+
+    memory = await Memories.get_memory_by_id(memory_id)
+    if memory is None or memory.user_id != user.id or is_chat_history_memory(memory):
+        raise HTTPException(status_code=404, detail=ERROR_MESSAGES.NOT_FOUND)
+
+    revisions = list((memory.meta or {}).get('revisions') or [])
+    if not revisions:
+        raise HTTPException(status_code=404, detail='No memory versions found')
+    try:
+        revision = revisions[form_data.revision_index]
+    except IndexError:
+        raise HTTPException(status_code=400, detail='Invalid memory version')
+
+    return await update_memory_by_id(
+        memory_id,
+        request,
+        MemoryUpdateModel(
+            content=revision.get('content'),
+            type=revision.get('type'),
+            path=revision.get('path') or '',
+        ),
+        user,
+    )
 
 
 ############################
