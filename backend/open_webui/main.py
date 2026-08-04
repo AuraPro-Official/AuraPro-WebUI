@@ -99,6 +99,7 @@ from open_webui.env import (
     ENABLE_WEBSOCKET_SUPPORT,
     GLOBAL_LOG_LEVEL,
     INSTANCE_ID,
+    DATA_DIR,
     LICENSE_KEY,
     LOG_FORMAT,
     MAX_BODY_LOG_SIZE,
@@ -147,6 +148,7 @@ from open_webui.routers import (
     channels,
     chats,
     configs,
+    epub,
     epub_concept,
     files,
     folders,
@@ -388,6 +390,14 @@ async def lifespan(app: FastAPI):
     )
     await apply_default_sherpa_audio_config()
     await initialize_runtime_config(app)
+    try:
+        from open_webui.services.epub_runtime import initialize_epub_concept_service
+
+        initialize_epub_concept_service(app, data_dir=DATA_DIR)
+    except Exception as error:
+        # EPUB routes remain fail-closed (503) if their independent store is
+        # misconfigured; do not replace it with the main WebUI database.
+        log.error('Failed to initialize EPUB concept service: %s', error)
     await migrate_legacy_webhook_config()
     await publish_event(app, EVENTS.SYSTEM_STARTUP_STARTED, source='system')
 
@@ -490,8 +500,10 @@ async def lifespan(app: FastAPI):
     await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_STARTED, source='system')
 
     # Shutdown: clean up shared resources
+    from open_webui.services.epub_runtime import close_epub_concept_service
     from open_webui.utils.session_pool import close_session
 
+    close_epub_concept_service(app)
     await close_session()
 
     if hasattr(app.state, 'redis_task_command_listener'):
@@ -836,6 +848,7 @@ app.include_router(groups.router, prefix='/api/v1/groups', tags=['groups'])
 app.include_router(files.router, prefix='/api/v1/files', tags=['files'])
 app.include_router(functions.router, prefix='/api/v1/functions', tags=['functions'])
 app.include_router(glossary.router, prefix='/api/v1/glossary', tags=['glossary'])
+app.include_router(epub.router)
 app.include_router(epub_concept.router)
 if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix='/api/v1/analytics', tags=['analytics'])
