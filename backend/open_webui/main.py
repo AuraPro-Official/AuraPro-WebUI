@@ -739,6 +739,13 @@ async def initialize_runtime_config(app: FastAPI):
         reranking_function=app.state.rf,
         reranking_batch_size=rag_config.get('rag.reranking_batch_size'),
     )
+    # EPUB is stricter than generic RAG: it can use only in-process models or
+    # an Ollama endpoint proven local/private by its concrete URL.  Generic
+    # OpenAI/Azure or external-reranker configuration must not leak user text
+    # from the shared EPUB library to a public provider.
+    from open_webui.services.epub_runtime import configure_epub_rag_inference_policy
+
+    configure_epub_rag_inference_policy(app.state, rag_config)
 
 
 ########################################
