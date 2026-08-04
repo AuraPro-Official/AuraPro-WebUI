@@ -28,6 +28,7 @@
 		banners,
 		user,
 		socket,
+		socketConnected,
 		audioQueue,
 		showControls,
 		showCallOverlay,
@@ -76,6 +77,7 @@
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
 	import { applyDesktopShortcutAction } from '$lib/utils/extension-modes';
+	import { waitForSocketReady } from '$lib/utils/socket-readiness';
 	import { getOutputText } from './Messages/structuredOutput';
 
 	import {
@@ -683,7 +685,12 @@
 	const chatEventHandler = async (event, cb) => {
 		console.log(event);
 
-		if (event.chat_id === $chatId) {
+		const belongsToPendingNewChat =
+			!$chatId &&
+			Boolean(event.message_id) &&
+			Object.prototype.hasOwnProperty.call(history.messages, event.message_id);
+
+		if (event.chat_id === $chatId || belongsToPendingNewChat) {
 			await tick();
 			let message = history.messages[event.message_id];
 
@@ -2243,6 +2250,12 @@
 		}
 		if (selectedModels.includes('')) {
 			toast.error($i18n.t('Model not selected'));
+			return;
+		}
+
+		const readySocket = await waitForSocketReady(socket, socketConnected);
+		if (!readySocket) {
+			toast.error($i18n.t('Server connection failed'));
 			return;
 		}
 

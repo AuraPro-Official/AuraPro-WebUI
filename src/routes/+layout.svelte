@@ -74,6 +74,7 @@
 		removeAllDetails
 	} from '$lib/utils';
 	import { setTextScale } from '$lib/utils/text-scale';
+	import { authenticateSocket } from '$lib/utils/socket-readiness';
 
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
 	import AppSidebar from '$lib/components/app/AppSidebar.svelte';
@@ -136,6 +137,7 @@
 	const DISCONNECT_TOAST_DELAY_MS = 2000;
 
 	const setupSocket = async (enableWebsocket) => {
+		socketConnected.set(false);
 		const _socket = io(`${WEBUI_BASE_URL}` || undefined, {
 			reconnection: true,
 			reconnectionDelay: 1000,
@@ -148,6 +150,7 @@
 		await socket.set(_socket);
 
 		_socket.on('connect_error', (err) => {
+			socketConnected.set(false);
 			console.log('connect_error', err);
 		});
 
@@ -155,6 +158,7 @@
 
 		_socket.on('connect', async () => {
 			console.log('connected', _socket.id);
+			socketConnected.set(false);
 
 			// Cancel any pending disconnect toast if we reconnected quickly
 			if (disconnectToastTimer) {
@@ -162,15 +166,19 @@
 				disconnectToastTimer = null;
 			}
 
-			if (hasConnectedOnce) {
-				socketConnected.set(true);
-				// Only show "Reconnected" if the user actually saw the disconnect warning
-				if (disconnectWarningShown) {
-					toast.success($i18n.t('Reconnected'));
-					disconnectWarningShown = false;
-				}
-			}
+			const wasReconnect = hasConnectedOnce;
 			hasConnectedOnce = true;
+
+			const authenticated = await authenticateSocket(_socket, localStorage.getItem('token'));
+			socketConnected.set(authenticated);
+			if (!authenticated) {
+				console.warn('Socket connected, but user authentication was not acknowledged');
+			}
+
+			if (wasReconnect && authenticated && disconnectWarningShown) {
+				toast.success($i18n.t('Reconnected'));
+				disconnectWarningShown = false;
+			}
 
 			const res = await getVersion(localStorage.token);
 
@@ -206,13 +214,6 @@
 			}
 
 			console.log('version', version);
-
-			if (localStorage.getItem('token')) {
-				// Emit user-join event with auth token
-				_socket.emit('user-join', { auth: { token: localStorage.token } });
-			} else {
-				console.warn('No token found in localStorage, user-join event not emitted');
-			}
 		});
 
 		_socket.on('reconnect_attempt', (attempt) => {
