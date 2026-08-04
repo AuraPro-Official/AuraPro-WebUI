@@ -260,6 +260,21 @@ skip-string-normalization = true
 [tool.ruff]
 line-length = 120
 
+# EPUB domain guard.  Names referenced only from `except` clauses and other
+# error paths are invisible to the happy-path test suite: a missing import
+# raises NameError exactly when the degraded path fires, turning an actionable
+# 400/404/degraded response into an opaque 500.  Pyflakes (F821) catches that
+# statically, so these modules are kept clean under the pyflakes rule set even
+# though the repo-wide style rules (quotes, line length) are not yet applied to
+# them.  Run from the repo root; it must report "All checks passed!":
+#
+#   ruff check --select F \
+#     backend/open_webui/retrieval/epub \
+#     backend/open_webui/retrieval/parsers/epub \
+#     backend/open_webui/services/epub_concept.py \
+#     backend/open_webui/services/epub_runtime.py \
+#     backend/open_webui/routers/epub.py
+
 [tool.ruff.format]
 quote-style = "single"
 docstring-code-format = false
