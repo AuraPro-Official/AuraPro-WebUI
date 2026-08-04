@@ -210,6 +210,43 @@ deterministic sample selection, pin a provider model snapshot, and be explicitly
 authorized by the administrator before submission. Only after the cloud sample
 is reviewed may a full-version Batch be created.
 
+### 4.2.2 Concept-relation graph (required first-release capability)
+
+Passage-level concept mentions alone are an evidence-backed terminology index,
+not a sufficient concept graph. The first release must therefore build a
+second, relation layer before its full-version offline Batch is accepted.
+
+1. The parser writes the EPUB TOC hierarchy deterministically. A mention is
+   already bound to one passage and therefore to one TOC node; this structural
+   provenance is never inferred by a model.
+2. The first offline pass extracts only concepts, aliases, definitions, and
+   exact passage mentions. All mention evidence/offset invariants remain as in
+   section 4.2.
+3. The second offline pass runs on bounded TOC-subtree packets. Each packet
+   supplies stable TOC-node IDs/titles, already accepted or provisional concept
+   IDs/names in that subtree, and the relevant source evidence. It may create
+   only relations whose endpoints already exist. It cannot invent a concept,
+   a TOC node, or an ungrounded relation endpoint.
+4. Initial relation predicates are controlled vocabulary: `HAS_PART`,
+   `PRECEDES`, `PREREQUISITE`, `CAUSES`, `CONTRASTS`, and `ELABORATES`.
+   Deterministic TOC parent/child edges remain structurally distinct from
+   model-suggested semantic edges.
+5. A concept-relation identity is global across the shared library, while every
+   model or administrator assertion of that relation is scoped to one EPUB
+   version and names one or more exact immutable-source evidence spans. This
+   permits the same grounded relationship to accumulate support across books
+   without turning it into an unproven universal fact. Assertions are
+   `PROVISIONAL` until reviewed; ambiguous or invalid output is a failed Batch
+   item with no partial graph mutation.
+
+At query time, direct concept mentions and bounded relation traversal form the
+graph candidate set. `HAS_PART` expands a resolved parent concept to its child
+concepts; TOC provenance orders the resulting passages in book order. The
+graph candidate set is combined with local vector candidates, locally
+Cross-Encoder reranked, and MMR diversified. A graph-derived result always
+returns its complete immutable passage and a verified source excerpt; the
+relationship affects retrieval provenance and ranking, never citation text.
+
 ### 4.3 Search
 
 - Tier 1 uses an in-memory multi-pattern matcher (Aho-Corasick or equivalent),
