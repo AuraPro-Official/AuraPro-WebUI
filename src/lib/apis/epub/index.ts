@@ -197,3 +197,23 @@ export const indexEpubRetrievalUnit = (token: string, retrievalUnitId: string) =
 		`/admin/retrieval-units/${encodeURIComponent(retrievalUnitId)}/index`,
 		{ method: 'POST' }
 	);
+
+export type EpubVersionIndexResult = {
+	version_id: string;
+	mode: 'PENDING' | 'REBUILD';
+	total_retrieval_units: number;
+	selected_retrieval_units: number;
+	skipped_ready: number;
+	ready: number;
+	degraded: number;
+	failed: number;
+	error_count: number;
+	errors: Array<{ retrieval_unit_id: string; reason: string }>;
+};
+
+export const indexEpubVersion = (token: string, versionId: string, rebuild = false) =>
+	request<EpubVersionIndexResult>(token, `/admin/versions/${encodeURIComponent(versionId)}/index`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ rebuild })
+	});

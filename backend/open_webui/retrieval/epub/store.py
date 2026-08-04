@@ -71,6 +71,12 @@ class EpubStore(Protocol):
         self, passage_id: str, start_codepoint: int, end_codepoint: int, **metadata: Any
     ) -> str: ...
 
+    def list_retrieval_units(self, passage_id: str) -> list[dict[str, Any]]: ...
+
+    def list_retrieval_units_for_version(self, version_id: str) -> list[dict[str, Any]]: ...
+
+    def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
+
 
 _MIGRATION_1: tuple[str, ...] = (
     """
@@ -593,6 +599,17 @@ class SQLiteEpubStore:
             if start_codepoint < 0 or end_codepoint <= start_codepoint or end_codepoint > len(content):
                 raise IntegrityError("retrieval-unit offsets must identify a non-empty source substring")
             excerpt = content[start_codepoint:end_codepoint]
+            # Window generation is retry-safe.  SQLite UNIQUE considers two
+            # NULL embedding profiles distinct, so use ``IS`` explicitly
+            # rather than depending only on the schema constraint.
+            existing = connection.execute(
+                """SELECT retrieval_unit_id FROM retrieval_units
+                   WHERE passage_id = ? AND start_codepoint = ? AND end_codepoint = ?
+                     AND embedding_profile IS ?""",
+                (passage_id, start_codepoint, end_codepoint, embedding_profile),
+            ).fetchone()
+            if existing is not None:
+                return str(existing["retrieval_unit_id"])
             unit_id = retrieval_unit_id or str(uuid4())
             connection.execute(
                 """INSERT INTO retrieval_units(
@@ -611,6 +628,54 @@ class SQLiteEpubStore:
                 ),
             )
         return unit_id
+
+    def list_retrieval_units(self, passage_id: str) -> list[dict[str, Any]]:
+        """Return stable derived windows for one immutable source passage."""
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                """SELECT * FROM retrieval_units WHERE passage_id = ?
+                   ORDER BY start_codepoint, end_codepoint, retrieval_unit_id""",
+                (passage_id,),
+            )
+            .fetchall()
+        ]
+
+    def list_retrieval_units_for_version(self, version_id: str) -> list[dict[str, Any]]:
+        """Return a version's derived windows in stable source order.
+
+        This is intentionally a derived-index read surface: it joins through
+        immutable passages but never exposes a way to replace their source
+        content.  Administrators use it to run a version-level indexing job
+        without having to discover opaque retrieval-unit identifiers.
+        """
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                """SELECT units.*
+                   FROM retrieval_units AS units
+                   JOIN passages AS passages ON passages.passage_id = units.passage_id
+                   WHERE passages.version_id = ?
+                   ORDER BY passages.spine_index, passages.ordinal,
+                            units.start_codepoint, units.end_codepoint, units.retrieval_unit_id""",
+                (version_id,),
+            )
+            .fetchall()
+        ]
+
+    def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None:
+        """Persist an indexing outcome without changing source-window fields."""
+        if vector_state not in {"PENDING", "READY", "FAILED"}:
+            raise IntegrityError(f"invalid vector state: {vector_state}")
+        with self._write() as connection:
+            changed = connection.execute(
+                "UPDATE retrieval_units SET vector_state = ? WHERE retrieval_unit_id = ?",
+                (vector_state, retrieval_unit_id),
+            ).rowcount
+            if changed != 1:
+                raise IntegrityError(f"unknown retrieval_unit_id: {retrieval_unit_id}")
 
     def get_retrieval_unit(self, retrieval_unit_id: str) -> dict[str, Any] | None:
         return self._row(

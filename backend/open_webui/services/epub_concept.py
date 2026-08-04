@@ -9,6 +9,7 @@ can configure a provider credential or replace an inference endpoint.
 from __future__ import annotations
 
 from dataclasses import asdict
+import asyncio
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ from open_webui.retrieval.epub.batch import (
     BatchProvider,
     SQLiteBatchRepository,
 )
+from open_webui.retrieval.epub.retrieval_units import plan_retrieval_windows
 from open_webui.retrieval.epub.search import EpubSearchService, SearchResponse
 from open_webui.retrieval.epub.store import IntegrityError, SQLiteEpubStore
 from open_webui.retrieval.parsers.epub.parser import EPUBParser
@@ -52,6 +54,15 @@ class EpubApiRepository(Protocol):
     def create_book_version(self, book_id: str, *, epub_bytes: bytes, source_locator: str | None = None) -> Any: ...
     def add_toc_nodes(self, version_id: str, nodes: Sequence[Mapping[str, Any]]) -> list[str]: ...
     def add_passages(self, version_id: str, passages: Sequence[Mapping[str, Any]]) -> list[str]: ...
+    def add_retrieval_unit(
+        self,
+        passage_id: str,
+        start_codepoint: int,
+        end_codepoint: int,
+        **metadata: Any,
+    ) -> str: ...
+    def list_retrieval_units_for_version(self, version_id: str) -> list[dict[str, Any]]: ...
+    def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
     def set_version_status(self, version_id: str, status: str, *, failure_reason: str | None = None) -> None: ...
     def upsert_concept(self, canonical_name: str, **kwargs: Any) -> str: ...
 
@@ -72,6 +83,7 @@ class EpubConceptService:
         batch: BatchJobService | None = None,
         providers: Mapping[str, BatchProvider] | None = None,
         vector_indexer: Any | None = None,
+        retrieval_embedding_profile: str | None = None,
     ) -> None:
         self._store = store
         self._search = search or EpubSearchService(source=store)
@@ -84,6 +96,7 @@ class EpubConceptService:
         self._batch = batch
         self._providers = dict(providers or {})
         self._vector_indexer = vector_indexer
+        self._retrieval_embedding_profile = retrieval_embedding_profile or None
 
     def list_books(self) -> list[dict[str, Any]]:
         return self._store.list_books()
@@ -125,6 +138,18 @@ class EpubConceptService:
             vector_limit=vector_limit,
         )
         return self._search_response(response)
+
+    async def search_async(
+        self, query: str, *, graph_offset: int = 0, graph_limit: int = 20, vector_limit: int = 10
+    ) -> dict[str, Any]:
+        """Keep canonical SQLite reads and current sync adapters off the ASGI loop.
+
+        Native AuraPro async model adapters will replace this compatibility
+        bridge in the next integration step; the HTTP contract is async now.
+        """
+        return await asyncio.to_thread(
+            self.search, query, graph_offset=graph_offset, graph_limit=graph_limit, vector_limit=vector_limit
+        )
 
     def import_epub(
         self,
@@ -180,7 +205,7 @@ class EpubConceptService:
             }
         try:
             toc_ids = self._persist_toc(version.version_id, parsed.passages)
-            self._store.add_passages(
+            passage_ids = self._store.add_passages(
                 version.version_id,
                 [
                     {
@@ -195,6 +220,7 @@ class EpubConceptService:
                     for passage in parsed.passages
                 ],
             )
+            retrieval_unit_count = self._create_retrieval_units(passage_ids)
             self._store.set_version_status(version.version_id, "READY")
         except Exception as error:
             self._store.set_version_status(version.version_id, "FAILED", failure_reason=_safe_reason(error))
@@ -207,8 +233,34 @@ class EpubConceptService:
             "book_title": parsed.book_title,
             "epub_sha256": version.epub_sha256,
             "total_passages": len(parsed.passages),
+            "total_retrieval_units": retrieval_unit_count,
             "warnings": [asdict(warning) for warning in parsed.warnings],
         }
+
+    def _create_retrieval_units(self, passage_ids: Sequence[str]) -> int:
+        """Persist the standard vector windows for newly imported passages.
+
+        The store's exact-window lookup makes this safe to call again after a
+        retry: it returns existing units instead of duplicating them.  Source
+        passage content remains the only input and is never rewritten.
+        """
+        created_or_reused = 0
+        for passage_id in passage_ids:
+            passage = self._store.get_passage(passage_id)
+            if passage is None:
+                raise EpubServiceError("newly stored EPUB passage is unavailable")
+            content = passage.get("content")
+            if not isinstance(content, str):
+                raise EpubServiceError("newly stored EPUB passage has invalid source content")
+            for window in plan_retrieval_windows(content):
+                self._store.add_retrieval_unit(
+                    passage_id,
+                    window.start_codepoint,
+                    window.end_codepoint,
+                    embedding_profile=self._retrieval_embedding_profile,
+                )
+                created_or_reused += 1
+        return created_or_reused
 
     def create_batch_draft(
         self,
@@ -276,6 +328,80 @@ class EpubConceptService:
             "availability": asdict(result.availability),
             "reason": result.reason,
         }
+
+    async def index_retrieval_unit_async(self, retrieval_unit_id: str) -> dict[str, Any]:
+        return await asyncio.to_thread(self.index_retrieval_unit, retrieval_unit_id)
+
+    def index_version_retrieval_units(self, version_id: str, *, rebuild: bool = False) -> dict[str, Any]:
+        """Index one EPUB version's derived windows with isolated outcomes.
+
+        A normal run retries every non-ready unit, while a rebuild deliberately
+        re-embeds all units for the version.  Individual failures are recorded
+        and returned without abandoning the remaining source windows.  A
+        degraded local embedding runtime leaves the existing state untouched:
+        a previously ready vector remains usable and a pending unit can be
+        retried after the private runtime recovers.
+        """
+        if self._vector_indexer is None:
+            raise EpubServiceUnavailable("the server has no private EPUB vector indexer configured")
+        if self._store.get_version(version_id) is None:
+            raise EpubServiceError("unknown EPUB version")
+
+        all_units = self._store.list_retrieval_units_for_version(version_id)
+        selected = all_units if rebuild else [
+            unit for unit in all_units if unit.get("vector_state") != "READY"
+        ]
+        errors: list[dict[str, str]] = []
+        ready = degraded = failed = 0
+        for unit in selected:
+            retrieval_unit_id = str(unit["retrieval_unit_id"])
+            try:
+                result = self._vector_indexer.index(retrieval_unit_id)
+                if result.state == "READY":
+                    self._store.set_retrieval_unit_vector_state(retrieval_unit_id, "READY")
+                    ready += 1
+                elif result.state == "DEGRADED":
+                    degraded += 1
+                    errors.append(
+                        {
+                            "retrieval_unit_id": retrieval_unit_id,
+                            "reason": result.reason or "private embedding runtime is unavailable",
+                        }
+                    )
+                else:
+                    self._store.set_retrieval_unit_vector_state(retrieval_unit_id, "FAILED")
+                    failed += 1
+                    errors.append(
+                        {
+                            "retrieval_unit_id": retrieval_unit_id,
+                            "reason": result.reason or f"unexpected index state: {result.state}",
+                        }
+                    )
+            except Exception as error:
+                self._store.set_retrieval_unit_vector_state(retrieval_unit_id, "FAILED")
+                failed += 1
+                errors.append({"retrieval_unit_id": retrieval_unit_id, "reason": _safe_reason(error)})
+
+        return {
+            "version_id": version_id,
+            "mode": "REBUILD" if rebuild else "PENDING",
+            "total_retrieval_units": len(all_units),
+            "selected_retrieval_units": len(selected),
+            "skipped_ready": len(all_units) - len(selected),
+            "ready": ready,
+            "degraded": degraded,
+            "failed": failed,
+            # The count is present even when individual details are capped so
+            # a large malformed EPUB cannot turn an operational response into
+            # an unbounded payload.
+            "error_count": len(errors),
+            "errors": errors[:20],
+        }
+
+    async def index_version_retrieval_units_async(
+        self, version_id: str, *, rebuild: bool = False
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(self.index_version_retrieval_units, version_id, rebuild=rebuild)
 
     def _provider_for_job(self, batch_job_id: str) -> BatchProvider:
         job = self._batch.get_job(batch_job_id)

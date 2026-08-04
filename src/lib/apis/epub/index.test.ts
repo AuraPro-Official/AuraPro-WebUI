@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createEpubBatchDraft, getEpubBooks, importEpub, searchEpub } from './index';
+import { createEpubBatchDraft, getEpubBooks, importEpub, indexEpubVersion, searchEpub } from './index';
 
 const jsonResponse = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), {
@@ -70,5 +70,30 @@ describe('EPUB concept API client', () => {
 	it('surfaces an actionable API detail instead of hiding a failed authorization or configuration', async () => {
 		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ detail: 'administrator required' }, 403)));
 		await expect(getEpubBooks('ordinary-token')).rejects.toThrow('administrator required');
+	});
+
+	it('targets the server-owned version bulk-index endpoint and makes rebuild explicit', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse({
+				version_id: 'version-1',
+				mode: 'REBUILD',
+				total_retrieval_units: 3,
+				selected_retrieval_units: 3,
+				skipped_ready: 0,
+				ready: 3,
+				degraded: 0,
+				failed: 0,
+				error_count: 0,
+				errors: []
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		await indexEpubVersion('admin-token', 'version-1', true);
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			'/api/v1/epub/admin/versions/version-1/index',
+			expect.objectContaining({ method: 'POST', body: JSON.stringify({ rebuild: true }) })
+		);
 	});
 });
