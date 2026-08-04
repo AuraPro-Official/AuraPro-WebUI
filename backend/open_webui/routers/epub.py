@@ -1,8 +1,9 @@
 """Authenticated REST API for the independent EPUB concept domain.
 
-This router intentionally does not share the legacy ``epub_concept``
-prototype's global objects or unauthenticated routes.  Startup integration
-sets ``app.state.EPUB_CONCEPT_SERVICE`` to an ``EpubConceptService`` configured
+Every route is authorized: reads require ``get_verified_user`` and every
+import, destructive, glossary, indexing, and Batch command requires
+``get_admin_user``.  Startup integration sets
+``app.state.EPUB_CONCEPT_SERVICE`` to an ``EpubConceptService`` configured
 with the server's independent store and private model/provider adapters.
 """
 
