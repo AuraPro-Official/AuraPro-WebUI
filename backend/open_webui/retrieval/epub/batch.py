@@ -28,6 +28,17 @@ class BatchPayloadError(BatchServiceError):
     """A provider result cannot safely be turned into concept graph records."""
 
 
+_JOB_KINDS = {"CONCEPT_MENTIONS", "SECTION_GRAPH"}
+_RELATION_PREDICATES = {
+    "HAS_PART",
+    "PRECEDES",
+    "PREREQUISITE",
+    "CAUSES",
+    "CONTRASTS",
+    "ELABORATES",
+}
+
+
 @dataclass(frozen=True)
 class BatchItemInput:
     """One persisted request, already tied to an immutable source passage."""
@@ -351,6 +362,7 @@ class BatchRepository(Protocol):
         version_id: str,
         provider: str,
         profile_name: str,
+        job_kind: str,
         is_sample: bool,
         items: Sequence[BatchItemInput],
         batch_job_id: str | None = None,
@@ -482,12 +494,15 @@ class SQLiteBatchRepository:
         version_id: str,
         provider: str,
         profile_name: str,
+        job_kind: str = "CONCEPT_MENTIONS",
         is_sample: bool,
         items: Sequence[BatchItemInput],
         batch_job_id: str | None = None,
     ) -> str:
         if not provider.strip() or not profile_name.strip():
             raise BatchServiceError("provider and profile_name cannot be empty")
+        if job_kind not in _JOB_KINDS:
+            raise BatchServiceError(f"unsupported EPUB Batch job kind: {job_kind}")
         self._validate_items(items)
         job_id = batch_job_id or str(uuid4())
         expected_items = {
@@ -502,6 +517,7 @@ class SQLiteBatchRepository:
                     existing["version_id"] == version_id
                     and existing["provider"] == provider
                     and existing["profile_name"] == profile_name
+                    and existing["job_kind"] == job_kind
                     and bool(existing["is_sample"]) == is_sample
                 )
                 actual_items = {
@@ -532,9 +548,9 @@ class SQLiteBatchRepository:
             if unknown:
                 raise BatchServiceError("every Batch item must belong to the job's ready book version")
             connection.execute(
-                """INSERT INTO batch_jobs(batch_job_id, version_id, provider, profile_name, is_sample)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (job_id, version_id, provider, profile_name, int(is_sample)),
+                """INSERT INTO batch_jobs(batch_job_id, version_id, provider, profile_name, job_kind, is_sample)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (job_id, version_id, provider, profile_name, job_kind, int(is_sample)),
             )
             for item in items:
                 connection.execute(
@@ -685,21 +701,42 @@ class SQLiteBatchRepository:
 
     @staticmethod
     def _add_mentions(
-        connection: Any, concept_id: str, passage_id: str, mentions: Any
+        connection: Any,
+        concept_id: str,
+        fallback_passage_id: str,
+        mentions: Any,
+        *,
+        version_id: str | None = None,
+        require_passage_ids: bool = False,
     ) -> None:
         if mentions is None:
             return
         if not isinstance(mentions, list):
             raise BatchPayloadError("concept mentions must be a list")
-        passage = connection.execute(
-            "SELECT content FROM passages WHERE passage_id = ?", (passage_id,)
-        ).fetchone()
-        if passage is None:
-            raise BatchPayloadError("Batch item has no source passage")
-        content = passage["content"]
         for mention in mentions:
             if not isinstance(mention, Mapping):
                 raise BatchPayloadError("each mention must be an object")
+            if require_passage_ids and set(mention) != {
+                "passage_id",
+                "start_codepoint",
+                "end_codepoint",
+                "evidence",
+            }:
+                raise BatchPayloadError("section graph mention has an invalid schema")
+            passage_id = mention.get("passage_id", fallback_passage_id)
+            if require_passage_ids and "passage_id" not in mention:
+                raise BatchPayloadError("section graph mentions need a passage_id")
+            if not isinstance(passage_id, str) or not passage_id:
+                raise BatchPayloadError("concept mention passage_id must be a non-empty string")
+            query = "SELECT content FROM passages WHERE passage_id = ?"
+            parameters: tuple[Any, ...] = (passage_id,)
+            if version_id is not None:
+                query += " AND version_id = ?"
+                parameters = (passage_id, version_id)
+            passage = connection.execute(query, parameters).fetchone()
+            if passage is None:
+                raise BatchPayloadError("concept mention does not belong to this EPUB version")
+            content = passage["content"]
             start = mention.get("start_codepoint")
             end = mention.get("end_codepoint")
             if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start or end > len(content):
@@ -721,6 +758,68 @@ class SQLiteBatchRepository:
                     (str(uuid4()), concept_id, passage_id, start, end, expected),
                 )
 
+    def _ingest_section_graph(
+        self, connection: Any, *, version_id: str, item: Any, payload: Mapping[str, Any]
+    ) -> None:
+        """Validate and commit one multi-passage packet as a single transaction."""
+        if set(payload) != {"concepts", "relations"}:
+            raise BatchPayloadError("section graph output must contain only concepts and relations")
+        concepts = payload.get("concepts")
+        relations = payload.get("relations")
+        if not isinstance(concepts, list) or not isinstance(relations, list):
+            raise BatchPayloadError("section graph output needs concepts and relations lists")
+        local_concepts: dict[str, str] = {}
+        for suggestion in concepts:
+            if not isinstance(suggestion, Mapping):
+                raise BatchPayloadError("section graph concepts must contain objects")
+            if set(suggestion) != {"local_id", "name", "aliases", "definition", "mentions"}:
+                raise BatchPayloadError("section graph concept has an invalid schema")
+            local_id = suggestion.get("local_id")
+            if not isinstance(local_id, str) or not local_id.strip() or local_id in local_concepts:
+                raise BatchPayloadError("section graph local_id must be unique and non-empty")
+            concept_id = self._resolve_or_create_concept(connection, suggestion)
+            self._add_mentions(
+                connection,
+                concept_id,
+                item["passage_id"],
+                suggestion["mentions"],
+                version_id=version_id,
+                require_passage_ids=True,
+            )
+            local_concepts[local_id] = concept_id
+        for relation in relations:
+            if not isinstance(relation, Mapping):
+                raise BatchPayloadError("section graph relations must contain objects")
+            if set(relation) != {"subject_local_id", "predicate", "object_local_id", "evidence"}:
+                raise BatchPayloadError("section graph relation has an invalid schema")
+            subject = relation.get("subject_local_id")
+            predicate = relation.get("predicate")
+            object_ = relation.get("object_local_id")
+            evidence = relation.get("evidence")
+            if not isinstance(subject, str) or not isinstance(object_, str) or subject == object_:
+                raise BatchPayloadError("section graph relation needs two distinct local concept IDs")
+            if subject not in local_concepts or object_ not in local_concepts:
+                raise BatchPayloadError("section graph relation endpoint is not a packet concept")
+            if predicate not in _RELATION_PREDICATES or not isinstance(evidence, list) or not evidence:
+                raise BatchPayloadError("section graph relation predicate or evidence is invalid")
+            if any(
+                not isinstance(item, Mapping)
+                or set(item) != {"passage_id", "start_codepoint", "end_codepoint", "evidence"}
+                for item in evidence
+            ):
+                raise BatchPayloadError("section graph relation evidence has an invalid schema")
+            try:
+                self._store._add_concept_relation(
+                    connection,
+                    version_id=version_id,
+                    subject_concept_id=local_concepts[subject],
+                    predicate=predicate,
+                    object_concept_id=local_concepts[object_],
+                    evidence=evidence,
+                )
+            except ValueError as exc:
+                raise BatchPayloadError(str(exc)) from exc
+
     def ingest_success(self, batch_job_id: str, custom_id: str, payload: Mapping[str, Any]) -> bool:
         """Atomically ingest one model result and mark the durable item complete.
 
@@ -729,10 +828,8 @@ class SQLiteBatchRepository:
         graph, preserving reproducibility of an offline Batch run.
         """
         serialized = _canonical_json(payload)
-        concepts = payload.get("concepts")
-        if not isinstance(concepts, list):
-            raise BatchPayloadError("provider success payload must contain a concepts list")
         with self._store._write() as connection:
+            job = self._require_job(connection, batch_job_id)
             item = self._item_for_update(connection, batch_job_id, custom_id)
             if item["status"] == "SUCCEEDED":
                 if item["response_json"] == serialized:
@@ -740,11 +837,19 @@ class SQLiteBatchRepository:
                 raise BatchPayloadError("different output received for an already ingested Batch item")
             if item["status"] not in {"PENDING", "SUBMITTED", "RETRY", "FAILED"}:
                 raise BatchPayloadError(f"cannot ingest output for item state {item['status']}")
-            for suggestion in concepts:
-                if not isinstance(suggestion, Mapping):
-                    raise BatchPayloadError("concepts must contain objects")
-                concept_id = self._resolve_or_create_concept(connection, suggestion)
-                self._add_mentions(connection, concept_id, item["passage_id"], suggestion.get("mentions"))
+            if job["job_kind"] == "SECTION_GRAPH":
+                self._ingest_section_graph(
+                    connection, version_id=job["version_id"], item=item, payload=payload
+                )
+            else:
+                concepts = payload.get("concepts")
+                if not isinstance(concepts, list):
+                    raise BatchPayloadError("provider success payload must contain a concepts list")
+                for suggestion in concepts:
+                    if not isinstance(suggestion, Mapping):
+                        raise BatchPayloadError("concepts must contain objects")
+                    concept_id = self._resolve_or_create_concept(connection, suggestion)
+                    self._add_mentions(connection, concept_id, item["passage_id"], suggestion.get("mentions"))
             connection.execute(
                 """UPDATE batch_items
                    SET status = 'SUCCEEDED', response_json = ?, error_text = NULL,
@@ -790,13 +895,14 @@ class SQLiteBatchRepository:
                 raise BatchServiceError("Batch job has no failed items to retry")
             child_id = str(uuid4())
             connection.execute(
-                """INSERT INTO batch_jobs(batch_job_id, version_id, provider, profile_name, is_sample)
-                   VALUES (?, ?, ?, ?, ?)""",
+                """INSERT INTO batch_jobs(batch_job_id, version_id, provider, profile_name, job_kind, is_sample)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     child_id,
                     parent["version_id"],
                     parent["provider"],
                     parent["profile_name"],
+                    parent["job_kind"],
                     parent["is_sample"],
                 ),
             )
@@ -854,6 +960,7 @@ class BatchJobService:
         provider: str,
         profile_name: str,
         items: Sequence[BatchItemInput],
+        job_kind: str = "CONCEPT_MENTIONS",
         is_sample: bool = False,
         batch_job_id: str | None = None,
     ) -> str:
@@ -861,6 +968,7 @@ class BatchJobService:
             version_id=version_id,
             provider=provider,
             profile_name=profile_name,
+            job_kind=job_kind,
             is_sample=is_sample,
             items=items,
             batch_job_id=batch_job_id,

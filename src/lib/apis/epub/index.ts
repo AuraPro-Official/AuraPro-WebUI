@@ -73,6 +73,7 @@ export type EpubSearchResponse = {
 	graph_offset: number;
 	graph_results: EpubSearchHit[];
 	vector_results: EpubSearchHit[];
+	fused_results: EpubSearchHit[];
 	degraded: EpubDegradedState[];
 };
 
@@ -89,7 +90,10 @@ export type BatchDraft = {
 	item_count: number;
 	status: string;
 	prompt_profile?: string;
+	job_kind?: 'SECTION_GRAPH';
 };
+
+export type SectionGraphBatchDraftInput = Omit<BatchDraftInput, 'prompt_profile'>;
 
 export type BatchStatus = Record<string, string | number | null | undefined>;
 
@@ -127,6 +131,25 @@ export type ConceptInput = {
 	definition: string;
 	status: 'PROVISIONAL' | 'APPROVED' | 'REJECTED';
 };
+
+export type RelationAssertion = {
+	assertion_id: string;
+	relation_id: string;
+	version_id: string;
+	status: 'PROVISIONAL' | 'APPROVED' | 'REJECTED';
+	source: 'MODEL' | 'ADMIN';
+	predicate: string;
+	subject_name: string;
+	object_name: string;
+	evidence: Array<{
+		passage_id: string;
+		start_codepoint: number;
+		end_codepoint: number;
+		evidence: string;
+	}>;
+};
+
+export type RelationAssertionPage = { total: number; offset: number; items: RelationAssertion[] };
 
 type ApiErrorBody = { detail?: unknown };
 
@@ -199,6 +222,16 @@ export const createEpubBatchDraft = (token: string, input: BatchDraftInput) =>
 		body: JSON.stringify(input)
 	});
 
+export const createEpubSectionGraphBatchDraft = (
+	token: string,
+	input: SectionGraphBatchDraftInput
+) =>
+	request<BatchDraft>(token, '/admin/section-graph-batches', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(input)
+	});
+
 export const runEpubLocalCalibration = (token: string, input: LocalCalibrationInput) =>
 	request<LocalCalibrationReport>(token, '/admin/calibrations/local', {
 		method: 'POST',
@@ -227,6 +260,38 @@ export const upsertEpubConcept = (token: string, input: ConceptInput) =>
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(input)
 	});
+
+export const getEpubRelationAssertions = (
+	token: string,
+	input: {
+		status?: 'PROVISIONAL' | 'APPROVED' | 'REJECTED';
+		version_id?: string;
+		offset?: number;
+		limit?: number;
+	} = {}
+) => {
+	const params = new URLSearchParams();
+	if (input.status) params.set('status', input.status);
+	if (input.version_id) params.set('version_id', input.version_id);
+	params.set('offset', String(input.offset ?? 0));
+	params.set('limit', String(input.limit ?? 50));
+	return request<RelationAssertionPage>(token, `/admin/relation-assertions?${params.toString()}`);
+};
+
+export const reviewEpubRelationAssertion = (
+	token: string,
+	assertionId: string,
+	status: RelationAssertion['status']
+) =>
+	request<{ assertion_id: string; status: RelationAssertion['status'] }>(
+		token,
+		`/admin/relation-assertions/${encodeURIComponent(assertionId)}`,
+		{
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ status })
+		}
+	);
 
 export const indexEpubRetrievalUnit = (token: string, retrievalUnitId: string) =>
 	request<Record<string, unknown>>(
