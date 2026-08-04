@@ -117,7 +117,9 @@
 
 	let sharedFolders: any[] = [];
 
-	$: pinnedItems = Array.from(new Set([ ...($settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS), 'epub' ]));
+	$: pinnedItems = Array.from(
+		new Set([...($settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS), 'epub'])
+	);
 
 	const isMenuItemVisible = (id) => {
 		switch (id) {
