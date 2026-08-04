@@ -619,8 +619,19 @@ async def get_file_process_status(
 
                         if status:
                             event = {'status': status}
+                            for key in (
+                                'progress_stage',
+                                'progress',
+                                'progress_started_at',
+                                'current',
+                                'total',
+                                'cold_start',
+                                'progress_error',
+                            ):
+                                if data.get(key) is not None:
+                                    event[key] = data[key]
                             if status == 'failed':
-                                event['error'] = data.get('error')
+                                event['error'] = data.get('error') or data.get('progress_error')
 
                             yield f'data: {json.dumps(event)}\n\n'
                             if status in ('completed', 'failed'):

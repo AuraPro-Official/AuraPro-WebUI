@@ -75,7 +75,7 @@
 			console.log('Glossary API Response:', res); // 关键：检查这里是否有 terms 数据
 
 			if (!res || !res.terms) {
-				throw new Error('No terms data received');
+				throw new Error($i18n.t('No terms data received'));
 			}
 
 			glossaryData = res;
@@ -512,7 +512,7 @@
                                                             bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 outline-none focus:border-blue-500"
 															bind:value={term.source}
 															on:input={() => markDirty(lang)}
-															placeholder="Source"
+															placeholder={$i18n.t('Source')}
 														/>
 													</div>
 
@@ -534,6 +534,7 @@
 													<!-- 删除按钮 (悬停时显示) -->
 													<button
 														class="p-1 opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition shrink-0"
+														aria-label={$i18n.t('Delete term')}
 														on:click={() => removeTermRow(lang, idx)}
 													>
 														<svg

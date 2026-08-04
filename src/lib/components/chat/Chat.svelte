@@ -75,6 +75,7 @@
 		displayFileHandler
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
+	import { isChatEventForCurrentConversation, waitForSocketSession } from '$lib/utils/chat-stream';
 	import { applyDesktopShortcutAction } from '$lib/utils/extension-modes';
 	import { getOutputText } from './Messages/structuredOutput';
 
@@ -686,7 +687,9 @@
 	const chatEventHandler = async (event, cb) => {
 		console.log(event);
 
-		if (event.chat_id === $chatId) {
+		if (
+			isChatEventForCurrentConversation(event.chat_id, $chatId, event.message_id, history.messages)
+		) {
 			await tick();
 			const type = event?.data?.type ?? null;
 			const data = event?.data?.data ?? null;
@@ -768,7 +771,7 @@
 							}
 						}
 					}
-					history = history;
+					history = { ...history };
 					return; // Patches history.messages directly; skip the trailing write-back.
 				} else if (type === 'chat:message:favorite') {
 					// Update message favorite status
@@ -850,11 +853,10 @@
 					console.log('Unknown message type', data);
 				}
 
-				history.messages[event.message_id] = message;
-				// Nested object mutations do not invalidate legacy Svelte reactivity.
-				// Reassigning the container exposes streamed deltas and the done state
-				// immediately without cloning the complete message history.
-				history = history;
+				history.messages[event.message_id] = { ...message };
+				// Give Svelte fresh references for each streamed delta without cloning
+				// the complete message map or chat history.
+				history = { ...history };
 			} else if (
 				type === 'chat:completion' ||
 				type === 'chat:message:error' ||
@@ -2739,6 +2741,11 @@
 		// Only send terminal_id if the model has terminal capability enabled
 		const terminalEnabled = model.info?.meta?.capabilities?.terminal ?? true;
 
+		const socketSessionId = await waitForSocketSession($socket);
+		if (!socketSessionId) {
+			console.warn('Socket session is unavailable; chat completion may use non-streaming fallback');
+		}
+
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
 			{
@@ -2774,7 +2781,7 @@
 				},
 				model_item: $models.find((m) => m.id === model.id),
 
-				session_id: $socket?.id,
+				session_id: socketSessionId ?? undefined,
 				chat_id: _chatId || undefined,
 				folder_id: $selectedFolder?.id ?? undefined,
 
