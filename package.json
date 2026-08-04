@@ -1,6 +1,6 @@
 {
 	"name": "aurapro-webui",
-	"version": "3.9.8",
+	"version": "3.9.9",
 	"private": true,
 	"description": "AuraPro WebUI distribution derived from Open WebUI",
 	"license": "SEE LICENSE IN LICENSE",
