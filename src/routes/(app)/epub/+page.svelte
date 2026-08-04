@@ -160,6 +160,20 @@
 				{/if}
 			</div>
 
+			<article class="rounded-xl border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
+				<h3 class="font-medium">综合排序</h3>
+				<p class="mb-3 text-xs text-gray-600 dark:text-gray-300">图谱与语义候选统一经服务器本地 Cross-Encoder 和 MMR 排序；每项仍引用完整原文段落。</p>
+				{#if searchResult.fused_results.length === 0}
+					<p class="text-sm text-gray-500">没有综合结果，或本地向量/重排服务不可用。</p>
+				{:else}
+					<div class="space-y-3">
+						{#each searchResult.fused_results as hit (hit.passage_id + hit.excerpt.start_codepoint)}
+							{@render SearchHit(hit)}
+						{/each}
+					</div>
+				{/if}
+			</article>
+
 			<div class="grid gap-4 xl:grid-cols-2">
 				<article class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
 					<h3 class="font-medium">图谱全部匹配</h3>

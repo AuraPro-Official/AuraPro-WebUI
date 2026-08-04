@@ -63,7 +63,21 @@ class SearchResponse:
     graph_offset: int
     graph_results: tuple[SearchHit, ...]
     vector_results: tuple[SearchHit, ...]
+    fused_results: tuple[SearchHit, ...]
     degraded: tuple[ModelAvailability, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _FusedCandidate:
+    """A locally-rankable, source-verified candidate from either channel.
+
+    ``hit`` keeps the canonical passage and exact excerpt that will be
+    rendered.  ``vector`` is only used locally for MMR diversification; it is
+    never exposed as source evidence.
+    """
+
+    hit: SearchHit
+    vector: tuple[float, ...]
 
 
 class EpubSearchRepository(Protocol):
@@ -84,6 +98,10 @@ class EpubSearchRepository(Protocol):
     def matched_concept_names(
         self, passage_id: str, concept_ids: Sequence[str]
     ) -> list[str]: ...
+
+    def list_concept_relation_neighbors(
+        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+    ) -> list[Mapping[str, Any]]: ...
 
 
 class VectorCandidateBackend(Protocol):
@@ -229,22 +247,40 @@ class EpubSearchService:
             matched = self._resolve_tier_two(query, matcher, degraded)
         concept_ids = tuple(term.concept_id for term in matched)
         resolved_names = tuple(dict.fromkeys(term.canonical_name for term in matched))
+        graph_concept_ids, relation_depths = self._expand_relation_concepts(concept_ids)
 
-        graph_total = self._source.count_concept_occurrences(concept_ids) if concept_ids else 0
+        graph_total = self._source.count_concept_occurrences(graph_concept_ids) if graph_concept_ids else 0
         graph_rows = (
-            self._source.list_concept_occurrences(concept_ids, offset=graph_offset, limit=graph_limit)
-            if concept_ids
+            self._source.list_concept_occurrences(graph_concept_ids, offset=graph_offset, limit=graph_limit)
+            if graph_concept_ids
             else []
         )
         graph_results = tuple(
-            self._graph_hit(row, resolved_names) for row in graph_rows
+            self._graph_hit(row, resolved_names, relation_depths) for row in graph_rows
+        )
+        vector_candidates = self._vector_candidates(
+            query,
+            candidate_limit=vector_candidate_limit,
+            degraded=degraded,
         )
         vector_results = self._vector_hits(
             query,
-            concept_ids=concept_ids,
-            candidate_limit=vector_candidate_limit,
+            vector_candidates=vector_candidates,
+            concept_ids=graph_concept_ids,
             result_limit=vector_limit,
             degraded=degraded,
+        )
+        fused_results = (
+            self._fused_hits(
+                query,
+                graph_results=graph_results,
+                vector_candidates=vector_candidates,
+                concept_ids=graph_concept_ids,
+                result_limit=vector_limit,
+                degraded=degraded,
+            )
+            if graph_results
+            else _mark_vector_results_fused(vector_results)
         )
         return SearchResponse(
             query=query,
@@ -253,8 +289,29 @@ class EpubSearchService:
             graph_offset=graph_offset,
             graph_results=graph_results,
             vector_results=vector_results,
+            fused_results=fused_results,
             degraded=tuple(degraded),
         )
+
+    def _expand_relation_concepts(
+        self, concept_ids: Sequence[str], *, max_depth: int = 2
+    ) -> tuple[tuple[str, ...], Mapping[str, int]]:
+        """Follow a bounded containment graph without turning relations into citations."""
+        depths = {concept_id: 0 for concept_id in concept_ids}
+        frontier = list(concept_ids)
+        for depth in range(1, max_depth + 1):
+            if not frontier:
+                break
+            edges = self._source.list_concept_relation_neighbors(frontier, predicates=("HAS_PART",))
+            next_frontier: list[str] = []
+            for edge in edges:
+                target = edge.get("object_concept_id")
+                if not isinstance(target, str) or not target or target in depths:
+                    continue
+                depths[target] = depth
+                next_frontier.append(target)
+            frontier = next_frontier
+        return tuple(depths), depths
 
     def _concept_terms(self) -> list[ConceptTerm]:
         terms: list[ConceptTerm] = []
@@ -298,13 +355,18 @@ class EpubSearchService:
             )
         return accepted
 
-    def _graph_hit(self, row: Mapping[str, Any], resolved_names: Sequence[str]) -> SearchHit:
+    def _graph_hit(
+        self, row: Mapping[str, Any], resolved_names: Sequence[str], relation_depths: Mapping[str, int]
+    ) -> SearchHit:
         passage = self._passage_from_row(row)
         start = row.get("start_codepoint")
         end = row.get("end_codepoint")
         excerpt = _verified_excerpt(passage["content"], passage["content_sha256"], start, end)
         name = row.get("canonical_name")
         matched = (str(name),) if isinstance(name, str) and name else tuple(resolved_names)
+        concept_id = row.get("concept_id")
+        relation_depth = relation_depths.get(concept_id) if isinstance(concept_id, str) else 0
+        provenance = ("graph",) if not relation_depth else ("graph", f"relation:HAS_PART:{relation_depth}")
         return SearchHit(
             passage_id=passage["passage_id"],
             book_title=passage["book_title"],
@@ -312,30 +374,35 @@ class EpubSearchService:
             content=passage["content"],
             content_sha256=passage["content_sha256"],
             matched_concepts=matched,
-            provenance=("graph",),
+            provenance=provenance,
             excerpt=excerpt,
         )
 
-    def _vector_hits(
+    def _vector_candidates(
         self,
         query: str,
         *,
-        concept_ids: Sequence[str],
         candidate_limit: int,
-        result_limit: int,
         degraded: list[ModelAvailability],
-    ) -> tuple[SearchHit, ...]:
+    ) -> tuple[DerivedVectorRecord, ...] | None:
+        """Read only source-validated local vector candidates once per query.
+
+        The same immutable candidate set is used by the legacy vector channel
+        and by the fused graph/vector channel.  A failure returns ``None`` so
+        callers do not accidentally reinterpret an unavailable local model as
+        an empty-but-successful result.
+        """
         if self._vector_backend is None or self._embeddings is None or self._reranker is None:
             degraded.append(ModelAvailability.degraded("local-vector-search", "not fully configured"))
-            return ()
+            return None
         embedding_availability = self._embeddings.availability()
         if not embedding_availability.available:
             degraded.append(embedding_availability)
-            return ()
+            return None
         reranker_availability = self._reranker.availability()
         if not reranker_availability.available:
             degraded.append(reranker_availability)
-            return ()
+            return None
         try:
             vectors = self._embeddings.embed([query])
             if len(vectors) != 1:
@@ -355,13 +422,33 @@ class EpubSearchService:
                 # backend that returned only one result (where MMR would not
                 # otherwise calculate a cosine similarity).
                 _cosine(query_vector, candidate.vector)
-            documents = [self._validated_candidate_window(candidate)["content"] for candidate in candidates]
-            scores = self._reranker.score(query, documents)
-            if len(scores) != len(candidates):
-                raise SearchError("local reranker must score every vector candidate")
-            ranked = sorted(
-                zip(candidates, scores), key=lambda pair: pair[1], reverse=True
-            )
+            # Validate windows before either channel sends their text to the
+            # local Cross-Encoder.  This rejects a stale/tampered derived
+            # vector record before it can influence any rank.
+            for candidate in candidates:
+                self._validated_candidate_window(candidate)
+        except Exception as error:
+            degraded.append(ModelAvailability.degraded("local-vector-search", _safe_reason(error)))
+            return None
+        return tuple(candidates)
+
+    def _vector_hits(
+        self,
+        query: str,
+        *,
+        vector_candidates: tuple[DerivedVectorRecord, ...] | None,
+        concept_ids: Sequence[str],
+        result_limit: int,
+        degraded: list[ModelAvailability],
+    ) -> tuple[SearchHit, ...]:
+        """Preserve the legacy vector-only ranking contract."""
+        if not vector_candidates:
+            return ()
+        assert self._reranker is not None
+        try:
+            documents = [self._validated_candidate_window(candidate)["content"] for candidate in vector_candidates]
+            scores = _validated_scores(self._reranker.score(query, documents), expected=len(vector_candidates))
+            ranked = sorted(zip(vector_candidates, scores), key=lambda pair: pair[1], reverse=True)
             selected = _mmr_select(ranked, limit=result_limit, lambda_value=self._mmr_lambda)
         except Exception as error:
             degraded.append(ModelAvailability.degraded("local-vector-search", _safe_reason(error)))
@@ -396,6 +483,150 @@ class EpubSearchService:
             if len(results) == result_limit:
                 break
         return tuple(results)
+
+    def _fused_hits(
+        self,
+        query: str,
+        *,
+        graph_results: Sequence[SearchHit],
+        vector_candidates: tuple[DerivedVectorRecord, ...] | None,
+        concept_ids: Sequence[str],
+        result_limit: int,
+        degraded: list[ModelAvailability],
+    ) -> tuple[SearchHit, ...]:
+        """Rank graph and vector candidates together with local models only.
+
+        Graph matches are not merely prepended to semantic results: their
+        precise excerpts enter the same private Cross-Encoder and MMR pass as
+        verified vector windows.  If any local operation is unavailable or
+        malformed, this new derived channel fails closed while the independent
+        graph/vector response fields retain their normal compatibility.
+        """
+        if self._embeddings is None or self._reranker is None:
+            # _vector_candidates already reported the configuration state.
+            return ()
+        if vector_candidates is None:
+            return ()
+        try:
+            candidates = self._fused_candidates(graph_results, vector_candidates, concept_ids=concept_ids)
+            if not candidates:
+                return ()
+            scores = _validated_scores(
+                self._reranker.score(query, [candidate.hit.excerpt.content for candidate in candidates]),
+                expected=len(candidates),
+            )
+            ranked = sorted(zip(candidates, scores), key=lambda pair: pair[1], reverse=True)
+            selected = _mmr_select_fused(ranked, limit=result_limit, lambda_value=self._mmr_lambda)
+        except Exception as error:
+            degraded.append(ModelAvailability.degraded("local-fused-search", _safe_reason(error)))
+            return ()
+
+        results: list[SearchHit] = []
+        rendered_passages: set[str] = set()
+        for candidate, score in selected:
+            # A result always cites one complete immutable parent passage.  We
+            # do not render two windows from it as separate top-level answers.
+            if candidate.hit.passage_id in rendered_passages:
+                continue
+            rendered_passages.add(candidate.hit.passage_id)
+            results.append(
+                SearchHit(
+                    passage_id=candidate.hit.passage_id,
+                    book_title=candidate.hit.book_title,
+                    toc_path=candidate.hit.toc_path,
+                    content=candidate.hit.content,
+                    content_sha256=candidate.hit.content_sha256,
+                    matched_concepts=candidate.hit.matched_concepts,
+                    provenance=(*candidate.hit.provenance, "cross-encoder", "mmr", "fused"),
+                    excerpt=candidate.hit.excerpt,
+                    score=float(score),
+                )
+            )
+            if len(results) == result_limit:
+                break
+        return tuple(results)
+
+    def _fused_candidates(
+        self,
+        graph_results: Sequence[SearchHit],
+        vector_candidates: Sequence[DerivedVectorRecord],
+        *,
+        concept_ids: Sequence[str],
+    ) -> tuple[_FusedCandidate, ...]:
+        """Deduplicate identical exact excerpts before locally ranking them."""
+        vector_by_excerpt: dict[tuple[str, int, int], _FusedCandidate] = {}
+        for vector_candidate in vector_candidates:
+            unit = self._validated_candidate_window(vector_candidate)
+            passage = self._search_passage(vector_candidate.passage_id)
+            excerpt = _verified_excerpt(
+                passage["content"], passage["content_sha256"],
+                unit["start_codepoint"], unit["end_codepoint"],
+            )
+            hit = SearchHit(
+                passage_id=passage["passage_id"],
+                book_title=passage["book_title"],
+                toc_path=passage["toc_path"],
+                content=passage["content"],
+                content_sha256=passage["content_sha256"],
+                matched_concepts=tuple(
+                    self._source.matched_concept_names(vector_candidate.passage_id, concept_ids)
+                ),
+                provenance=("vector",),
+                excerpt=excerpt,
+            )
+            vector_by_excerpt[(hit.passage_id, excerpt.start_codepoint, excerpt.end_codepoint)] = _FusedCandidate(
+                hit=hit, vector=_validated_vector(vector_candidate.vector)
+            )
+
+        # Preserve graph ordering as a stable tie-breaker, then append vector
+        # candidates that do not share the same exact source excerpt.
+        merged: list[_FusedCandidate] = []
+        seen: set[tuple[str, int, int]] = set()
+        graph_without_vector: list[SearchHit] = []
+        for graph_hit in graph_results:
+            key = (graph_hit.passage_id, graph_hit.excerpt.start_codepoint, graph_hit.excerpt.end_codepoint)
+            vector_match = vector_by_excerpt.get(key)
+            if vector_match is None:
+                graph_without_vector.append(graph_hit)
+                continue
+            seen.add(key)
+            merged.append(
+                _FusedCandidate(
+                    hit=SearchHit(
+                        passage_id=graph_hit.passage_id,
+                        book_title=graph_hit.book_title,
+                        toc_path=graph_hit.toc_path,
+                        content=graph_hit.content,
+                        content_sha256=graph_hit.content_sha256,
+                        matched_concepts=_merged_strings(
+                            graph_hit.matched_concepts, vector_match.hit.matched_concepts
+                        ),
+                        provenance=_merged_provenance(graph_hit.provenance, vector_match.hit.provenance),
+                        excerpt=graph_hit.excerpt,
+                    ),
+                    vector=vector_match.vector,
+                )
+            )
+
+        if graph_without_vector:
+            # Embeddings are calculated only for graph excerpts that have no
+            # already-indexed vector.  This is entirely local/private and lets
+            # MMR compare both retrieval channels in the same vector space.
+            graph_vectors = self._embeddings.embed([hit.excerpt.content for hit in graph_without_vector])
+            if len(graph_vectors) != len(graph_without_vector):
+                raise SearchError("local embedding must score every graph candidate")
+            for graph_hit, graph_vector in zip(graph_without_vector, graph_vectors):
+                graph_vector = _validated_vector(graph_vector)
+                # Enforce a single embedding space before MMR; vectors from
+                # indexed candidates have already been profile-validated.
+                if vector_by_excerpt:
+                    _cosine(graph_vector, next(iter(vector_by_excerpt.values())).vector)
+                merged.append(_FusedCandidate(hit=graph_hit, vector=graph_vector))
+
+        for key, vector_candidate in vector_by_excerpt.items():
+            if key not in seen:
+                merged.append(vector_candidate)
+        return tuple(merged)
 
     def _validated_candidate_window(self, candidate: DerivedVectorRecord) -> Mapping[str, Any]:
         unit = self._source.get_retrieval_unit(candidate.retrieval_unit_id)
@@ -486,6 +717,30 @@ def _mmr_select(
     return selected
 
 
+def _mmr_select_fused(
+    ranked: Sequence[tuple[_FusedCandidate, float]], *, limit: int, lambda_value: float
+) -> list[tuple[_FusedCandidate, float]]:
+    """MMR for candidates whose vectors may come from either retrieval path."""
+    remaining = list(ranked)
+    selected: list[tuple[_FusedCandidate, float]] = []
+    while remaining and len(selected) < limit:
+        best_index: int | None = None
+        best_mmr = -math.inf
+        for index, (candidate, relevance) in enumerate(remaining):
+            if any(existing.hit.passage_id == candidate.hit.passage_id for existing, _ in selected):
+                continue
+            diversity = max(
+                (_cosine(candidate.vector, existing.vector) for existing, _ in selected), default=0.0
+            )
+            score = lambda_value * relevance - (1.0 - lambda_value) * diversity
+            if score > best_mmr:
+                best_index, best_mmr = index, score
+        if best_index is None:
+            break
+        selected.append(remaining.pop(best_index))
+    return selected
+
+
 def _ascii_word(character: str) -> bool:
     return character.isascii() and (character.isalnum() or character == "_")
 
@@ -499,6 +754,50 @@ def _validated_vector(vector: Sequence[float]) -> tuple[float, ...]:
             raise SearchError("local embedding returned a non-finite query vector")
         result.append(float(value))
     return tuple(result)
+
+
+def _validated_scores(scores: Sequence[float], *, expected: int) -> tuple[float, ...]:
+    if len(scores) != expected:
+        raise SearchError("local reranker must score every candidate")
+    result: list[float] = []
+    for score in scores:
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+            raise SearchError("local reranker returned a non-finite score")
+        result.append(float(score))
+    return tuple(result)
+
+
+def _merged_strings(*values: Sequence[str]) -> tuple[str, ...]:
+    """Stable deduplication for canonical concept labels or provenance labels."""
+    return tuple(dict.fromkeys(item for value in values for item in value))
+
+
+def _merged_provenance(graph: Sequence[str], vector: Sequence[str]) -> tuple[str, ...]:
+    """Identify both retrieval origins before local rank-stage provenance."""
+    return _merged_strings(graph, vector)
+
+
+def _mark_vector_results_fused(results: Sequence[SearchHit]) -> tuple[SearchHit, ...]:
+    """Avoid a duplicate local rerank when there is no graph candidate.
+
+    With no graph result, the vector-only Cross-Encoder/MMR result is exactly
+    the fused candidate set.  The marker makes that derivation explicit while
+    retaining one local model invocation and stable legacy vector behavior.
+    """
+    return tuple(
+        SearchHit(
+            passage_id=hit.passage_id,
+            book_title=hit.book_title,
+            toc_path=hit.toc_path,
+            content=hit.content,
+            content_sha256=hit.content_sha256,
+            matched_concepts=hit.matched_concepts,
+            provenance=(*hit.provenance, "fused"),
+            excerpt=hit.excerpt,
+            score=hit.score,
+        )
+        for hit in results
+    )
 
 
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
