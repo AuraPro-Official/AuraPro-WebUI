@@ -90,18 +90,18 @@ Offline OpenAI Batch is enabled only by the server-side
 `EPUB_CONCEPT_BATCH_OPENAI_COMPLETION_WINDOW`). It deliberately does not reuse
 generic OpenAI/RAG credentials and no browser request can set it.
 
-The online EPUB inference policy is stricter than generic RAG.  The built-in
+The online EPUB inference policy is stricter than generic RAG. The built-in
 AuraPro embedding and Cross-Encoder engines are accepted as in-process local
-execution.  An AuraPro Ollama embedding configuration is accepted only when
+execution. An AuraPro Ollama embedding configuration is accepted only when
 its actual URL is loopback/private, or its private DNS hostname is explicitly
 listed in the server-only comma-separated
 `EPUB_CONCEPT_TRUSTED_MODEL_HOSTNAMES`; OpenAI, Azure, and external reranker
-engines are disabled for EPUB rather than falling back.  Tier-2 concept
-resolution is optional only while it is unconfigured.  Administrator-managed
+engines are disabled for EPUB rather than falling back. Tier-2 concept
+resolution is optional only while it is unconfigured. Administrator-managed
 or development deployments may configure `EPUB_CONCEPT_LOCAL_LLM_ENDPOINT`
 and `EPUB_CONCEPT_LOCAL_LLM_MODEL`; the endpoint is validated with the same
 private-address policy and accepts an explicit private-DNS allowlist through
-`EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`.  In a Desktop-managed local
+`EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`. In a Desktop-managed local
 deployment, WebUI instead receives an absolute
 `AURAPRO_DESKTOP_LLM_RUNTIME_FILE` path. Desktop atomically writes the
 versioned, credential-free JSON descriptor containing its current loopback
@@ -113,15 +113,15 @@ llama.cpp timeout and output limit settings are
 `EPUB_CONCEPT_LOCAL_LLM_MAX_TOKENS`.
 
 Startup and the administrator runtime-status endpoint report the independent
-vector extension, embedding, reranker, and resolver separately.  The response
-contains no model URL, database path, or credentials.  A failed sqlite-vec SQL
+vector extension, embedding, reranker, and resolver separately. The response
+contains no model URL, database path, or credentials. A failed sqlite-vec SQL
 health check or model policy validation remains degraded/fail-closed and never
 substitutes a cloud service.
 
 ### 3.2 End-user local packaging requirement (D-010)
 
 The development and acceptance-test path may run a separately installed
-Homebrew `llama-server`, but this is not an end-user prerequisite.  For the
+Homebrew `llama-server`, but this is not an end-user prerequisite. For the
 desktop/local-server profile, a user must be able to install only AuraPro
 Desktop and AuraPro-WebUI, then use the EPUB feature without manually
 installing Homebrew, llama.cpp, Python model tooling, or a separate model
@@ -136,14 +136,14 @@ path through `AURAPRO_DESKTOP_LLM_RUNTIME_FILE`, and remove or invalidate the
 descriptor when the runtime stops. WebUI must not require an end user to edit
 `EPUB_CONCEPT_LOCAL_LLM_*` variables.
 The first-run UI must show model download progress, disk requirements, and a
-recoverable failure state.  This requirement does not mean models are embedded
-in the application installer: initial online model download is acceptable.  A
+recoverable failure state. This requirement does not mean models are embedded
+in the application installer: initial online model download is acceptable. A
 fully offline first run requires a separately distributed, versioned model
 bundle.
 
 For a shared remote WebUI server, user Desktop runtimes cannot execute
-server-side EPUB retrieval.  That deployment instead requires an
-administrator-owned private model runtime on the server/network.  Validate the
+server-side EPUB retrieval. That deployment instead requires an
+administrator-owned private model runtime on the server/network. Validate the
 current Homebrew acceptance path first, then validate the Desktop-managed path
 with no external user installation.
 
