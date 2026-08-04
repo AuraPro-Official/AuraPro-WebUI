@@ -82,17 +82,26 @@
   - `occurrences`: 出现的段落集合与关联权重 `[{"passage_id": "...", "book_title": "..."}]`
 
 ### 3. 存储层设计 (`storage_layer`) — 已实现
-- **独立 SQLite 数据库**：创建单独的 `epub_concept.db` 文件（位于 `DATA_DIR/epub_concept.db`），与主 `webui.db` 完全解耦，便于独立导入/导出/分享概念图谱数据。
-- **实现模块**：[epub_concept_db.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/utils/epub_concept_db.py)
+- **独立 SQLite 数据库**：创建单独的 `epub_concept_v1.db` 文件（默认位于 `DATA_DIR/epub_concept_v1.db`，可由 `EPUB_CONCEPT_DB_PATH` 覆盖），与主 `webui.db` 完全解耦，便于独立导入/导出/分享概念图谱数据。
+- **实现模块**：[store.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/retrieval/epub/store.py)（`SQLiteEpubStore`）
 - **表结构**：
   | 表名 | 用途 | 主要字段 |
   |------|------|----------|
-  | `books` | EPUB 图书注册表 | `book_id`, `book_title`, `file_hash`, `total_passages` |
-  | `passages` | 100% 忠实原始段落 | `passage_id`, `book_id`, `toc_path_json`, `content`, `parent_context` |
-  | `concepts` | 概念词条与别名 | `concept_id`, `canonical_name`, `aliases_json`, `definition` |
-  | `concept_occurrences` | 概念 ↔ 段落多对多映射 | `concept_id`, `passage_id`, `book_title` |
-  | `alias_index` | 别名快速反查索引 | `alias_lower` → `concept_id` |
-- **特性**：WAL journal mode、线程安全单例连接管理、启动时自动从 SQLite 恢复内存索引
+  | `books` | EPUB 图书注册表 | `book_id`, `title`, `current_version_id` |
+  | `book_versions` | 图书版本与导入状态机 | `version_id`, `book_id`, `content_hash`, `status`, `parser_version` |
+  | `epub_blobs` | 原始 EPUB 字节留存 | `version_id`, `content`, `byte_count` |
+  | `toc_nodes` | 目录树节点（自引用层级） | `toc_node_id`, `version_id`, `parent_toc_node_id`, `title`, `spine_index`, `ordinal` |
+  | `passages` | 100% 忠实原始段落 | `passage_id`, `version_id`, `toc_node_id`, `content`, `content_kind`, `ordinal` |
+  | `retrieval_units` | 段落切分后的检索/向量单元 | `retrieval_unit_id`, `passage_id`, `start_codepoint`, `end_codepoint`, `embedding_profile`, `vector_state` |
+  | `concepts` | 概念词条 | `concept_id`, `canonical_name`, `normalized_name`, `definition`, `status` |
+  | `concept_aliases` | 别名快速反查索引 | `alias_id`, `concept_id`, `alias`, `normalized_alias`, `source` |
+  | `concept_mentions` | 概念 ↔ 段落带偏移的证据映射 | `mention_id`, `concept_id`, `passage_id`, `start_codepoint`, `end_codepoint`, `evidence` |
+  | `concept_relations` | 概念间关系三元组 | `relation_id`, `subject_concept_id`, `predicate`, `object_concept_id` |
+  | `concept_relation_assertions` | 关系在某一图书版本上的断言与状态 | `assertion_id`, `relation_id`, `version_id`, `status`, `source` |
+  | `concept_relation_evidence` | 关系断言的原文证据 | `relation_evidence_id`, `assertion_id`, `passage_id`, `start_codepoint`, `end_codepoint`, `evidence` |
+  | `batch_jobs` | Batch 作业记录 | `batch_job_id`, `version_id`, `provider`, `provider_job_id`, `profile_name`, `status` |
+  | `batch_items` | Batch 单条请求与回收结果 | `batch_item_id`, `batch_job_id`, `passage_id`, `custom_id`, `status`, `request_json`, `response_json` |
+- **特性**：WAL journal mode、线程安全连接管理、带版本号的迁移执行器（`schema_migrations` 表 + `PRAGMA user_version`，当前 `SCHEMA_VERSION = 3`），启动时自动建库与增量迁移
 - **远程/私有部署**：后续可替换为 PostgreSQL + `pgvector`，当前先以 SQLite 为主。
 - 保留 100% 原文，不存储任何篡改或加工后的段落内容。
 
@@ -119,17 +128,51 @@
 
 ## 二、 代码模块组织 (Code Architecture Plan)
 
-### Backend Components (`AuraPro-WebUI/backend/open_webui`)
-1. [epub_parser.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/retrieval/loaders/epub_parser.py): EPUB NCX/NAV 结构化解析
-2. [epub_concept_db.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/utils/epub_concept_db.py): **独立 SQLite 持久化层** (books/passages/concepts/alias_index/occurrences 五张表)
-3. [batch_pipeline.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/utils/batch_pipeline.py): Batch API 批处理控制器
-4. [concept_wiki.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/utils/concept_wiki.py): 概念图谱与 Wiki 管理器 (内存索引 + SQLite 持久化)
-5. [epub_concept.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/routers/epub_concept.py): API 路由端点
-6. [main.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/main.py): 路由注册
+> 本节从属于 [epub_concept_sdd.md](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/docs/specs/epub_concept_sdd.md)；如有冲突，以 SDD 为准。
+
+### 解析层 (`backend/open_webui/retrieval/parsers/epub/`)
+纯解析、无持久化，按格式版本演进（`PARSER_FORMAT_VERSION`）。
+
+| 模块 | 职责 |
+|------|------|
+| `archive.py` | ZIP 归档安全校验（zip-bomb / 路径穿越 / 体积上限） |
+| `package.py` | `container.xml`、OPF 清单与 spine 解析，`href` 归一 |
+| `toc.py` | NAV (EPUB3) 与 NCX (EPUB2) 目录解析 |
+| `toc_mapping.py` | 段落 → 目录节点（面包屑）映射 |
+| `xhtml.py` | XHTML 可见正文抽取与锚点收集 |
+| `model.py` | `EpubParseResult` / `ParsedPassage` / `TocEntry` / `ParserWarning` 等值对象 |
+| `parser.py` | `EPUBParser.parse_book()` 与模块级 `parse_epub()` 入口 |
+
+### 领域层 (`backend/open_webui/retrieval/epub/`)
+
+| 模块 | 职责 |
+|------|------|
+| `store.py` | 独立 SQLite 持久化层 `SQLiteEpubStore` 与版本化迁移执行器 |
+| `batch.py` | Batch 作业编排：JSONL 生成、提交、轮询与结果回收落库 |
+| `search.py` | 混合多路召回与重排的在线查询流水线 |
+| `section_graph.py` | 章节/目录图谱与邻近段落合并 |
+| `retrieval_units.py` | 段落切分为检索单元 |
+| `vector_index.py` / `sqlite_vec.py` / `sqlite_vec_backend.py` | 向量索引抽象与 `sqlite-vec` 后端实现 |
+| `inference.py` / `prompt_profiles.py` / `calibration.py` | Tier-2 本地推理调用、提示词配置与校准 |
+| `desktop_runtime.py` | 读取 Desktop 下发的本地运行时描述符 |
+
+### 服务层 (`backend/open_webui/services/`)
+1. [epub_concept.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/services/epub_concept.py): EPUB 概念检索领域服务（导入、索引、查询用例编排）
+2. [epub_runtime.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/services/epub_runtime.py): 生命周期装配（建库、启停、RAG 推理策略配置）
+
+### HTTP 层 (`backend/open_webui/routers/`)
+1. [epub.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/routers/epub.py): 唯一的 EPUB 路由（前缀 `/api/v1/epub`）。**所有路由均鉴权**：只读接口要求 `get_verified_user`，导入、销毁、词表、索引与 Batch 等写操作要求 `get_admin_user`。
+2. [main.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/main.py): 路由注册与 `epub_runtime` 生命周期挂载
+
+### Frontend Components (`AuraPro-WebUI`)
+1. [src/lib/apis/epub/index.ts](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/src/lib/apis/epub/index.ts): `/api/v1/epub` 前端 API 客户端
+2. [src/routes/(app)/epub/+page.svelte](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/src/routes/(app)/epub/+page.svelte): 用户侧概念检索与阅读界面
+3. [src/routes/(app)/admin/epub/+page.svelte](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/src/routes/(app)/admin/epub/+page.svelte): 管理员侧导入、索引与 Batch 管理界面
 
 ### Desktop Client Components (`AuraPro-Desktop`)
-1. [EpubConceptSearch.svelte](file:///Volumes/codes/workspace/aurapro_new/AuraPro-Desktop/src/renderer/src/components/EpubConceptSearch.svelte): 概念检索与解析 UI
-2. [preload/index.ts](file:///Volumes/codes/workspace/aurapro_new/AuraPro-Desktop/src/preload/index.ts): Preload 桥接
+Desktop **不是独立的功能客户端**，不承载任何 EPUB 功能 UI，也不接收 EPUB 专用 IPC、凭据或写权限。其唯一职责是**本地运行时供给**：
+1. `src/main/utils/llamacpp.ts` / `src/main/utils/index.ts`: llama.cpp 运行时与模型的下载、校验与生命周期管理
+2. 运行时描述符落盘（`AURAPRO_DESKTOP_LLM_RUNTIME_FILE`），供 WebUI 后端的 `retrieval/epub/desktop_runtime.py` 读取以启用 Tier-2 本地推理
 
 ---
 
