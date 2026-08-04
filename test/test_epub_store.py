@@ -74,6 +74,18 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         with self.assertRaises(IntegrityError):
             self.store.add_retrieval_unit("passage-a", 0, 999)
 
+    def test_version_retrieval_units_have_stable_order_and_persist_index_state(self) -> None:
+        self.store.add_passages("version-a", [self._passage()])
+        unit_id = self.store.add_retrieval_unit("passage-a", 0, 3)
+
+        rows = self.store.list_retrieval_units_for_version("version-a")
+        self.assertEqual([row["retrieval_unit_id"] for row in rows], [unit_id])
+        self.assertEqual(rows[0]["vector_state"], "PENDING")
+        self.store.set_retrieval_unit_vector_state(unit_id, "READY")
+        self.assertEqual(self.store.get_retrieval_unit(unit_id)["vector_state"], "READY")
+        with self.assertRaisesRegex(IntegrityError, "invalid vector state"):
+            self.store.set_retrieval_unit_vector_state(unit_id, "UNKNOWN")
+
     def test_source_passages_are_immutable_and_foreign_keys_are_safe(self) -> None:
         self.store.add_passages("version-a", [self._passage()])
         concept_id = self.store.upsert_concept("TCP", aliases=["Transmission Control Protocol"])

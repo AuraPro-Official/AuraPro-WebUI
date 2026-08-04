@@ -52,6 +52,17 @@ that same UI in its authenticated WebView; it is not a separate feature client.
   typed element is retained in an ordered `fallback` unit rather than dropped;
   malformed XHTML additionally produces a recovery warning.
 
+### 2.2 First-phase language and retrieval-window rule
+
+The first operational EPUB acceptance sample is Simplified Chinese. Derived
+retrieval units retain their parent passage and are created only for vector
+retrieval: passages up to 800 Unicode code points produce one full-passage
+unit; longer passages are split near Chinese sentence boundaries (`。！？；`)
+with English punctuation as a fallback, targeting about 800 code points with
+about 150 code points of overlap. A fallback character boundary is allowed only
+when no sentence boundary is available. The displayed source remains the full,
+immutable parent passage in every case.
+
 ## 3. Deployment model
 
 | Profile                | Canonical store                 | Derived vector index          | Inference                                               |
@@ -78,6 +89,27 @@ Offline OpenAI Batch is enabled only by the server-side
 `EPUB_CONCEPT_BATCH_OPENAI_ENDPOINT` and
 `EPUB_CONCEPT_BATCH_OPENAI_COMPLETION_WINDOW`). It deliberately does not reuse
 generic OpenAI/RAG credentials and no browser request can set it.
+
+The online EPUB inference policy is stricter than generic RAG.  The built-in
+AuraPro embedding and Cross-Encoder engines are accepted as in-process local
+execution.  An AuraPro Ollama embedding configuration is accepted only when
+its actual URL is loopback/private, or its private DNS hostname is explicitly
+listed in the server-only comma-separated
+`EPUB_CONCEPT_TRUSTED_MODEL_HOSTNAMES`; OpenAI, Azure, and external reranker
+engines are disabled for EPUB rather than falling back.  Tier-2 concept
+resolution is optional only while it is unconfigured: when enabled it requires
+`EPUB_CONCEPT_LOCAL_LLM_ENDPOINT` and `EPUB_CONCEPT_LOCAL_LLM_MODEL`, validates
+the llama.cpp endpoint with the same private-address policy, and accepts an
+explicit private-DNS allowlist through
+`EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`.  Optional llama.cpp timeout and
+output limit settings are `EPUB_CONCEPT_LOCAL_LLM_TIMEOUT_SECONDS` and
+`EPUB_CONCEPT_LOCAL_LLM_MAX_TOKENS`.
+
+Startup and the administrator runtime-status endpoint report the independent
+vector extension, embedding, reranker, and resolver separately.  The response
+contains no model URL, database path, or credentials.  A failed sqlite-vec SQL
+health check or model policy validation remains degraded/fail-closed and never
+substitutes a cloud service.
 
 ## 4. Functional requirements
 
@@ -107,6 +139,13 @@ precedence over NCX; disagreement is retained as an auditable warning.
 - Seed glossary aliases are authoritative. Only deterministic normalized-name or
   alias matches merge automatically. Model-suggested semantic merges are review
   candidates, not irreversible automatic graph mutations.
+- **Deferred prompt optimization:** the initial Batch prompt performs generic
+  concept extraction and does not include the entire seed glossary. If offline
+  result review shows that the remote model fails to recognize established
+  proper nouns, add only the seed canonical names/aliases relevant to the
+  current passage as controlled candidate context. Keep the existing exact
+  normalized-name/alias ingestion checks authoritative; prompt context must
+  never itself create a semantic merge or bypass administrator review.
 
 ### 4.3 Search
 
