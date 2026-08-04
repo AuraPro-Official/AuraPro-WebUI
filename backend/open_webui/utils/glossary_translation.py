@@ -7,16 +7,14 @@ import os
 import re
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Optional
 
 import langcodes
-import unicodedata
-from rapidfuzz import fuzz
 from langchain_core.documents import Document
-
 from open_webui.config import DATA_DIR
 from open_webui.internal.db import get_async_db
 from open_webui.models.config import Config
@@ -24,7 +22,15 @@ from open_webui.models.knowledge import Knowledges
 from open_webui.retrieval.utils import VectorSearchRetriever
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
+from open_webui.utils.glossary_routing import (
+    GlossaryDataset,
+    SmartGlossaryResult,
+    language_key,
+    resolve_smart_glossary,
+    same_language,
+)
 from open_webui.utils.lazy_model import LazyModel
+from rapidfuzz import fuzz
 
 log = logging.getLogger(__name__)
 
@@ -507,6 +513,9 @@ SETTINGS_PATH = Path(DATA_DIR) / 'glossary.settings.json'
 DEFAULT_SETTINGS: dict[str, Any] = {
     'active_glossary_id': DEFAULT_GLOSSARY_ID,
     'glossaries': [],
+    'glossary_mode': 'smart',
+    'smart_source_lang': '',
+    'smart_target_lang': '',
     'glossary_path': DEFAULT_GLOSSARY_RELATIVE_PATH,
     'glossary_version': '1.0.0',
     'source_lang': '\u4e2d\u6587',
@@ -515,13 +524,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'max_terms_injected': 10,
     'max_turns': 3,
     'token_limit': 16384,
+    'mtp_enabled': False,
+    'multimodal_enabled': True,
     'debug': False,
 }
 
 _cache_lock = asyncio.Lock()
-_cache_path: Optional[str] = None
-_cache_signature: Optional[tuple[float, int]] = None
-_cache_entries: dict[str, str] = {}
+_entries_cache: dict[str, tuple[tuple[int, int], dict[str, str], float]] = {}
+_smart_route_cache: dict[str, tuple[SmartGlossaryResult, Optional[float]]] = {}
 _official_configs_cache_marker = object()
 _official_configs_cache_signature: object | tuple[int, int] | None = _official_configs_cache_marker
 _official_configs_cache: list[dict[str, str]] = []
@@ -681,11 +691,27 @@ def _personal_glossary_item() -> dict[str, Any]:
     }
 
 
+def _normalize_bool_setting(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {'true', '1', 'yes', 'on'}:
+            return True
+        if normalized in {'false', '0', 'no', 'off'}:
+            return False
+    return default
+
+
 def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     legacy_path = settings.get('glossary_path') or DEFAULT_GLOSSARY_PATH
     legacy_source_lang = settings.get('source_lang') or DEFAULT_SETTINGS['source_lang']
     legacy_glossary_lang = settings.get('glossary_lang') or DEFAULT_SETTINGS['glossary_lang']
     legacy_target_lang = settings.get('target_lang') or DEFAULT_SETTINGS['target_lang']
+    legacy_smart_source_lang = settings.get('smart_source_lang') or legacy_source_lang
+    legacy_smart_target_lang = settings.get('smart_target_lang') or legacy_target_lang
     glossaries = settings.get('glossaries')
 
     available_official = _official_glossary_items()
@@ -739,6 +765,7 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
                         (official_config or {}).get('target_lang') or glossary.get('target_lang') or legacy_target_lang
                     ),
                     'official': is_official,
+                    'user_override': bool(glossary.get('user_override')),
                 }
             )
         for item in _available_official_glossary_configs():
@@ -766,6 +793,14 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     settings['source_lang'] = active['source_lang']
     settings['glossary_lang'] = active['glossary_lang']
     settings['target_lang'] = active['target_lang']
+    mode = str(settings.get('glossary_mode') or 'smart').strip().lower()
+    settings['glossary_mode'] = mode if mode in {'smart', 'fixed'} else 'smart'
+    settings['smart_source_lang'] = normalize_term(str(legacy_smart_source_lang or active['source_lang']))
+    settings['smart_target_lang'] = normalize_term(str(legacy_smart_target_lang or active['target_lang']))
+    settings['mtp_enabled'] = _normalize_bool_setting(settings.get('mtp_enabled'), False)
+    settings['multimodal_enabled'] = _normalize_bool_setting(
+        settings.get('multimodal_enabled'), True
+    )
     return settings
 
 
@@ -910,11 +945,9 @@ async def ensure_glossary_settings_persisted() -> dict[str, Any]:
 
 
 async def invalidate_cache() -> None:
-    global _cache_path, _cache_signature, _cache_entries
     async with _cache_lock:
-        _cache_path = None
-        _cache_signature = None
-        _cache_entries = {}
+        _entries_cache.clear()
+        _smart_route_cache.clear()
 
 
 def _parse_glossary(raw: Any) -> dict[str, str]:
@@ -936,34 +969,42 @@ def _parse_glossary(raw: Any) -> dict[str, str]:
     return entries
 
 
-async def read_entries(settings: Optional[dict[str, Any]] = None) -> tuple[dict[str, str], Optional[float]]:
-    global _cache_path, _cache_signature, _cache_entries
+def _path_for_glossary(glossary: dict[str, Any]) -> Path:
+    configured = glossary.get('path') or glossary.get('glossary_path') or DEFAULT_GLOSSARY_RELATIVE_PATH
+    path = resolve_glossary_path(configured)
+    if is_official_glossary_path(configured) and not path.exists() and LEGACY_OFFICIAL_GLOSSARY_PATH.exists():
+        return LEGACY_OFFICIAL_GLOSSARY_PATH
+    return path
 
-    settings = settings or await read_settings()
-    path = get_effective_glossary_path(settings)
+
+async def read_glossary_entries(
+    glossary: dict[str, Any],
+) -> tuple[dict[str, str], Optional[float], Optional[tuple[int, int]]]:
+    path = _path_for_glossary(glossary)
     if not path.exists():
-        return {}, None
+        return {}, None, None
 
     stat = await asyncio.to_thread(path.stat)
-    signature = (stat.st_mtime, stat.st_size)
+    signature = (stat.st_mtime_ns, stat.st_size)
     path_key = str(path.resolve())
 
     async with _cache_lock:
-        if _cache_path == path_key and _cache_signature == signature:
-            return dict(_cache_entries), stat.st_mtime
+        cached = _entries_cache.get(path_key)
+        if cached and cached[0] == signature:
+            return dict(cached[1]), cached[2], signature
 
-        raw_text = await asyncio.to_thread(path.read_text, encoding='utf-8')
-        raw = json.loads(raw_text)
-        entries = _parse_glossary(raw)
-        _cache_path = path_key
-        _cache_signature = signature
-        _cache_entries = entries
-        return dict(entries), stat.st_mtime
+    raw_text = await asyncio.to_thread(path.read_text, encoding='utf-8')
+    entries = _parse_glossary(json.loads(raw_text))
+    async with _cache_lock:
+        _entries_cache[path_key] = (signature, dict(entries), stat.st_mtime)
+    return dict(entries), stat.st_mtime, signature
 
 
-async def write_entries(entries: dict[str, str], settings: Optional[dict[str, Any]] = None) -> None:
-    settings = settings or await read_settings()
-    path = get_effective_glossary_path(settings)
+async def write_glossary_entries(
+    entries: dict[str, str],
+    glossary: dict[str, Any],
+) -> None:
+    path = _path_for_glossary(glossary)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     fd, tmp_name = tempfile.mkstemp(prefix='glossary-', suffix='.json', dir=str(path.parent))
@@ -979,21 +1020,217 @@ async def write_entries(entries: dict[str, str], settings: Optional[dict[str, An
     await invalidate_cache()
 
 
+async def _resolve_smart_glossary(
+    settings: dict[str, Any],
+) -> tuple[SmartGlossaryResult, Optional[float]]:
+    settings = normalize_settings(settings)
+    source_lang, target_lang = _glossary_language_pair(settings)
+    glossaries = [item for item in settings.get('glossaries', []) if isinstance(item, dict)]
+    loaded = await asyncio.gather(*(read_glossary_entries(glossary) for glossary in glossaries))
+
+    datasets: list[GlossaryDataset] = []
+    fingerprints: list[tuple[object, ...]] = []
+    updated_at: Optional[float] = None
+    for glossary, (entries, modified_at, signature) in zip(glossaries, loaded, strict=True):
+        glossary_source = str(glossary.get('source_lang') or DEFAULT_SETTINGS['source_lang'])
+        glossary_target = str(
+            glossary.get('target_lang') or glossary.get('glossary_lang') or DEFAULT_SETTINGS['target_lang']
+        )
+        official = bool(glossary.get('official')) or is_official_glossary_path(glossary.get('path') or '')
+        datasets.append(
+            GlossaryDataset(
+                id=str(glossary.get('id') or ''),
+                name=str(glossary.get('name') or glossary.get('id') or ''),
+                source_lang=glossary_source,
+                target_lang=glossary_target,
+                entries=entries,
+                official=official,
+                user_override=bool(glossary.get('user_override')),
+                version=str(glossary.get('version') or '1.0.0'),
+            )
+        )
+        fingerprints.append(
+            (
+                glossary.get('id'),
+                glossary.get('path'),
+                glossary_source,
+                glossary_target,
+                official,
+                bool(glossary.get('user_override')),
+                signature,
+            )
+        )
+        if modified_at is not None:
+            updated_at = max(updated_at or modified_at, modified_at)
+
+    cache_payload = json.dumps(
+        [source_lang, target_lang, fingerprints],
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    cache_key = hashlib.sha256(cache_payload.encode('utf-8')).hexdigest()
+    async with _cache_lock:
+        cached = _smart_route_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    result = resolve_smart_glossary(datasets, source_lang, target_lang)
+    async with _cache_lock:
+        if len(_smart_route_cache) >= 8:
+            _smart_route_cache.pop(next(iter(_smart_route_cache)))
+        _smart_route_cache[cache_key] = (result, updated_at)
+    return result, updated_at
+
+
+async def get_glossary_view(
+    settings: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    settings = normalize_settings(settings or await read_settings())
+    if settings.get('glossary_mode') == 'smart':
+        result, updated_at = await _resolve_smart_glossary(settings)
+        return {
+            'entries': dict(result.entries),
+            'entry_origins': dict(result.entry_origins),
+            'routes': [route.as_dict() for route in result.routes],
+            'languages': list(result.available_languages),
+            'mode': 'smart',
+            'updated_at': updated_at,
+        }
+
+    active = active_glossary(settings)
+    entries, updated_at, _signature = await read_glossary_entries(active)
+    official = bool(active.get('official')) or is_official_glossary_path(active.get('path') or '')
+    source_lang = str(active.get('source_lang') or settings.get('source_lang') or '')
+    target_lang = str(active.get('target_lang') or active.get('glossary_lang') or settings.get('target_lang') or '')
+    languages = sorted(
+        {
+            str(language)
+            for glossary in settings.get('glossaries', [])
+            if isinstance(glossary, dict)
+            for language in (
+                glossary.get('source_lang'),
+                glossary.get('target_lang') or glossary.get('glossary_lang'),
+            )
+            if language
+        },
+        key=str.casefold,
+    )
+    routes = []
+    if entries:
+        routes.append(
+            {
+                'kind': 'direct',
+                'source_lang': source_lang,
+                'target_lang': target_lang,
+                'pivot_lang': None,
+                'glossary_ids': [active.get('id')],
+                'glossary_names': [active.get('name')],
+                'coverage': len(entries),
+            }
+        )
+    return {
+        'entries': entries,
+        'entry_origins': {source: 'direct' if official else 'user' for source in entries},
+        'routes': routes,
+        'languages': languages,
+        'mode': 'fixed',
+        'updated_at': updated_at,
+    }
+
+
+async def read_entries(
+    settings: Optional[dict[str, Any]] = None,
+) -> tuple[dict[str, str], Optional[float]]:
+    view = await get_glossary_view(settings)
+    return dict(view['entries']), view.get('updated_at')
+
+
+async def write_entries(
+    entries: dict[str, str],
+    settings: Optional[dict[str, Any]] = None,
+) -> None:
+    settings = normalize_settings(settings or await read_settings())
+    await write_glossary_entries(entries, active_glossary(settings))
+
+
 def _language_key(value: str) -> str:
-    return re.sub(r'\s+', '', str(value or '').strip().casefold())
+    return language_key(value)
 
 
 def _is_chinese_language(value: str) -> bool:
-    key = _language_key(value)
-    return key in {'中文', '汉语', '简体中文', '繁体中文', '普通话', 'chinese', 'mandarin', 'zh', 'zh-cn', 'zh_cn'}
+    return _language_key(value).split('-', 1)[0] == 'zh'
 
 
 def _glossary_language_pair(settings: dict[str, Any]) -> tuple[str, str]:
+    if settings.get('glossary_mode') == 'smart':
+        source_lang = str(settings.get('smart_source_lang') or DEFAULT_SETTINGS['smart_source_lang']).strip()
+        target_lang = str(settings.get('smart_target_lang') or DEFAULT_SETTINGS['smart_target_lang']).strip()
+        return source_lang, target_lang
+
     source_lang = str(settings.get('source_lang') or DEFAULT_SETTINGS['source_lang']).strip()
     target_lang = str(
         settings.get('target_lang') or settings.get('glossary_lang') or DEFAULT_SETTINGS['target_lang']
     ).strip()
     return source_lang, target_lang
+
+
+async def get_editable_glossary(
+    settings: Optional[dict[str, Any]] = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    settings = normalize_settings(settings or await read_settings())
+    if settings.get('glossary_mode') != 'smart':
+        settings = await fork_official_glossary_for_edit(settings)
+        return settings, active_glossary(settings)
+
+    source_lang, target_lang = _glossary_language_pair(settings)
+    glossaries = [item for item in settings.get('glossaries', []) if isinstance(item, dict)]
+    existing = next(
+        (
+            item
+            for item in glossaries
+            if item.get('user_override')
+            and same_language(str(item.get('source_lang') or ''), source_lang)
+            and same_language(str(item.get('target_lang') or ''), target_lang)
+        ),
+        None,
+    )
+    if existing is not None:
+        return settings, existing
+
+    pair_hash = hashlib.sha256(f'{language_key(source_lang)}->{language_key(target_lang)}'.encode('utf-8')).hexdigest()[
+        :12
+    ]
+    base_id = f'user-{pair_hash}'
+    glossary_id = base_id
+    existing_ids = {str(item.get('id') or '') for item in glossaries}
+    suffix = 2
+    while glossary_id in existing_ids:
+        glossary_id = f'{base_id}-{suffix}'
+        suffix += 1
+
+    relative_path = make_relative_glossary_path(f'glossaries/{glossary_id}.json')
+    path = resolve_glossary_path(relative_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        await asyncio.to_thread(path.write_text, '{}\n', encoding='utf-8')
+
+    glossaries.append(
+        {
+            'id': glossary_id,
+            'name': f'{source_lang}-{target_lang} 个人词条',
+            'path': relative_path,
+            'version': '1.0.0',
+            'source_lang': source_lang,
+            'glossary_lang': target_lang,
+            'target_lang': target_lang,
+            'official': False,
+            'user_override': True,
+        }
+    )
+    settings = await write_settings({'glossaries': glossaries})
+    editable = next(item for item in settings['glossaries'] if item.get('id') == glossary_id)
+    return settings, editable
 
 
 def _lang_to_code(lang_name: str) -> str:
@@ -1453,6 +1690,7 @@ class BilingualKnowledgeReader:
         self,
         collection_name: str,
         fetch_fn,
+        query_lang: str | None = None,
     ) -> Optional[dict]:
         from rank_bm25 import BM25Okapi
 
@@ -1472,8 +1710,23 @@ class BilingualKnowledgeReader:
             if not collection_result or not collection_result.documents or not collection_result.documents[0]:
                 return None
 
-            texts = collection_result.documents[0]
-            metadatas = collection_result.metadatas[0]
+            all_texts = collection_result.documents[0]
+            all_metadatas = collection_result.metadatas[0]
+
+            if query_lang:
+                filtered = [
+                    (t, m) for t, m in zip(all_texts, all_metadatas)
+                    if m.get('lang') == query_lang
+                ]
+                texts = [t for t, _ in filtered]
+                metadatas = [m for _, m in filtered]
+            else:
+                texts = all_texts
+                metadatas = all_metadatas
+
+            if not texts:
+                return None
+
             tokenized = [self._tokenize(t) for t in texts]
             entry = {
                 'bm25': BM25Okapi(tokenized),
@@ -1627,8 +1880,9 @@ class BilingualKnowledgeReader:
         query: str,
         k: int,
         fetch_fn,
+        query_lang: str | None = None,
     ) -> list[tuple[float, str, dict]]:
-        entry = await self._get_or_build_bm25_index(collection_name, fetch_fn)
+        entry = await self._get_or_build_bm25_index(collection_name, fetch_fn, query_lang)
         if entry is None:
             return []
 
@@ -1649,11 +1903,13 @@ class BilingualKnowledgeReader:
         query: str,
         embedding_function,
         k: int,
+        query_lang: str | None = None,
     ) -> list[tuple[float, str, dict]]:
         retriever = VectorSearchRetriever(
             collection_name=collection_name,
             embedding_function=embedding_function,
             top_k=k,
+            filter={'lang': query_lang} if query_lang else None,
         )
         docs = await retriever.ainvoke(query)
         return [
@@ -1748,12 +2004,13 @@ class BilingualKnowledgeReader:
         k_final: int,
         r: float,
         hybrid_bm25_weight: float,
+        query_lang: str | None = None,
     ) -> list[tuple[float, str, dict]]:
         bm25_results = (
-            await self._bm25_recall(collection_name, query, k_recall, fetch_fn) if hybrid_bm25_weight > 0 else []
+            await self._bm25_recall(collection_name, query, k_recall, fetch_fn, query_lang=query_lang) if hybrid_bm25_weight > 0 else []
         )
         embedding_results = (
-            await self._embedding_recall(collection_name, query, embedding_function, k_recall)
+            await self._embedding_recall(collection_name, query, embedding_function, k_recall, query_lang=query_lang)
             if hybrid_bm25_weight < 1
             else []
         )
@@ -1777,6 +2034,7 @@ class BilingualKnowledgeReader:
         k_final: int,
         r: float,
         hybrid_bm25_weight: float,
+        query_lang: str | None = None,
     ) -> dict:
         async def fetch_fn(name: str):
             try:
@@ -1797,6 +2055,7 @@ class BilingualKnowledgeReader:
                     k_final=k_final,
                     r=r,
                     hybrid_bm25_weight=hybrid_bm25_weight,
+                    query_lang=query_lang,
                 )
             except Exception as e:
                 log.exception(f'Error retrieving from {collection_name}: {e}')
@@ -1824,6 +2083,21 @@ class BilingualKnowledgeReader:
             'documents': [list(documents)],
             'metadatas': [list(metadatas)],
         }
+
+    @staticmethod
+    def _meta_load(value, default=None):
+        if value is None:
+            return default
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                try:
+                    return ast.literal_eval(value)
+                except Exception:
+                    return default if default is not None else value
+        return value
+
 
     async def find_matches(self, request, queries, source_lang, target_lang, user):
         try:
@@ -1858,6 +2132,7 @@ class BilingualKnowledgeReader:
             for collection_name in collection_names:
                 await self.cleanup_duplicate_collection_content(collection_name)
 
+            source_lang_code = self.name_to_langcode(source_lang)
             raw_result = await self.retrieve(
                 collection_names=collection_names,
                 queries=[queries],
@@ -1867,6 +2142,7 @@ class BilingualKnowledgeReader:
                 k_final=k_final,
                 r=retrieval_config.get('rag.relevance_threshold', 0.0),
                 hybrid_bm25_weight=retrieval_config.get('rag.hybrid_bm25_weight', 0.5),
+                query_lang=source_lang_code
             )
 
             metadatas = raw_result.get('metadatas', [[]])[0]
@@ -1874,8 +2150,8 @@ class BilingualKnowledgeReader:
 
             # 判断当前字符是否和搜索出来的字符重叠
             for metadata in metadatas:
-                source = metadata.get('parent_content', '')
-                score = self.combined_similarity(queries, source)
+                source = self._meta_load(metadata.get('parent_langs', ''), {})
+                score = self.combined_similarity(queries, source.get(source_lang_code, ''))
                 if score >= 99:
                     is_match = True
                     break
@@ -1894,6 +2170,21 @@ class BilingualKnowledgeReader:
             log.warning('BilingualKnowledgeReader: 查询知识库失败: %s', e)
             return []
 
+    def _find_collection_for_bilingual_id(self, bilingual_id: str, collection_names: list[str]) -> str | None:
+        for collection_name in collection_names:
+            try:
+                collection = VECTOR_DB_CLIENT.client.get_collection(collection_name)  # noqa: F821
+                result = collection.get(
+                    where={'bilingual_id': {'$eq': bilingual_id}},
+                    include=['metadatas'],
+                    limit=1,
+                )
+                if result.get('ids'):
+                    return collection_name
+            except Exception:
+                continue
+        return None
+
     async def find_matches_words(self, raw_result, source_lang, target_lang, collection_names, knowledge_name_by_id):
         documents = raw_result.get('documents', [[]])[0]
         metadatas = raw_result.get('metadatas', [[]])[0]
@@ -1901,75 +2192,49 @@ class BilingualKnowledgeReader:
         source_lang_code = self.name_to_langcode(source_lang)
         target_lang_code = self.name_to_langcode(target_lang)
 
-        sentence_collection = []
-        for collection_name in collection_names:
-            for _, meta in zip(documents, metadatas):
-                bilingual_id = meta.get('bilingual_id')
-                para_idx = meta.get('para_index')
-                sentence_index = meta.get('sentence_index')
-
-                collection = VECTOR_DB_CLIENT.client.get_collection(collection_name)  # noqa: F821
-                result = collection.get(
-                    where={
-                        '$and': [
-                            {'bilingual_id': {'$eq': bilingual_id}},
-                            {'para_index': {'$eq': para_idx}},
-                            {'sentence_index': {'$eq': sentence_index}},
-                        ]
-                    },
-                    include=['metadatas'],
-                )
-
-                if result:
-                    sentence_collection.append((collection_name, result))
-                    break
-
+        seen_bilingual_ids: set[str] = set()
         words_list = []
         sources_by_collection: dict[str, dict] = {}
-        for collection_name, result in sentence_collection:
-            metadatas = result.get('metadatas', [])
-            for meta in metadatas:
-                word_langs = meta.get('words', {})
-                if isinstance(word_langs, str):
-                    word_langs = ast.literal_eval(word_langs)
-                words = word_langs.get(target_lang_code, '')
-                words_list.extend(words)
 
-                bilingual_id = meta.get('bilingual_id')
-                para_idx = meta.get('para_index')
-                align_score = meta.get('align_score', 0)
-                langs = meta.get('langs', {})
-                if isinstance(langs, str):
-                    langs = ast.literal_eval(langs)
+        for meta in metadatas:
+            bilingual_id = meta.get('bilingual_id')
+            if not bilingual_id or bilingual_id in seen_bilingual_ids:
+                continue
+            seen_bilingual_ids.add(bilingual_id)
 
-                src_text = langs.get(source_lang_code, '')
-                tgt_text = langs.get(target_lang_code, '')
-                if not collection_name:
-                    continue
+            word_langs = meta.get('words', {})
+            if isinstance(word_langs, str):
+                word_langs = ast.literal_eval(word_langs)
+            words = word_langs.get(target_lang_code, [])
+            words_list.extend(words)
 
-                knowledge_name = knowledge_name_by_id.get(collection_name, collection_name)
-                bucket = sources_by_collection.setdefault(
-                    collection_name,
-                    {
-                        'source': {
-                            'id': collection_name,
-                            'name': knowledge_name,
-                            'type': 'bilingual',
-                        },
-                        'document': [],
-                        'metadata': [],
-                    },
-                )
-                bucket['document'].append(f'{src_text} -> {tgt_text}')
-                bucket['metadata'].append(
-                    {
-                        'source': knowledge_name,
+            collection_name = self._find_collection_for_bilingual_id(bilingual_id, collection_names)
+            if not collection_name:
+                continue
+
+            knowledge_name = knowledge_name_by_id.get(collection_name, collection_name)
+            bucket = sources_by_collection.setdefault(
+                collection_name,
+                {
+                    'source': {
+                        'id': collection_name,
                         'name': knowledge_name,
-                        'bilingual_id': bilingual_id,
-                        'para_index': para_idx,
-                        'align_score': align_score,
-                    }
-                )
+                        'type': 'bilingual',
+                    },
+                    'document': [],
+                    'metadata': [],
+                },
+            )
+            for source_word, target_word in words:
+                bucket['document'].append(f'{source_word} -> {target_word}')
+            bucket['metadata'].append(
+                {
+                    'source': knowledge_name,
+                    'name': knowledge_name,
+                    'bilingual_id': bilingual_id,
+                }
+            )
+
         return words_list, list(sources_by_collection.values()), False
 
     async def find_matches_sentence(
@@ -1982,86 +2247,85 @@ class BilingualKnowledgeReader:
         metadatas = raw_result.get('metadatas', [[]])[0]
         distances = raw_result.get('distances', [[]])[0]
 
-        para_list = set()
+        para_list: set[tuple] = set()
         for _, meta, _ in zip(documents, metadatas, distances):
             bilingual_id = meta.get('bilingual_id')
             para_idx = meta.get('para_index')
             if para_idx is None:
                 continue
-            key = (bilingual_id, para_idx)
-            if key not in para_list:
-                para_list.add(key)
+            para_list.add((bilingual_id, para_idx))
 
-        para_source_collection: dict[tuple, str] = {}
-        full_para_map = {}
+        all_source_sentences: list[dict] = []
         for key in list(para_list):
+            bilingual_id, para_idx = key
             per_collection = await self._fetch_paragraph_sentences(
-                key,
-                collection_names,
-                source_lang_code,
-                target_lang_code,
+                key, collection_names, source_lang_code
             )
-            full_para_map[key] = []
-            for collection_name, sent_map, _ in per_collection:
-                filtered = {}
+            for collection_name, sent_map in per_collection:
                 for sent_idx, item in sent_map.items():
-                    best_sim = self.combined_similarity(queries, item['source'])
-                    if best_sim < 50:
-                        continue
-                    filtered[sent_idx] = item
-                if filtered:
-                    full_para_map[key].append(filtered)
-                    para_source_collection[key] = collection_name
+                    all_source_sentences.append({
+                        'collection_name': collection_name,
+                        'bilingual_id': bilingual_id,
+                        'para_index': para_idx,
+                        'sentence_index': sent_idx,
+                        'text': item['text'],
+                        'align_group_id': item['align_group_id'],
+                        'align_score': item['align_score'],
+                    })
+
+        matched_sentences = [
+            s for s in all_source_sentences
+            if self.combined_similarity(queries, s['text']) >= 50
+        ]
+        if not matched_sentences:
+            return [], [], True
+
+        align_group_ids = [s['align_group_id'] for s in matched_sentences if s['align_group_id']]
+        translations = await self._fetch_translations_by_group_ids(
+            align_group_ids, collection_names, target_lang_code
+        )
 
         bilingual_tuple = []
         sources_by_collection: dict[str, dict] = {}
-        for key, para_items in full_para_map.items():
-            collection_name = para_source_collection.get(key)
-            knowledge_name = (
-                knowledge_name_by_id.get(collection_name, collection_name) if collection_name else '双语知识库'
+        for s in matched_sentences:
+            src_text = s['text']
+            tgt_text = translations.get(s['align_group_id'], '')
+            if not tgt_text:
+                continue
+
+            bilingual_tuple.append((src_text, tgt_text))
+            collection_name = s['collection_name']
+            knowledge_name = knowledge_name_by_id.get(collection_name, collection_name)
+            bucket = sources_by_collection.setdefault(
+                collection_name,
+                {
+                    'source': {
+                        'id': collection_name,
+                        'name': knowledge_name,
+                        'type': 'bilingual',
+                    },
+                    'document': [],
+                    'metadata': [],
+                },
             )
-
-            for sentence_items in para_items:
-                for _, item in sentence_items.items():
-                    src_text = item['source']
-                    tgt_text = item['target']
-                    bilingual_tuple.append((src_text, tgt_text))
-
-                    if not collection_name:
-                        continue
-
-                    bucket = sources_by_collection.setdefault(
-                        collection_name,
-                        {
-                            'source': {
-                                'id': collection_name,
-                                'name': knowledge_name,
-                                'type': 'bilingual',
-                            },
-                            'document': [],
-                            'metadata': [],
-                        },
-                    )
-                    bucket['document'].append(f'{src_text} -> {tgt_text}')
-                    bucket['metadata'].append(
-                        {
-                            'source': knowledge_name,
-                            'name': knowledge_name,
-                            'bilingual_id': key[0],
-                            'para_index': key[1],
-                            'align_score': item.get('align_score'),
-                        }
-                    )
-
+            bucket['document'].append(f'{src_text} -> {tgt_text}')
+            bucket['metadata'].append(
+                {
+                    'source': knowledge_name,
+                    'name': knowledge_name,
+                    'bilingual_id': s['bilingual_id'],
+                    'para_index': s['para_index'],
+                    'align_score': s['align_score'],
+                }
+            )
         return bilingual_tuple, list(sources_by_collection.values()), True
 
     async def _fetch_paragraph_sentences(
         self,
         key: tuple,
         collection_names: list[str],
-        source_lang_code: str,
-        target_lang_code: str,
-    ) -> list[tuple[str, dict, dict]]:
+        lang_code: str,
+    ) -> list[tuple[str, dict]]:
         """
         取出某个段落在各 collection 下的全部句子（不做相似度过滤），
         返回 [(collection_name, sent_map), ...]，sent_map: {sentence_index: {'source','target','align_score'}}
@@ -2076,25 +2340,56 @@ class BilingualKnowledgeReader:
                     '$and': [
                         {'bilingual_id': {'$eq': bilingual_id}},
                         {'para_index': {'$eq': para_idx}},
+                        {'lang': {'$eq': lang_code}},
                     ]
                 },
-                include=['metadatas'],
+                include=['metadatas', 'documents'],
             )
             sent_map = {}
-            for meta in result.get('metadatas', []):
+            documents = result.get('documents', [])
+            metadatas = result.get('metadatas', [])
+            for text, meta in zip(documents, metadatas):
                 sent_idx = meta.get('sentence_index')
                 if sent_idx is None:
                     continue
-                langs = meta.get('langs', {})
-                if isinstance(langs, str):
-                    langs = ast.literal_eval(langs)
-                source = langs.get(source_lang_code, '')
-                target = langs.get(target_lang_code, '')
-                align_score = meta.get('align_score', 0)
-                sent_map[sent_idx] = {'source': source, 'target': target, 'align_score': align_score}
+                sent_map[sent_idx] = {
+                    'text': text,
+                    'align_group_id': meta.get('align_group_id'),
+                    'align_score': meta.get('align_score', 0),
+                }
             if sent_map:
-                per_collection.append((collection_name, sent_map, result.get('metadatas', [])))
+                per_collection.append((collection_name, sent_map))
         return per_collection
+
+    async def _fetch_translations_by_group_ids(
+            self,
+            align_group_ids: list[str],
+            collection_names: list[str],
+            target_lang_code: str,
+    ) -> dict[str, str]:
+        if not align_group_ids:
+            return {}
+
+        translations: dict[str, str] = {}
+        for collection_name in collection_names:
+            collection = VECTOR_DB_CLIENT.client.get_collection(collection_name)  # noqa: F821
+            result = collection.get(
+                where={
+                    '$and': [
+                        {'align_group_id': {'$in': align_group_ids}},
+                        {'lang': {'$eq': target_lang_code}},
+                    ]
+                },
+                include=['metadatas', 'documents'],
+            )
+            documents = result.get('documents', [])
+            metadatas = result.get('metadatas', [])
+            for text, meta in zip(documents, metadatas):
+                group_id = meta.get('align_group_id')
+                if group_id:
+                    translations[group_id] = text
+        return translations
+
 
     def combined_similarity(self, a: str, b: str) -> float:
         partial = fuzz.partial_ratio(a, b)

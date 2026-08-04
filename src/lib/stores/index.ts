@@ -213,6 +213,7 @@ type Settings = {
 	userLocation?: any;
 	webSearch?: any;
 	memory?: boolean;
+	chatHistoryMemory?: boolean;
 	contextCompaction?: {
 		enabled?: boolean;
 	};

@@ -41,6 +41,30 @@
 	let editName = '';
 	let editInput: HTMLInputElement;
 
+	const progressMessageKeys: Record<string, string> = {
+		preparing: 'Preparing the file...',
+		reading_content: 'Reading file content...',
+		extracting_content: 'Extracting text from the file...',
+		content_extracted: 'Text extraction complete; preparing chunks...',
+		linking_to_knowledge: 'Adding the file to the knowledge base...',
+		preparing_vectors: 'Preparing knowledge base vectors...',
+		splitting_documents: 'Splitting content into searchable chunks...',
+		search_embeddings: 'Generating semantic search vectors...',
+		saving_vectors: 'Writing vectors to the knowledge base...',
+		finalizing: 'Finalizing the knowledge base...',
+		complete: 'Processing complete'
+	};
+
+	const getProgressLabel = (file: any) =>
+		$i18n.t(progressMessageKeys[file?.progressStage] ?? 'Processing knowledge base...');
+
+	const getElapsedLabel = (file: any) => {
+		if (!file?.progressStartedAt) return '';
+		const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - file.progressStartedAt));
+		if (elapsed < 60) return $i18n.t('{{count}} sec', { count: elapsed });
+		return $i18n.t('{{count}} min', { count: Math.floor(elapsed / 60) });
+	};
+
 	const startRename = (file: any) => {
 		editingFileId = file?.id ?? file?.tempId;
 		editName = file?.name ?? file?.meta?.name ?? '';
@@ -115,7 +139,7 @@
 					if (knowledge?.write_access) startRename(file);
 				}}
 			>
-				<div>
+				<div class="min-w-0 flex-1">
 					<div class="flex gap-2 items-center line-clamp-1">
 						{#if editingFileId === (file?.id ?? file?.tempId)}
 							<!-- svelte-ignore a11y-autofocus -->
@@ -144,6 +168,32 @@
 							</div>
 						{/if}
 					</div>
+					{#if file?.status === 'uploading'}
+						<div class="mt-1 min-w-[14rem] max-w-md">
+							<div
+								class="flex items-center justify-between gap-3 text-[11px] text-gray-500 dark:text-gray-400"
+							>
+								<span class="truncate">{getProgressLabel(file)}</span>
+								<span class="shrink-0">
+									{file?.progress ?? 0}%
+									{#if getElapsedLabel(file)}
+										· {$i18n.t('Elapsed {{time}}', { time: getElapsedLabel(file) })}
+									{/if}
+								</span>
+							</div>
+							<div class="mt-1 h-1 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+								<div
+									class="h-1 rounded-full bg-blue-500 transition-[width] duration-300"
+									style="width: {file?.progress ?? 0}%"
+								/>
+							</div>
+							{#if file?.progressColdStart}
+								<div class="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+									{$i18n.t('First use usually takes 5–20 minutes')}
+								</div>
+							{/if}
+						</div>
+					{/if}
 				</div>
 
 				<div class="flex items-center gap-2 shrink-0">
