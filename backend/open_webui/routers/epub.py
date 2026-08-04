@@ -38,8 +38,22 @@ class SearchForm(BaseModel):
 class BatchDraftForm(BaseModel):
     version_id: str = Field(min_length=1, max_length=128)
     profile_name: str = Field(min_length=1, max_length=200)
+    prompt_profile: str = Field(default="zh-glossary-v3", min_length=1, max_length=100)
     is_sample: bool = False
     sample_limit: int = Field(default=20, ge=1, le=500)
+
+
+class SectionGraphBatchDraftForm(BaseModel):
+    version_id: str = Field(min_length=1, max_length=128)
+    profile_name: str = Field(min_length=1, max_length=200)
+    is_sample: bool = False
+    sample_limit: int = Field(default=20, ge=1, le=500)
+
+
+class LocalCalibrationForm(BaseModel):
+    version_id: str = Field(min_length=1, max_length=128)
+    prompt_profile: str = Field(default="zh-glossary-v3", min_length=1, max_length=100)
+    sample_limit: int = Field(default=20, ge=1, le=100)
 
 
 class ConceptUpsertForm(BaseModel):
@@ -47,6 +61,10 @@ class ConceptUpsertForm(BaseModel):
     aliases: list[str] = Field(default_factory=list, max_length=100)
     definition: str = Field(default="", max_length=10_000)
     status: str = Field(default="APPROVED", pattern="^(PROVISIONAL|APPROVED|REJECTED)$")
+
+
+class RelationAssertionReviewForm(BaseModel):
+    status: str = Field(pattern="^(APPROVED|REJECTED|PROVISIONAL)$")
 
 
 class VersionIndexForm(BaseModel):
@@ -148,10 +166,44 @@ async def create_batch_draft(
         return service.create_batch_draft(
             version_id=form_data.version_id,
             profile_name=form_data.profile_name,
+            prompt_profile=form_data.prompt_profile,
             is_sample=form_data.is_sample,
             sample_limit=form_data.sample_limit,
         )
     except (EpubServiceError, BatchServiceError, IntegrityError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.post("/admin/section-graph-batches", status_code=status.HTTP_201_CREATED)
+async def create_section_graph_batch_draft(
+    form_data: SectionGraphBatchDraftForm, service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, Any]:
+    """Create a server-owned offline Batch job for grounded TOC section graphs."""
+    try:
+        return service.create_section_graph_batch_draft(
+            version_id=form_data.version_id,
+            profile_name=form_data.profile_name,
+            is_sample=form_data.is_sample,
+            sample_limit=form_data.sample_limit,
+        )
+    except (EpubServiceError, BatchServiceError, IntegrityError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.post("/admin/calibrations/local")
+async def run_local_calibration(
+    form_data: LocalCalibrationForm, service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, Any]:
+    """Run a content-free prompt/schema calibration only through Desktop llama.cpp."""
+    try:
+        return await service.run_local_calibration_async(
+            version_id=form_data.version_id,
+            prompt_profile=form_data.prompt_profile,
+            sample_limit=form_data.sample_limit,
+        )
+    except EpubServiceUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+    except (EpubServiceError, BatchPayloadError) as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
@@ -195,6 +247,36 @@ async def upsert_concept(
             status=form_data.status,
         )
     except (EpubServiceError, IntegrityError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.get("/admin/relation-assertions")
+async def list_relation_assertions(
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+    relation_status: str | None = Query(default="PROVISIONAL", alias="status", pattern="^(PROVISIONAL|APPROVED|REJECTED)$"),
+    version_id: str | None = Query(default=None, min_length=1, max_length=128),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    try:
+        return service.list_relation_assertions(
+            status=relation_status, version_id=version_id, offset=offset, limit=limit
+        )
+    except EpubServiceError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.put("/admin/relation-assertions/{assertion_id}")
+async def review_relation_assertion(
+    assertion_id: str,
+    form_data: RelationAssertionReviewForm,
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+) -> dict[str, str]:
+    try:
+        return service.review_relation_assertion(assertion_id=assertion_id, status=form_data.status)
+    except EpubServiceError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
