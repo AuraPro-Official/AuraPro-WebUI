@@ -73,6 +73,9 @@ read_pin() {
 # Fallbacks mirror the pyproject.toml pins as of this writing.
 SQLITE_VEC_PIN="$(read_pin sqlite-vec 0.1.9)"
 MULTIPART_PIN="$(read_pin python-multipart 0.0.32)"
+# ruff is declared as a range (`ruff>=0.15.5`) in [dependency-groups] dev rather
+# than an `==` pin, so read_pin cannot find it; mirror the declared floor.
+RUFF_PIN="ruff>=0.15.5"
 
 # Minimal set only.  Deliberately NOT `pip install -e .` -- that drags in torch
 # and several hundred packages that no EPUB test touches.
@@ -82,7 +85,19 @@ MULTIPART_PIN="$(read_pin python-multipart 0.0.32)"
 #   python-multipart -> backend/open_webui/routers/epub.py declares UploadFile
 #                       form params; FastAPI raises at import time without it
 #   sqlite-vec       -> the loadable SQLite extension under test
-REQUIREMENTS=(typer uvicorn fastapi httpx "${MULTIPART_PIN}" "${SQLITE_VEC_PIN}")
+#   ruff             -> the F821 guard below; names used only in `except`
+#                       clauses are invisible to a passing test suite
+REQUIREMENTS=(typer uvicorn fastapi httpx "${MULTIPART_PIN}" "${SQLITE_VEC_PIN}" "${RUFF_PIN}")
+
+# Pyflakes-only. The repo-wide ruff style rules (single quotes, line length) do
+# not yet apply to the EPUB modules and would bury the finding that matters.
+RUFF_PATHS=(
+	backend/open_webui/retrieval/epub
+	backend/open_webui/retrieval/parsers/epub
+	backend/open_webui/services/epub_concept.py
+	backend/open_webui/services/epub_runtime.py
+	backend/open_webui/routers/epub.py
+)
 
 # ── interpreter validation ────────────────────────────────────────────────────
 VALIDATION_SNIPPET='
@@ -243,6 +258,7 @@ VENV_PYTHON="${VENV_DIR}/bin/python"
 
 venv_is_complete() {
 	[ -x "${VENV_PYTHON}" ] || return 1
+	[ -x "${VENV_DIR}/bin/ruff" ] || return 1
 	validate_python "${VENV_PYTHON}" quiet || return 1
 	AURAPRO_REQUIRED_PINS="${SQLITE_VEC_PIN} ${MULTIPART_PIN}" \
 		"${VENV_PYTHON}" - <<'PY' >/dev/null 2>&1 || return 1
@@ -311,6 +327,10 @@ main() {
 	echo "Run the suite from the repo root:"
 	echo
 	echo "  cd ${REPO_ROOT} && \"${VENV_PYTHON}\" -m unittest discover -s test -p 'test_epub_*.py'"
+	echo
+	echo "Guard the error paths (must report \"All checks passed!\"):"
+	echo
+	echo "  cd ${REPO_ROOT} && \"${VENV_DIR}/bin/ruff\" check --select F ${RUFF_PATHS[*]}"
 	echo
 }
 

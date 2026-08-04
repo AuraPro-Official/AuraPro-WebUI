@@ -19,7 +19,9 @@ from typing import Any, Mapping, Protocol, Sequence
 from open_webui.retrieval.epub.batch import (
     BatchItemInput,
     BatchJobService,
+    BatchPayloadError,
     BatchProvider,
+    BatchServiceError,
     SQLiteBatchRepository,
 )
 from open_webui.retrieval.epub.calibration import LocalConceptCalibrationRunner
