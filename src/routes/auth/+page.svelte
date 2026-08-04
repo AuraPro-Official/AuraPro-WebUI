@@ -18,7 +18,8 @@
 	} from '$lib/apis/auths';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
-	import { WEBUI_NAME, config, user, socket } from '$lib/stores';
+	import { WEBUI_NAME, config, user, socket, socketConnected } from '$lib/stores';
+	import { authenticateSocket } from '$lib/utils/socket-readiness';
 
 	import { generateInitialsImage, canvasPixelTest, getUserTimezone } from '$lib/utils';
 
@@ -48,7 +49,8 @@
 			if (sessionUser.token) {
 				localStorage.token = sessionUser.token;
 			}
-			$socket.emit('user-join', { auth: { token: sessionUser.token } });
+			const authenticated = await authenticateSocket($socket, sessionUser.token);
+			socketConnected.set(authenticated);
 			await user.set(sessionUser);
 			await config.set(await getBackendConfig());
 
