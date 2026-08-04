@@ -28,7 +28,6 @@
 		banners,
 		user,
 		socket,
-		socketConnected,
 		audioQueue,
 		showControls,
 		showCallOverlay,
@@ -76,8 +75,8 @@
 		displayFileHandler
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
+	import { isChatEventForCurrentConversation, waitForSocketSession } from '$lib/utils/chat-stream';
 	import { applyDesktopShortcutAction } from '$lib/utils/extension-modes';
-	import { waitForSocketReady } from '$lib/utils/socket-readiness';
 	import { getOutputText } from './Messages/structuredOutput';
 
 	import {
@@ -245,6 +244,9 @@
 	};
 
 	let taskIds = null;
+	let pendingChatReconcileTimer: number | null = null;
+	let pendingChatReconcileInFlight = false;
+	const PENDING_CHAT_RECONCILE_INTERVAL_MS = 4000;
 
 	// Chat Input
 	let prompt = '';
@@ -685,18 +687,24 @@
 	const chatEventHandler = async (event, cb) => {
 		console.log(event);
 
-		const belongsToPendingNewChat =
-			!$chatId &&
-			Boolean(event.message_id) &&
-			Object.prototype.hasOwnProperty.call(history.messages, event.message_id);
-
-		if (event.chat_id === $chatId || belongsToPendingNewChat) {
+		if (
+			isChatEventForCurrentConversation(event.chat_id, $chatId, event.message_id, history.messages)
+		) {
 			await tick();
+			const type = event?.data?.type ?? null;
+			const data = event?.data?.data ?? null;
+
+			// chat:active is chat-scoped and may arrive before a local message placeholder exists.
+			if (type === 'chat:active') {
+				if (!data?.active) {
+					taskIds = null;
+					await reconcilePendingChat(true);
+				}
+				return;
+			}
 			let message = history.messages[event.message_id];
 
 			if (message) {
-				const type = event?.data?.type ?? null;
-				const data = event?.data?.data ?? null;
 				if (type === 'status') {
 					if (message?.statusHistory) {
 						message.statusHistory.push(data);
@@ -705,16 +713,6 @@
 					}
 				} else if (type === 'context_compaction') {
 					handleContextCompactionStatus(data);
-				} else if (type === 'chat:active') {
-					if (!data?.active) {
-						taskIds = null;
-						if ($chatId && !$temporaryChatEnabled && hasPendingAssistantLeaf()) {
-							await loadChat();
-						}
-						if ($chatId && !$temporaryChatEnabled) {
-							updateLastReadAt($chatId);
-						}
-					}
 				} else if (type === 'chat:completion') {
 					await chatCompletionEventHandler(data, message, event.chat_id);
 				} else if (type === 'chat:tasks:cancel') {
@@ -857,6 +855,13 @@
 				// Give Svelte fresh references for each streamed delta without cloning
 				// the complete message map or chat history.
 				history = { ...history };
+			} else if (
+				type === 'chat:completion' ||
+				type === 'chat:message:error' ||
+				type === 'chat:tasks:cancel'
+			) {
+				// A terminal event can race the placeholder or arrive after a reconnect.
+				await reconcilePendingChat(true);
 			}
 		} else {
 			// Non-active chat completion: queue stays in the global store.
@@ -979,25 +984,72 @@
 				message?.role === 'assistant' && !message.done && (message.childrenIds?.length ?? 0) === 0
 		);
 
-	const handleSocketConnect = async () => {
-		if (!$chatId || $temporaryChatEnabled) return;
-		if (!hasPendingAssistantLeaf()) return;
-
-		const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, $chatId)
-			.then((res) => res?.task_ids ?? [])
-			.catch(() => null);
-
-		if (pendingTaskIds?.length === 0) {
-			await loadChat();
+	const reconcilePendingChat = async (knownInactive = false) => {
+		if (
+			pendingChatReconcileInFlight ||
+			loading ||
+			!$chatId ||
+			$temporaryChatEnabled ||
+			!hasPendingAssistantLeaf()
+		) {
+			return;
 		}
+
+		const activeChatId = $chatId;
+		pendingChatReconcileInFlight = true;
+
+		try {
+			if (!knownInactive) {
+				const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, activeChatId)
+					.then((res) => res?.task_ids ?? [])
+					.catch(() => null);
+
+				if (pendingTaskIds === null || pendingTaskIds.length > 0) {
+					return;
+				}
+			}
+
+			if ($chatId !== activeChatId || !hasPendingAssistantLeaf()) {
+				return;
+			}
+
+			await loadChat(activeChatId);
+
+			if ($chatId === activeChatId) {
+				processingQueueChats.delete(activeChatId);
+				await processNextInQueue(activeChatId);
+			}
+		} finally {
+			pendingChatReconcileInFlight = false;
+		}
+	};
+
+	const handleVisibilityChange = () => {
+		if (document.visibilityState === 'visible') {
+			void reconcilePendingChat();
+		}
+	};
+
+	const handleWindowFocus = () => {
+		void reconcilePendingChat();
+	};
+
+	const handleSocketConnect = async () => {
+		await reconcilePendingChat();
 	};
 
 	onMount(() => {
 		loading = true;
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
+		window.addEventListener('focus', handleWindowFocus);
+		document.addEventListener('visibilitychange', handleVisibilityChange);
 		$socket?.on('events', chatEventHandler);
 		$socket?.on('connect', handleSocketConnect);
+		pendingChatReconcileTimer = window.setInterval(
+			() => void reconcilePendingChat(),
+			PENDING_CHAT_RECONCILE_INTERVAL_MS
+		);
 
 		$audioQueue?.destroy();
 
@@ -1116,6 +1168,12 @@
 				showControlsSubscribe();
 				selectedFolderSubscribe();
 				window.removeEventListener('message', onMessageHandler);
+				window.removeEventListener('focus', handleWindowFocus);
+				document.removeEventListener('visibilitychange', handleVisibilityChange);
+				if (pendingChatReconcileTimer !== null) {
+					window.clearInterval(pendingChatReconcileTimer);
+					pendingChatReconcileTimer = null;
+				}
 				$socket?.off('events', chatEventHandler);
 				$socket?.off('connect', handleSocketConnect);
 				dismissContextCompactionToast();
@@ -1651,8 +1709,8 @@
 		setTimeout(() => chatInput?.focus(), 0);
 	};
 
-	const loadChat = async () => {
-		chatId.set(chatIdProp);
+	const loadChat = async (targetChatId = chatIdProp) => {
+		chatId.set(targetChatId);
 
 		if ($temporaryChatEnabled) {
 			temporaryChatEnabled.set(false);
@@ -2253,12 +2311,6 @@
 			return;
 		}
 
-		const readySocket = await waitForSocketReady(socket, socketConnected);
-		if (!readySocket) {
-			toast.error($i18n.t('Server connection failed'));
-			return;
-		}
-
 		if (
 			files.length > 0 &&
 			files.filter((file) => file.type !== 'image' && file.status === 'uploading').length > 0
@@ -2686,6 +2738,11 @@
 		// Only send terminal_id if the model has terminal capability enabled
 		const terminalEnabled = model.info?.meta?.capabilities?.terminal ?? true;
 
+		const socketSessionId = await waitForSocketSession($socket);
+		if (!socketSessionId) {
+			console.warn('Socket session is unavailable; chat completion may use non-streaming fallback');
+		}
+
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
 			{
@@ -2721,7 +2778,7 @@
 				},
 				model_item: $models.find((m) => m.id === model.id),
 
-				session_id: $socket?.id,
+				session_id: socketSessionId ?? undefined,
 				chat_id: _chatId || undefined,
 				folder_id: $selectedFolder?.id ?? undefined,
 

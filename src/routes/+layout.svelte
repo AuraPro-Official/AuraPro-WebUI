@@ -74,7 +74,6 @@
 		removeAllDetails
 	} from '$lib/utils';
 	import { setTextScale } from '$lib/utils/text-scale';
-	import { authenticateSocket } from '$lib/utils/socket-readiness';
 
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
 	import AppSidebar from '$lib/components/app/AppSidebar.svelte';
@@ -139,6 +138,7 @@
 	const setupSocket = async (enableWebsocket) => {
 		socketConnected.set(false);
 		const _socket = io(`${WEBUI_BASE_URL}` || undefined, {
+			autoConnect: false,
 			reconnection: true,
 			reconnectionDelay: 1000,
 			reconnectionDelayMax: 5000,
@@ -147,7 +147,7 @@
 			transports: enableWebsocket ? ['websocket'] : ['polling', 'websocket'],
 			auth: { token: localStorage.token }
 		});
-		await socket.set(_socket);
+		socket.set(_socket);
 
 		_socket.on('connect_error', (err) => {
 			socketConnected.set(false);
@@ -158,7 +158,6 @@
 
 		_socket.on('connect', async () => {
 			console.log('connected', _socket.id);
-			socketConnected.set(false);
 
 			// Cancel any pending disconnect toast if we reconnected quickly
 			if (disconnectToastTimer) {
@@ -168,14 +167,10 @@
 
 			const wasReconnect = hasConnectedOnce;
 			hasConnectedOnce = true;
+			socketConnected.set(true);
 
-			const authenticated = await authenticateSocket(_socket, localStorage.getItem('token'));
-			socketConnected.set(authenticated);
-			if (!authenticated) {
-				console.warn('Socket connected, but user authentication was not acknowledged');
-			}
-
-			if (wasReconnect && authenticated && disconnectWarningShown) {
+			// Only show "Reconnected" if the user actually saw the disconnect warning.
+			if (wasReconnect && disconnectWarningShown) {
 				toast.success($i18n.t('Reconnected'));
 				disconnectWarningShown = false;
 			}
@@ -214,6 +209,10 @@
 			}
 
 			console.log('version', version);
+
+			if (localStorage.getItem('token')) {
+				_socket.emit('user-join', { auth: { token: localStorage.token } });
+			}
 		});
 
 		_socket.on('reconnect_attempt', (attempt) => {
@@ -249,6 +248,9 @@
 				console.log('Additional details:', details);
 			}
 		});
+
+		// Register listeners before connecting so fast local connections cannot be missed.
+		_socket.connect();
 	};
 
 	/**
