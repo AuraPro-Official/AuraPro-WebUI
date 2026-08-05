@@ -203,6 +203,50 @@ export type ConceptInput = {
 	status: 'PROVISIONAL' | 'APPROVED' | 'REJECTED';
 };
 
+/** Concept labels and counts only. No passage text, evidence or model output. */
+export type EpubConcept = {
+	concept_id: string;
+	canonical_name: string;
+	definition: string;
+	status: 'PROVISIONAL' | 'APPROVED' | 'REJECTED';
+	aliases: string[];
+	mention_count: number;
+	created_at?: string | null;
+	updated_at?: string | null;
+};
+
+export type EpubConceptPage = { total: number; offset: number; items: EpubConcept[] };
+
+/**
+ * Fold `source_concept_id` into `target_concept_id`. Ingest refuses an item
+ * whose model suggestion matches two concepts exactly; this is the only
+ * administrator action that resolves such a candidate.
+ */
+export type ConceptMergeInput = {
+	target_concept_id: string;
+	source_concept_id: string;
+	/** Optional preferred spelling for the surviving concept. */
+	canonical_name?: string;
+};
+
+export type ConceptMergeResult = {
+	concept_merge_id: string;
+	target_concept_id: string;
+	source_concept_id: string;
+	source_canonical_name: string;
+	canonical_name: string;
+	status: EpubConcept['status'];
+	merged_by: string;
+	merged_at: string;
+	moved_aliases: number;
+	moved_mentions: number;
+	duplicate_mentions: number;
+	repointed_relations: number;
+	folded_relations: number;
+	/** Relations between the two merged concepts; a self-loop cannot survive. */
+	dropped_self_relations: number;
+};
+
 export type RelationAssertion = {
 	assertion_id: string;
 	relation_id: string;
@@ -381,6 +425,28 @@ export const reviewEpubSampleBatch = (
 export const upsertEpubConcept = (token: string, input: ConceptInput) =>
 	request<{ concept_id: string }>(token, '/admin/concepts', {
 		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(input)
+	});
+
+export const getEpubConcepts = (
+	token: string,
+	input: {
+		status?: EpubConcept['status'];
+		offset?: number;
+		limit?: number;
+	} = {}
+) => {
+	const params = new URLSearchParams();
+	if (input.status) params.set('status', input.status);
+	params.set('offset', String(input.offset ?? 0));
+	params.set('limit', String(input.limit ?? 50));
+	return request<EpubConceptPage>(token, `/admin/concepts?${params.toString()}`);
+};
+
+export const mergeEpubConcepts = (token: string, input: ConceptMergeInput) =>
+	request<ConceptMergeResult>(token, '/admin/concepts/merge', {
+		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(input)
 	});
