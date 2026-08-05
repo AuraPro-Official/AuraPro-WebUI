@@ -31,24 +31,24 @@ class ConceptWiki:
         # Load all concepts
         db_concepts = self._db.get_all_concepts()
         for c in db_concepts:
-            cid = c["concept_id"]
+            cid = c['concept_id']
             occurrences = self._db.get_occurrences_for_concept(cid)
             self.concepts[cid] = {
-                "concept_id": cid,
-                "canonical_name": c["canonical_name"],
-                "aliases": c["aliases"],
-                "definition": c.get("definition", ""),
-                "occurrences": occurrences,
+                'concept_id': cid,
+                'canonical_name': c['canonical_name'],
+                'aliases': c['aliases'],
+                'definition': c.get('definition', ''),
+                'occurrences': occurrences,
             }
             # Parse counter from concept_id to keep numbering consistent
             try:
-                num = int(cid.split("_")[1])
+                num = int(cid.split('_')[1])
                 if num >= self._concept_counter:
                     self._concept_counter = num + 1
             except (IndexError, ValueError):
                 pass
 
-        log.info(f"ConceptWiki loaded from DB: {len(self.concepts)} concepts, {len(self.alias_to_concept_id)} aliases")
+        log.info(f'ConceptWiki loaded from DB: {len(self.concepts)} concepts, {len(self.alias_to_concept_id)} aliases')
 
     def load_seed_vocabulary(self, seed_data: List[Dict[str, Any]]) -> int:
         """
@@ -58,18 +58,14 @@ class ConceptWiki:
         """
         loaded_count = 0
         for item in seed_data:
-            term = item.get("term") or item.get("canonical_name")
+            term = item.get('term') or item.get('canonical_name')
             if not term:
                 continue
 
-            aliases = item.get("aliases", [])
-            definition = item.get("definition", "")
+            aliases = item.get('aliases', [])
+            definition = item.get('definition', '')
 
-            self.register_concept(
-                canonical_name=term,
-                aliases=aliases,
-                definition=definition
-            )
+            self.register_concept(canonical_name=term, aliases=aliases, definition=definition)
             loaded_count += 1
 
         return loaded_count
@@ -79,12 +75,12 @@ class ConceptWiki:
         if not os.path.exists(file_path):
             return 0
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if isinstance(data, list):
                     return self.load_seed_vocabulary(data)
                 elif isinstance(data, dict):
-                    items = [{"term": k, "aliases": v if isinstance(v, list) else [v]} for k, v in data.items()]
+                    items = [{'term': k, 'aliases': v if isinstance(v, list) else [v]} for k, v in data.items()]
                     return self.load_seed_vocabulary(items)
         except Exception:
             pass
@@ -94,9 +90,9 @@ class ConceptWiki:
         self,
         canonical_name: str,
         aliases: Optional[List[str]] = None,
-        definition: str = "",
+        definition: str = '',
         passage_id: Optional[str] = None,
-        book_title: Optional[str] = None
+        book_title: Optional[str] = None,
     ) -> str:
         """
         Registers or updates a concept. If canonical_name or any alias matches
@@ -118,20 +114,20 @@ class ConceptWiki:
             concept_id = existing_cid
             concept = self.concepts[concept_id]
             # Merge aliases
-            existing_aliases = set(concept["aliases"])
+            existing_aliases = set(concept['aliases'])
             existing_aliases.update(aliases_set)
-            concept["aliases"] = list(existing_aliases)
-            if definition and not concept["definition"]:
-                concept["definition"] = definition
+            concept['aliases'] = list(existing_aliases)
+            if definition and not concept['definition']:
+                concept['definition'] = definition
         else:
-            concept_id = f"CONCEPT_{self._concept_counter:06d}"
+            concept_id = f'CONCEPT_{self._concept_counter:06d}'
             self._concept_counter += 1
             concept = {
-                "concept_id": concept_id,
-                "canonical_name": canonical_name.strip(),
-                "aliases": list(aliases_set),
-                "definition": definition,
-                "occurrences": []
+                'concept_id': concept_id,
+                'canonical_name': canonical_name.strip(),
+                'aliases': list(aliases_set),
+                'definition': definition,
+                'occurrences': [],
             }
             self.concepts[concept_id] = concept
 
@@ -141,18 +137,18 @@ class ConceptWiki:
 
         # Attach passage occurrence if provided
         if passage_id:
-            occ_list = self.concepts[concept_id]["occurrences"]
-            if not any(o["passage_id"] == passage_id for o in occ_list):
-                occ_list.append({"passage_id": passage_id, "book_title": book_title or ""})
+            occ_list = self.concepts[concept_id]['occurrences']
+            if not any(o['passage_id'] == passage_id for o in occ_list):
+                occ_list.append({'passage_id': passage_id, 'book_title': book_title or ''})
                 # Persist occurrence to SQLite
-                self._db.save_occurrence(concept_id, passage_id, book_title or "")
+                self._db.save_occurrence(concept_id, passage_id, book_title or '')
 
         # Persist concept to SQLite
         self._db.save_concept(
             concept_id=concept_id,
-            canonical_name=concept["canonical_name"],
-            aliases=concept["aliases"],
-            definition=concept["definition"],
+            canonical_name=concept['canonical_name'],
+            aliases=concept['aliases'],
+            definition=concept['definition'],
         )
 
         return concept_id
@@ -186,15 +182,15 @@ class ConceptWiki:
 
     def export_to_dict(self) -> Dict[str, Any]:
         return {
-            "concepts": self.concepts,
-            "alias_to_concept_id": self.alias_to_concept_id,
-            "concept_counter": self._concept_counter
+            'concepts': self.concepts,
+            'alias_to_concept_id': self.alias_to_concept_id,
+            'concept_counter': self._concept_counter,
         }
 
     def import_from_dict(self, data: Dict[str, Any]):
-        self.concepts = data.get("concepts", {})
-        self.alias_to_concept_id = data.get("alias_to_concept_id", {})
-        self._concept_counter = data.get("concept_counter", 1)
+        self.concepts = data.get('concepts', {})
+        self.alias_to_concept_id = data.get('alias_to_concept_id', {})
+        self._concept_counter = data.get('concept_counter', 1)
 
     def get_db(self) -> EpubConceptDB:
         """Expose the underlying DB instance for direct passage/stats queries."""

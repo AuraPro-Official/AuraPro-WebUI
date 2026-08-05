@@ -123,10 +123,7 @@ class TestMemoryReviewParsing(unittest.TestCase):
         operations = [
             {'action': 'remove', 'id': 'unknown'},
             {'action': 'replace', 'id': 'known', 'content': 'Updated', 'type': 'user'},
-        ] + [
-            {'action': 'add', 'content': f'Memory {index}', 'type': 'context'}
-            for index in range(10)
-        ]
+        ] + [{'action': 'add', 'content': f'Memory {index}', 'type': 'context'} for index in range(10)]
         sanitized = _sanitize_memory_operations(operations, {'known'})
         self.assertLessEqual(len(sanitized), 8)
         self.assertNotIn('unknown', {item.get('id') for item in sanitized})

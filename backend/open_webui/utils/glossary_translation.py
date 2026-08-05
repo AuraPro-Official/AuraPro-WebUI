@@ -798,9 +798,7 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     settings['smart_source_lang'] = normalize_term(str(legacy_smart_source_lang or active['source_lang']))
     settings['smart_target_lang'] = normalize_term(str(legacy_smart_target_lang or active['target_lang']))
     settings['mtp_enabled'] = _normalize_bool_setting(settings.get('mtp_enabled'), False)
-    settings['multimodal_enabled'] = _normalize_bool_setting(
-        settings.get('multimodal_enabled'), True
-    )
+    settings['multimodal_enabled'] = _normalize_bool_setting(settings.get('multimodal_enabled'), True)
     return settings
 
 
@@ -1714,10 +1712,7 @@ class BilingualKnowledgeReader:
             all_metadatas = collection_result.metadatas[0]
 
             if query_lang:
-                filtered = [
-                    (t, m) for t, m in zip(all_texts, all_metadatas)
-                    if m.get('lang') == query_lang
-                ]
+                filtered = [(t, m) for t, m in zip(all_texts, all_metadatas) if m.get('lang') == query_lang]
                 texts = [t for t, _ in filtered]
                 metadatas = [m for _, m in filtered]
             else:
@@ -2007,7 +2002,9 @@ class BilingualKnowledgeReader:
         query_lang: str | None = None,
     ) -> list[tuple[float, str, dict]]:
         bm25_results = (
-            await self._bm25_recall(collection_name, query, k_recall, fetch_fn, query_lang=query_lang) if hybrid_bm25_weight > 0 else []
+            await self._bm25_recall(collection_name, query, k_recall, fetch_fn, query_lang=query_lang)
+            if hybrid_bm25_weight > 0
+            else []
         )
         embedding_results = (
             await self._embedding_recall(collection_name, query, embedding_function, k_recall, query_lang=query_lang)
@@ -2098,7 +2095,6 @@ class BilingualKnowledgeReader:
                     return default if default is not None else value
         return value
 
-
     async def find_matches(self, request, queries, source_lang, target_lang, user):
         try:
             async with get_async_db() as session:
@@ -2142,7 +2138,7 @@ class BilingualKnowledgeReader:
                 k_final=k_final,
                 r=retrieval_config.get('rag.relevance_threshold', 0.0),
                 hybrid_bm25_weight=retrieval_config.get('rag.hybrid_bm25_weight', 0.5),
-                query_lang=source_lang_code
+                query_lang=source_lang_code,
             )
 
             metadatas = raw_result.get('metadatas', [[]])[0]
@@ -2258,32 +2254,27 @@ class BilingualKnowledgeReader:
         all_source_sentences: list[dict] = []
         for key in list(para_list):
             bilingual_id, para_idx = key
-            per_collection = await self._fetch_paragraph_sentences(
-                key, collection_names, source_lang_code
-            )
+            per_collection = await self._fetch_paragraph_sentences(key, collection_names, source_lang_code)
             for collection_name, sent_map in per_collection:
                 for sent_idx, item in sent_map.items():
-                    all_source_sentences.append({
-                        'collection_name': collection_name,
-                        'bilingual_id': bilingual_id,
-                        'para_index': para_idx,
-                        'sentence_index': sent_idx,
-                        'text': item['text'],
-                        'align_group_id': item['align_group_id'],
-                        'align_score': item['align_score'],
-                    })
+                    all_source_sentences.append(
+                        {
+                            'collection_name': collection_name,
+                            'bilingual_id': bilingual_id,
+                            'para_index': para_idx,
+                            'sentence_index': sent_idx,
+                            'text': item['text'],
+                            'align_group_id': item['align_group_id'],
+                            'align_score': item['align_score'],
+                        }
+                    )
 
-        matched_sentences = [
-            s for s in all_source_sentences
-            if self.combined_similarity(queries, s['text']) >= 50
-        ]
+        matched_sentences = [s for s in all_source_sentences if self.combined_similarity(queries, s['text']) >= 50]
         if not matched_sentences:
             return [], [], True
 
         align_group_ids = [s['align_group_id'] for s in matched_sentences if s['align_group_id']]
-        translations = await self._fetch_translations_by_group_ids(
-            align_group_ids, collection_names, target_lang_code
-        )
+        translations = await self._fetch_translations_by_group_ids(align_group_ids, collection_names, target_lang_code)
 
         bilingual_tuple = []
         sources_by_collection: dict[str, dict] = {}
@@ -2362,10 +2353,10 @@ class BilingualKnowledgeReader:
         return per_collection
 
     async def _fetch_translations_by_group_ids(
-            self,
-            align_group_ids: list[str],
-            collection_names: list[str],
-            target_lang_code: str,
+        self,
+        align_group_ids: list[str],
+        collection_names: list[str],
+        target_lang_code: str,
     ) -> dict[str, str]:
         if not align_group_ids:
             return {}
@@ -2389,7 +2380,6 @@ class BilingualKnowledgeReader:
                 if group_id:
                     translations[group_id] = text
         return translations
-
 
     def combined_similarity(self, a: str, b: str) -> float:
         partial = fuzz.partial_ratio(a, b)

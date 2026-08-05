@@ -7,16 +7,16 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-SECTION_GRAPH_PROFILE = "zh-section-graph-v1"
+SECTION_GRAPH_PROFILE = 'zh-section-graph-v1'
 SECTION_GRAPH_MAX_CHARACTERS = 12_000
 
 RELATION_PREDICATES = (
-    "HAS_PART",
-    "PRECEDES",
-    "PREREQUISITE",
-    "CAUSES",
-    "CONTRASTS",
-    "ELABORATES",
+    'HAS_PART',
+    'PRECEDES',
+    'PREREQUISITE',
+    'CAUSES',
+    'CONTRASTS',
+    'ELABORATES',
 )
 
 
@@ -35,48 +35,48 @@ class SectionGraphPacket:
 
 
 _MENTION_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["passage_id", "start_codepoint", "end_codepoint", "evidence"],
-    "properties": {
-        "passage_id": {"type": "string", "minLength": 1},
-        "start_codepoint": {"type": "integer", "minimum": 0},
-        "end_codepoint": {"type": "integer", "minimum": 1},
-        "evidence": {"type": "string", "minLength": 1},
+    'type': 'object',
+    'additionalProperties': False,
+    'required': ['passage_id', 'start_codepoint', 'end_codepoint', 'evidence'],
+    'properties': {
+        'passage_id': {'type': 'string', 'minLength': 1},
+        'start_codepoint': {'type': 'integer', 'minimum': 0},
+        'end_codepoint': {'type': 'integer', 'minimum': 1},
+        'evidence': {'type': 'string', 'minLength': 1},
     },
 }
 
 SECTION_GRAPH_OUTPUT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["concepts", "relations"],
-    "properties": {
-        "concepts": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["local_id", "name", "aliases", "definition", "mentions"],
-                "properties": {
-                    "local_id": {"type": "string", "minLength": 1},
-                    "name": {"type": "string", "minLength": 1},
-                    "aliases": {"type": "array", "items": {"type": "string"}},
-                    "definition": {"type": "string"},
-                    "mentions": {"type": "array", "items": _MENTION_SCHEMA},
+    'type': 'object',
+    'additionalProperties': False,
+    'required': ['concepts', 'relations'],
+    'properties': {
+        'concepts': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'additionalProperties': False,
+                'required': ['local_id', 'name', 'aliases', 'definition', 'mentions'],
+                'properties': {
+                    'local_id': {'type': 'string', 'minLength': 1},
+                    'name': {'type': 'string', 'minLength': 1},
+                    'aliases': {'type': 'array', 'items': {'type': 'string'}},
+                    'definition': {'type': 'string'},
+                    'mentions': {'type': 'array', 'items': _MENTION_SCHEMA},
                 },
             },
         },
-        "relations": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["subject_local_id", "predicate", "object_local_id", "evidence"],
-                "properties": {
-                    "subject_local_id": {"type": "string", "minLength": 1},
-                    "predicate": {"type": "string", "enum": list(RELATION_PREDICATES)},
-                    "object_local_id": {"type": "string", "minLength": 1},
-                    "evidence": {"type": "array", "minItems": 1, "items": _MENTION_SCHEMA},
+        'relations': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'additionalProperties': False,
+                'required': ['subject_local_id', 'predicate', 'object_local_id', 'evidence'],
+                'properties': {
+                    'subject_local_id': {'type': 'string', 'minLength': 1},
+                    'predicate': {'type': 'string', 'enum': list(RELATION_PREDICATES)},
+                    'object_local_id': {'type': 'string', 'minLength': 1},
+                    'evidence': {'type': 'array', 'minItems': 1, 'items': _MENTION_SCHEMA},
                 },
             },
         },
@@ -103,17 +103,15 @@ def build_section_graph_packets(
 ) -> list[SectionGraphPacket]:
     """Partition visible source passages into deterministic bounded TOC packets."""
     if max_characters < 1:
-        raise SectionGraphError("section graph packet size must be positive")
-    ordered = sorted(
-        passages, key=lambda row: (int(row.get("ordinal", 0)), str(row.get("passage_id", "")))
-    )
+        raise SectionGraphError('section graph packet size must be positive')
+    ordered = sorted(passages, key=lambda row: (int(row.get('ordinal', 0)), str(row.get('passage_id', ''))))
     groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = {}
     for passage in ordered:
-        passage_id = passage.get("passage_id")
-        content = passage.get("content")
+        passage_id = passage.get('passage_id')
+        content = passage.get('content')
         if not isinstance(passage_id, str) or not passage_id or not isinstance(content, str) or not content:
-            raise SectionGraphError("section graph packets require stored passage IDs and visible text")
-        raw_path = passage.get("toc_path")
+            raise SectionGraphError('section graph packets require stored passage IDs and visible text')
+        raw_path = passage.get('toc_path')
         path = tuple(str(part) for part in raw_path) if isinstance(raw_path, (list, tuple)) else ()
         groups.setdefault(path[:1], []).append(passage)
 
@@ -123,7 +121,7 @@ def build_section_graph_packets(
         size = 0
         index = 0
         for passage in group:
-            content = str(passage["content"])
+            content = str(passage['content'])
             if chunk and size + len(content) > max_characters:
                 packets.append(_packet(root_path, index, chunk))
                 index += 1
@@ -138,32 +136,32 @@ def build_section_graph_packets(
 def build_section_graph_completion_request(*, model: str, packet: SectionGraphPacket) -> dict[str, Any]:
     """Return a remote Structured Outputs request for one immutable TOC packet."""
     if not model.strip():
-        raise SectionGraphError("section graph model cannot be empty")
+        raise SectionGraphError('section graph model cannot be empty')
     visible_passages = [
         {
-            "passage_id": str(passage["passage_id"]),
-            "toc_path": list(passage.get("toc_path", ())),
-            "content": str(passage["content"]),
+            'passage_id': str(passage['passage_id']),
+            'toc_path': list(passage.get('toc_path', ())),
+            'content': str(passage['content']),
         }
         for passage in packet.passages
     ]
     return {
-        "model": model.strip(),
-        "temperature": 0.0,
-        "seed": 0,
-        "max_tokens": 1_800,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "epub_section_graph", "strict": True, "schema": SECTION_GRAPH_OUTPUT_SCHEMA},
+        'model': model.strip(),
+        'temperature': 0.0,
+        'seed': 0,
+        'max_tokens': 1_800,
+        'response_format': {
+            'type': 'json_schema',
+            'json_schema': {'name': 'epub_section_graph', 'strict': True, 'schema': SECTION_GRAPH_OUTPUT_SCHEMA},
         },
-        "messages": [
-            {"role": "system", "content": _SYSTEM_INSTRUCTION},
+        'messages': [
+            {'role': 'system', 'content': _SYSTEM_INSTRUCTION},
             {
-                "role": "user",
-                "content": json.dumps(
-                    {"packet_id": packet.packet_id, "toc_path": list(packet.toc_path), "passages": visible_passages},
+                'role': 'user',
+                'content': json.dumps(
+                    {'packet_id': packet.packet_id, 'toc_path': list(packet.toc_path), 'passages': visible_passages},
                     ensure_ascii=False,
-                    separators=(",", ":"),
+                    separators=(',', ':'),
                 ),
             },
         ],
@@ -171,10 +169,10 @@ def build_section_graph_completion_request(*, model: str, packet: SectionGraphPa
 
 
 def _packet(path: tuple[str, ...], index: int, passages: Sequence[Mapping[str, Any]]) -> SectionGraphPacket:
-    anchor = str(passages[0]["passage_id"])
-    root = path[0] if path else "root"
+    anchor = str(passages[0]['passage_id'])
+    root = path[0] if path else 'root'
     return SectionGraphPacket(
-        packet_id=f"{root}:{index}:{anchor}",
+        packet_id=f'{root}:{index}:{anchor}',
         anchor_passage_id=anchor,
         toc_path=path,
         passages=tuple(passages),

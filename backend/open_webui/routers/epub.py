@@ -24,7 +24,7 @@ from open_webui.services.epub_concept import (
 from open_webui.utils.auth import get_admin_user, get_verified_user
 
 
-router = APIRouter(prefix="/api/v1/epub", tags=["epub"])
+router = APIRouter(prefix='/api/v1/epub', tags=['epub'])
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
@@ -38,7 +38,7 @@ class SearchForm(BaseModel):
 class BatchDraftForm(BaseModel):
     version_id: str = Field(min_length=1, max_length=128)
     profile_name: str = Field(min_length=1, max_length=200)
-    prompt_profile: str = Field(default="zh-glossary-v3", min_length=1, max_length=100)
+    prompt_profile: str = Field(default='zh-glossary-v3', min_length=1, max_length=100)
     is_sample: bool = False
     sample_limit: int = Field(default=20, ge=1, le=500)
 
@@ -52,19 +52,19 @@ class SectionGraphBatchDraftForm(BaseModel):
 
 class LocalCalibrationForm(BaseModel):
     version_id: str = Field(min_length=1, max_length=128)
-    prompt_profile: str = Field(default="zh-glossary-v3", min_length=1, max_length=100)
+    prompt_profile: str = Field(default='zh-glossary-v3', min_length=1, max_length=100)
     sample_limit: int = Field(default=20, ge=1, le=100)
 
 
 class ConceptUpsertForm(BaseModel):
     canonical_name: str = Field(min_length=1, max_length=500)
     aliases: list[str] = Field(default_factory=list, max_length=100)
-    definition: str = Field(default="", max_length=10_000)
-    status: str = Field(default="APPROVED", pattern="^(PROVISIONAL|APPROVED|REJECTED)$")
+    definition: str = Field(default='', max_length=10_000)
+    status: str = Field(default='APPROVED', pattern='^(PROVISIONAL|APPROVED|REJECTED)$')
 
 
 class RelationAssertionReviewForm(BaseModel):
-    status: str = Field(pattern="^(APPROVED|REJECTED|PROVISIONAL)$")
+    status: str = Field(pattern='^(APPROVED|REJECTED|PROVISIONAL)$')
 
 
 class VersionIndexForm(BaseModel):
@@ -77,11 +77,11 @@ def get_epub_concept_service(request: Request) -> EpubConceptService:
     A missing service is an operations/configuration error, not an invitation to
     create an accidental data file or to use a generic cloud RAG integration.
     """
-    service = getattr(request.app.state, "EPUB_CONCEPT_SERVICE", None)
+    service = getattr(request.app.state, 'EPUB_CONCEPT_SERVICE', None)
     if not isinstance(service, EpubConceptService):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="EPUB concept service is not configured on this server",
+            detail='EPUB concept service is not configured on this server',
         )
     return service
 
@@ -89,21 +89,21 @@ def get_epub_concept_service(request: Request) -> EpubConceptService:
 ServiceDep = Annotated[EpubConceptService, Depends(get_epub_concept_service)]
 
 
-@router.get("/books")
+@router.get('/books')
 async def list_books(service: ServiceDep, user=Depends(get_verified_user)) -> list[dict[str, Any]]:
     """Browse the shared EPUB catalogue as any verified user."""
     return service.list_books()
 
 
-@router.get("/books/{book_id}")
+@router.get('/books/{book_id}')
 async def get_book(book_id: str, service: ServiceDep, user=Depends(get_verified_user)) -> dict[str, Any]:
     book = service.get_book(book_id)
     if book is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="EPUB book not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='EPUB book not found')
     return book
 
 
-@router.get("/versions/{version_id}/passages")
+@router.get('/versions/{version_id}/passages')
 async def list_passages(
     version_id: str,
     service: ServiceDep,
@@ -117,17 +117,15 @@ async def list_passages(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
 
 
-@router.get("/passages/{passage_id}")
-async def get_passage(
-    passage_id: str, service: ServiceDep, user=Depends(get_verified_user)
-) -> dict[str, Any]:
+@router.get('/passages/{passage_id}')
+async def get_passage(passage_id: str, service: ServiceDep, user=Depends(get_verified_user)) -> dict[str, Any]:
     passage = service.get_passage(passage_id)
     if passage is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="EPUB passage not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='EPUB passage not found')
     return passage
 
 
-@router.post("/search")
+@router.post('/search')
 async def search_epub(form_data: SearchForm, service: ServiceDep, user=Depends(get_verified_user)) -> dict[str, Any]:
     try:
         return await service.search_async(
@@ -140,25 +138,25 @@ async def search_epub(form_data: SearchForm, service: ServiceDep, user=Depends(g
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.post("/admin/import", status_code=status.HTTP_201_CREATED)
+@router.post('/admin/import', status_code=status.HTTP_201_CREATED)
 async def import_epub(
     service: ServiceDep,
     user=Depends(get_admin_user),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    filename = file.filename or ""
-    if not filename.lower().endswith(".epub"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="uploaded file must be an .epub")
+    filename = file.filename or ''
+    if not filename.lower().endswith('.epub'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='uploaded file must be an .epub')
     epub_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(epub_bytes) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="EPUB upload exceeds 200 MiB")
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail='EPUB upload exceeds 200 MiB')
     try:
         return service.import_epub(filename=filename, epub_bytes=epub_bytes, source_locator=filename)
     except (EpubServiceError, IntegrityError, ValueError) as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.post("/admin/batches", status_code=status.HTTP_201_CREATED)
+@router.post('/admin/batches', status_code=status.HTTP_201_CREATED)
 async def create_batch_draft(
     form_data: BatchDraftForm, service: ServiceDep, user=Depends(get_admin_user)
 ) -> dict[str, Any]:
@@ -174,7 +172,7 @@ async def create_batch_draft(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.post("/admin/section-graph-batches", status_code=status.HTTP_201_CREATED)
+@router.post('/admin/section-graph-batches', status_code=status.HTTP_201_CREATED)
 async def create_section_graph_batch_draft(
     form_data: SectionGraphBatchDraftForm, service: ServiceDep, user=Depends(get_admin_user)
 ) -> dict[str, Any]:
@@ -190,7 +188,7 @@ async def create_section_graph_batch_draft(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.post("/admin/calibrations/local")
+@router.post('/admin/calibrations/local')
 async def run_local_calibration(
     form_data: LocalCalibrationForm, service: ServiceDep, user=Depends(get_admin_user)
 ) -> dict[str, Any]:
@@ -207,7 +205,7 @@ async def run_local_calibration(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.post("/admin/batches/{batch_job_id}/submit")
+@router.post('/admin/batches/{batch_job_id}/submit')
 async def submit_batch(batch_job_id: str, service: ServiceDep, user=Depends(get_admin_user)) -> dict[str, Any]:
     try:
         return service.submit_batch(batch_job_id)
@@ -217,7 +215,7 @@ async def submit_batch(batch_job_id: str, service: ServiceDep, user=Depends(get_
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.post("/admin/batches/{batch_job_id}/poll")
+@router.post('/admin/batches/{batch_job_id}/poll')
 async def poll_batch(batch_job_id: str, service: ServiceDep, user=Depends(get_admin_user)) -> dict[str, int | str]:
     try:
         return service.poll_batch(batch_job_id)
@@ -227,7 +225,7 @@ async def poll_batch(batch_job_id: str, service: ServiceDep, user=Depends(get_ad
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.post("/admin/batches/{batch_job_id}/retry", status_code=status.HTTP_201_CREATED)
+@router.post('/admin/batches/{batch_job_id}/retry', status_code=status.HTTP_201_CREATED)
 async def retry_batch(batch_job_id: str, service: ServiceDep, user=Depends(get_admin_user)) -> dict[str, str]:
     try:
         return service.retry_batch(batch_job_id)
@@ -235,7 +233,7 @@ async def retry_batch(batch_job_id: str, service: ServiceDep, user=Depends(get_a
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.put("/admin/concepts")
+@router.put('/admin/concepts')
 async def upsert_concept(
     form_data: ConceptUpsertForm, service: ServiceDep, user=Depends(get_admin_user)
 ) -> dict[str, str]:
@@ -250,11 +248,13 @@ async def upsert_concept(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.get("/admin/relation-assertions")
+@router.get('/admin/relation-assertions')
 async def list_relation_assertions(
     service: ServiceDep,
     user=Depends(get_admin_user),
-    relation_status: str | None = Query(default="PROVISIONAL", alias="status", pattern="^(PROVISIONAL|APPROVED|REJECTED)$"),
+    relation_status: str | None = Query(
+        default='PROVISIONAL', alias='status', pattern='^(PROVISIONAL|APPROVED|REJECTED)$'
+    ),
     version_id: str | None = Query(default=None, min_length=1, max_length=128),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
@@ -267,7 +267,7 @@ async def list_relation_assertions(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.put("/admin/relation-assertions/{assertion_id}")
+@router.put('/admin/relation-assertions/{assertion_id}')
 async def review_relation_assertion(
     assertion_id: str,
     form_data: RelationAssertionReviewForm,
@@ -280,7 +280,7 @@ async def review_relation_assertion(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.post("/admin/retrieval-units/{retrieval_unit_id}/index")
+@router.post('/admin/retrieval-units/{retrieval_unit_id}/index')
 async def index_retrieval_unit(
     retrieval_unit_id: str, service: ServiceDep, user=Depends(get_admin_user)
 ) -> dict[str, Any]:
@@ -292,7 +292,7 @@ async def index_retrieval_unit(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.post("/admin/versions/{version_id}/index")
+@router.post('/admin/versions/{version_id}/index')
 async def index_epub_version(
     version_id: str,
     form_data: VersionIndexForm,
@@ -308,25 +308,25 @@ async def index_epub_version(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
-@router.get("/admin/runtime-status")
+@router.get('/admin/runtime-status')
 async def epub_runtime_status(request: Request, user=Depends(get_admin_user)) -> dict[str, Any]:
     """Expose server-owned EPUB runtime readiness to administrators only."""
-    status_reader = getattr(request.app.state, "EPUB_CONCEPT_RUNTIME_STATUS", None)
+    status_reader = getattr(request.app.state, 'EPUB_CONCEPT_RUNTIME_STATUS', None)
     if not callable(status_reader):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="EPUB runtime health status is not configured on this server",
+            detail='EPUB runtime health status is not configured on this server',
         )
     try:
         result = status_reader()
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"EPUB runtime health status is unavailable: {type(error).__name__}",
+            detail=f'EPUB runtime health status is unavailable: {type(error).__name__}',
         ) from error
     if not isinstance(result, dict):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="EPUB runtime health status returned an invalid response",
+            detail='EPUB runtime health status returned an invalid response',
         )
     return result

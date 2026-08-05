@@ -12,8 +12,8 @@ from dataclasses import dataclass
 
 TARGET_CODEPOINTS = 800
 OVERLAP_CODEPOINTS = 150
-CHINESE_SENTENCE_ENDINGS = frozenset("。！？；")
-ENGLISH_SENTENCE_ENDINGS = frozenset(".!?;")
+CHINESE_SENTENCE_ENDINGS = frozenset('。！？；')
+ENGLISH_SENTENCE_ENDINGS = frozenset('.!?;')
 
 
 @dataclass(frozen=True)
@@ -44,13 +44,13 @@ def plan_retrieval_windows(
     repeated window or an infinite loop.
     """
     if not isinstance(content, str):
-        raise TypeError("retrieval-unit source content must be text")
+        raise TypeError('retrieval-unit source content must be text')
     if not content:
         return ()
     if target_codepoints < 1:
-        raise ValueError("target_codepoints must be positive")
+        raise ValueError('target_codepoints must be positive')
     if not 0 <= overlap_codepoints < target_codepoints:
-        raise ValueError("overlap_codepoints must be non-negative and smaller than target")
+        raise ValueError('overlap_codepoints must be non-negative and smaller than target')
     if len(content) <= target_codepoints:
         return (RetrievalWindow(0, len(content)),)
 
@@ -78,7 +78,7 @@ def plan_retrieval_windows(
                 end = desired_end
 
         if end <= start:
-            raise RuntimeError("retrieval window planner did not make progress")
+            raise RuntimeError('retrieval window planner did not make progress')
         windows.append(RetrievalWindow(start, end))
         if end == len(content):
             break

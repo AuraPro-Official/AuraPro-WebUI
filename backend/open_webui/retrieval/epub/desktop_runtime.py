@@ -41,7 +41,7 @@ class DesktopManagedLlamaCppConceptResolver:
 
     component = LlamaCppConceptResolver.component
     # The actual model profile is sourced from every descriptor snapshot.
-    profile = "aurapro-desktop-managed"
+    profile = 'aurapro-desktop-managed'
 
     def __init__(
         self,
@@ -54,7 +54,7 @@ class DesktopManagedLlamaCppConceptResolver:
     ) -> None:
         candidate = Path(descriptor_path).expanduser()
         if not candidate.is_absolute():
-            raise DesktopRuntimeDescriptorError("Desktop runtime descriptor path must be absolute")
+            raise DesktopRuntimeDescriptorError('Desktop runtime descriptor path must be absolute')
         self._descriptor_path = candidate
         self._trusted_hostnames = trusted_hostnames
         self._timeout_seconds = timeout_seconds
@@ -87,28 +87,28 @@ def read_desktop_runtime_descriptor(descriptor_path: str | Path) -> tuple[str, s
     """Read one atomic Desktop runtime descriptor snapshot without caching it."""
     path = Path(descriptor_path).expanduser()
     if not path.is_absolute():
-        raise DesktopRuntimeDescriptorError("Desktop runtime descriptor path must be absolute")
+        raise DesktopRuntimeDescriptorError('Desktop runtime descriptor path must be absolute')
     try:
-        with path.open("r", encoding="utf-8") as descriptor_file:
+        with path.open('r', encoding='utf-8') as descriptor_file:
             decoded = json.load(descriptor_file)
     except FileNotFoundError as error:
-        raise DesktopRuntimeDescriptorError("Desktop local runtime is not running") from error
+        raise DesktopRuntimeDescriptorError('Desktop local runtime is not running') from error
     except (OSError, json.JSONDecodeError) as error:
-        raise DesktopRuntimeDescriptorError("Desktop runtime descriptor is unreadable") from error
+        raise DesktopRuntimeDescriptorError('Desktop runtime descriptor is unreadable') from error
 
-    if not isinstance(decoded, Mapping) or decoded.get("version") != 1:
-        raise DesktopRuntimeDescriptorError("Desktop runtime descriptor has an unsupported schema")
-    llama_cpp = decoded.get("llama_cpp")
+    if not isinstance(decoded, Mapping) or decoded.get('version') != 1:
+        raise DesktopRuntimeDescriptorError('Desktop runtime descriptor has an unsupported schema')
+    llama_cpp = decoded.get('llama_cpp')
     if not isinstance(llama_cpp, Mapping):
-        raise DesktopRuntimeDescriptorError("Desktop runtime descriptor has no llama.cpp runtime")
-    endpoint = llama_cpp.get("endpoint")
-    model = llama_cpp.get("model")
+        raise DesktopRuntimeDescriptorError('Desktop runtime descriptor has no llama.cpp runtime')
+    endpoint = llama_cpp.get('endpoint')
+    model = llama_cpp.get('model')
     if not isinstance(endpoint, str) or not endpoint.strip():
-        raise DesktopRuntimeDescriptorError("Desktop runtime descriptor has no local endpoint")
+        raise DesktopRuntimeDescriptorError('Desktop runtime descriptor has no local endpoint')
     if not isinstance(model, str) or not model.strip() or len(model) > 256:
-        raise DesktopRuntimeDescriptorError("Desktop runtime descriptor has no valid model identifier")
-    if any(character in model for character in "\r\n\x00"):
-        raise DesktopRuntimeDescriptorError("Desktop runtime descriptor has no valid model identifier")
+        raise DesktopRuntimeDescriptorError('Desktop runtime descriptor has no valid model identifier')
+    if any(character in model for character in '\r\n\x00'):
+        raise DesktopRuntimeDescriptorError('Desktop runtime descriptor has no valid model identifier')
     return endpoint.strip(), model.strip()
 
 
