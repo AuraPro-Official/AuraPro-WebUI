@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-ContentKind = Literal["paragraph", "heading", "list_item", "blockquote", "pre", "fallback"]
+ContentKind = Literal['paragraph', 'heading', 'list_item', 'blockquote', 'pre', 'fallback']
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +20,7 @@ class TocEntry:
     href: str
     fragment: str | None
     path: tuple[str, ...]
-    source: Literal["nav", "ncx"]
+    source: Literal['nav', 'ncx']
 
 
 @dataclass(frozen=True, slots=True)

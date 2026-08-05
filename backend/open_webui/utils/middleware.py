@@ -2727,9 +2727,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     form_data['messages'],
                 )
 
-        if (
-            (features.get('memory') or features.get('chat_history_memory'))
-            and await Config.get('memories.system_context.enable')
+        if (features.get('memory') or features.get('chat_history_memory')) and await Config.get(
+            'memories.system_context.enable'
         ):
             form_data = await add_memory_context(
                 request,

@@ -26,22 +26,20 @@ def load_sqlite_vec(connection: sqlite3.Connection) -> SQLiteVecHealth:
     Extension loading is enabled only for the short loading window and is
     disabled again even when import or loading fails.
     """
-    enable = getattr(connection, "enable_load_extension", None)
+    enable = getattr(connection, 'enable_load_extension', None)
     if not callable(enable):
-        raise SQLiteVecUnavailable(
-            "this Python SQLite build does not support loading sqlite extensions"
-        )
+        raise SQLiteVecUnavailable('this Python SQLite build does not support loading sqlite extensions')
     try:
         import sqlite_vec
     except ImportError as error:
-        raise SQLiteVecUnavailable("sqlite-vec is not installed") from error
+        raise SQLiteVecUnavailable('sqlite-vec is not installed') from error
 
     try:
         enable(True)
         sqlite_vec.load(connection)
-        row = connection.execute("SELECT vec_version()").fetchone()
+        row = connection.execute('SELECT vec_version()').fetchone()
     except sqlite3.Error as error:
-        raise SQLiteVecUnavailable(f"sqlite-vec failed its SQL health check: {error}") from error
+        raise SQLiteVecUnavailable(f'sqlite-vec failed its SQL health check: {error}') from error
     finally:
         try:
             enable(False)
@@ -50,5 +48,5 @@ def load_sqlite_vec(connection: sqlite3.Connection) -> SQLiteVecHealth:
             # loaded connection is still protected by callers not exposing it.
             pass
     if row is None or not isinstance(row[0], str):
-        raise SQLiteVecUnavailable("sqlite-vec did not return a version")
+        raise SQLiteVecUnavailable('sqlite-vec did not return a version')
     return SQLiteVecHealth(version=row[0])

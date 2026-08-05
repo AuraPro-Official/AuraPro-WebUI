@@ -38,7 +38,7 @@ _FORGET_MEMORY_RE = re.compile(
     re.IGNORECASE,
 )
 _DURABLE_MEMORY_RE = re.compile(
-    r"(?:\bmy (?:(?:preferred|primary) )?(?:name|job|role|language|timezone|location|preference|goal|project|pronouns?)\b|"
+    r'(?:\bmy (?:(?:preferred|primary) )?(?:name|job|role|language|timezone|location|preference|goal|project|pronouns?)\b|'
     r'\bi (?:am|work|live|prefer|like|dislike|always|never|need you to|want you to)\b|'
     r'\u6211(?:\u53eb|\u662f|\u5728.{0,12}(?:\u5de5\u4f5c|\u751f\u6d3b|\u5c45\u4f4f)|'
     r'\u4ece\u4e8b|\u559c\u6b22|\u4e0d\u559c\u6b22|\u4e60\u60ef|\u5e0c\u671b\u4f60|'
@@ -451,6 +451,7 @@ async def add_memory_context(
     seen_ids = set()
 
     if use_saved_memories:
+
         def pinned_first(memory):
             meta = memory.meta if isinstance(memory.meta, dict) else {}
             return (not bool(meta.get('pinned')), memory.path or '', -(memory.updated_at or 0))
@@ -558,6 +559,7 @@ async def add_memory_context(
     memory_context = f'{MEMORY_CONTEXT_OPEN}\n{rendered}\n{MEMORY_CONTEXT_CLOSE}'
     form_data['messages'] = add_or_update_system_message(memory_context, messages, append=True)
     return form_data
+
 
 async def review_memory_after_turn(
     *,
