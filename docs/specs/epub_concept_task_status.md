@@ -98,8 +98,9 @@ this file and `epub_concept_sdd.md` before making changes.
   The same venv carries ruff for the `--select F` error-path guard. Do not rely on Homebrew or
   pyenv CPython: the first fails `xml.parsers.expat`, the second lacks loadable SQLite extensions.
 - **Current implementation state:** The frontend keeps reads on authenticated `/epub` routes and renders complete passages plus explicit exact excerpts. The administrator route is separate, presents imports, Batch controls/history, sample approval, concept review, and derived-index operations, and sends no provider credentials. Backend authorization remains authoritative: full OpenAI Batch creation is durably blocked until a fully ingested, same-version, same-kind, same-model-profile cloud sample has an administrator approval record. Import automatically writes retry-safe, Chinese-first derived retrieval windows without changing canonical passages. Local startup attaches a persistent independent SQLite service, and the tested sqlite-vec backend is available for production adapter wiring; the remote PostgreSQL implementation remains.
-- **Next action (T-155):** Poll all four in-flight samples and compare them, and the two profiles against each other, on the v4 baseline of gpt-4.1 19/20 and gpt-4o-mini 15/20. v5 targets the 6 `PROVIDER_ITEM_ERROR` truncations; v6 additionally targets the very short evidence spans that drive ambiguity. Neither can fix v3's genuine repeats, which v4-style anchors already handle. Read the outcome from the failure-reason counts, not the pass rate alone: a v6 that trades truncations for a new failure class is not an improvement. The default profile should follow that evidence — it currently points at v6 as the newest candidate, which is a placeholder, not a measured decision. Only after a sample reaches `SUCCEEDED` with every item ingested may an administrator approve it, and only that approval unlocks a full `openai-batch` for the same version, job kind, and model snapshot. No sample of any profile is approved today, so full Batch creation remains durably blocked.
-- **Known residual risk in v6:** the floor is unreachable on short passages — of the 20 sampled, eight are at most 10 code points and two are 9 — so its escape hatch makes `evidence` the entire passage there. That is a valid verified citation but a coarse one, and it is the first thing to inspect if v6 scores well on pass rate yet produces worse mentions.
+- **Next action (T-155): no sample is approvable yet, and no further cloud spend is needed to change that.** The durable gate requires a sample whose job *and every item* reached `SUCCEEDED`; the best arm, v6/gpt-4.1, has 3 items held for alias review, so `review_sample_job` will refuse it. Resolve those collisions through the administrator concept-review surface, then re-poll — a re-poll re-ingests a previously failed item that has become safely normalizable, at no provider cost, exactly as it did for the v4 grounding fix. Only once an arm reaches 20/20 may an administrator approve it, and only that approval unlocks a full `openai-batch` for the same version, job kind, and model snapshot. `zh-glossary-v6` is now the evidence-backed default rather than a placeholder.
+- **Known residual risk in v6:** the floor is unreachable on short passages — of the 20 sampled, eight are at most 10 code points and two are 9 — so its escape hatch makes `evidence` the entire passage there. That is a valid verified citation but a coarse one, and worth inspecting on the ingested mentions before a full-book run.
+- **Diagnostics gap found while reading these results:** the alias-collision review hold persists no `failure_diagnostics_json`, so it shows as `(no diagnostics)` and is easy to misread as a prompt failure. It deserves its own reason slug alongside the grounding ones; recorded here rather than fixed, since it is a distinct change from the phase under review.
 - **Cloud sample ledger (local E2E store `/private/tmp/aurapro-epub-e2e/epub_concept_v1.db`), all on version `b7e4d0ed`, 20 items each:**
 
   | Job | Model snapshot | Profile | State |
@@ -108,10 +109,32 @@ this file and `epub_concept_sdd.md` before making changes.
   | `31140302` | gpt-4o-mini-2024-07-18 | v3 | 17/20 |
   | `ec7fe945` | gpt-4.1-2025-04-14 | v4 | 19/20 |
   | `b893528d` | gpt-4o-mini-2024-07-18 | v4 | 15/20 |
-  | `419dd120` | gpt-4.1-2025-04-14 | **v5** | SUBMITTED 2026-08-05 01:06 |
-  | `e6e027d1` | gpt-4o-mini-2024-07-18 | **v5** | SUBMITTED 2026-08-05 01:06 |
-  | `005a7a20` | gpt-4.1-2025-04-14 | **v6** | SUBMITTED 2026-08-05 01:19 |
-  | `82016085` | gpt-4o-mini-2024-07-18 | **v6** | SUBMITTED 2026-08-05 01:19 |
+  | `419dd120` | gpt-4.1-2025-04-14 | **v5** | 17 ingested / 2 review-hold / 1 grounding |
+  | `e6e027d1` | gpt-4o-mini-2024-07-18 | **v5** | 17 ingested / 0 review-hold / 3 grounding |
+  | `005a7a20` | gpt-4.1-2025-04-14 | **v6** | 17 ingested / 3 review-hold / **0 grounding** |
+  | `82016085` | gpt-4o-mini-2024-07-18 | **v6** | 19 ingested / 0 review-hold / 1 grounding |
+
+  **Read this table by grounding failures, not ingest count.** A "review-hold" item is not a
+  prompt defect: it is `_resolve_or_create_concept` refusing an alias that matches several
+  existing concepts and demanding administrator review, exactly as SDD 4.2 requires of
+  model-suggested merges. Those holds are a function of accumulated graph state, which grew
+  from 52 concepts / 54 aliases before these runs to 69 / 71 after, so later arms met more
+  collisions than earlier ones. Ingest counts across arms are therefore confounded by
+  execution order; grounding failures are not.
+
+  Grounding failures per arm, which is the prompt-quality signal:
+
+  | Model snapshot | v3 | v4 | v5 | v6 |
+  |---|---|---|---|---|
+  | gpt-4.1-2025-04-14 | 7 | 1 | 1 | **0** |
+  | gpt-4o-mini-2024-07-18 | 3 | 5 | 3 | **1** |
+
+  v6 is best or tied-best on both snapshots, and the improvement is monotone from v4. Both
+  hypotheses held: `PROVIDER_ITEM_ERROR` truncations fell 6 → 1 → 0 as `max_tokens` went
+  512 → 2048, and the minimum evidence span removed the remaining ambiguity failures.
+  v6/gpt-4.1 met the grounding contract on all 20 items. The one v6 failure left is a
+  `gpt-4o-mini` `EVIDENCE_ABSENT` paraphrase (30 code points, 0 occurrences, on the
+  692-code-point passage) — not a truncation.
 
   The v5 and v6 samples were administrator-authorized on 2026-08-05 and run in parallel,
   since a Batch round trip costs hours and the two profiles test independent levers: v5
