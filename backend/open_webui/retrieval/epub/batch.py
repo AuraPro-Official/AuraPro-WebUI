@@ -1126,9 +1126,10 @@ class SQLiteBatchRepository:
         OpenAI Structured Outputs constrains the response shape, but a model
         can still count Unicode code points incorrectly.  A bad numeric offset
         is never trusted: it can be repaired only from an exact evidence string
-        whose literal occurrence is unique, or (for v4) whose short adjacent
-        context anchor selects exactly one occurrence.  Legacy v1-v3 output is
-        retained for replay compatibility, but it has no ambiguity escape hatch.
+        whose literal occurrence is unique, or - when that literal repeats -
+        whose short adjacent context anchor selects exactly one of those
+        occurrences.  Legacy v1-v3 output carries no anchors, so for it a
+        repeated literal is always a hard failure.
 
         Every rejection below also carries content-free diagnostics.  A failed
         item persists no result payload at all, so without them the durable
@@ -1298,6 +1299,15 @@ class SQLiteBatchRepository:
                         ),
                     )
 
+                # Deliberate asymmetry with the repair path below, and not an
+                # inconsistency to "fix": when the model's own offsets already
+                # slice the evidence exactly, SDD 4.2.1 requires that direct
+                # offset to be verified against *both* the source and the
+                # anchors the model supplied.  A claim that is internally
+                # contradictory - correct offsets, but adjacent text the model
+                # says is something else - is not evidence of a located mention.
+                # Below, by contrast, the offsets are already known to be wrong
+                # and the anchors are only a disambiguation device.
                 if direct_is_exact and has_anchors:
                     if (
                         content[max(0, start - len(before)):start] != before
@@ -1314,8 +1324,19 @@ class SQLiteBatchRepository:
                             ),
                         )
                 if not direct_is_exact:
+                    # The anchors exist for exactly one purpose: to choose among
+                    # repeated occurrences of the same literal.  A literal that
+                    # occurs once is self-verifying - the derived span is the
+                    # only slice of the immutable source that can equal this
+                    # evidence - so a wrong anchor is a defect in the model's
+                    # description of a mention it nonetheless located, not a
+                    # reason to discard the one valid occurrence.  SDD 4.2.1
+                    # scopes the anchor filter to repeated evidence and
+                    # separately sanctions unique-literal repair; filtering here
+                    # would also contradict the sibling ANCHOR_MISSING check
+                    # above, which is already scoped to len(occurrences) > 1.
                     candidates = occurrences
-                    if has_anchors:
+                    if has_anchors and len(occurrences) > 1:
                         candidates = [
                             occurrence
                             for occurrence in occurrences

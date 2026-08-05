@@ -238,7 +238,7 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         )
         self.assertEqual(draft.status_code, 201)
         self.assertEqual(draft.json()["item_count"], 1)
-        self.assertEqual(draft.json()["prompt_profile"], "zh-glossary-v4")
+        self.assertEqual(draft.json()["prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE)
 
         section_graph_draft = self.client.post(
             "/api/v1/epub/admin/section-graph-batches",
@@ -349,7 +349,7 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         class FakeCalibrationRunner:
             def run(self, *, passages, prompt_profile, sample_limit):
                 test_case.assertEqual(len(passages), 1)
-                test_case.assertEqual(prompt_profile, "zh-glossary-v4")
+                test_case.assertEqual(prompt_profile, DEFAULT_CONCEPT_PROMPT_PROFILE)
                 test_case.assertEqual(sample_limit, 20)
                 return {
                     "mode": "LOCAL_QWEN",
