@@ -35,11 +35,12 @@ from open_webui.retrieval.epub.prompt_profiles import (
 from open_webui.retrieval.epub.retrieval_units import plan_retrieval_windows
 from open_webui.retrieval.epub.search import EpubSearchService, SearchResponse
 from open_webui.retrieval.epub.section_graph import (
+    DEFAULT_SECTION_GRAPH_PROFILE,
     SECTION_GRAPH_MAX_CHARACTERS,
-    SECTION_GRAPH_PROFILE,
     SectionGraphError,
     build_section_graph_completion_request,
     build_section_graph_packets,
+    get_section_graph_profile,
 )
 from open_webui.retrieval.epub.store import (
     IntegrityError,
@@ -366,6 +367,7 @@ class EpubConceptService:
         profile_name: str,
         is_sample: bool,
         sample_limit: int,
+        section_graph_profile: str = DEFAULT_SECTION_GRAPH_PROFILE,
     ) -> dict[str, Any]:
         """Create one durable cloud item per bounded TOC section packet.
 
@@ -378,6 +380,10 @@ class EpubConceptService:
             raise EpubServiceError("Batch profile_name cannot be empty")
         if not 1 <= sample_limit <= 500:
             raise EpubServiceError("sample_limit must be between 1 and 500")
+        try:
+            get_section_graph_profile(section_graph_profile)
+        except SectionGraphError as error:
+            raise EpubServiceError(str(error)) from error
         passages = self._store.list_passages(version_id)
         if not passages:
             raise EpubServiceError("EPUB version contains no passages")
@@ -393,7 +399,9 @@ class EpubConceptService:
             BatchItemInput(
                 passage_id=packet.anchor_passage_id,
                 custom_id=f"{version_id}:section-graph:{index}",
-                request=self._section_graph_batch_request(model=profile_name, packet=packet),
+                request=self._section_graph_batch_request(
+                    model=profile_name, packet=packet, profile_id=section_graph_profile
+                ),
             )
             for index, packet in enumerate(packets)
         ]
@@ -411,7 +419,7 @@ class EpubConceptService:
             "status": "DRAFT",
             "job_kind": "SECTION_GRAPH",
             "is_sample": is_sample,
-            "prompt_profile": SECTION_GRAPH_PROFILE,
+            "prompt_profile": section_graph_profile,
         }
 
     def submit_batch(self, batch_job_id: str) -> dict[str, Any]:
@@ -714,11 +722,15 @@ class EpubConceptService:
         }
 
     @staticmethod
-    def _section_graph_batch_request(*, model: str, packet: Any) -> dict[str, Any]:
+    def _section_graph_batch_request(
+        *, model: str, packet: Any, profile_id: str = DEFAULT_SECTION_GRAPH_PROFILE
+    ) -> dict[str, Any]:
         return {
             "method": "POST",
             "url": "/v1/chat/completions",
-            "body": build_section_graph_completion_request(model=model, packet=packet),
+            "body": build_section_graph_completion_request(
+                model=model, packet=packet, profile_id=profile_id
+            ),
         }
 
     @staticmethod
