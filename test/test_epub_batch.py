@@ -515,6 +515,155 @@ class EpubBatchServiceTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(tuple(mention), (13, 16))
 
+    # ------------------------------------------------------------------
+    # Grounding precedence between a unique literal and a supplied anchor
+    #
+    # Real cloud samples showed the anchor filter vetoing byte-exact evidence
+    # that occurred exactly once.  The anchors are a disambiguation device for
+    # repeated evidence, so they must not decide a case that has nothing to
+    # disambiguate - while still deciding the cases they exist for.
+    # ------------------------------------------------------------------
+
+    def _ingest_openai_item(self, *, job_id: str, passage_id: str, payload: dict) -> None:
+        """Poll a one-item OpenAI job whose single result must ground cleanly."""
+        self.service.create_draft(
+            version_id="version",
+            provider="openai-batch",
+            profile_name="cloud-model-snapshot",
+            items=[BatchItemInput(passage_id, passage_id, {"body": {"passage": passage_id}})],
+            is_sample=True,
+            batch_job_id=job_id,
+        )
+        provider = FakeProvider()
+        provider.name = "openai-batch"
+        remote_id = self.service.submit(job_id, provider)
+        provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        provider.results[remote_id] = [ProviderItemResult(passage_id, payload=payload)]
+        self.assertEqual(self.service.poll_and_ingest(job_id, provider)["ingested"], 1)
+
+    def _only_mention(self) -> tuple[str, int, int, str]:
+        row = self.store._connection().execute(
+            """SELECT passage_id, start_codepoint, end_codepoint, evidence
+                 FROM concept_mentions"""
+        ).fetchall()
+        self.assertEqual(len(row), 1)
+        return tuple(row[0])
+
+    def _assert_mention_slices_the_immutable_source(self) -> tuple[int, int]:
+        """A stored citation must still be a byte-exact slice of the passage."""
+        passage_id, start, end, evidence = self._only_mention()
+        content = self.store._connection().execute(
+            "SELECT content FROM passages WHERE passage_id = ?", (passage_id,)
+        ).fetchone()["content"]
+        self.assertEqual(content[start:end], evidence)
+        return start, end
+
+    def test_unique_evidence_outranks_a_wrong_anchor_and_wrong_model_offsets(self) -> None:
+        # The dominant v4 cloud failure: offsets out of range (the model counted
+        # code points wrongly) and anchors that match nothing, over evidence
+        # that occurs exactly once.  There is nothing to disambiguate, so the
+        # single occurrence must win.
+        self._ingest_openai_item(
+            job_id="unique-vs-anchor",
+            passage_id="p2",
+            payload=self._concept_payload(
+                [
+                    {
+                        "start_codepoint": 77,
+                        "end_codepoint": 80,
+                        "evidence": "UDP",
+                        "context_before": "never in the source ",
+                        "context_after": " nor is this",
+                    }
+                ]
+            ),
+        )
+        self.assertEqual(self._only_mention(), ("p2", 0, 3, "UDP"))
+        self.assertEqual(self._assert_mention_slices_the_immutable_source(), (0, 3))
+
+    def test_repeated_evidence_with_a_wrong_anchor_is_still_ambiguous(self) -> None:
+        # The filter must keep working where it is meant to: two occurrences and
+        # anchors that select neither cannot identify a citation.
+        passage_id = self._add_marker_passage()
+        self._fail_openai_item(
+            job_id="repeat-wrong-anchor",
+            passage_id=passage_id,
+            payload=self._concept_payload(
+                [
+                    {
+                        "start_codepoint": 900,
+                        "end_codepoint": 912,
+                        "evidence": "ZORBLAX gate",
+                        "context_before": "never in the source ",
+                        "context_after": " nor is this",
+                    }
+                ]
+            ),
+        )
+        diagnostics = self._item_diagnostics("repeat-wrong-anchor")
+        self.assertEqual(diagnostics["reason"], "EVIDENCE_AMBIGUOUS")
+        self.assertEqual(diagnostics["occurrence_count"], 2)
+        self.assertEqual(diagnostics["anchored_candidate_count"], 0)
+        self.assertEqual(
+            self.repository.list_items("repeat-wrong-anchor")[0]["error_text"],
+            "OpenAI evidence cannot be uniquely located in the immutable source",
+        )
+        self.assertEqual(
+            self.store._connection().execute(
+                "SELECT COUNT(*) FROM concept_mentions"
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_repeated_evidence_with_a_correct_anchor_still_selects_one_occurrence(self) -> None:
+        passage_id = self._add_marker_passage()
+        self._ingest_openai_item(
+            job_id="repeat-right-anchor",
+            passage_id=passage_id,
+            payload=self._concept_payload(
+                [
+                    {
+                        "start_codepoint": 900,
+                        "end_codepoint": 912,
+                        "evidence": "ZORBLAX gate",
+                        "context_before": "opens. The ",
+                        "context_after": " closes.",
+                    }
+                ]
+            ),
+        )
+        self.assertEqual(self._only_mention(), (passage_id, 28, 40, "ZORBLAX gate"))
+        self._assert_mention_slices_the_immutable_source()
+
+    def test_a_correct_direct_offset_is_still_verified_against_its_anchor(self) -> None:
+        # Deliberate asymmetry with the unique-literal repair above: when the
+        # model's own offsets already slice the evidence exactly, SDD 4.2.1
+        # still verifies them against the anchors it supplied.  Same passage and
+        # same unmatchable anchors as the repair test - only the offsets differ.
+        self._fail_openai_item(
+            job_id="exact-offset-wrong-anchor",
+            passage_id="p2",
+            payload=self._concept_payload(
+                [
+                    {
+                        "start_codepoint": 0,
+                        "end_codepoint": 3,
+                        "evidence": "UDP",
+                        "context_before": "",
+                        "context_after": " nor is this",
+                    }
+                ]
+            ),
+        )
+        diagnostics = self._item_diagnostics("exact-offset-wrong-anchor")
+        self.assertEqual(diagnostics["reason"], "ANCHOR_MISMATCH")
+        self.assertTrue(diagnostics["direct_is_exact"])
+        self.assertEqual(diagnostics["occurrence_count"], 1)
+        self.assertEqual(
+            self.repository.list_items("exact-offset-wrong-anchor")[0]["error_text"],
+            "OpenAI evidence context anchor does not match the immutable source",
+        )
+
     def test_openai_repeat_poll_can_reingest_a_previously_failed_item_without_rewriting_success(self) -> None:
         job_id = self.service.create_draft(
             version_id="version",

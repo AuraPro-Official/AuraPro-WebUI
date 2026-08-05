@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from pydantic import BaseModel, Field
 
 from open_webui.retrieval.epub.batch import BatchPayloadError, BatchServiceError
+from open_webui.retrieval.epub.prompt_profiles import DEFAULT_CONCEPT_PROMPT_PROFILE
 from open_webui.retrieval.epub.search import SearchError
 from open_webui.retrieval.epub.store import IntegrityError
 from open_webui.services.epub_concept import (
@@ -39,7 +40,11 @@ class SearchForm(BaseModel):
 class BatchDraftForm(BaseModel):
     version_id: str = Field(min_length=1, max_length=128)
     profile_name: str = Field(min_length=1, max_length=200)
-    prompt_profile: str = Field(default="zh-glossary-v4", min_length=1, max_length=100)
+    # Track the registered default rather than a second literal, so a new
+    # profile version cannot leave the API pinned to a superseded instruction.
+    prompt_profile: str = Field(
+        default=DEFAULT_CONCEPT_PROMPT_PROFILE, min_length=1, max_length=100
+    )
     is_sample: bool = False
     sample_limit: int = Field(default=20, ge=1, le=500)
 
@@ -53,7 +58,9 @@ class SectionGraphBatchDraftForm(BaseModel):
 
 class LocalCalibrationForm(BaseModel):
     version_id: str = Field(min_length=1, max_length=128)
-    prompt_profile: str = Field(default="zh-glossary-v4", min_length=1, max_length=100)
+    prompt_profile: str = Field(
+        default=DEFAULT_CONCEPT_PROMPT_PROFILE, min_length=1, max_length=100
+    )
     sample_limit: int = Field(default=20, ge=1, le=100)
 
 

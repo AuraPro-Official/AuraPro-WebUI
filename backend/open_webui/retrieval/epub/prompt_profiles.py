@@ -24,6 +24,12 @@ class ConceptPromptProfile:
     system_instruction: str
     max_tokens: int = 1_200
     temperature: float = 0.0
+    # Whether the instruction asks for adjacent evidence context anchors, and
+    # therefore which strict schema a remote Structured Outputs request uses.
+    # This is a property of the profile rather than of "whichever profile is
+    # currently the default": a superseded anchored profile must keep sending
+    # the anchored schema so an existing sample stays replayable.
+    uses_context_anchors: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +42,7 @@ class ConceptPayloadValidation:
     reason: str | None = None
 
 
-DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v4"
+DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v5"
 
 # Bounded, adjacent literal context distinguishes repeated evidence without
 # putting another copy of a passage into a provider response.
@@ -128,6 +134,10 @@ CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+# A registered profile is immutable.  Durable cloud sample approvals key on the
+# profile ID, so editing v1-v4 in place would silently re-point an existing
+# approval at an instruction that was never sampled.  A change is always a new
+# entry, and the superseded entries stay exactly as they were submitted.
 _PROFILES: dict[str, ConceptPromptProfile] = {
     "zh-glossary-v1": ConceptPromptProfile(
         profile_id="zh-glossary-v1",
@@ -178,9 +188,10 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
         ),
     ),
-    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
-        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+    "zh-glossary-v4": ConceptPromptProfile(
+        profile_id="zh-glossary-v4",
         max_tokens=512,
+        uses_context_anchors=True,
         system_instruction=(
             "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
             "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
@@ -200,7 +211,46 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
         ),
-    )
+    ),
+    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
+        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+        # v4's 512-token budget was the direct cause of a third of its sample
+        # failures: the provider returned no JSON payload at all on the longest
+        # passages (1174, 1040 and 692 code points).  The worst case this
+        # contract permits is 6 concepts, each carrying a name, up to 2 aliases,
+        # a definition of at most 30 characters, and one mention holding
+        # evidence plus two anchors of at most 48 code points.  Budgeting 20
+        # code points per name and per alias and 40 for evidence, that is
+        # 20 + 2*20 + 30 + 40 + 2*48 = 226 code points of content per concept,
+        # which for CJK text costs roughly one token per code point, plus about
+        # 70 tokens of JSON field names, digits and punctuation: ~296 tokens per
+        # concept, ~1_780 for six, plus the wrapper object.  2_048 clears that
+        # ceiling with margin.  Typical responses are far smaller, because the
+        # anchors below are now empty unless the evidence actually repeats.
+        max_tokens=2_048,
+        uses_context_anchors=True,
+        system_instruction=(
+            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
+            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
+            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
+            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
+            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
+            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
+            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、"
+            "end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，"
+            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
+            "包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、"
+            "全角与半角标点、空格和大小写。evidence 在本段只出现一次时，"
+            "context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，"
+            "两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，"
+            "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
+            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
+            "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":1,\"evidence\":\"…\","
+            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
+            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
+            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+        ),
+    ),
 }
 
 
@@ -237,7 +287,7 @@ def build_concept_completion_request(
                 "strict": True,
                 "schema": (
                     CONCEPT_OUTPUT_SCHEMA
-                    if profile_id == DEFAULT_CONCEPT_PROMPT_PROFILE
+                    if profile.uses_context_anchors
                     else _LEGACY_CONCEPT_OUTPUT_SCHEMA
                 ),
             },
