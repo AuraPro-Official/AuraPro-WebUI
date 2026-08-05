@@ -20,6 +20,7 @@ from open_webui.retrieval.epub.search import SearchError
 from open_webui.retrieval.epub.store import IntegrityError
 from open_webui.services.epub_concept import (
     EpubConceptService,
+    EpubResourceNotFound,
     EpubServiceError,
     EpubServiceUnavailable,
 )
@@ -69,6 +70,19 @@ class ConceptUpsertForm(BaseModel):
     aliases: list[str] = Field(default_factory=list, max_length=100)
     definition: str = Field(default="", max_length=10_000)
     status: str = Field(default="APPROVED", pattern="^(PROVISIONAL|APPROVED|REJECTED)$")
+
+
+class ConceptMergeForm(BaseModel):
+    """Fold ``source_concept_id`` into ``target_concept_id``.
+
+    ``canonical_name`` is optional and lets the surviving concept adopt a
+    different preferred spelling — typically the source's, when the source was
+    the better label of the two.  Every other spelling becomes an alias.
+    """
+
+    target_concept_id: str = Field(min_length=1, max_length=128)
+    source_concept_id: str = Field(min_length=1, max_length=128)
+    canonical_name: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 class RelationAssertionReviewForm(BaseModel):
@@ -344,6 +358,45 @@ async def upsert_concept(
             definition=form_data.definition,
             status=form_data.status,
         )
+    except (EpubServiceError, IntegrityError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.get("/admin/concepts")
+async def list_concepts(
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+    concept_status: str | None = Query(
+        default=None, alias="status", pattern="^(PROVISIONAL|APPROVED|REJECTED)$"
+    ),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    """List concepts with aliases, status and mention counts for review.
+
+    Without this an administrator cannot see the graph at all and therefore
+    cannot find the duplicate pair a refused Batch item is waiting on.
+    """
+    try:
+        return service.list_concepts(status=concept_status, offset=offset, limit=limit)
+    except EpubServiceError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.post("/admin/concepts/merge")
+async def merge_concepts(
+    form_data: ConceptMergeForm, service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, Any]:
+    """Fold one concept into another so a refused Batch item can be retried."""
+    try:
+        return service.merge_concepts(
+            target_concept_id=form_data.target_concept_id,
+            source_concept_id=form_data.source_concept_id,
+            canonical_name=form_data.canonical_name,
+            merged_by=str(getattr(user, "id", "")).strip(),
+        )
+    except EpubResourceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (EpubServiceError, IntegrityError) as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 

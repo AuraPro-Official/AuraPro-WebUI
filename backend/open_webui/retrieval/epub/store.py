@@ -22,7 +22,7 @@ from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class IntegrityError(ValueError):
@@ -31,6 +31,10 @@ class IntegrityError(ValueError):
 
 class DuplicateEpubError(IntegrityError):
     """The complete EPUB hash already identifies an existing book version."""
+
+
+class UnknownConceptError(IntegrityError):
+    """A referenced concept identifier does not exist in the graph."""
 
 
 @dataclass(frozen=True)
@@ -363,6 +367,29 @@ _MIGRATION_4: tuple[str, ...] = (
 )
 
 
+_MIGRATION_5: tuple[str, ...] = (
+    # An administrator merge folds one concept into another and deletes the
+    # source row, so the graph itself can no longer answer "what was merged
+    # here, by whom".  This audit table deliberately holds identifiers, the
+    # source's own concept label, the acting administrator and the time.  A
+    # canonical name is a concept label, never source passage text, evidence,
+    # a prompt or model output, and nothing else from the merge is copied.
+    # ``source_concept_id`` cannot be a foreign key: its row is gone by design.
+    """
+    CREATE TABLE concept_merges (
+        concept_merge_id TEXT PRIMARY KEY,
+        target_concept_id TEXT NOT NULL REFERENCES concepts(concept_id) ON DELETE RESTRICT,
+        source_concept_id TEXT NOT NULL,
+        source_canonical_name TEXT NOT NULL,
+        merged_by TEXT NOT NULL,
+        merged_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    "CREATE INDEX idx_concept_merges_target ON concept_merges(target_concept_id, merged_at)",
+    "CREATE INDEX idx_concept_merges_source ON concept_merges(source_concept_id)",
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
@@ -429,6 +456,7 @@ class SQLiteEpubStore:
                 (2, _MIGRATION_2),
                 (3, _MIGRATION_3),
                 (4, _MIGRATION_4),
+                (5, _MIGRATION_5),
             )
             try:
                 connection.execute("BEGIN")
@@ -1203,6 +1231,368 @@ class SQLiteEpubStore:
                         (str(uuid4()), resolved_id, alias, normalized_alias, alias_source),
                     )
         return resolved_id
+
+    def count_concepts(self, *, status: str | None = None) -> int:
+        if status is not None and status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError(f"invalid concept status: {status}")
+        where = "WHERE status = ?" if status is not None else ""
+        parameters = (status,) if status is not None else ()
+        row = self._connection().execute(
+            f"SELECT COUNT(*) AS count FROM concepts {where}", parameters
+        ).fetchone()
+        return int(row["count"])
+
+    def list_concepts(
+        self, *, status: str | None = None, offset: int = 0, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Page the concept graph itself for administrator review.
+
+        Merge candidates are only visible to an administrator who can see the
+        graph, so this returns every concept's aliases and mention count in a
+        stable order.  It deliberately carries no passage text or evidence:
+        alias and canonical spellings are concept labels, not source material.
+        """
+        if status is not None and status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
+            raise IntegrityError(f"invalid concept status: {status}")
+        if offset < 0 or not 1 <= limit <= 200:
+            raise IntegrityError("concept pagination values are invalid")
+        where = "WHERE c.status = ?" if status is not None else ""
+        parameters: tuple[Any, ...] = (status,) if status is not None else ()
+        rows = self._connection().execute(
+            f"""SELECT c.concept_id, c.canonical_name, c.definition, c.status,
+                       c.created_at, c.updated_at,
+                       (SELECT COUNT(*) FROM concept_mentions AS m
+                         WHERE m.concept_id = c.concept_id) AS mention_count
+                  FROM concepts AS c
+                  {where}
+                 ORDER BY c.canonical_name COLLATE NOCASE, c.concept_id
+                 LIMIT ? OFFSET ?""",
+            (*parameters, limit, offset),
+        ).fetchall()
+        concepts = [dict(row) for row in rows]
+        if not concepts:
+            return []
+        placeholders = ", ".join("?" for _ in concepts)
+        aliases: dict[str, list[str]] = {concept["concept_id"]: [] for concept in concepts}
+        for alias_row in self._connection().execute(
+            f"""SELECT concept_id, alias FROM concept_aliases
+                 WHERE concept_id IN ({placeholders})
+                 ORDER BY alias COLLATE NOCASE, alias_id""",
+            tuple(concept["concept_id"] for concept in concepts),
+        ):
+            aliases[str(alias_row["concept_id"])].append(str(alias_row["alias"]))
+        for concept in concepts:
+            concept["aliases"] = aliases[concept["concept_id"]]
+        return concepts
+
+    def merge_concepts(
+        self,
+        *,
+        target_concept_id: str,
+        source_concept_id: str,
+        merged_by: str,
+        canonical_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Fold ``source`` into ``target`` in one transaction, or change nothing.
+
+        A model may suggest a semantic merge but can never perform one: when a
+        suggestion exactly matches two existing concepts, ingest refuses the
+        item and an administrator resolves it here.  Everything below happens
+        inside a single ``_write()`` transaction because a partially merged
+        graph is worse than an unmerged one.
+
+        The source's canonical spelling becomes an alias of the target.  That
+        spelling is exactly what a future model response will match on, so
+        losing it would immediately reintroduce the failure this resolves.
+
+        Mentions keep their exact passage, offsets, evidence and source; only
+        ``concept_id`` is repointed.  A source mention that would duplicate one
+        the target already holds for the same passage and span is dropped
+        rather than duplicated.
+
+        Relations are repointed, with two deliberate degenerate cases:
+
+        * A relation *between* the two merged concepts would become a
+          self-loop, which ``concept_relations`` forbids by CHECK.  It is
+          deleted together with its assertions and evidence, because after the
+          merge it asserts a relation from a concept to itself.  The count is
+          reported so an operator sees it happened.
+        * A relation whose repointed endpoints duplicate an existing relation
+          is folded into that surviving relation instead of being dropped: its
+          version-scoped assertions move across, and evidence spans that the
+          surviving assertion already holds are deduplicated.  No grounded
+          evidence span is discarded this way.
+        """
+        if not target_concept_id or not source_concept_id:
+            raise IntegrityError("a concept merge needs both a target and a source concept")
+        if target_concept_id == source_concept_id:
+            raise IntegrityError("a concept cannot be merged into itself")
+        merger = merged_by.strip()
+        if not merger or len(merger) > 200:
+            raise IntegrityError(
+                "concept merge operator identity must be a non-empty value of at most 200 characters"
+            )
+        # ``_normalize`` refuses an empty or whitespace-only override rather
+        # than letting it read as "keep the target's current name".
+        requested_canonical = canonical_name.strip() if canonical_name is not None else None
+        requested_normalized = _normalize(canonical_name) if canonical_name is not None else None
+
+        with self._write() as connection:
+            target = connection.execute(
+                "SELECT * FROM concepts WHERE concept_id = ?", (target_concept_id,)
+            ).fetchone()
+            if target is None:
+                raise UnknownConceptError(f"unknown concept_id: {target_concept_id}")
+            source = connection.execute(
+                "SELECT * FROM concepts WHERE concept_id = ?", (source_concept_id,)
+            ).fetchone()
+            if source is None:
+                raise UnknownConceptError(f"unknown concept_id: {source_concept_id}")
+            source_canonical_name = str(source["canonical_name"])
+
+            if requested_normalized is not None:
+                owner = connection.execute(
+                    """SELECT concept_id FROM concepts
+                        WHERE normalized_name = ? AND concept_id NOT IN (?, ?)""",
+                    (requested_normalized, target_concept_id, source_concept_id),
+                ).fetchone()
+                if owner is not None:
+                    raise IntegrityError(
+                        "the requested canonical name already belongs to a different concept"
+                    )
+                alias_owner = connection.execute(
+                    """SELECT concept_id FROM concept_aliases
+                        WHERE normalized_alias = ? AND concept_id NOT IN (?, ?)""",
+                    (requested_normalized, target_concept_id, source_concept_id),
+                ).fetchone()
+                if alias_owner is not None:
+                    raise IntegrityError(
+                        "the requested canonical name is already an alias of a different concept"
+                    )
+
+            # ``normalized_alias`` is globally unique, so a row owned by the
+            # source can never collide with one owned by the target.
+            moved_aliases = connection.execute(
+                "UPDATE concept_aliases SET concept_id = ? WHERE concept_id = ?",
+                (target_concept_id, source_concept_id),
+            ).rowcount
+            moved_aliases += self._ensure_alias(
+                connection,
+                concept_id=target_concept_id,
+                alias=source_canonical_name,
+                normalized_alias=str(source["normalized_name"]),
+            )
+            # The target's own canonical spelling must survive an override as
+            # an alias; usually ``upsert_concept`` already stored it.
+            moved_aliases += self._ensure_alias(
+                connection,
+                concept_id=target_concept_id,
+                alias=str(target["canonical_name"]),
+                normalized_alias=str(target["normalized_name"]),
+            )
+
+            # ``IS`` is SQLite's NULL-safe comparison: a mention without
+            # offsets must still deduplicate against the target's own
+            # offset-less mention of the same passage.
+            duplicate_mentions = connection.execute(
+                """DELETE FROM concept_mentions
+                    WHERE concept_id = ?
+                      AND EXISTS (
+                          SELECT 1 FROM concept_mentions AS kept
+                           WHERE kept.concept_id = ?
+                             AND kept.passage_id = concept_mentions.passage_id
+                             AND kept.start_codepoint IS concept_mentions.start_codepoint
+                             AND kept.end_codepoint IS concept_mentions.end_codepoint
+                      )""",
+                (source_concept_id, target_concept_id),
+            ).rowcount
+            moved_mentions = connection.execute(
+                "UPDATE concept_mentions SET concept_id = ? WHERE concept_id = ?",
+                (target_concept_id, source_concept_id),
+            ).rowcount
+
+            dropped_self_relations = connection.execute(
+                """DELETE FROM concept_relations
+                    WHERE (subject_concept_id = ? AND object_concept_id = ?)
+                       OR (subject_concept_id = ? AND object_concept_id = ?)""",
+                (source_concept_id, target_concept_id, target_concept_id, source_concept_id),
+            ).rowcount
+            repointed_relations = folded_relations = 0
+            for relation in connection.execute(
+                """SELECT relation_id, subject_concept_id, predicate, object_concept_id
+                     FROM concept_relations
+                    WHERE subject_concept_id = ? OR object_concept_id = ?
+                    ORDER BY relation_id""",
+                (source_concept_id, source_concept_id),
+            ).fetchall():
+                subject = (
+                    target_concept_id
+                    if relation["subject_concept_id"] == source_concept_id
+                    else str(relation["subject_concept_id"])
+                )
+                object_ = (
+                    target_concept_id
+                    if relation["object_concept_id"] == source_concept_id
+                    else str(relation["object_concept_id"])
+                )
+                survivor = connection.execute(
+                    """SELECT relation_id FROM concept_relations
+                        WHERE subject_concept_id = ? AND predicate = ? AND object_concept_id = ?
+                          AND relation_id <> ?""",
+                    (subject, relation["predicate"], object_, relation["relation_id"]),
+                ).fetchone()
+                if survivor is None:
+                    connection.execute(
+                        """UPDATE concept_relations
+                              SET subject_concept_id = ?, object_concept_id = ?
+                            WHERE relation_id = ?""",
+                        (subject, object_, relation["relation_id"]),
+                    )
+                    repointed_relations += 1
+                    continue
+                self._fold_relation_assertions(
+                    connection,
+                    from_relation_id=str(relation["relation_id"]),
+                    into_relation_id=str(survivor["relation_id"]),
+                )
+                connection.execute(
+                    "DELETE FROM concept_relations WHERE relation_id = ?",
+                    (relation["relation_id"],),
+                )
+                folded_relations += 1
+
+            deleted = connection.execute(
+                "DELETE FROM concepts WHERE concept_id = ?", (source_concept_id,)
+            ).rowcount
+            if deleted != 1:
+                raise UnknownConceptError(f"unknown concept_id: {source_concept_id}")
+
+            if requested_normalized is not None and requested_normalized != target["normalized_name"]:
+                connection.execute(
+                    """UPDATE concepts SET canonical_name = ?, normalized_name = ?,
+                              updated_at = CURRENT_TIMESTAMP
+                        WHERE concept_id = ?""",
+                    (requested_canonical, requested_normalized, target_concept_id),
+                )
+                moved_aliases += self._ensure_alias(
+                    connection,
+                    concept_id=target_concept_id,
+                    alias=str(requested_canonical),
+                    normalized_alias=requested_normalized,
+                )
+            else:
+                connection.execute(
+                    "UPDATE concepts SET updated_at = CURRENT_TIMESTAMP WHERE concept_id = ?",
+                    (target_concept_id,),
+                )
+
+            merge_id = str(uuid4())
+            connection.execute(
+                """INSERT INTO concept_merges(
+                       concept_merge_id, target_concept_id, source_concept_id,
+                       source_canonical_name, merged_by
+                   ) VALUES (?, ?, ?, ?, ?)""",
+                (merge_id, target_concept_id, source_concept_id, source_canonical_name, merger),
+            )
+            merged = connection.execute(
+                """SELECT c.canonical_name, c.status, m.merged_at
+                     FROM concept_merges AS m
+                     JOIN concepts AS c ON c.concept_id = m.target_concept_id
+                    WHERE m.concept_merge_id = ?""",
+                (merge_id,),
+            ).fetchone()
+        assert merged is not None
+        return {
+            "concept_merge_id": merge_id,
+            "target_concept_id": target_concept_id,
+            "source_concept_id": source_concept_id,
+            "source_canonical_name": source_canonical_name,
+            "canonical_name": str(merged["canonical_name"]),
+            "status": str(merged["status"]),
+            "merged_by": merger,
+            "merged_at": merged["merged_at"],
+            "moved_aliases": moved_aliases,
+            "moved_mentions": moved_mentions,
+            "duplicate_mentions": duplicate_mentions,
+            "repointed_relations": repointed_relations,
+            "folded_relations": folded_relations,
+            "dropped_self_relations": dropped_self_relations,
+        }
+
+    @staticmethod
+    def _ensure_alias(
+        connection: sqlite3.Connection,
+        *,
+        concept_id: str,
+        alias: str,
+        normalized_alias: str,
+    ) -> int:
+        """Give ``concept_id`` this alias unless the spelling is already taken.
+
+        Returns 1 when a row was written.  A spelling owned by a third concept
+        is an invariant violation the caller must not silently paper over: the
+        whole merge is refused instead.
+        """
+        owner = connection.execute(
+            "SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?", (normalized_alias,)
+        ).fetchone()
+        if owner is not None:
+            if owner["concept_id"] != concept_id:
+                raise IntegrityError(f"alias already belongs to another concept: {alias}")
+            return 0
+        connection.execute(
+            """INSERT INTO concept_aliases(alias_id, concept_id, alias, normalized_alias, source)
+               VALUES (?, ?, ?, ?, 'ADMIN')""",
+            (str(uuid4()), concept_id, alias, normalized_alias),
+        )
+        return 1
+
+    @staticmethod
+    def _fold_relation_assertions(
+        connection: sqlite3.Connection, *, from_relation_id: str, into_relation_id: str
+    ) -> None:
+        """Move version-scoped assertions onto a surviving duplicate relation.
+
+        ``concept_relation_assertions`` is unique per (relation, version,
+        source) and its evidence is unique per (assertion, passage, span), so
+        both levels deduplicate rather than fail.  Evidence rows keep their
+        exact passage and offsets; only their parent identifier changes.
+        """
+        for assertion in connection.execute(
+            "SELECT assertion_id, version_id, source FROM concept_relation_assertions WHERE relation_id = ?",
+            (from_relation_id,),
+        ).fetchall():
+            survivor = connection.execute(
+                """SELECT assertion_id FROM concept_relation_assertions
+                    WHERE relation_id = ? AND version_id = ? AND source = ?""",
+                (into_relation_id, assertion["version_id"], assertion["source"]),
+            ).fetchone()
+            if survivor is None:
+                connection.execute(
+                    "UPDATE concept_relation_assertions SET relation_id = ? WHERE assertion_id = ?",
+                    (into_relation_id, assertion["assertion_id"]),
+                )
+                continue
+            connection.execute(
+                """DELETE FROM concept_relation_evidence
+                    WHERE assertion_id = ?
+                      AND EXISTS (
+                          SELECT 1 FROM concept_relation_evidence AS kept
+                           WHERE kept.assertion_id = ?
+                             AND kept.passage_id = concept_relation_evidence.passage_id
+                             AND kept.start_codepoint = concept_relation_evidence.start_codepoint
+                             AND kept.end_codepoint = concept_relation_evidence.end_codepoint
+                      )""",
+                (assertion["assertion_id"], survivor["assertion_id"]),
+            )
+            connection.execute(
+                "UPDATE concept_relation_evidence SET assertion_id = ? WHERE assertion_id = ?",
+                (survivor["assertion_id"], assertion["assertion_id"]),
+            )
+            connection.execute(
+                "DELETE FROM concept_relation_assertions WHERE assertion_id = ?",
+                (assertion["assertion_id"],),
+            )
 
     def add_concept_mention(
         self,

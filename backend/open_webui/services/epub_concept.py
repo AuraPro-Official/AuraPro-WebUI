@@ -41,7 +41,11 @@ from open_webui.retrieval.epub.section_graph import (
     build_section_graph_completion_request,
     build_section_graph_packets,
 )
-from open_webui.retrieval.epub.store import IntegrityError, SQLiteEpubStore
+from open_webui.retrieval.epub.store import (
+    IntegrityError,
+    SQLiteEpubStore,
+    UnknownConceptError,
+)
 from open_webui.retrieval.parsers.epub.parser import EPUBParser
 
 
@@ -51,6 +55,10 @@ class EpubServiceError(ValueError):
 
 class EpubServiceUnavailable(EpubServiceError):
     """A server-only integration has not been configured or is unavailable."""
+
+
+class EpubResourceNotFound(EpubServiceError):
+    """A referenced EPUB record does not exist, so the route answers 404."""
 
 
 class EpubApiRepository(Protocol):
@@ -82,6 +90,9 @@ class EpubApiRepository(Protocol):
     def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
     def set_version_status(self, version_id: str, status: str, *, failure_reason: str | None = None) -> None: ...
     def upsert_concept(self, canonical_name: str, **kwargs: Any) -> str: ...
+    def list_concepts(self, **kwargs: Any) -> list[dict[str, Any]]: ...
+    def count_concepts(self, **kwargs: Any) -> int: ...
+    def merge_concepts(self, **kwargs: Any) -> dict[str, Any]: ...
     def list_concept_relation_assertions(self, **kwargs: Any) -> list[dict[str, Any]]: ...
     def count_concept_relation_assertions(self, **kwargs: Any) -> int: ...
     def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
@@ -524,6 +535,48 @@ class EpubConceptService:
             alias_source="ADMIN",
         )
         return {"concept_id": concept_id}
+
+    def list_concepts(self, *, status: str | None, offset: int, limit: int) -> dict[str, Any]:
+        """Page the concept graph so an administrator can find merge candidates.
+
+        Aliases and canonical names are concept labels, and mention counts are
+        integers; no passage text, evidence span, prompt or model output is
+        part of this response.
+        """
+        try:
+            return {
+                "total": self._store.count_concepts(status=status),
+                "offset": offset,
+                "items": self._store.list_concepts(status=status, offset=offset, limit=limit),
+            }
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def merge_concepts(
+        self,
+        *,
+        target_concept_id: str,
+        source_concept_id: str,
+        canonical_name: str | None,
+        merged_by: str,
+    ) -> dict[str, Any]:
+        """Resolve a model-suggested duplicate by folding one concept into another.
+
+        Ingest deliberately refuses an item whose suggestion exactly matches
+        two concepts, and nothing else in the API could resolve that.  This is
+        the administrator remedy; the acting user is recorded in the audit row.
+        """
+        try:
+            return self._store.merge_concepts(
+                target_concept_id=target_concept_id,
+                source_concept_id=source_concept_id,
+                canonical_name=canonical_name,
+                merged_by=merged_by,
+            )
+        except UnknownConceptError as error:
+            raise EpubResourceNotFound(str(error)) from error
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
 
     def index_retrieval_unit(self, retrieval_unit_id: str) -> dict[str, Any]:
         if self._vector_indexer is None:

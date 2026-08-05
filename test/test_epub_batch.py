@@ -413,6 +413,80 @@ class EpubBatchServiceTest(unittest.TestCase):
         item = self.repository.list_items("job")[0]
         self.assertEqual(item["status"], "SUCCEEDED")
 
+    def test_admin_merge_unblocks_a_suggestion_that_matched_two_concepts(self) -> None:
+        """The end-to-end remedy for the only failure an operator cannot retry.
+
+        ``_resolve_or_create_concept`` refuses to guess when one suggestion
+        exactly matches two concepts, and that guard stays exactly as it is.
+        What was missing was an administrator action that resolves the
+        candidate, after which the very same durable result ingests cleanly.
+        """
+        surviving = self.store.upsert_concept("UDP", concept_id="udp")
+        duplicate = self.store.upsert_concept("datagram", concept_id="datagram")
+        self._draft("merge-job")
+        remote_id = self.service.submit("merge-job", self.provider)
+        self.provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        self.provider.results[remote_id] = [
+            ProviderItemResult("p1", payload={"concepts": []}),
+            ProviderItemResult(
+                "p2",
+                payload={
+                    "concepts": [
+                        {
+                            "name": "UDP",
+                            "aliases": ["datagram"],
+                            "definition": "A protocol",
+                            "mentions": [
+                                {"start_codepoint": 0, "end_codepoint": 3, "evidence": "UDP"}
+                            ],
+                        }
+                    ]
+                },
+            ),
+        ]
+
+        blocked = self.service.poll_and_ingest("merge-job", self.provider)
+        held = next(
+            item for item in self.repository.list_items("merge-job") if item["custom_id"] == "p2"
+        )
+        self.assertEqual(blocked["failed"], 1)
+        self.assertEqual(held["status"], "FAILED")
+        self.assertIn("multiple concepts", held["error_text"])
+        self.assertEqual(
+            self.store._connection().execute("SELECT COUNT(*) FROM concept_mentions").fetchone()[0],
+            0,
+        )
+
+        merged = self.store.merge_concepts(
+            target_concept_id=surviving,
+            source_concept_id=duplicate,
+            merged_by="administrator",
+        )
+        self.assertEqual(merged["source_canonical_name"], "datagram")
+        self.assertEqual(
+            {
+                row[0]
+                for row in self.store._connection().execute(
+                    "SELECT alias FROM concept_aliases WHERE concept_id = ?", (surviving,)
+                )
+            },
+            {"UDP", "datagram"},
+        )
+
+        resolved = self.service.poll_and_ingest("merge-job", self.provider)
+        self.assertEqual(resolved["ingested"], 1)
+        self.assertEqual(
+            [item["status"] for item in self.repository.list_items("merge-job")],
+            ["SUCCEEDED", "SUCCEEDED"],
+        )
+        mention = self.store._connection().execute(
+            "SELECT concept_id, passage_id, start_codepoint, end_codepoint, evidence FROM concept_mentions"
+        ).fetchall()
+        self.assertEqual([tuple(row) for row in mention], [(surviving, "p2", 0, 3, "UDP")])
+        self.assertEqual(
+            self.store._connection().execute("SELECT COUNT(*) FROM concepts").fetchone()[0], 1
+        )
+
     def test_openai_cloud_ingest_repairs_only_uniquely_locatable_evidence(self) -> None:
         job_id = self.service.create_draft(
             version_id="version",
@@ -1430,7 +1504,7 @@ class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4},
+            {1, 2, 3, 4, 5},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
         item = connection.execute("SELECT * FROM batch_items").fetchone()
