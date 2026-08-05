@@ -879,116 +879,456 @@ class EpubBatchServiceTest(unittest.TestCase):
             self.store._connection().execute("SELECT COUNT(*) FROM concepts").fetchone()[0], 0
         )
 
-    def test_section_graph_output_is_atomic_and_grounded_across_packet_passages(self) -> None:
-        job_id = self.service.create_draft(
+    # ------------------------------------------------------------------
+    # Section graph packets
+    #
+    # A packet holds many spans across many passages, and ingest is atomic, so
+    # what matters is not "how often is one offset right" but "how often is
+    # every offset in the packet right".  Measured across four CONCEPT_MENTIONS
+    # cloud samples the model supplied a correct code-point pair about one time
+    # in thirty-seven, so a packet whose offsets had to be believed would
+    # essentially never survive.  Nothing below writes a correct offset by
+    # hand: every expected span is derived from the immutable passage, exactly
+    # the way ingest has to derive it.  Tests that construct correct offsets
+    # themselves are what let this path ship with no repair at all.
+    # ------------------------------------------------------------------
+
+    _P1 = "TCP connects TCP endpoints."
+    _P2 = "UDP is datagram based."
+
+    @staticmethod
+    def _v2_span(passage_id: str, evidence: str, *, before: str = "", after: str = "") -> dict:
+        """One zh-section-graph-v2 span: a literal, an anchor, and no offsets."""
+        return {
+            "passage_id": passage_id,
+            "evidence": evidence,
+            "context_before": before,
+            "context_after": after,
+        }
+
+    @staticmethod
+    def _v1_span(passage_id: str, evidence: str, *, start: int, end: int) -> dict:
+        """One zh-section-graph-v1 span.  Callers pass wrong offsets on purpose."""
+        return {
+            "passage_id": passage_id,
+            "start_codepoint": start,
+            "end_codepoint": end,
+            "evidence": evidence,
+        }
+
+    @staticmethod
+    def _graph_concept(local_id: str, name: str, mentions: list[dict]) -> dict:
+        return {
+            "local_id": local_id,
+            "name": name,
+            "aliases": [],
+            "definition": "A protocol",
+            "mentions": mentions,
+        }
+
+    @staticmethod
+    def _graph_relation(
+        subject: str, object_: str, evidence: list[dict], predicate: str = "HAS_PART"
+    ) -> dict:
+        return {
+            "subject_local_id": subject,
+            "predicate": predicate,
+            "object_local_id": object_,
+            "evidence": evidence,
+        }
+
+    def _ingest_packet(self, payload: dict, *, job_id: str = "section-graph") -> dict:
+        self.service.create_draft(
             version_id="version",
             provider="fake-batch",
-            profile_name="section-graph-v1",
+            profile_name="zh-section-graph-v2",
             job_kind="SECTION_GRAPH",
             items=[BatchItemInput("p1", "section-1", {"body": {"packet": True}})],
+            batch_job_id=job_id,
         )
         remote_id = self.service.submit(job_id, self.provider)
         self.provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
-        self.provider.results[remote_id] = [
-            ProviderItemResult(
-                "section-1",
-                payload={
-                    "concepts": [
-                        {
-                            "local_id": "parent",
-                            "name": "TCP",
-                            "aliases": [],
-                            "definition": "A protocol",
-                            "mentions": [
-                                {
-                                    "passage_id": "p1",
-                                    "start_codepoint": 0,
-                                    "end_codepoint": 3,
-                                    "evidence": "TCP",
-                                }
-                            ],
-                        },
-                        {
-                            "local_id": "child",
-                            "name": "UDP",
-                            "aliases": [],
-                            "definition": "A protocol",
-                            "mentions": [
-                                {
-                                    "passage_id": "p2",
-                                    "start_codepoint": 0,
-                                    "end_codepoint": 3,
-                                    "evidence": "UDP",
-                                }
-                            ],
-                        },
-                    ],
-                    "relations": [
-                        {
-                            "subject_local_id": "parent",
-                            "predicate": "HAS_PART",
-                            "object_local_id": "child",
-                            "evidence": [
-                                {
-                                    "passage_id": "p1",
-                                    "start_codepoint": 0,
-                                    "end_codepoint": 3,
-                                    "evidence": "TCP",
-                                }
-                            ],
-                        }
-                    ],
-                },
-            )
-        ]
+        self.provider.results[remote_id] = [ProviderItemResult("section-1", payload=payload)]
+        return self.service.poll_and_ingest(job_id, self.provider)
 
-        result = self.service.poll_and_ingest(job_id, self.provider)
-        self.assertEqual(result["ingested"], 1)
+    _GRAPH_TABLES = (
+        "concepts",
+        "concept_aliases",
+        "concept_mentions",
+        "concept_relations",
+        "concept_relation_assertions",
+        "concept_relation_evidence",
+    )
+
+    def _graph_row_counts(self) -> dict[str, int]:
         connection = self.store._connection()
-        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concept_mentions").fetchone()[0], 2)
-        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concept_relations").fetchone()[0], 1)
-        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concept_relation_evidence").fetchone()[0], 1)
+        return {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in self._GRAPH_TABLES
+        }
+
+    def _assert_no_graph_rows(self) -> None:
+        """Every table one packet can touch, not only the one that failed."""
+        self.assertEqual(self._graph_row_counts(), dict.fromkeys(self._GRAPH_TABLES, 0))
+
+    def _stored_spans(self, table: str) -> list[tuple]:
+        rows = self.store._connection().execute(
+            f"""SELECT s.passage_id, s.start_codepoint, s.end_codepoint, s.evidence, p.content
+                FROM {table} AS s JOIN passages AS p ON p.passage_id = s.passage_id
+                ORDER BY s.passage_id, s.start_codepoint"""
+        ).fetchall()
+        for row in rows:
+            # The invariant the whole feature exists to protect.
+            self.assertEqual(
+                row["content"][row["start_codepoint"]:row["end_codepoint"]], row["evidence"]
+            )
+        return [(row["passage_id"], row["start_codepoint"], row["end_codepoint"]) for row in rows]
+
+    @staticmethod
+    def _expected_span(passage: str, evidence: str, *, occurrence: int = 0) -> tuple[int, int]:
+        """Where the span has to land, derived from the source rather than typed."""
+        start = -1
+        for _ in range(occurrence + 1):
+            start = passage.index(evidence, start + 1)
+        return start, start + len(evidence)
+
+    def test_section_graph_v2_packet_without_offsets_is_grounded_and_persisted(self) -> None:
+        unique_p1 = "connects TCP endpoints"
+        unique_p2 = "UDP is datagram based"
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept("parent", "TCP", [self._v2_span("p1", unique_p1)]),
+                    self._graph_concept("child", "UDP", [self._v2_span("p2", unique_p2)]),
+                ],
+                "relations": [
+                    self._graph_relation("parent", "child", [self._v2_span("p1", unique_p1)])
+                ],
+            }
+        )
+
+        self.assertEqual(result["ingested"], 1)
+        self.assertEqual(
+            self._stored_spans("concept_mentions"),
+            [
+                ("p1", *self._expected_span(self._P1, unique_p1)),
+                ("p2", *self._expected_span(self._P2, unique_p2)),
+            ],
+        )
+        self.assertEqual(
+            self._stored_spans("concept_relation_evidence"),
+            [("p1", *self._expected_span(self._P1, unique_p1))],
+        )
+        counts = self._graph_row_counts()
+        self.assertEqual(counts["concepts"], 2)
+        self.assertEqual(counts["concept_relations"], 1)
+        self.assertEqual(counts["concept_relation_assertions"], 1)
+
+        # The durable response is the graph that was written.  The anchors were
+        # an input device for choosing an occurrence; once one is chosen the
+        # derived offset is the fact, and that is what a replay compares.
+        stored = json.loads(self.repository.list_items("section-graph")[0]["response_json"])
+        mention = stored["concepts"][0]["mentions"][0]
+        self.assertEqual(
+            set(mention), {"passage_id", "start_codepoint", "end_codepoint", "evidence"}
+        )
+        self.assertEqual(
+            (mention["start_codepoint"], mention["end_codepoint"]),
+            self._expected_span(self._P1, unique_p1),
+        )
+        # Grounding is deterministic, so re-polling the same remote job is a
+        # no-op rather than "different output for an already ingested item".
+        self.assertEqual(
+            self.service.poll_and_ingest("section-graph", self.provider)["ingested"], 0
+        )
+
+    def test_section_graph_v1_offsets_are_repaired_from_the_unique_literal(self) -> None:
+        # A stored v1 request still replays, but its offsets are re-derived
+        # rather than believed.  Both of these are wrong: one points outside
+        # the passage, one points at the wrong text inside it.
+        unique_p1 = "connects TCP endpoints"
+        unique_p2 = "UDP is datagram based"
+        self.assertNotEqual(self._P2[1:1 + len(unique_p2)], unique_p2)
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "parent",
+                        "TCP",
+                        [self._v1_span("p1", unique_p1, start=900, end=922)],
+                    ),
+                    self._graph_concept(
+                        "child",
+                        "UDP",
+                        [self._v1_span("p2", unique_p2, start=1, end=1 + len(unique_p2))],
+                    ),
+                ],
+                "relations": [
+                    self._graph_relation(
+                        "parent", "child", [self._v1_span("p1", unique_p1, start=0, end=22)]
+                    )
+                ],
+            },
+            job_id="section-graph-v1",
+        )
+
+        self.assertEqual(result["ingested"], 1)
+        self.assertEqual(
+            self._stored_spans("concept_mentions"),
+            [
+                ("p1", *self._expected_span(self._P1, unique_p1)),
+                ("p2", *self._expected_span(self._P2, unique_p2)),
+            ],
+        )
+        self.assertEqual(
+            self._stored_spans("concept_relation_evidence"),
+            [("p1", *self._expected_span(self._P1, unique_p1))],
+        )
+
+    def test_repeated_section_graph_literal_without_an_anchor_fails_atomically(self) -> None:
+        # "TCP" occurs twice in p1, so nothing in this payload can choose an
+        # occurrence.  The first concept is perfectly good and must not survive:
+        # a packet is one item, and an item is all or nothing.
+        self.assertEqual(self._P1.count("TCP"), 2)
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "good", "UDP", [self._v2_span("p2", "UDP is datagram based")]
+                    ),
+                    self._graph_concept("bad", "TCP", [self._v2_span("p1", "TCP")]),
+                ],
+                "relations": [
+                    self._graph_relation(
+                        "good", "bad", [self._v2_span("p2", "UDP is datagram based")]
+                    )
+                ],
+            },
+            job_id="section-graph-repeated",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self._assert_no_graph_rows()
+        diagnostics = self._item_diagnostics("section-graph-repeated")
+        self.assertEqual(diagnostics["reason"], "ANCHOR_MISSING")
+        self.assertEqual(diagnostics["concept_index"], 1)
+        self.assertEqual(diagnostics["concept_count"], 2)
+        self.assertEqual(diagnostics["mention_index"], 0)
+        self.assertEqual(diagnostics["occurrence_count"], 2)
+        self.assertEqual(diagnostics["passage_codepoints"], len(self._P1))
+        self.assertEqual(diagnostics["evidence_codepoints"], len("TCP"))
+        self.assertTrue(
+            all(isinstance(value, (bool, int)) or key == "reason" for key, value in diagnostics.items())
+        )
+
+    def test_repeated_section_graph_literal_with_an_anchor_selects_that_occurrence(self) -> None:
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "second", "TCP", [self._v2_span("p1", "TCP", before="connects ")]
+                    )
+                ],
+                "relations": [],
+            },
+            job_id="section-graph-anchored",
+        )
+
+        self.assertEqual(result["ingested"], 1)
+        # The anchor selects the *second* occurrence, not merely "an" occurrence.
+        self.assertEqual(
+            self._stored_spans("concept_mentions"),
+            [("p1", *self._expected_span(self._P1, "TCP", occurrence=1))],
+        )
+
+    def test_section_graph_evidence_must_come_from_the_passage_it_names(self) -> None:
+        for label, span, reason in (
+            ("wrong-passage", self._v2_span("p1", "UDP is datagram based"), "EVIDENCE_ABSENT"),
+            ("unknown-passage", self._v2_span("p9", "UDP is datagram based"), "PASSAGE_UNAVAILABLE"),
+        ):
+            with self.subTest(case=label):
+                job_id = f"section-graph-{label}"
+                result = self._ingest_packet(
+                    {
+                        "concepts": [self._graph_concept("only", "UDP", [span])],
+                        "relations": [],
+                    },
+                    job_id=job_id,
+                )
+                self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+                self._assert_no_graph_rows()
+                self.assertEqual(self._item_diagnostics(job_id)["reason"], reason)
+
+    def test_relation_evidence_is_grounded_exactly_like_a_mention(self) -> None:
+        # Same resolver, same repair.  A relation span is not a second, weaker
+        # citation path: it is the same one.
+        unique_p1 = "connects TCP endpoints"
+        unique_p2 = "UDP is datagram based"
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept("parent", "TCP", [self._v2_span("p1", unique_p1)]),
+                    self._graph_concept("child", "UDP", [self._v2_span("p2", unique_p2)]),
+                ],
+                "relations": [
+                    self._graph_relation(
+                        "parent",
+                        "child",
+                        [self._v1_span("p2", unique_p2, start=999, end=1_020)],
+                    )
+                ],
+            },
+            job_id="section-graph-relation-repair",
+        )
+
+        self.assertEqual(result["ingested"], 1)
+        self.assertEqual(
+            self._stored_spans("concept_relation_evidence"),
+            [("p2", *self._expected_span(self._P2, unique_p2))],
+        )
+
+    def test_relation_evidence_that_cannot_be_located_fails_the_whole_packet(self) -> None:
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "parent", "TCP", [self._v2_span("p1", "connects TCP endpoints")]
+                    ),
+                    self._graph_concept(
+                        "child", "UDP", [self._v2_span("p2", "UDP is datagram based")]
+                    ),
+                ],
+                "relations": [
+                    self._graph_relation("parent", "child", [self._v2_span("p1", "TCP")])
+                ],
+            },
+            job_id="section-graph-relation-ambiguous",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self._assert_no_graph_rows()
+        diagnostics = self._item_diagnostics("section-graph-relation-ambiguous")
+        self.assertEqual(diagnostics["reason"], "ANCHOR_MISSING")
+        # A relation failure is reported on its own axes, so an operator can
+        # tell "the model cannot cite a relation" from "it cannot cite a term".
+        self.assertEqual(diagnostics["relation_index"], 0)
+        self.assertEqual(diagnostics["relation_count"], 1)
+        self.assertEqual(diagnostics["evidence_index"], 0)
+        self.assertEqual(diagnostics["evidence_count"], 1)
+        self.assertEqual(diagnostics["local_concept_count"], 2)
+        self.assertNotIn("concept_index", diagnostics)
+        self.assertNotIn("mention_index", diagnostics)
+
+    def test_unresolved_relation_local_id_fails_atomically(self) -> None:
+        # The packet-local ID mechanism is the only thing that makes relations
+        # expressible inside one response, so an endpoint that no concept
+        # defined is its own failure class rather than a generic schema error.
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "parent", "TCP", [self._v2_span("p1", "connects TCP endpoints")]
+                    )
+                ],
+                "relations": [
+                    self._graph_relation(
+                        "parent", "ghost", [self._v2_span("p1", "connects TCP endpoints")]
+                    )
+                ],
+            },
+            job_id="section-graph-ghost",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self._assert_no_graph_rows()
+        diagnostics = self._item_diagnostics("section-graph-ghost")
+        self.assertEqual(diagnostics["reason"], "RELATION_ENDPOINT_UNRESOLVED")
+        self.assertEqual(diagnostics["relation_index"], 0)
+        self.assertEqual(diagnostics["local_concept_count"], 1)
+        self.assertEqual(
+            self.repository.list_items("section-graph-ghost")[0]["error_text"],
+            "section graph relation endpoint is not a packet concept",
+        )
+
+    def test_duplicate_packet_local_id_is_its_own_failure_class(self) -> None:
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "same", "TCP", [self._v2_span("p1", "connects TCP endpoints")]
+                    ),
+                    self._graph_concept(
+                        "same", "UDP", [self._v2_span("p2", "UDP is datagram based")]
+                    ),
+                ],
+                "relations": [],
+            },
+            job_id="section-graph-duplicate-local-id",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self._assert_no_graph_rows()
+        diagnostics = self._item_diagnostics("section-graph-duplicate-local-id")
+        self.assertEqual(diagnostics["reason"], "LOCAL_ID_INVALID")
+        self.assertEqual(diagnostics["concept_index"], 1)
+        self.assertEqual(diagnostics["local_concept_count"], 1)
 
     def test_invalid_section_graph_rolls_back_all_graph_writes(self) -> None:
-        job_id = self.service.create_draft(
-            version_id="version",
-            provider="fake-batch",
-            profile_name="section-graph-v1",
-            job_kind="SECTION_GRAPH",
-            items=[BatchItemInput("p1", "section-1", {"body": {"packet": True}})],
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "only", "TCP", [self._v2_span("p1", "connects TCP endpoints")]
+                    )
+                ],
+                "relations": [],
+                "unexpected": True,
+            },
+            job_id="section-graph-invalid",
         )
-        remote_id = self.service.submit(job_id, self.provider)
-        self.provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
-        self.provider.results[remote_id] = [
-            ProviderItemResult(
-                "section-1",
-                payload={
-                    "concepts": [
-                        {
-                            "local_id": "only",
-                            "name": "TCP",
-                            "aliases": [],
-                            "definition": "A protocol",
-                            "mentions": [
-                                {
-                                    "passage_id": "p1",
-                                    "start_codepoint": 0,
-                                    "end_codepoint": 3,
-                                    "evidence": "TCP",
-                                }
-                            ],
-                        }
-                    ],
-                    "relations": [],
-                    "unexpected": True,
-                },
-            )
-        ]
 
-        self.assertEqual(self.service.poll_and_ingest(job_id, self.provider)["failed"], 1)
-        connection = self.store._connection()
-        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concepts").fetchone()[0], 0)
-        self.assertEqual(connection.execute("SELECT COUNT(*) FROM concept_mentions").fetchone()[0], 0)
+        self.assertEqual(result["failed"], 1)
+        self._assert_no_graph_rows()
+        self.assertEqual(
+            self._item_diagnostics("section-graph-invalid")["reason"], "INVALID_SCHEMA"
+        )
+
+    def test_section_graph_diagnostics_never_carry_packet_text(self) -> None:
+        self.store.add_passages(
+            "version",
+            [
+                {
+                    "passage_id": "p4",
+                    "source_href": "chapter.xhtml",
+                    "spine_index": 0,
+                    "ordinal": 3,
+                    "content_kind": "paragraph",
+                    "content": "The ZORBLAX gate opens. The ZORBLAX gate closes.",
+                }
+            ],
+        )
+        # The marker repeats with identical surroundings, so it is unresolvable
+        # and appears in the packet, in the evidence and nowhere downstream.
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept("only", "ZORBLAX", [self._v2_span("p4", "ZORBLAX gate")])
+                ],
+                "relations": [],
+            },
+            job_id="section-graph-no-text",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        summary = self.service.get_job_summary("section-graph-no-text")
+        self.assertEqual(summary["items"][0]["failure_diagnostics"]["reason"], "ANCHOR_MISSING")
+        stored = self.store._connection().execute(
+            "SELECT failure_diagnostics_json FROM batch_items WHERE batch_job_id = ?",
+            ("section-graph-no-text",),
+        ).fetchone()[0]
+        for rendered in (json.dumps(summary["items"][0]["failure_diagnostics"]), repr(summary), stored):
+            self.assertNotIn("ZORBLAX", rendered)
+            self.assertNotIn("gate", rendered)
 
     def test_failed_items_create_one_durable_retry_successor(self) -> None:
         self._draft()
