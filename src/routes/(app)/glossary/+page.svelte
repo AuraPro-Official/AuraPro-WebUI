@@ -5,6 +5,10 @@
 	import { showArchivedChats, showSidebar, mobile, user } from '$lib/stores';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import {
+		buildGlossaryLanguageSelectItems,
+		normalizeGlossaryLanguage
+	} from '$lib/utils/glossaryLanguages';
+	import {
 		activateGlossary,
 		createGlossary,
 		deleteGlossary,
@@ -170,9 +174,11 @@
 	$: activeGlossary = (settings.glossaries ?? []).find(
 		(glossary) => glossary.id === settings.active_glossary_id
 	);
-	$: activeGlossaryPair = `${activeGlossary?.source_lang ?? settings.source_lang ?? ''} -> ${
+	$: activeGlossaryPair = `${normalizeGlossaryLanguage(
+		activeGlossary?.source_lang ?? settings.source_lang ?? ''
+	)} -> ${normalizeGlossaryLanguage(
 		activeGlossary?.target_lang ?? settings.target_lang ?? activeGlossary?.glossary_lang ?? ''
-	}`;
+	)}`;
 	$: activeGlossaryVersion = activeGlossary?.version ?? settings.glossary_version ?? '1.0.0';
 
 	const safeExportName = (value: string) =>
@@ -192,13 +198,15 @@
 	const getGlossaryFileName = (path: string = '') => path.split(/[\\/]/).pop() ?? '';
 
 	$: glossarySelectItems = (settings.glossaries ?? []).map((glossary) => {
-		const source = glossary.source_lang ?? settings.source_lang ?? '';
-		const target =
+		const rawSource = glossary.source_lang ?? settings.source_lang ?? '';
+		const rawTarget =
 			glossary.target_lang ??
 			glossary.glossary_lang ??
 			settings.target_lang ??
 			settings.glossary_lang ??
 			'';
+		const source = normalizeGlossaryLanguage(rawSource);
+		const target = normalizeGlossaryLanguage(rawTarget);
 		const fileName = getGlossaryFileName(glossary.path ?? '');
 		const label = `${source} → ${target}${glossary.official ? ` ${$i18n.t('Official')}` : ''} v${
 			glossary.version ?? '1.0.0'
@@ -209,6 +217,8 @@
 			label,
 			searchTerms: [
 				glossary.name,
+				rawSource,
+				rawTarget,
 				glossary.source_lang,
 				glossary.target_lang,
 				glossary.glossary_lang,
@@ -219,23 +229,21 @@
 	});
 
 	$: isSmartMode = (settings.glossary_mode ?? 'smart') === 'smart';
-	$: smartSourceLang = settings.smart_source_lang ?? settings.source_lang ?? '中文';
-	$: smartTargetLang = settings.smart_target_lang ?? settings.target_lang ?? '外文';
-	$: languageSelectItems = Array.from(
-		new Set(
-			[
-				...availableLanguages,
-				...(settings.glossaries ?? []).flatMap((glossary) => [
-					glossary.source_lang,
-					glossary.target_lang ?? glossary.glossary_lang
-				]),
-				smartSourceLang,
-				smartTargetLang
-			].filter((language): language is string => Boolean(language?.trim()))
-		)
-	)
-		.sort((left, right) => left.localeCompare(right))
-		.map((language) => ({ value: language, label: language }));
+	$: smartSourceLang = normalizeGlossaryLanguage(
+		settings.smart_source_lang ?? settings.source_lang ?? '中文'
+	);
+	$: smartTargetLang = normalizeGlossaryLanguage(
+		settings.smart_target_lang ?? settings.target_lang ?? '外文'
+	);
+	$: languageSelectItems = buildGlossaryLanguageSelectItems([
+		...availableLanguages,
+		...(settings.glossaries ?? []).flatMap((glossary) => [
+			glossary.source_lang,
+			glossary.target_lang ?? glossary.glossary_lang
+		]),
+		smartSourceLang,
+		smartTargetLang
+	]);
 
 	const load = async () => {
 		loading = true;
@@ -453,7 +461,7 @@
 	};
 
 	const updateSmartLanguage = async (side: 'source' | 'target', value: string) => {
-		const language = value.trim();
+		const language = normalizeGlossaryLanguage(value);
 		if (!language) return;
 		const source = side === 'source' ? language : smartSourceLang;
 		const target = side === 'target' ? language : smartTargetLang;
@@ -489,14 +497,16 @@
 
 	const createNewGlossary = async () => {
 		const name = newGlossaryName.trim();
-		const sourceLang =
+		const sourceLang = normalizeGlossaryLanguage(
 			newGlossarySourceLang.trim() ||
-			(isSmartMode ? smartSourceLang : settings.source_lang) ||
-			'中文';
-		const targetLang =
+				(isSmartMode ? smartSourceLang : settings.source_lang) ||
+				'中文'
+		);
+		const targetLang = normalizeGlossaryLanguage(
 			newGlossaryTargetLang.trim() ||
-			(isSmartMode ? smartTargetLang : settings.target_lang || settings.glossary_lang) ||
-			'西班牙语';
+				(isSmartMode ? smartTargetLang : settings.target_lang || settings.glossary_lang) ||
+				'西班牙语'
+		);
 		if (!sourceLang || !targetLang) return;
 		loading = true;
 		try {
@@ -808,11 +818,14 @@
 															: $i18n.t('Combined glossary')}
 													</span>
 													<span class="font-medium text-gray-700 dark:text-gray-200">
-														{route.source_lang} ↔ {route.target_lang}
+														{normalizeGlossaryLanguage(route.source_lang)} ↔
+														{normalizeGlossaryLanguage(route.target_lang)}
 													</span>
 													{#if route.kind === 'combined' && route.pivot_lang}
 														<span class="text-gray-500">
-															{$i18n.t('via {{language}}', { language: route.pivot_lang })}
+															{$i18n.t('via {{language}}', {
+																language: normalizeGlossaryLanguage(route.pivot_lang)
+															})}
 														</span>
 													{/if}
 													<span class="text-gray-400">
