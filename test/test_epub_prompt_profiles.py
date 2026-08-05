@@ -32,6 +32,10 @@ _PUBLISHED_PROFILE_DIGESTS = {
     "zh-glossary-v2": "4ba4ac59c3f6d31f38c23e3d4a739f10a593566df1b12c8a117889b0d1a1b3cc",
     "zh-glossary-v3": "5358971cb3ffa79e769b6f9e0f7dc84d701bf3486782d95ff4d0748035d2bf99",
     "zh-glossary-v4": "62c306f19dedf939dd93d313b2957eb8e3e3a4b1fe7dabd531705440f2ec7fcc",
+    # v5 has live submitted cloud samples (419dd120, e6e027d1), so it became
+    # immutable the moment those requests left the machine; editing it now would
+    # invalidate results already paid for and still in flight.
+    "zh-glossary-v5": "16f32d361d70fc596a930cea4b0899846fb1e930ca9e80d7732930c2ad2f0630",
 }
 
 
@@ -87,10 +91,10 @@ class PromptProfileTest(unittest.TestCase):
             PROMPTS.MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
         )
 
-    def test_superseded_profiles_are_frozen_and_v5_is_the_registered_default(self) -> None:
+    def test_superseded_profiles_are_frozen_and_v6_is_the_registered_default(self) -> None:
         registered = PROMPTS.available_prompt_profiles()
-        self.assertEqual(PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE, "zh-glossary-v5")
-        self.assertIn("zh-glossary-v5", registered)
+        self.assertEqual(PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE, "zh-glossary-v6")
+        self.assertIn("zh-glossary-v6", registered)
         for profile_id, digest in _PUBLISHED_PROFILE_DIGESTS.items():
             with self.subTest(profile=profile_id):
                 self.assertIn(profile_id, registered)
@@ -190,6 +194,151 @@ class PromptProfileTest(unittest.TestCase):
         self.assertTrue(unique.valid, unique.reason)
         self.assertTrue(repeated.valid, repeated.reason)
         self.assertEqual((unique.concept_count, unique.mention_count), (1, 1))
+
+    def test_v6_is_the_default_anchored_profile_and_keeps_v5_decoding_limits(self) -> None:
+        v5 = PROMPTS.get_prompt_profile("zh-glossary-v5")
+        v6 = PROMPTS.get_prompt_profile("zh-glossary-v6")
+        self.assertEqual(PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE, "zh-glossary-v6")
+        self.assertEqual(v6.profile_id, "zh-glossary-v6")
+        # v6 changes the instruction, never the decoding budget: a difference in
+        # max_tokens or temperature would confound the comparison against the two
+        # in-flight v5 samples.
+        self.assertEqual(v6.max_tokens, v5.max_tokens)
+        self.assertEqual(v6.temperature, v5.temperature)
+        # The flag, not the default, decides which strict schema is sent.
+        self.assertTrue(v6.uses_context_anchors)
+        request = PROMPTS.build_concept_completion_request(
+            model="remote-model-snapshot",
+            profile_id=PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE,
+            passage="甲甲",
+            remote_structured_output=True,
+        )
+        self.assertEqual(
+            request["response_format"]["json_schema"]["schema"], PROMPTS.CONCEPT_OUTPUT_SCHEMA
+        )
+        self.assertEqual(request["max_tokens"], 2_048)
+
+    def test_v6_adds_only_a_minimum_evidence_span_on_top_of_v5(self) -> None:
+        v5 = PROMPTS.get_prompt_profile("zh-glossary-v5").system_instruction
+        v6 = PROMPTS.get_prompt_profile("zh-glossary-v6").system_instruction
+        self.assertNotEqual(v5, v6)
+        # v6 exists to isolate one variable against the live v5 samples, so it
+        # must differ by exactly two edits that both express that variable: the
+        # minimum-span clause, and the shape example's offsets made consistent
+        # with it.  Leaving the example at end_codepoint 1 while demanding ten
+        # code points would be a self-contradictory prompt -- and a one-character
+        # example is a plausible contributor to the 1-3 code-point evidence that
+        # motivated this profile, so it cannot stay.  Undoing both edits must
+        # reproduce v5 byte for byte; any other drift fails here.
+        example_v5 = "\"start_codepoint\":0,\"end_codepoint\":1,"
+        example_v6 = "\"start_codepoint\":0,\"end_codepoint\":10,"
+        self.assertIn(example_v5, v5)
+        self.assertIn(example_v6, v6)
+        self.assertNotIn(example_v6, v5)
+
+        reverted = v6.replace(example_v6, example_v5)
+        prefix = 0
+        while prefix < min(len(v5), len(reverted)) and v5[prefix] == reverted[prefix]:
+            prefix += 1
+        suffix = 0
+        while (
+            suffix < min(len(v5), len(reverted)) - prefix
+            and v5[len(v5) - 1 - suffix] == reverted[len(reverted) - 1 - suffix]
+        ):
+            suffix += 1
+        self.assertEqual(v5[prefix:len(v5) - suffix], "")
+        inserted = reverted[prefix:len(reverted) - suffix]
+        self.assertEqual(v5, reverted.replace(inserted, "", 1))
+        self.assertIn("至少 10 个 Unicode 字符", inserted)
+        # A length floor alone would be satisfiable by padding, so the clause has
+        # to demand a real phrase, and it has to stay possible on a passage that
+        # is itself shorter than the floor (eight of the twenty sampled passages
+        # are 9-10 code points long).
+        self.assertIn("完整、有意义的短语或分句", inserted)
+        self.assertIn("不得只给出概念本身", inserted)
+        self.assertIn("本段总长不足 10 个 Unicode 字符时，evidence 取本段全文", inserted)
+        # Every v5 lever survives verbatim: conditional anchors, verbatim copy,
+        # the object shape, and the output-format rules.
+        for clause in (
+            "逐字复制",
+            "不得改写、翻译或统一引号",
+            "只出现一次时",
+            "必须都是空字符串",
+            "重复出现时",
+            "最多 48 个 Unicode 字符",
+            "紧邻",
+            "最多抽取 6 个",
+            "第一个字符必须是 {",
+            "Markdown 代码块",
+            "\"context_before\":\"\",\"context_after\":\"\"",
+        ):
+            with self.subTest(clause=clause):
+                self.assertIn(clause, v5)
+                self.assertIn(clause, v6)
+
+    def test_v6_longer_evidence_spans_still_pass_strict_payload_validation(self) -> None:
+        passage = (
+            "丁戊己在导论中被定义为一种制度安排。"
+            "第一节指出甲乙丙是本章讨论的核心名称。"
+            "第二节重申甲乙丙是本章讨论的核心名称。"
+        )
+        unique_evidence = "丁戊己在导论中被定义为一种制度安排"
+        repeated_evidence = "甲乙丙是本章讨论的核心名称"
+        self.assertGreaterEqual(len(unique_evidence), 10)
+        self.assertGreaterEqual(len(repeated_evidence), 10)
+        self.assertEqual(passage.count(unique_evidence), 1)
+        self.assertEqual(passage.count(repeated_evidence), 2)
+        unique_start = passage.index(unique_evidence)
+        repeated_start = passage.index(repeated_evidence)
+        unique = PROMPTS.validate_concept_payload(
+            {
+                "concepts": [
+                    {
+                        "name": "丁戊己",
+                        "aliases": [],
+                        "definition": "导论中定义的一种制度安排。",
+                        "mentions": [
+                            {
+                                "start_codepoint": unique_start,
+                                "end_codepoint": unique_start + len(unique_evidence),
+                                "evidence": unique_evidence,
+                                "context_before": "",
+                                "context_after": "",
+                            }
+                        ],
+                    }
+                ]
+            },
+            passage=passage,
+        )
+        repeated = PROMPTS.validate_concept_payload(
+            {
+                "concepts": [
+                    {
+                        "name": "甲乙丙",
+                        "aliases": [],
+                        "definition": "本章讨论的核心名称。",
+                        "mentions": [
+                            {
+                                "start_codepoint": repeated_start,
+                                "end_codepoint": repeated_start + len(repeated_evidence),
+                                "evidence": repeated_evidence,
+                                "context_before": "第一节指出",
+                                "context_after": "。",
+                            }
+                        ],
+                    }
+                ]
+            },
+            passage=passage,
+        )
+        self.assertTrue(unique.valid, unique.reason)
+        self.assertTrue(repeated.valid, repeated.reason)
+        self.assertEqual((unique.concept_count, unique.mention_count), (1, 1))
+        self.assertEqual((repeated.concept_count, repeated.mention_count), (1, 1))
+        # The longer span is exactly what makes the citation resolvable: the bare
+        # concept term repeats, the phrase carrying it is uniquely anchored.
+        self.assertEqual(passage.count("第一节指出" + repeated_evidence), 1)
 
     def test_stratified_selection_covers_chapters_instead_of_taking_first_rows(self) -> None:
         passages = [
