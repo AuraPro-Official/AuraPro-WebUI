@@ -63,13 +63,9 @@ class EpubStore(Protocol):
         source_locator: str | None = None,
     ) -> VersionCreation: ...
 
-    def add_passages(
-        self, version_id: str, passages: Iterable[Mapping[str, Any]]
-    ) -> list[str]: ...
+    def add_passages(self, version_id: str, passages: Iterable[Mapping[str, Any]]) -> list[str]: ...
 
-    def add_retrieval_unit(
-        self, passage_id: str, start_codepoint: int, end_codepoint: int, **metadata: Any
-    ) -> str: ...
+    def add_retrieval_unit(self, passage_id: str, start_codepoint: int, end_codepoint: int, **metadata: Any) -> str: ...
 
     def list_retrieval_units(self, passage_id: str) -> list[dict[str, Any]]: ...
 
@@ -85,12 +81,12 @@ class EpubStore(Protocol):
         object_concept_id: str,
         *,
         evidence: Sequence[Mapping[str, Any]],
-        status: str = "PROVISIONAL",
-        source: str = "MODEL",
+        status: str = 'PROVISIONAL',
+        source: str = 'MODEL',
     ) -> str: ...
 
     def list_concept_relation_neighbors(
-        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ('HAS_PART',)
     ) -> list[dict[str, Any]]: ...
 
     def list_concept_relation_assertions(
@@ -102,9 +98,7 @@ class EpubStore(Protocol):
         limit: int = 50,
     ) -> list[dict[str, Any]]: ...
 
-    def count_concept_relation_assertions(
-        self, *, status: str | None = None, version_id: str | None = None
-    ) -> int: ...
+    def count_concept_relation_assertions(self, *, status: str | None = None, version_id: str | None = None) -> int: ...
 
     def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
 
@@ -139,7 +133,7 @@ _MIGRATION_1: tuple[str, ...] = (
         failure_reason TEXT
     )
     """,
-    "CREATE INDEX idx_book_versions_book ON book_versions(book_id, created_at)",
+    'CREATE INDEX idx_book_versions_book ON book_versions(book_id, created_at)',
     """
     CREATE TABLE epub_blobs (
         version_id TEXT PRIMARY KEY REFERENCES book_versions(version_id) ON DELETE CASCADE,
@@ -161,7 +155,7 @@ _MIGRATION_1: tuple[str, ...] = (
         UNIQUE(version_id, ordinal)
     )
     """,
-    "CREATE INDEX idx_toc_nodes_version_parent ON toc_nodes(version_id, parent_toc_node_id, ordinal)",
+    'CREATE INDEX idx_toc_nodes_version_parent ON toc_nodes(version_id, parent_toc_node_id, ordinal)',
     """
     CREATE TABLE passages (
         passage_id TEXT PRIMARY KEY,
@@ -180,8 +174,8 @@ _MIGRATION_1: tuple[str, ...] = (
         UNIQUE(version_id, ordinal)
     )
     """,
-    "CREATE INDEX idx_passages_version_order ON passages(version_id, spine_index, ordinal)",
-    "CREATE INDEX idx_passages_toc ON passages(toc_node_id)",
+    'CREATE INDEX idx_passages_version_order ON passages(version_id, spine_index, ordinal)',
+    'CREATE INDEX idx_passages_toc ON passages(toc_node_id)',
     """
     CREATE TRIGGER passages_content_is_immutable
     BEFORE UPDATE OF content, content_sha256, version_id, source_href, source_fragment,
@@ -205,7 +199,7 @@ _MIGRATION_1: tuple[str, ...] = (
         UNIQUE(passage_id, start_codepoint, end_codepoint, embedding_profile)
     )
     """,
-    "CREATE INDEX idx_retrieval_units_passage ON retrieval_units(passage_id)",
+    'CREATE INDEX idx_retrieval_units_passage ON retrieval_units(passage_id)',
     """
     CREATE TABLE concepts (
         concept_id TEXT PRIMARY KEY,
@@ -229,7 +223,7 @@ _MIGRATION_1: tuple[str, ...] = (
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX idx_concept_aliases_concept ON concept_aliases(concept_id)",
+    'CREATE INDEX idx_concept_aliases_concept ON concept_aliases(concept_id)',
     """
     CREATE TABLE concept_mentions (
         mention_id TEXT PRIMARY KEY,
@@ -246,8 +240,8 @@ _MIGRATION_1: tuple[str, ...] = (
         UNIQUE(concept_id, passage_id, start_codepoint, end_codepoint)
     )
     """,
-    "CREATE INDEX idx_concept_mentions_concept ON concept_mentions(concept_id, passage_id)",
-    "CREATE INDEX idx_concept_mentions_passage ON concept_mentions(passage_id)",
+    'CREATE INDEX idx_concept_mentions_concept ON concept_mentions(concept_id, passage_id)',
+    'CREATE INDEX idx_concept_mentions_passage ON concept_mentions(passage_id)',
     """
     CREATE TABLE batch_jobs (
         batch_job_id TEXT PRIMARY KEY,
@@ -265,7 +259,7 @@ _MIGRATION_1: tuple[str, ...] = (
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    "CREATE INDEX idx_batch_jobs_version ON batch_jobs(version_id, created_at)",
+    'CREATE INDEX idx_batch_jobs_version ON batch_jobs(version_id, created_at)',
     """
     CREATE TABLE batch_items (
         batch_item_id TEXT PRIMARY KEY,
@@ -283,17 +277,17 @@ _MIGRATION_1: tuple[str, ...] = (
         UNIQUE(batch_job_id, passage_id)
     )
     """,
-    "CREATE INDEX idx_batch_items_job_status ON batch_items(batch_job_id, status)",
+    'CREATE INDEX idx_batch_items_job_status ON batch_items(batch_job_id, status)',
 )
 
 
 _RELATION_PREDICATES = (
-    "HAS_PART",
-    "PRECEDES",
-    "PREREQUISITE",
-    "CAUSES",
-    "CONTRASTS",
-    "ELABORATES",
+    'HAS_PART',
+    'PRECEDES',
+    'PREREQUISITE',
+    'CAUSES',
+    'CONTRASTS',
+    'ELABORATES',
 )
 
 _MIGRATION_2: tuple[str, ...] = (
@@ -301,15 +295,15 @@ _MIGRATION_2: tuple[str, ...] = (
     CREATE TABLE concept_relations (
         relation_id TEXT PRIMARY KEY,
         subject_concept_id TEXT NOT NULL REFERENCES concepts(concept_id) ON DELETE RESTRICT,
-        predicate TEXT NOT NULL CHECK (predicate IN ({", ".join(repr(value) for value in _RELATION_PREDICATES)})),
+        predicate TEXT NOT NULL CHECK (predicate IN ({', '.join(repr(value) for value in _RELATION_PREDICATES)})),
         object_concept_id TEXT NOT NULL REFERENCES concepts(concept_id) ON DELETE RESTRICT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         CHECK (subject_concept_id <> object_concept_id),
         UNIQUE(subject_concept_id, predicate, object_concept_id)
     )
     """,
-    "CREATE INDEX idx_concept_relations_subject ON concept_relations(subject_concept_id, predicate)",
-    "CREATE INDEX idx_concept_relations_object ON concept_relations(object_concept_id, predicate)",
+    'CREATE INDEX idx_concept_relations_subject ON concept_relations(subject_concept_id, predicate)',
+    'CREATE INDEX idx_concept_relations_object ON concept_relations(object_concept_id, predicate)',
     """
     CREATE TABLE concept_relation_assertions (
         assertion_id TEXT PRIMARY KEY,
@@ -324,8 +318,8 @@ _MIGRATION_2: tuple[str, ...] = (
         UNIQUE(relation_id, version_id, source)
     )
     """,
-    "CREATE INDEX idx_relation_assertions_relation ON concept_relation_assertions(relation_id, status)",
-    "CREATE INDEX idx_relation_assertions_version ON concept_relation_assertions(version_id, status)",
+    'CREATE INDEX idx_relation_assertions_relation ON concept_relation_assertions(relation_id, status)',
+    'CREATE INDEX idx_relation_assertions_version ON concept_relation_assertions(version_id, status)',
     """
     CREATE TABLE concept_relation_evidence (
         relation_evidence_id TEXT PRIMARY KEY,
@@ -337,7 +331,7 @@ _MIGRATION_2: tuple[str, ...] = (
         UNIQUE(assertion_id, passage_id, start_codepoint, end_codepoint)
     )
     """,
-    "CREATE INDEX idx_concept_relation_evidence_assertion ON concept_relation_evidence(assertion_id)",
+    'CREATE INDEX idx_concept_relation_evidence_assertion ON concept_relation_evidence(assertion_id)',
 )
 
 
@@ -346,18 +340,18 @@ _MIGRATION_3: tuple[str, ...] = (
     ALTER TABLE batch_jobs ADD COLUMN job_kind TEXT NOT NULL DEFAULT 'CONCEPT_MENTIONS'
         CHECK (job_kind IN ('CONCEPT_MENTIONS', 'SECTION_GRAPH'))
     """,
-    "CREATE INDEX idx_batch_jobs_kind ON batch_jobs(job_kind, status)",
+    'CREATE INDEX idx_batch_jobs_kind ON batch_jobs(job_kind, status)',
 )
 
 
 def _sha256_text(value: str) -> str:
-    return sha256(value.encode("utf-8")).hexdigest()
+    return sha256(value.encode('utf-8')).hexdigest()
 
 
 def _normalize(value: str) -> str:
-    normalized = " ".join(value.split()).casefold()
+    normalized = ' '.join(value.split()).casefold()
     if not normalized:
-        raise IntegrityError("a concept name or alias cannot be empty")
+        raise IntegrityError('a concept name or alias cannot be empty')
     return normalized
 
 
@@ -376,27 +370,27 @@ class SQLiteEpubStore:
 
     def __init__(self, path: str | Path):
         self.path = str(path)
-        if self.path != ":memory:":
+        if self.path != ':memory:':
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._migrate()
 
     def close(self) -> None:
         """Close this thread's connection, primarily useful for tests/shutdown."""
-        connection = getattr(self._local, "connection", None)
+        connection = getattr(self._local, 'connection', None)
         if connection is not None:
             connection.close()
             del self._local.connection
 
     def _connection(self) -> sqlite3.Connection:
-        connection = getattr(self._local, "connection", None)
+        connection = getattr(self._local, 'connection', None)
         if connection is None:
             connection = sqlite3.connect(self.path, check_same_thread=False)
             connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA busy_timeout = 5000")
-            if self.path != ":memory:":
-                connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute('PRAGMA foreign_keys = ON')
+            connection.execute('PRAGMA busy_timeout = 5000')
+            if self.path != ':memory:':
+                connection.execute('PRAGMA journal_mode = WAL')
             self._local.connection = connection
         return connection
 
@@ -404,23 +398,20 @@ class SQLiteEpubStore:
         with self._schema_lock:
             connection = self._connection()
             connection.execute(
-                "CREATE TABLE IF NOT EXISTS schema_migrations "
-                "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                'CREATE TABLE IF NOT EXISTS schema_migrations '
+                '(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'
             )
-            applied = {
-                row[0]
-                for row in connection.execute("SELECT version FROM schema_migrations")
-            }
+            applied = {row[0] for row in connection.execute('SELECT version FROM schema_migrations')}
             migrations = ((1, _MIGRATION_1), (2, _MIGRATION_2), (3, _MIGRATION_3))
             try:
-                connection.execute("BEGIN")
+                connection.execute('BEGIN')
                 for version, statements in migrations:
                     if version in applied:
                         continue
                     for statement in statements[1:] if version == 1 else statements:
                         connection.execute(statement)
-                    connection.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
-                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    connection.execute('INSERT INTO schema_migrations(version) VALUES (?)', (version,))
+                connection.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
                 connection.commit()
             except Exception:
                 connection.rollback()
@@ -430,7 +421,7 @@ class SQLiteEpubStore:
     def _write(self) -> Iterator[sqlite3.Connection]:
         connection = self._connection()
         try:
-            connection.execute("BEGIN")
+            connection.execute('BEGIN')
             yield connection
             connection.commit()
         except Exception:
@@ -443,18 +434,14 @@ class SQLiteEpubStore:
 
     def create_book(self, title: str, *, book_id: str | None = None) -> str:
         if not title or not title.strip():
-            raise IntegrityError("book title cannot be empty")
+            raise IntegrityError('book title cannot be empty')
         resolved_id = book_id or str(uuid4())
         with self._write() as connection:
-            connection.execute(
-                "INSERT INTO books(book_id, title) VALUES (?, ?)", (resolved_id, title)
-            )
+            connection.execute('INSERT INTO books(book_id, title) VALUES (?, ?)', (resolved_id, title))
         return resolved_id
 
     def get_book(self, book_id: str) -> dict[str, Any] | None:
-        return self._row(
-            self._connection().execute("SELECT * FROM books WHERE book_id = ?", (book_id,)).fetchone()
-        )
+        return self._row(self._connection().execute('SELECT * FROM books WHERE book_id = ?', (book_id,)).fetchone())
 
     def list_books(self) -> list[dict[str, Any]]:
         """Return the shared EPUB catalogue without exposing archive bytes."""
@@ -490,7 +477,7 @@ class SQLiteEpubStore:
     def find_version_by_sha256(self, epub_sha256: str) -> dict[str, Any] | None:
         """Look up an already-ingested complete archive by its full SHA-256."""
         if len(epub_sha256) != 64:
-            raise IntegrityError("EPUB SHA-256 must be a complete 64-character digest")
+            raise IntegrityError('EPUB SHA-256 must be a complete 64-character digest')
         return self._row(
             self._connection()
             .execute(
@@ -517,19 +504,19 @@ class SQLiteEpubStore:
         its canonical identity is the already-existing version.
         """
         if not isinstance(epub_bytes, bytes) or not epub_bytes:
-            raise IntegrityError("epub_bytes must contain the complete EPUB archive")
+            raise IntegrityError('epub_bytes must contain the complete EPUB archive')
         epub_hash = sha256(epub_bytes).hexdigest()
         resolved_id = version_id or str(uuid4())
         with self._write() as connection:
-            if connection.execute("SELECT 1 FROM books WHERE book_id = ?", (book_id,)).fetchone() is None:
-                raise IntegrityError(f"unknown book_id: {book_id}")
+            if connection.execute('SELECT 1 FROM books WHERE book_id = ?', (book_id,)).fetchone() is None:
+                raise IntegrityError(f'unknown book_id: {book_id}')
             duplicate = connection.execute(
-                "SELECT version_id, book_id FROM book_versions WHERE epub_sha256 = ?", (epub_hash,)
+                'SELECT version_id, book_id FROM book_versions WHERE epub_sha256 = ?', (epub_hash,)
             ).fetchone()
             if duplicate is not None:
                 return VersionCreation(
-                    version_id=duplicate["version_id"],
-                    book_id=duplicate["book_id"],
+                    version_id=duplicate['version_id'],
+                    book_id=duplicate['book_id'],
                     epub_sha256=epub_hash,
                     created=False,
                 )
@@ -539,29 +526,25 @@ class SQLiteEpubStore:
                 (resolved_id, book_id, epub_hash, source_locator),
             )
             connection.execute(
-                "INSERT INTO epub_blobs(version_id, content, byte_count, sha256) VALUES (?, ?, ?, ?)",
+                'INSERT INTO epub_blobs(version_id, content, byte_count, sha256) VALUES (?, ?, ?, ?)',
                 (resolved_id, epub_bytes, len(epub_bytes), epub_hash),
             )
         return VersionCreation(resolved_id, book_id, epub_hash, True)
 
     def get_version(self, version_id: str) -> dict[str, Any] | None:
         return self._row(
-            self._connection().execute(
-                "SELECT * FROM book_versions WHERE version_id = ?", (version_id,)
-            ).fetchone()
+            self._connection().execute('SELECT * FROM book_versions WHERE version_id = ?', (version_id,)).fetchone()
         )
 
     def get_epub_bytes(self, version_id: str) -> bytes | None:
-        row = self._connection().execute(
-            "SELECT content FROM epub_blobs WHERE version_id = ?", (version_id,)
-        ).fetchone()
+        row = (
+            self._connection().execute('SELECT content FROM epub_blobs WHERE version_id = ?', (version_id,)).fetchone()
+        )
         return bytes(row[0]) if row is not None else None
 
-    def set_version_status(
-        self, version_id: str, status: str, *, failure_reason: str | None = None
-    ) -> None:
-        if status not in {"PARSING", "READY", "FAILED", "ARCHIVED"}:
-            raise IntegrityError(f"invalid book version status: {status}")
+    def set_version_status(self, version_id: str, status: str, *, failure_reason: str | None = None) -> None:
+        if status not in {'PARSING', 'READY', 'FAILED', 'ARCHIVED'}:
+            raise IntegrityError(f'invalid book version status: {status}')
         with self._write() as connection:
             cursor = connection.execute(
                 """UPDATE book_versions
@@ -571,29 +554,27 @@ class SQLiteEpubStore:
                 (status, failure_reason, status, version_id),
             )
             if cursor.rowcount != 1:
-                raise IntegrityError(f"unknown version_id: {version_id}")
-            if status == "READY":
+                raise IntegrityError(f'unknown version_id: {version_id}')
+            if status == 'READY':
                 connection.execute(
                     """UPDATE books SET current_version_id = ?, updated_at = CURRENT_TIMESTAMP
                        WHERE book_id = (SELECT book_id FROM book_versions WHERE version_id = ?)""",
                     (version_id, version_id),
                 )
 
-    def add_toc_nodes(
-        self, version_id: str, nodes: Iterable[Mapping[str, Any]]
-    ) -> list[str]:
+    def add_toc_nodes(self, version_id: str, nodes: Iterable[Mapping[str, Any]]) -> list[str]:
         ids: list[str] = []
         with self._write() as connection:
             self._require_version(connection, version_id)
             for node in nodes:
-                node_id = str(node.get("toc_node_id") or uuid4())
-                parent_id = node.get("parent_toc_node_id")
+                node_id = str(node.get('toc_node_id') or uuid4())
+                parent_id = node.get('parent_toc_node_id')
                 if parent_id:
                     parent = connection.execute(
-                        "SELECT version_id FROM toc_nodes WHERE toc_node_id = ?", (parent_id,)
+                        'SELECT version_id FROM toc_nodes WHERE toc_node_id = ?', (parent_id,)
                     ).fetchone()
-                    if parent is None or parent["version_id"] != version_id:
-                        raise IntegrityError("a TOC node parent must belong to the same version")
+                    if parent is None or parent['version_id'] != version_id:
+                        raise IntegrityError('a TOC node parent must belong to the same version')
                 connection.execute(
                     """INSERT INTO toc_nodes(
                          toc_node_id, version_id, parent_toc_node_id, title, href, fragment, spine_index, ordinal
@@ -602,38 +583,36 @@ class SQLiteEpubStore:
                         node_id,
                         version_id,
                         parent_id,
-                        self._required_text(node, "title"),
-                        node.get("href"),
-                        node.get("fragment"),
-                        self._nonnegative_int(node, "spine_index"),
-                        self._nonnegative_int(node, "ordinal"),
+                        self._required_text(node, 'title'),
+                        node.get('href'),
+                        node.get('fragment'),
+                        self._nonnegative_int(node, 'spine_index'),
+                        self._nonnegative_int(node, 'ordinal'),
                     ),
                 )
                 ids.append(node_id)
         return ids
 
-    def add_passages(
-        self, version_id: str, passages: Iterable[Mapping[str, Any]]
-    ) -> list[str]:
+    def add_passages(self, version_id: str, passages: Iterable[Mapping[str, Any]]) -> list[str]:
         """Persist untouched source passages once.  Existing rows are never replaced."""
         ids: list[str] = []
         with self._write() as connection:
             self._require_version(connection, version_id)
             for passage in passages:
-                passage_id = str(passage.get("passage_id") or uuid4())
-                toc_node_id = passage.get("toc_node_id")
+                passage_id = str(passage.get('passage_id') or uuid4())
+                toc_node_id = passage.get('toc_node_id')
                 if toc_node_id:
                     toc = connection.execute(
-                        "SELECT version_id FROM toc_nodes WHERE toc_node_id = ?", (toc_node_id,)
+                        'SELECT version_id FROM toc_nodes WHERE toc_node_id = ?', (toc_node_id,)
                     ).fetchone()
-                    if toc is None or toc["version_id"] != version_id:
-                        raise IntegrityError("a passage TOC node must belong to the same version")
-                content = self._required_text(passage, "content", allow_empty=True)
-                supplied_hash = passage.get("content_sha256")
+                    if toc is None or toc['version_id'] != version_id:
+                        raise IntegrityError('a passage TOC node must belong to the same version')
+                content = self._required_text(passage, 'content', allow_empty=True)
+                supplied_hash = passage.get('content_sha256')
                 calculated_hash = _sha256_text(content)
                 if supplied_hash is not None and supplied_hash != calculated_hash:
-                    raise IntegrityError("content_sha256 does not match UTF-8 source content")
-                kind = str(passage.get("content_kind", "paragraph"))
+                    raise IntegrityError('content_sha256 does not match UTF-8 source content')
+                kind = str(passage.get('content_kind', 'paragraph'))
                 connection.execute(
                     """INSERT INTO passages(
                          passage_id, version_id, toc_node_id, source_href, source_fragment, spine_index,
@@ -643,10 +622,10 @@ class SQLiteEpubStore:
                         passage_id,
                         version_id,
                         toc_node_id,
-                        self._required_text(passage, "source_href"),
-                        passage.get("source_fragment"),
-                        self._nonnegative_int(passage, "spine_index"),
-                        self._nonnegative_int(passage, "ordinal"),
+                        self._required_text(passage, 'source_href'),
+                        passage.get('source_fragment'),
+                        self._nonnegative_int(passage, 'spine_index'),
+                        self._nonnegative_int(passage, 'ordinal'),
                         kind,
                         content,
                         calculated_hash,
@@ -656,18 +635,14 @@ class SQLiteEpubStore:
         return ids
 
     def get_passage(self, passage_id: str) -> dict[str, Any] | None:
-        row = self._connection().execute(
-            "SELECT * FROM passages WHERE passage_id = ?", (passage_id,)
-        ).fetchone()
+        row = self._connection().execute('SELECT * FROM passages WHERE passage_id = ?', (passage_id,)).fetchone()
         return self._search_row_with_toc(dict(row)) if row is not None else None
 
     def list_passages(self, version_id: str) -> list[dict[str, Any]]:
         return [
             self._search_row_with_toc(dict(row))
             for row in self._connection()
-            .execute(
-                "SELECT * FROM passages WHERE version_id = ? ORDER BY spine_index, ordinal", (version_id,)
-            )
+            .execute('SELECT * FROM passages WHERE version_id = ? ORDER BY spine_index, ordinal', (version_id,))
             .fetchall()
         ]
 
@@ -678,23 +653,21 @@ class SQLiteEpubStore:
         end_codepoint: int,
         *,
         embedding_profile: str | None = None,
-        vector_state: str = "PENDING",
+        vector_state: str = 'PENDING',
         retrieval_unit_id: str | None = None,
     ) -> str:
         """Store a verified, continuous derived window of one source passage."""
-        if vector_state not in {"PENDING", "READY", "FAILED"}:
-            raise IntegrityError(f"invalid vector state: {vector_state}")
+        if vector_state not in {'PENDING', 'READY', 'FAILED'}:
+            raise IntegrityError(f'invalid vector state: {vector_state}')
         if not isinstance(start_codepoint, int) or not isinstance(end_codepoint, int):
-            raise IntegrityError("excerpt offsets must be integer Unicode code-point positions")
+            raise IntegrityError('excerpt offsets must be integer Unicode code-point positions')
         with self._write() as connection:
-            passage = connection.execute(
-                "SELECT content FROM passages WHERE passage_id = ?", (passage_id,)
-            ).fetchone()
+            passage = connection.execute('SELECT content FROM passages WHERE passage_id = ?', (passage_id,)).fetchone()
             if passage is None:
-                raise IntegrityError(f"unknown passage_id: {passage_id}")
-            content = passage["content"]
+                raise IntegrityError(f'unknown passage_id: {passage_id}')
+            content = passage['content']
             if start_codepoint < 0 or end_codepoint <= start_codepoint or end_codepoint > len(content):
-                raise IntegrityError("retrieval-unit offsets must identify a non-empty source substring")
+                raise IntegrityError('retrieval-unit offsets must identify a non-empty source substring')
             excerpt = content[start_codepoint:end_codepoint]
             # Window generation is retry-safe.  SQLite UNIQUE considers two
             # NULL embedding profiles distinct, so use ``IS`` explicitly
@@ -706,7 +679,7 @@ class SQLiteEpubStore:
                 (passage_id, start_codepoint, end_codepoint, embedding_profile),
             ).fetchone()
             if existing is not None:
-                return str(existing["retrieval_unit_id"])
+                return str(existing['retrieval_unit_id'])
             unit_id = retrieval_unit_id or str(uuid4())
             connection.execute(
                 """INSERT INTO retrieval_units(
@@ -764,20 +737,20 @@ class SQLiteEpubStore:
 
     def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None:
         """Persist an indexing outcome without changing source-window fields."""
-        if vector_state not in {"PENDING", "READY", "FAILED"}:
-            raise IntegrityError(f"invalid vector state: {vector_state}")
+        if vector_state not in {'PENDING', 'READY', 'FAILED'}:
+            raise IntegrityError(f'invalid vector state: {vector_state}')
         with self._write() as connection:
             changed = connection.execute(
-                "UPDATE retrieval_units SET vector_state = ? WHERE retrieval_unit_id = ?",
+                'UPDATE retrieval_units SET vector_state = ? WHERE retrieval_unit_id = ?',
                 (vector_state, retrieval_unit_id),
             ).rowcount
             if changed != 1:
-                raise IntegrityError(f"unknown retrieval_unit_id: {retrieval_unit_id}")
+                raise IntegrityError(f'unknown retrieval_unit_id: {retrieval_unit_id}')
 
     def get_retrieval_unit(self, retrieval_unit_id: str) -> dict[str, Any] | None:
         return self._row(
             self._connection()
-            .execute("SELECT * FROM retrieval_units WHERE retrieval_unit_id = ?", (retrieval_unit_id,))
+            .execute('SELECT * FROM retrieval_units WHERE retrieval_unit_id = ?', (retrieval_unit_id,))
             .fetchone()
         )
 
@@ -804,8 +777,8 @@ class SQLiteEpubStore:
         object_concept_id: str,
         *,
         evidence: Sequence[Mapping[str, Any]],
-        status: str = "PROVISIONAL",
-        source: str = "MODEL",
+        status: str = 'PROVISIONAL',
+        source: str = 'MODEL',
         relation_id: str | None = None,
     ) -> str:
         """Persist a global relation assertion with version-scoped evidence.
@@ -815,15 +788,15 @@ class SQLiteEpubStore:
         a free-floating node or connecting concepts from unrelated books.
         """
         if predicate not in _RELATION_PREDICATES:
-            raise IntegrityError(f"unsupported concept relation predicate: {predicate}")
-        if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
-            raise IntegrityError(f"invalid concept relation status: {status}")
-        if source not in {"MODEL", "ADMIN"}:
-            raise IntegrityError(f"invalid concept relation source: {source}")
+            raise IntegrityError(f'unsupported concept relation predicate: {predicate}')
+        if status not in {'PROVISIONAL', 'APPROVED', 'REJECTED'}:
+            raise IntegrityError(f'invalid concept relation status: {status}')
+        if source not in {'MODEL', 'ADMIN'}:
+            raise IntegrityError(f'invalid concept relation source: {source}')
         if not subject_concept_id or not object_concept_id or subject_concept_id == object_concept_id:
-            raise IntegrityError("concept relation needs two distinct concept endpoints")
+            raise IntegrityError('concept relation needs two distinct concept endpoints')
         if not evidence:
-            raise IntegrityError("concept relation needs at least one source evidence span")
+            raise IntegrityError('concept relation needs at least one source evidence span')
         with self._write() as connection:
             return self._add_concept_relation(
                 connection,
@@ -846,8 +819,8 @@ class SQLiteEpubStore:
         predicate: str,
         object_concept_id: str,
         evidence: Sequence[Mapping[str, Any]],
-        status: str = "PROVISIONAL",
-        source: str = "MODEL",
+        status: str = 'PROVISIONAL',
+        source: str = 'MODEL',
         relation_id: str | None = None,
     ) -> str:
         """Write one grounded relation using an existing store transaction.
@@ -858,19 +831,17 @@ class SQLiteEpubStore:
         :meth:`add_concept_relation` instead.
         """
         if predicate not in _RELATION_PREDICATES:
-            raise IntegrityError(f"unsupported concept relation predicate: {predicate}")
-        if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
-            raise IntegrityError(f"invalid concept relation status: {status}")
-        if source not in {"MODEL", "ADMIN"}:
-            raise IntegrityError(f"invalid concept relation source: {source}")
+            raise IntegrityError(f'unsupported concept relation predicate: {predicate}')
+        if status not in {'PROVISIONAL', 'APPROVED', 'REJECTED'}:
+            raise IntegrityError(f'invalid concept relation status: {status}')
+        if source not in {'MODEL', 'ADMIN'}:
+            raise IntegrityError(f'invalid concept relation source: {source}')
         if not subject_concept_id or not object_concept_id or subject_concept_id == object_concept_id:
-            raise IntegrityError("concept relation needs two distinct concept endpoints")
+            raise IntegrityError('concept relation needs two distinct concept endpoints')
         if not evidence:
-            raise IntegrityError("concept relation needs at least one source evidence span")
-        if connection.execute(
-            "SELECT 1 FROM book_versions WHERE version_id = ?", (version_id,)
-        ).fetchone() is None:
-            raise IntegrityError(f"unknown version_id: {version_id}")
+            raise IntegrityError('concept relation needs at least one source evidence span')
+        if connection.execute('SELECT 1 FROM book_versions WHERE version_id = ?', (version_id,)).fetchone() is None:
+            raise IntegrityError(f'unknown version_id: {version_id}')
         for concept_id in (subject_concept_id, object_concept_id):
             mentioned = connection.execute(
                 """SELECT 1 FROM concept_mentions AS m
@@ -879,75 +850,75 @@ class SQLiteEpubStore:
                 (concept_id, version_id),
             ).fetchone()
             if mentioned is None:
-                raise IntegrityError("relation endpoint has no mention in this EPUB version")
+                raise IntegrityError('relation endpoint has no mention in this EPUB version')
         existing = connection.execute(
-                """SELECT relation_id FROM concept_relations
+            """SELECT relation_id FROM concept_relations
                    WHERE subject_concept_id = ? AND predicate = ? AND object_concept_id = ?""",
-                (subject_concept_id, predicate, object_concept_id),
+            (subject_concept_id, predicate, object_concept_id),
         ).fetchone()
-        resolved_id = str(existing["relation_id"]) if existing is not None else (relation_id or str(uuid4()))
+        resolved_id = str(existing['relation_id']) if existing is not None else (relation_id or str(uuid4()))
         if existing is None:
             connection.execute(
-                    """INSERT INTO concept_relations(
+                """INSERT INTO concept_relations(
                            relation_id, subject_concept_id, predicate, object_concept_id
                        ) VALUES (?, ?, ?, ?)""",
-                    (resolved_id, subject_concept_id, predicate, object_concept_id),
+                (resolved_id, subject_concept_id, predicate, object_concept_id),
             )
         assertion = connection.execute(
-                """SELECT assertion_id FROM concept_relation_assertions
+            """SELECT assertion_id FROM concept_relation_assertions
                    WHERE relation_id = ? AND version_id = ? AND source = ?""",
-                (resolved_id, version_id, source),
+            (resolved_id, version_id, source),
         ).fetchone()
-        assertion_id = str(assertion["assertion_id"]) if assertion is not None else str(uuid4())
+        assertion_id = str(assertion['assertion_id']) if assertion is not None else str(uuid4())
         if assertion is None:
             connection.execute(
-                    """INSERT INTO concept_relation_assertions(
+                """INSERT INTO concept_relation_assertions(
                            assertion_id, relation_id, version_id, status, source
                        ) VALUES (?, ?, ?, ?, ?)""",
-                    (assertion_id, resolved_id, version_id, status, source),
+                (assertion_id, resolved_id, version_id, status, source),
             )
         for item in evidence:
             if not isinstance(item, Mapping):
-                raise IntegrityError("concept relation evidence must be an object")
-            passage_id = item.get("passage_id")
-            start = item.get("start_codepoint")
-            end = item.get("end_codepoint")
-            supplied = item.get("evidence")
+                raise IntegrityError('concept relation evidence must be an object')
+            passage_id = item.get('passage_id')
+            start = item.get('start_codepoint')
+            end = item.get('end_codepoint')
+            supplied = item.get('evidence')
             if not isinstance(passage_id, str) or not isinstance(start, int) or not isinstance(end, int):
-                raise IntegrityError("concept relation evidence needs passage_id and integer offsets")
+                raise IntegrityError('concept relation evidence needs passage_id and integer offsets')
             passage = connection.execute(
-                "SELECT content FROM passages WHERE passage_id = ? AND version_id = ?",
+                'SELECT content FROM passages WHERE passage_id = ? AND version_id = ?',
                 (passage_id, version_id),
             ).fetchone()
-            if passage is None or start < 0 or end <= start or end > len(passage["content"]):
-                raise IntegrityError("concept relation evidence does not belong to this EPUB version")
-            expected = passage["content"][start:end]
+            if passage is None or start < 0 or end <= start or end > len(passage['content']):
+                raise IntegrityError('concept relation evidence does not belong to this EPUB version')
+            expected = passage['content'][start:end]
             if not isinstance(supplied, str) or supplied != expected:
-                raise IntegrityError("concept relation evidence must equal the immutable source substring")
+                raise IntegrityError('concept relation evidence must equal the immutable source substring')
             exists = connection.execute(
-                    """SELECT 1 FROM concept_relation_evidence
+                """SELECT 1 FROM concept_relation_evidence
                        WHERE assertion_id = ? AND passage_id = ? AND start_codepoint = ? AND end_codepoint = ?""",
-                    (assertion_id, passage_id, start, end),
+                (assertion_id, passage_id, start, end),
             ).fetchone()
             if exists is None:
                 connection.execute(
-                        """INSERT INTO concept_relation_evidence(
+                    """INSERT INTO concept_relation_evidence(
                                relation_evidence_id, assertion_id, passage_id, start_codepoint, end_codepoint, evidence
                            ) VALUES (?, ?, ?, ?, ?, ?)""",
-                        (str(uuid4()), assertion_id, passage_id, start, end, expected),
+                    (str(uuid4()), assertion_id, passage_id, start, end, expected),
                 )
         return resolved_id
 
     def list_concept_relation_neighbors(
-        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ('HAS_PART',)
     ) -> list[dict[str, Any]]:
         """Return edges with at least one non-rejected grounded assertion."""
         if not concept_ids or not predicates:
             return []
         if any(predicate not in _RELATION_PREDICATES for predicate in predicates):
-            raise IntegrityError("unsupported concept relation predicate")
-        concept_placeholders = ", ".join("?" for _ in concept_ids)
-        predicate_placeholders = ", ".join("?" for _ in predicates)
+            raise IntegrityError('unsupported concept relation predicate')
+        concept_placeholders = ', '.join('?' for _ in concept_ids)
+        predicate_placeholders = ', '.join('?' for _ in predicates)
         return [
             dict(row)
             for row in self._connection()
@@ -973,21 +944,23 @@ class SQLiteEpubStore:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Page administrator-review rows together with immutable evidence."""
-        if status is not None and status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
-            raise IntegrityError("invalid concept relation assertion status")
+        if status is not None and status not in {'PROVISIONAL', 'APPROVED', 'REJECTED'}:
+            raise IntegrityError('invalid concept relation assertion status')
         if offset < 0 or not 1 <= limit <= 200:
-            raise IntegrityError("concept relation assertion pagination values are invalid")
+            raise IntegrityError('concept relation assertion pagination values are invalid')
         conditions: list[str] = []
         parameters: list[Any] = []
         if status is not None:
-            conditions.append("a.status = ?")
+            conditions.append('a.status = ?')
             parameters.append(status)
         if version_id is not None:
-            conditions.append("a.version_id = ?")
+            conditions.append('a.version_id = ?')
             parameters.append(version_id)
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        rows = self._connection().execute(
-            f"""SELECT a.assertion_id, a.relation_id, a.version_id, a.status, a.source, a.created_at,
+        where = f'WHERE {" AND ".join(conditions)}' if conditions else ''
+        rows = (
+            self._connection()
+            .execute(
+                f"""SELECT a.assertion_id, a.relation_id, a.version_id, a.status, a.source, a.created_at,
                        r.predicate, subject.canonical_name AS subject_name,
                        object.canonical_name AS object_name
                 FROM concept_relation_assertions AS a
@@ -997,42 +970,48 @@ class SQLiteEpubStore:
                 {where}
                 ORDER BY a.created_at DESC, a.assertion_id DESC
                 LIMIT ? OFFSET ?""",
-            (*parameters, limit, offset),
-        ).fetchall()
+                (*parameters, limit, offset),
+            )
+            .fetchall()
+        )
         result = [dict(row) for row in rows]
         for assertion in result:
-            evidence_rows = self._connection().execute(
-                """SELECT passage_id, start_codepoint, end_codepoint, evidence
+            evidence_rows = (
+                self._connection()
+                .execute(
+                    """SELECT passage_id, start_codepoint, end_codepoint, evidence
                    FROM concept_relation_evidence
                    WHERE assertion_id = ?
                    ORDER BY passage_id, start_codepoint, end_codepoint""",
-                (assertion["assertion_id"],),
-            ).fetchall()
-            assertion["evidence"] = [dict(row) for row in evidence_rows]
+                    (assertion['assertion_id'],),
+                )
+                .fetchall()
+            )
+            assertion['evidence'] = [dict(row) for row in evidence_rows]
         return result
 
-    def count_concept_relation_assertions(
-        self, *, status: str | None = None, version_id: str | None = None
-    ) -> int:
-        if status is not None and status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
-            raise IntegrityError("invalid concept relation assertion status")
+    def count_concept_relation_assertions(self, *, status: str | None = None, version_id: str | None = None) -> int:
+        if status is not None and status not in {'PROVISIONAL', 'APPROVED', 'REJECTED'}:
+            raise IntegrityError('invalid concept relation assertion status')
         conditions: list[str] = []
         parameters: list[Any] = []
         if status is not None:
-            conditions.append("status = ?")
+            conditions.append('status = ?')
             parameters.append(status)
         if version_id is not None:
-            conditions.append("version_id = ?")
+            conditions.append('version_id = ?')
             parameters.append(version_id)
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        row = self._connection().execute(
-            f"SELECT COUNT(*) AS count FROM concept_relation_assertions {where}", parameters
-        ).fetchone()
-        return int(row["count"])
+        where = f'WHERE {" AND ".join(conditions)}' if conditions else ''
+        row = (
+            self._connection()
+            .execute(f'SELECT COUNT(*) AS count FROM concept_relation_assertions {where}', parameters)
+            .fetchone()
+        )
+        return int(row['count'])
 
     def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None:
-        if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
-            raise IntegrityError("invalid concept relation assertion status")
+        if status not in {'PROVISIONAL', 'APPROVED', 'REJECTED'}:
+            raise IntegrityError('invalid concept relation assertion status')
         with self._write() as connection:
             changed = connection.execute(
                 """UPDATE concept_relation_assertions
@@ -1040,29 +1019,33 @@ class SQLiteEpubStore:
                 (status, assertion_id),
             ).rowcount
             if changed != 1:
-                raise IntegrityError("unknown concept relation assertion")
+                raise IntegrityError('unknown concept relation assertion')
 
     def count_concept_occurrences(self, concept_ids: Sequence[str]) -> int:
         if not concept_ids:
             return 0
-        placeholders = ", ".join("?" for _ in concept_ids)
-        row = self._connection().execute(
-            f"SELECT COUNT(*) AS count FROM concept_mentions WHERE concept_id IN ({placeholders})",
-            tuple(concept_ids),
-        ).fetchone()
-        return int(row["count"])
+        placeholders = ', '.join('?' for _ in concept_ids)
+        row = (
+            self._connection()
+            .execute(
+                f'SELECT COUNT(*) AS count FROM concept_mentions WHERE concept_id IN ({placeholders})',
+                tuple(concept_ids),
+            )
+            .fetchone()
+        )
+        return int(row['count'])
 
-    def list_concept_occurrences(
-        self, concept_ids: Sequence[str], *, offset: int, limit: int
-    ) -> list[dict[str, Any]]:
+    def list_concept_occurrences(self, concept_ids: Sequence[str], *, offset: int, limit: int) -> list[dict[str, Any]]:
         """Page all matching graph occurrences in a stable source order."""
         if not concept_ids:
             return []
         if offset < 0 or limit < 1:
-            raise IntegrityError("concept occurrence pagination values are invalid")
-        placeholders = ", ".join("?" for _ in concept_ids)
-        rows = self._connection().execute(
-            f"""SELECT m.mention_id, m.concept_id, m.passage_id, m.start_codepoint,
+            raise IntegrityError('concept occurrence pagination values are invalid')
+        placeholders = ', '.join('?' for _ in concept_ids)
+        rows = (
+            self._connection()
+            .execute(
+                f"""SELECT m.mention_id, m.concept_id, m.passage_id, m.start_codepoint,
                        m.end_codepoint, c.canonical_name, p.content, p.content_sha256,
                        p.toc_node_id, b.title AS book_title
                 FROM concept_mentions AS m
@@ -1073,38 +1056,48 @@ class SQLiteEpubStore:
                 WHERE m.concept_id IN ({placeholders})
                 ORDER BY p.spine_index, p.ordinal, m.start_codepoint, m.mention_id
                 LIMIT ? OFFSET ?""",
-            (*concept_ids, limit, offset),
-        ).fetchall()
+                (*concept_ids, limit, offset),
+            )
+            .fetchall()
+        )
         return [self._search_row_with_toc(dict(row)) for row in rows]
 
     def get_search_passage(self, passage_id: str) -> dict[str, Any] | None:
-        row = self._connection().execute(
-            """SELECT p.passage_id, p.content, p.content_sha256, p.toc_node_id,
+        row = (
+            self._connection()
+            .execute(
+                """SELECT p.passage_id, p.content, p.content_sha256, p.toc_node_id,
                        b.title AS book_title
                 FROM passages AS p
                 JOIN book_versions AS v ON v.version_id = p.version_id
                 JOIN books AS b ON b.book_id = v.book_id
                 WHERE p.passage_id = ?""",
-            (passage_id,),
-        ).fetchone()
+                (passage_id,),
+            )
+            .fetchone()
+        )
         return self._search_row_with_toc(dict(row)) if row is not None else None
 
     def matched_concept_names(self, passage_id: str, concept_ids: Sequence[str]) -> list[str]:
         if not concept_ids:
             return []
-        placeholders = ", ".join("?" for _ in concept_ids)
-        rows = self._connection().execute(
-            f"""SELECT DISTINCT c.canonical_name
+        placeholders = ', '.join('?' for _ in concept_ids)
+        rows = (
+            self._connection()
+            .execute(
+                f"""SELECT DISTINCT c.canonical_name
                 FROM concept_mentions AS m
                 JOIN concepts AS c ON c.concept_id = m.concept_id
                 WHERE m.passage_id = ? AND m.concept_id IN ({placeholders})
                 ORDER BY c.canonical_name""",
-            (passage_id, *concept_ids),
-        ).fetchall()
-        return [str(row["canonical_name"]) for row in rows]
+                (passage_id, *concept_ids),
+            )
+            .fetchall()
+        )
+        return [str(row['canonical_name']) for row in rows]
 
     def _search_row_with_toc(self, row: dict[str, Any]) -> dict[str, Any]:
-        row["toc_path"] = self._toc_path(row.pop("toc_node_id", None))
+        row['toc_path'] = self._toc_path(row.pop('toc_node_id', None))
         return row
 
     def _toc_path(self, toc_node_id: str | None) -> tuple[str, ...]:
@@ -1117,15 +1110,17 @@ class SQLiteEpubStore:
         visited: set[str] = set()
         while current_id is not None:
             if current_id in visited:
-                raise IntegrityError("TOC hierarchy contains a cycle")
+                raise IntegrityError('TOC hierarchy contains a cycle')
             visited.add(current_id)
-            row = self._connection().execute(
-                "SELECT title, parent_toc_node_id FROM toc_nodes WHERE toc_node_id = ?", (current_id,)
-            ).fetchone()
+            row = (
+                self._connection()
+                .execute('SELECT title, parent_toc_node_id FROM toc_nodes WHERE toc_node_id = ?', (current_id,))
+                .fetchone()
+            )
             if row is None:
-                raise IntegrityError("passage refers to a missing TOC node")
-            path.append(str(row["title"]))
-            current_id = row["parent_toc_node_id"]
+                raise IntegrityError('passage refers to a missing TOC node')
+            path.append(str(row['title']))
+            current_id = row['parent_toc_node_id']
         path.reverse()
         return tuple(path)
 
@@ -1134,32 +1129,32 @@ class SQLiteEpubStore:
         canonical_name: str,
         *,
         aliases: Iterable[str] = (),
-        definition: str = "",
-        status: str = "PROVISIONAL",
+        definition: str = '',
+        status: str = 'PROVISIONAL',
         concept_id: str | None = None,
-        alias_source: str = "MODEL",
+        alias_source: str = 'MODEL',
     ) -> str:
         """Create/update a concept without replacing its foreign-key parent row."""
-        if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
-            raise IntegrityError(f"invalid concept status: {status}")
-        if alias_source not in {"SEED", "MODEL", "ADMIN"}:
-            raise IntegrityError(f"invalid alias source: {alias_source}")
+        if status not in {'PROVISIONAL', 'APPROVED', 'REJECTED'}:
+            raise IntegrityError(f'invalid concept status: {status}')
+        if alias_source not in {'SEED', 'MODEL', 'ADMIN'}:
+            raise IntegrityError(f'invalid alias source: {alias_source}')
         normalized_name = _normalize(canonical_name)
         requested_aliases: dict[str, str] = {normalized_name: canonical_name}
         for alias in aliases:
             requested_aliases[_normalize(alias)] = alias
         with self._write() as connection:
             existing = connection.execute(
-                "SELECT concept_id FROM concepts WHERE normalized_name = ?", (normalized_name,)
+                'SELECT concept_id FROM concepts WHERE normalized_name = ?', (normalized_name,)
             ).fetchone()
-            resolved_id = concept_id or (existing["concept_id"] if existing else str(uuid4()))
-            if existing is not None and concept_id is not None and existing["concept_id"] != concept_id:
-                raise IntegrityError("canonical name already belongs to a different concept")
+            resolved_id = concept_id or (existing['concept_id'] if existing else str(uuid4()))
+            if existing is not None and concept_id is not None and existing['concept_id'] != concept_id:
+                raise IntegrityError('canonical name already belongs to a different concept')
             canonical_alias_owner = connection.execute(
-                "SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?", (normalized_name,)
+                'SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?', (normalized_name,)
             ).fetchone()
-            if canonical_alias_owner is not None and canonical_alias_owner["concept_id"] != resolved_id:
-                raise IntegrityError("canonical name is already an alias of a different concept")
+            if canonical_alias_owner is not None and canonical_alias_owner['concept_id'] != resolved_id:
+                raise IntegrityError('canonical name is already an alias of a different concept')
             if existing is None:
                 connection.execute(
                     """INSERT INTO concepts(concept_id, canonical_name, normalized_name, definition, status)
@@ -1174,10 +1169,10 @@ class SQLiteEpubStore:
                 )
             for normalized_alias, alias in requested_aliases.items():
                 owner = connection.execute(
-                    "SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?", (normalized_alias,)
+                    'SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?', (normalized_alias,)
                 ).fetchone()
-                if owner is not None and owner["concept_id"] != resolved_id:
-                    raise IntegrityError(f"alias already belongs to another concept: {alias}")
+                if owner is not None and owner['concept_id'] != resolved_id:
+                    raise IntegrityError(f'alias already belongs to another concept: {alias}')
                 if owner is None:
                     connection.execute(
                         """INSERT INTO concept_aliases(alias_id, concept_id, alias, normalized_alias, source)
@@ -1194,28 +1189,31 @@ class SQLiteEpubStore:
         start_codepoint: int | None = None,
         end_codepoint: int | None = None,
         evidence: str | None = None,
-        source: str = "MODEL",
+        source: str = 'MODEL',
         mention_id: str | None = None,
     ) -> str:
         """Link an existing concept to an existing source passage in FK-safe order."""
-        if source not in {"SEED", "MODEL", "ADMIN"}:
-            raise IntegrityError(f"invalid mention source: {source}")
+        if source not in {'SEED', 'MODEL', 'ADMIN'}:
+            raise IntegrityError(f'invalid mention source: {source}')
         if (start_codepoint is None) != (end_codepoint is None):
-            raise IntegrityError("mention offsets must be supplied together")
+            raise IntegrityError('mention offsets must be supplied together')
         with self._write() as connection:
-            if connection.execute("SELECT 1 FROM concepts WHERE concept_id = ?", (concept_id,)).fetchone() is None:
-                raise IntegrityError(f"unknown concept_id: {concept_id}")
-            passage = connection.execute(
-                "SELECT content FROM passages WHERE passage_id = ?", (passage_id,)
-            ).fetchone()
+            if connection.execute('SELECT 1 FROM concepts WHERE concept_id = ?', (concept_id,)).fetchone() is None:
+                raise IntegrityError(f'unknown concept_id: {concept_id}')
+            passage = connection.execute('SELECT content FROM passages WHERE passage_id = ?', (passage_id,)).fetchone()
             if passage is None:
-                raise IntegrityError(f"unknown passage_id: {passage_id}")
+                raise IntegrityError(f'unknown passage_id: {passage_id}')
             if start_codepoint is not None:
-                if start_codepoint < 0 or end_codepoint is None or end_codepoint <= start_codepoint or end_codepoint > len(passage["content"]):
-                    raise IntegrityError("mention offsets must identify a non-empty source substring")
-                expected = passage["content"][start_codepoint:end_codepoint]
+                if (
+                    start_codepoint < 0
+                    or end_codepoint is None
+                    or end_codepoint <= start_codepoint
+                    or end_codepoint > len(passage['content'])
+                ):
+                    raise IntegrityError('mention offsets must identify a non-empty source substring')
+                expected = passage['content'][start_codepoint:end_codepoint]
                 if evidence is not None and evidence != expected:
-                    raise IntegrityError("mention evidence must equal the source substring")
+                    raise IntegrityError('mention evidence must equal the source substring')
                 evidence = expected
             mention = mention_id or str(uuid4())
             connection.execute(
@@ -1237,7 +1235,7 @@ class SQLiteEpubStore:
     ) -> str:
         """Create a durable job record before any provider submission occurs."""
         if not provider.strip() or not profile_name.strip():
-            raise IntegrityError("provider and profile_name cannot be empty")
+            raise IntegrityError('provider and profile_name cannot be empty')
         job_id = batch_job_id or str(uuid4())
         with self._write() as connection:
             self._require_version(connection, version_id)
@@ -1259,18 +1257,18 @@ class SQLiteEpubStore:
     ) -> str:
         """Persist a request item and verify that passage and job share a version."""
         if not custom_id:
-            raise IntegrityError("batch custom_id cannot be empty")
+            raise IntegrityError('batch custom_id cannot be empty')
         item_id = batch_item_id or str(uuid4())
         with self._write() as connection:
             job = connection.execute(
-                "SELECT version_id FROM batch_jobs WHERE batch_job_id = ?", (batch_job_id,)
+                'SELECT version_id FROM batch_jobs WHERE batch_job_id = ?', (batch_job_id,)
             ).fetchone()
             passage = connection.execute(
-                "SELECT version_id FROM passages WHERE passage_id = ?", (passage_id,)
+                'SELECT version_id FROM passages WHERE passage_id = ?', (passage_id,)
             ).fetchone()
             if job is None:
-                raise IntegrityError(f"unknown batch_job_id: {batch_job_id}")
-            if passage is None or passage["version_id"] != job["version_id"]:
+                raise IntegrityError(f'unknown batch_job_id: {batch_job_id}')
+            if passage is None or passage['version_id'] != job['version_id']:
                 raise IntegrityError("a batch item passage must belong to the job's book version")
             connection.execute(
                 """INSERT INTO batch_items(batch_item_id, batch_job_id, passage_id, custom_id, request_json)
@@ -1280,24 +1278,20 @@ class SQLiteEpubStore:
         return item_id
 
     @staticmethod
-    def _required_text(
-        values: Mapping[str, Any], key: str, *, allow_empty: bool = False
-    ) -> str:
+    def _required_text(values: Mapping[str, Any], key: str, *, allow_empty: bool = False) -> str:
         value = values.get(key)
         if not isinstance(value, str) or (not allow_empty and not value):
-            raise IntegrityError(f"{key} must be {'a string' if allow_empty else 'a non-empty string'}")
+            raise IntegrityError(f'{key} must be {"a string" if allow_empty else "a non-empty string"}')
         return value
 
     @staticmethod
     def _nonnegative_int(values: Mapping[str, Any], key: str) -> int:
         value = values.get(key)
         if not isinstance(value, int) or value < 0:
-            raise IntegrityError(f"{key} must be a non-negative integer")
+            raise IntegrityError(f'{key} must be a non-negative integer')
         return value
 
     @staticmethod
     def _require_version(connection: sqlite3.Connection, version_id: str) -> None:
-        if connection.execute(
-            "SELECT 1 FROM book_versions WHERE version_id = ?", (version_id,)
-        ).fetchone() is None:
-            raise IntegrityError(f"unknown version_id: {version_id}")
+        if connection.execute('SELECT 1 FROM book_versions WHERE version_id = ?', (version_id,)).fetchone() is None:
+            raise IntegrityError(f'unknown version_id: {version_id}')

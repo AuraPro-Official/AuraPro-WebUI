@@ -66,6 +66,7 @@ async def get_memories(
     memories = await Memories.get_memories_by_user_id(user.id, db=db)
     return [memory for memory in (memories or []) if not is_chat_history_memory(memory)]
 
+
 @router.get('/status')
 async def get_memory_status(
     user=Depends(get_verified_user),
@@ -79,9 +80,7 @@ async def get_memory_status(
     return {
         'saved_count': len(saved_memories),
         'pinned_count': sum(
-            1
-            for memory in saved_memories
-            if isinstance(memory.meta, dict) and memory.meta.get('pinned')
+            1 for memory in saved_memories if isinstance(memory.meta, dict) and memory.meta.get('pinned')
         ),
         'chat_history_summary': history_memory.content if history_memory else None,
         'chat_history_updated_at': history_memory.updated_at if history_memory else None,
@@ -366,6 +365,7 @@ async def query_memory(
         distances=[filtered_dists],
     )
 
+
 @router.post('/search', response_model=list[MemoryModel])
 async def search_memories(
     form_data: SearchMemoriesForm,
@@ -548,6 +548,7 @@ async def delete_chat_history_memory(
         )
     return True
 
+
 ############################
 # UpdateMemoryById
 ############################
@@ -613,6 +614,7 @@ async def update_memory_by_id(
         },
     )
     return memory
+
 
 @router.post('/{memory_id}/restore', response_model=MemoryModel | None)
 async def restore_memory_version(
