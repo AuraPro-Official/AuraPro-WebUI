@@ -184,6 +184,12 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             ("post", "/api/v1/epub/admin/batches/recover", None),
 			("get", "/api/v1/epub/admin/sample-batch-reviews", None),
 			("put", "/api/v1/epub/admin/sample-batches/missing/review", {"status": "APPROVED"}),
+            ("get", "/api/v1/epub/admin/concepts", None),
+            (
+                "post",
+                "/api/v1/epub/admin/concepts/merge",
+                {"target_concept_id": "one", "source_concept_id": "two"},
+            ),
             ("get", "/api/v1/epub/admin/relation-assertions", None),
             ("put", "/api/v1/epub/admin/relation-assertions/missing", {"status": "APPROVED"}),
             ("post", "/api/v1/epub/admin/retrieval-units/missing/index", None),
@@ -265,6 +271,74 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         recovery = self.client.post("/api/v1/epub/admin/batches/recover")
         self.assertEqual(recovery.status_code, 200)
         self.assertEqual(recovery.json(), {"recovered": [], "skipped": []})
+
+    def test_admin_can_read_the_concept_graph_and_merge_a_duplicate(self) -> None:
+        """Seeing the graph and merging a duplicate are one administrator workflow.
+
+        Batch ingest refuses an item whose model suggestion matches two
+        concepts exactly, and no other route could resolve that candidate.
+        Neither response may carry passage text, prompts or model output.
+        """
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        listed = self.client.get("/api/v1/epub/admin/concepts?limit=10")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["total"], 2)
+        self.assertEqual(listed.json()["offset"], 0)
+        by_name = {item["canonical_name"]: item for item in listed.json()["items"]}
+        self.assertEqual(by_name["TCP"]["aliases"], ["TCP", "Transmission Control Protocol"])
+        self.assertEqual(by_name["TCP"]["mention_count"], 1)
+        self.assertEqual(by_name["TCP"]["status"], "APPROVED")
+        self.assertNotIn("原文必须完整返回", listed.text)
+
+        merged = self.client.post(
+            "/api/v1/epub/admin/concepts/merge",
+            json={
+                "target_concept_id": by_name["TCP"]["concept_id"],
+                "source_concept_id": by_name["传输控制协议"]["concept_id"],
+                "canonical_name": "传输控制协议",
+            },
+        )
+        self.assertEqual(merged.status_code, 200)
+        self.assertEqual(merged.json()["canonical_name"], "传输控制协议")
+        self.assertEqual(merged.json()["merged_by"], "administrator")
+        self.assertEqual(merged.json()["moved_mentions"], 1)
+        # The two concepts were related to each other, so that relation would
+        # now point a concept at itself and is deliberately dropped.
+        self.assertEqual(merged.json()["dropped_self_relations"], 1)
+        self.assertNotIn("原文必须完整返回", merged.text)
+
+        after = self.client.get("/api/v1/epub/admin/concepts")
+        self.assertEqual(after.json()["total"], 1)
+        surviving = after.json()["items"][0]
+        self.assertEqual(surviving["canonical_name"], "传输控制协议")
+        self.assertEqual(surviving["mention_count"], 2)
+        self.assertEqual(
+            surviving["aliases"], ["TCP", "Transmission Control Protocol", "传输控制协议"]
+        )
+        self.assertEqual(
+            self.client.get("/api/v1/epub/admin/relation-assertions").json()["items"], []
+        )
+
+    def test_merge_refuses_an_unknown_or_identical_concept_with_an_actionable_status(self) -> None:
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        concept_id = self.client.get("/api/v1/epub/admin/concepts").json()["items"][0]["concept_id"]
+
+        same = self.client.post(
+            "/api/v1/epub/admin/concepts/merge",
+            json={"target_concept_id": concept_id, "source_concept_id": concept_id},
+        )
+        self.assertEqual(same.status_code, 400)
+        self.assertIn("merged into itself", same.json()["detail"])
+
+        for payload in (
+            {"target_concept_id": concept_id, "source_concept_id": "missing"},
+            {"target_concept_id": "missing", "source_concept_id": concept_id},
+        ):
+            response = self.client.post("/api/v1/epub/admin/concepts/merge", json=payload)
+            self.assertEqual(response.status_code, 404, payload)
+            self.assertIn("unknown concept_id: missing", response.json()["detail"])
+
+        self.assertEqual(self.client.get("/api/v1/epub/admin/concepts").json()["total"], 2)
 
     def test_admin_can_review_version_scoped_relation_assertions(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user

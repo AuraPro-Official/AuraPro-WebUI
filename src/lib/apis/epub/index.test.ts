@@ -6,11 +6,13 @@ import {
 	getEpubBatchJob,
 	getEpubBatchJobs,
 	getEpubBooks,
+	getEpubConcepts,
 	getEpubPromptProfiles,
 	getEpubRelationAssertions,
 	getEpubSampleBatchReviews,
 	importEpub,
 	indexEpubVersion,
+	mergeEpubConcepts,
 	reviewEpubRelationAssertion,
 	reviewEpubSampleBatch,
 	recoverEpubBatches,
@@ -147,6 +149,68 @@ describe('EPUB concept API client', () => {
 		expect(fetchMock.mock.calls[1][1]).toMatchObject({
 			method: 'PUT',
 			body: JSON.stringify({ status: 'APPROVED' })
+		});
+	});
+
+	it('reads the concept graph and merges a duplicate through administrator-only endpoints', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				jsonResponse({
+					total: 2,
+					offset: 0,
+					items: [
+						{
+							concept_id: 'concept-1',
+							canonical_name: '扰动源',
+							definition: '',
+							status: 'PROVISIONAL',
+							aliases: ['扰动源'],
+							mention_count: 3
+						}
+					]
+				})
+			)
+			.mockResolvedValueOnce(
+				jsonResponse({
+					concept_merge_id: 'merge-1',
+					target_concept_id: 'concept-1',
+					source_concept_id: 'concept-2',
+					source_canonical_name: '强扰动源',
+					canonical_name: '扰动源',
+					status: 'PROVISIONAL',
+					merged_by: 'administrator',
+					merged_at: '2026-01-01T00:00:00Z',
+					moved_aliases: 2,
+					moved_mentions: 1,
+					duplicate_mentions: 0,
+					repointed_relations: 0,
+					folded_relations: 0,
+					dropped_self_relations: 0
+				})
+			);
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getEpubConcepts('admin-token', { status: 'PROVISIONAL', limit: 100 });
+		const merged = await mergeEpubConcepts('admin-token', {
+			target_concept_id: 'concept-1',
+			source_concept_id: 'concept-2'
+		});
+
+		expect(merged.source_canonical_name).toBe('强扰动源');
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			'/api/v1/epub/admin/concepts?status=PROVISIONAL&offset=0&limit=100'
+		);
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({
+			headers: expect.objectContaining({ authorization: 'Bearer admin-token' })
+		});
+		expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/epub/admin/concepts/merge');
+		expect(fetchMock.mock.calls[1][1]).toMatchObject({
+			method: 'POST',
+			body: JSON.stringify({
+				target_concept_id: 'concept-1',
+				source_concept_id: 'concept-2'
+			})
 		});
 	});
 
