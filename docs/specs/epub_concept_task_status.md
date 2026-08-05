@@ -98,8 +98,8 @@ this file and `epub_concept_sdd.md` before making changes.
   The same venv carries ruff for the `--select F` error-path guard. Do not rely on Homebrew or
   pyenv CPython: the first fails `xml.parsers.expat`, the second lacks loadable SQLite extensions.
 - **Current implementation state:** The frontend keeps reads on authenticated `/epub` routes and renders complete passages plus explicit exact excerpts. The administrator route is separate, presents imports, Batch controls/history, sample approval, concept review, and derived-index operations, and sends no provider credentials. Backend authorization remains authoritative: full OpenAI Batch creation is durably blocked until a fully ingested, same-version, same-kind, same-model-profile cloud sample has an administrator approval record. Import automatically writes retry-safe, Chinese-first derived retrieval windows without changing canonical passages. Local startup attaches a persistent independent SQLite service, and the tested sqlite-vec backend is available for production adapter wiring; the remote PostgreSQL implementation remains.
-- **Next action (T-155):** Poll the two submitted v5 samples and compare against the v4 baseline of gpt-4.1 19/20 and gpt-4o-mini 15/20. v5 targets the 6 `PROVIDER_ITEM_ERROR` truncations via `max_tokens` 512→2048 and reduces output volume by making anchors mandatory-empty for unique evidence; it should not be expected to fix v3's genuine repeats, which v4-style anchors already handle. If v5 clears both models, an administrator may approve one sample — that approval, and only that approval, unlocks a full `openai-batch` for the same version, job kind, and model snapshot. No sample of any profile is approved today, so full Batch creation remains durably blocked.
-- **Known unaddressed weakness:** several failures cite evidence of 1–3 code points repeating up to 38 times, i.e. the model offering a single character as evidence. No profile constrains minimum evidence length; that is a candidate lever for a future profile rather than something v5 addresses.
+- **Next action (T-155):** Poll all four in-flight samples and compare them, and the two profiles against each other, on the v4 baseline of gpt-4.1 19/20 and gpt-4o-mini 15/20. v5 targets the 6 `PROVIDER_ITEM_ERROR` truncations; v6 additionally targets the very short evidence spans that drive ambiguity. Neither can fix v3's genuine repeats, which v4-style anchors already handle. Read the outcome from the failure-reason counts, not the pass rate alone: a v6 that trades truncations for a new failure class is not an improvement. The default profile should follow that evidence — it currently points at v6 as the newest candidate, which is a placeholder, not a measured decision. Only after a sample reaches `SUCCEEDED` with every item ingested may an administrator approve it, and only that approval unlocks a full `openai-batch` for the same version, job kind, and model snapshot. No sample of any profile is approved today, so full Batch creation remains durably blocked.
+- **Known residual risk in v6:** the floor is unreachable on short passages — of the 20 sampled, eight are at most 10 code points and two are 9 — so its escape hatch makes `evidence` the entire passage there. That is a valid verified citation but a coarse one, and it is the first thing to inspect if v6 scores well on pass rate yet produces worse mentions.
 - **Cloud sample ledger (local E2E store `/private/tmp/aurapro-epub-e2e/epub_concept_v1.db`), all on version `b7e4d0ed`, 20 items each:**
 
   | Job | Model snapshot | Profile | State |
@@ -110,12 +110,19 @@ this file and `epub_concept_sdd.md` before making changes.
   | `b893528d` | gpt-4o-mini-2024-07-18 | v4 | 15/20 |
   | `419dd120` | gpt-4.1-2025-04-14 | **v5** | SUBMITTED 2026-08-05 01:06 |
   | `e6e027d1` | gpt-4o-mini-2024-07-18 | **v5** | SUBMITTED 2026-08-05 01:06 |
+  | `005a7a20` | gpt-4.1-2025-04-14 | **v6** | SUBMITTED 2026-08-05 01:19 |
+  | `82016085` | gpt-4o-mini-2024-07-18 | **v6** | SUBMITTED 2026-08-05 01:19 |
 
-  The v5 samples were administrator-authorized on 2026-08-05. Deterministic stratified
-  selection put them on the same 20 passages as the v4 samples (verified: 20 shared, 0
-  divergent), so the comparison is controlled; their requests carry the anchored schema at
-  `max_tokens=2048`. Poll with `BatchJobService.recover_all`, which touches only
-  `SUBMITTED`/`RUNNING` jobs. Earlier pairs completed roughly an hour after submission
-  against a 24h window. Pre-poll backups of the database are retained beside it under
-  `backup-*/`.
+  The v5 and v6 samples were administrator-authorized on 2026-08-05 and run in parallel,
+  since a Batch round trip costs hours and the two profiles test independent levers: v5
+  raises `max_tokens` and makes anchors conditional, v6 adds the minimum evidence span on
+  top of that. Deterministic stratified selection put every arm on the same 20 passages as
+  the v4 samples (verified: 20 shared, 0 divergent in both), so all four comparisons are
+  controlled. Submitted prompts verified at the wire: both carry the anchored schema at
+  `max_tokens=2048`; only v6 carries the floor clause, the short-passage escape hatch, and
+  the shape example at `end_codepoint:10`.
+
+  Poll with `BatchJobService.recover_all`, which touches only `SUBMITTED`/`RUNNING` jobs
+  and cannot create spend. Earlier pairs completed roughly an hour after submission against
+  a 24h window. Pre-poll backups of the database are retained beside it under `backup-*/`.
 - **Reusable local test asset:** Retain the isolated macOS Desktop runtime at `/private/tmp/aurapro-desktop-e2e` for later T-090 and E2E runs. It contains the Desktop-managed Python runtime, llama.cpp binary, and local test model, but no EPUB source material. Do not remove it before all planned local validation is complete; remind the administrator to reclaim the temporary disk space at final project completion.
