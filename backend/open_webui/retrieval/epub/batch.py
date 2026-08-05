@@ -457,6 +457,13 @@ _GROUNDED_CONCEPT_MENTION_FIELDS = {
     "context_after",
 }
 _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
+# A section graph span names its own passage.  ``zh-section-graph-v1`` asks for
+# offsets and no anchors; ``zh-section-graph-v2`` asks for anchors and no
+# offsets.  Ingest accepts both, per span rather than per payload, so a stored
+# v1 request still replays and a mixed response is not a special case.  Neither
+# shape's offsets are trusted: v1's are re-derived exactly like v2's.
+_SECTION_GRAPH_SPAN_FIELDS_V1 = {"passage_id", "start_codepoint", "end_codepoint", "evidence"}
+_SECTION_GRAPH_SPAN_FIELDS_V2 = {"passage_id", "evidence", "context_before", "context_after"}
 
 # Stable, machine-readable failure classes for prompt tuning.  The human
 # ``error_text`` strings stay exactly as they are: they are durable and
@@ -486,8 +493,25 @@ _GROUNDING_FAILURE_REASONS = frozenset(
         # separate "anchors selected nothing" from "anchors were not selective";
         # both need the same class of prompt fix, so they share one slug.
         "EVIDENCE_AMBIGUOUS",
-        # The item's immutable passage could not be read back.
+        # The item's immutable passage could not be read back.  For a section
+        # graph packet this also covers a span naming a passage_id that is not
+        # in this EPUB version at all.
         "PASSAGE_UNAVAILABLE",
+        # Section graph only: a concept's packet-local ID is missing, blank, or
+        # reused.  Distinct from INVALID_SCHEMA because the local_id mechanism
+        # is what makes relations expressible within one packet, and a model
+        # that cannot keep those IDs unique needs a different prompt fix from
+        # one that returns the wrong field set.
+        "LOCAL_ID_INVALID",
+        # Section graph only: a relation names a local_id that no concept in
+        # this packet defined.  This is the interesting one - the model
+        # described a real edge but hallucinated an endpoint, or dropped the
+        # concept it was pointing at - and it costs the whole packet.
+        "RELATION_ENDPOINT_UNRESOLVED",
+        # Section graph only: the canonical store refused a fully grounded
+        # relation (an unsupported predicate, or an endpoint with no mention in
+        # this EPUB version).
+        "RELATION_REJECTED",
         # The provider itself reported this item as failed.  No grounding ran,
         # so nothing was measured; the raw provider error is never persisted.
         "PROVIDER_ITEM_ERROR",
@@ -513,6 +537,14 @@ _GROUNDING_DIAGNOSTIC_FIELDS = frozenset(
         "anchored_candidate_count",
         "direct_offsets_in_range",
         "direct_is_exact",
+        # Section graph packets carry many spans across many passages, so the
+        # position of a rejection needs two more axes than a single-passage
+        # concept result does.
+        "relation_index",
+        "relation_count",
+        "evidence_index",
+        "evidence_count",
+        "local_concept_count",
     }
 )
 _UNDIAGNOSED_FAILURE_REASON = "UNDIAGNOSED"
@@ -1466,25 +1498,276 @@ class SQLiteBatchRepository:
                     (str(uuid4()), concept_id, passage_id, start, end, expected),
                 )
 
-    def _ingest_section_graph(
+    @staticmethod
+    def _ground_section_graph_span(
+        connection: Any, *, version_id: str, span: Any, position: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Return one packet span as an exact slice of the passage it names.
+
+        A concept mention and a relation evidence span are the same shape and
+        are grounded identically; only ``position`` differs, so an operator can
+        still tell which of the two failed.  The returned span is canonicalized
+        to the four fields the store writes: the anchors are a device for
+        choosing among repeated literals, and once the occurrence is chosen the
+        derived offset is the fact.  Storing the resolved span rather than the
+        model's description is also what makes re-ingesting the same packet
+        byte-identical, and therefore idempotent.
+        """
+        if not isinstance(span, Mapping) or (
+            set(span) != _SECTION_GRAPH_SPAN_FIELDS_V1
+            and set(span) != _SECTION_GRAPH_SPAN_FIELDS_V2
+        ):
+            raise BatchPayloadError(
+                "section graph evidence span has an invalid schema",
+                diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+            )
+        has_anchors = set(span) == _SECTION_GRAPH_SPAN_FIELDS_V2
+        passage_id = span["passage_id"]
+        evidence = span["evidence"]
+        if (
+            not isinstance(passage_id, str)
+            or not passage_id
+            or not isinstance(evidence, str)
+            or not evidence
+        ):
+            raise BatchPayloadError(
+                "section graph evidence span has invalid offsets or evidence",
+                diagnostics=_grounding_diagnostics(
+                    "INVALID_OFFSETS",
+                    has_anchors=has_anchors,
+                    evidence_codepoints=len(evidence) if isinstance(evidence, str) else None,
+                    **position,
+                ),
+            )
+        # Version-scoped: a packet may name any passage it was shown, but never
+        # a passage from another book or another version of this one.
+        passage = connection.execute(
+            "SELECT content FROM passages WHERE passage_id = ? AND version_id = ?",
+            (passage_id, version_id),
+        ).fetchone()
+        if passage is None:
+            raise BatchPayloadError(
+                "section graph evidence does not belong to this EPUB version",
+                diagnostics=_grounding_diagnostics(
+                    "PASSAGE_UNAVAILABLE",
+                    has_anchors=has_anchors,
+                    evidence_codepoints=len(evidence),
+                    **position,
+                ),
+            )
+        content = passage["content"]
+        span_position = {**position, "passage_codepoints": len(content)}
+        start: int | None = None
+        end: int | None = None
+        before = after = ""
+        if has_anchors:
+            before = span["context_before"]
+            after = span["context_after"]
+            if (
+                not isinstance(before, str)
+                or not isinstance(after, str)
+                or len(before) > _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
+                or len(after) > _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
+            ):
+                raise BatchPayloadError(
+                    "section graph evidence context anchor is invalid",
+                    diagnostics=_grounding_diagnostics(
+                        "ANCHOR_INVALID",
+                        has_anchors=True,
+                        evidence_codepoints=len(evidence),
+                        anchor_before_codepoints=len(before) if isinstance(before, str) else None,
+                        anchor_after_codepoints=len(after) if isinstance(after, str) else None,
+                        **span_position,
+                    ),
+                )
+        else:
+            start = span["start_codepoint"]
+            end = span["end_codepoint"]
+            if (
+                isinstance(start, bool)
+                or isinstance(end, bool)
+                or not isinstance(start, int)
+                or not isinstance(end, int)
+            ):
+                raise BatchPayloadError(
+                    "section graph evidence span has invalid offsets or evidence",
+                    diagnostics=_grounding_diagnostics(
+                        "INVALID_OFFSETS",
+                        has_anchors=False,
+                        evidence_codepoints=len(evidence),
+                        **span_position,
+                    ),
+                )
+        start, end = _resolve_evidence_span(
+            content,
+            evidence=evidence,
+            before=before,
+            after=after,
+            has_anchors=has_anchors,
+            start=start,
+            end=end,
+            position=span_position,
+        )
+        return {
+            "passage_id": passage_id,
+            "start_codepoint": start,
+            "end_codepoint": end,
+            "evidence": evidence,
+        }
+
+    def _ground_section_graph_payload(
+        self, connection: Any, *, version_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Validate and ground a whole packet without writing anything.
+
+        Every span in the packet - concept mentions and relation evidence
+        alike - goes through the shared resolver, so a section graph result is
+        repaired exactly the way a concept result is instead of being rejected
+        wholesale.  Both packet shapes are accepted: ``zh-section-graph-v1``
+        supplies offsets, which are verified and re-derived rather than
+        trusted, and ``zh-section-graph-v2`` supplies none at all.
+
+        This pass is deliberately read-only and complete.  Ingest is atomic per
+        item and the enclosing transaction would roll back anyway, but doing
+        every rejection before the first insert makes atomicity structural: an
+        unresolvable relation endpoint discovered after nine concepts were
+        written can never depend on the rollback to undo them.
+        """
+        if set(payload) != {"concepts", "relations"}:
+            raise BatchPayloadError(
+                "section graph output must contain only concepts and relations",
+                diagnostics=_grounding_diagnostics("INVALID_SCHEMA"),
+            )
+        concepts = payload["concepts"]
+        relations = payload["relations"]
+        if not isinstance(concepts, list) or not isinstance(relations, list):
+            raise BatchPayloadError(
+                "section graph output needs concepts and relations lists",
+                diagnostics=_grounding_diagnostics("INVALID_SCHEMA"),
+            )
+        concept_count = len(concepts)
+        relation_count = len(relations)
+        local_ids: set[str] = set()
+        grounded_concepts: list[dict[str, Any]] = []
+        for concept_index, suggestion in enumerate(concepts):
+            position: dict[str, Any] = {
+                "concept_index": concept_index,
+                "concept_count": concept_count,
+            }
+            if not isinstance(suggestion, Mapping):
+                raise BatchPayloadError(
+                    "section graph concepts must contain objects",
+                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                )
+            if set(suggestion) != {"local_id", "name", "aliases", "definition", "mentions"}:
+                raise BatchPayloadError(
+                    "section graph concept has an invalid schema",
+                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                )
+            local_id = suggestion["local_id"]
+            if not isinstance(local_id, str) or not local_id.strip() or local_id in local_ids:
+                raise BatchPayloadError(
+                    "section graph local_id must be unique and non-empty",
+                    diagnostics=_grounding_diagnostics(
+                        "LOCAL_ID_INVALID", local_concept_count=len(local_ids), **position
+                    ),
+                )
+            local_ids.add(local_id)
+            mentions = suggestion["mentions"]
+            if not isinstance(mentions, list) or not mentions:
+                raise BatchPayloadError(
+                    "section graph concept needs a visible mention",
+                    diagnostics=_grounding_diagnostics(
+                        "MENTIONS_MISSING",
+                        mention_count=len(mentions) if isinstance(mentions, list) else None,
+                        **position,
+                    ),
+                )
+            grounded_mentions = [
+                self._ground_section_graph_span(
+                    connection,
+                    version_id=version_id,
+                    span=mention,
+                    position={
+                        **position,
+                        "mention_index": mention_index,
+                        "mention_count": len(mentions),
+                    },
+                )
+                for mention_index, mention in enumerate(mentions)
+            ]
+            grounded_concepts.append({**suggestion, "mentions": grounded_mentions})
+
+        grounded_relations: list[dict[str, Any]] = []
+        for relation_index, relation in enumerate(relations):
+            position = {
+                "relation_index": relation_index,
+                "relation_count": relation_count,
+                "local_concept_count": len(local_ids),
+            }
+            if not isinstance(relation, Mapping):
+                raise BatchPayloadError(
+                    "section graph relations must contain objects",
+                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                )
+            if set(relation) != {"subject_local_id", "predicate", "object_local_id", "evidence"}:
+                raise BatchPayloadError(
+                    "section graph relation has an invalid schema",
+                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                )
+            subject = relation["subject_local_id"]
+            predicate = relation["predicate"]
+            object_ = relation["object_local_id"]
+            evidence = relation["evidence"]
+            if not isinstance(subject, str) or not isinstance(object_, str) or subject == object_:
+                raise BatchPayloadError(
+                    "section graph relation needs two distinct local concept IDs",
+                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                )
+            if subject not in local_ids or object_ not in local_ids:
+                raise BatchPayloadError(
+                    "section graph relation endpoint is not a packet concept",
+                    diagnostics=_grounding_diagnostics(
+                        "RELATION_ENDPOINT_UNRESOLVED", **position
+                    ),
+                )
+            if predicate not in _RELATION_PREDICATES or not isinstance(evidence, list) or not evidence:
+                raise BatchPayloadError(
+                    "section graph relation predicate or evidence is invalid",
+                    diagnostics=_grounding_diagnostics(
+                        "INVALID_SCHEMA",
+                        evidence_count=len(evidence) if isinstance(evidence, list) else None,
+                        **position,
+                    ),
+                )
+            grounded_evidence = [
+                self._ground_section_graph_span(
+                    connection,
+                    version_id=version_id,
+                    span=span,
+                    position={
+                        **position,
+                        "evidence_index": evidence_index,
+                        "evidence_count": len(evidence),
+                    },
+                )
+                for evidence_index, span in enumerate(evidence)
+            ]
+            grounded_relations.append({**relation, "evidence": grounded_evidence})
+        return {"concepts": grounded_concepts, "relations": grounded_relations}
+
+    def _write_section_graph(
         self, connection: Any, *, version_id: str, item: Any, payload: Mapping[str, Any]
     ) -> None:
-        """Validate and commit one multi-passage packet as a single transaction."""
-        if set(payload) != {"concepts", "relations"}:
-            raise BatchPayloadError("section graph output must contain only concepts and relations")
-        concepts = payload.get("concepts")
-        relations = payload.get("relations")
-        if not isinstance(concepts, list) or not isinstance(relations, list):
-            raise BatchPayloadError("section graph output needs concepts and relations lists")
+        """Commit one already-grounded packet as a single transaction.
+
+        Every span here is already an exact slice of its own immutable passage.
+        The store's own equality checks still run: they are the last gate that
+        keeps a stored citation byte-exact, and they cost one comparison.
+        """
+        relations = payload["relations"]
         local_concepts: dict[str, str] = {}
-        for suggestion in concepts:
-            if not isinstance(suggestion, Mapping):
-                raise BatchPayloadError("section graph concepts must contain objects")
-            if set(suggestion) != {"local_id", "name", "aliases", "definition", "mentions"}:
-                raise BatchPayloadError("section graph concept has an invalid schema")
-            local_id = suggestion.get("local_id")
-            if not isinstance(local_id, str) or not local_id.strip() or local_id in local_concepts:
-                raise BatchPayloadError("section graph local_id must be unique and non-empty")
+        for suggestion in payload["concepts"]:
             concept_id = self._resolve_or_create_concept(connection, suggestion)
             self._add_mentions(
                 connection,
@@ -1494,39 +1777,27 @@ class SQLiteBatchRepository:
                 version_id=version_id,
                 require_passage_ids=True,
             )
-            local_concepts[local_id] = concept_id
-        for relation in relations:
-            if not isinstance(relation, Mapping):
-                raise BatchPayloadError("section graph relations must contain objects")
-            if set(relation) != {"subject_local_id", "predicate", "object_local_id", "evidence"}:
-                raise BatchPayloadError("section graph relation has an invalid schema")
-            subject = relation.get("subject_local_id")
-            predicate = relation.get("predicate")
-            object_ = relation.get("object_local_id")
-            evidence = relation.get("evidence")
-            if not isinstance(subject, str) or not isinstance(object_, str) or subject == object_:
-                raise BatchPayloadError("section graph relation needs two distinct local concept IDs")
-            if subject not in local_concepts or object_ not in local_concepts:
-                raise BatchPayloadError("section graph relation endpoint is not a packet concept")
-            if predicate not in _RELATION_PREDICATES or not isinstance(evidence, list) or not evidence:
-                raise BatchPayloadError("section graph relation predicate or evidence is invalid")
-            if any(
-                not isinstance(item, Mapping)
-                or set(item) != {"passage_id", "start_codepoint", "end_codepoint", "evidence"}
-                for item in evidence
-            ):
-                raise BatchPayloadError("section graph relation evidence has an invalid schema")
+            local_concepts[str(suggestion["local_id"])] = concept_id
+        for relation_index, relation in enumerate(relations):
             try:
                 self._store._add_concept_relation(
                     connection,
                     version_id=version_id,
-                    subject_concept_id=local_concepts[subject],
-                    predicate=predicate,
-                    object_concept_id=local_concepts[object_],
-                    evidence=evidence,
+                    subject_concept_id=local_concepts[str(relation["subject_local_id"])],
+                    predicate=str(relation["predicate"]),
+                    object_concept_id=local_concepts[str(relation["object_local_id"])],
+                    evidence=relation["evidence"],
                 )
             except ValueError as exc:
-                raise BatchPayloadError(str(exc)) from exc
+                raise BatchPayloadError(
+                    str(exc),
+                    diagnostics=_grounding_diagnostics(
+                        "RELATION_REJECTED",
+                        relation_index=relation_index,
+                        relation_count=len(relations),
+                        local_concept_count=len(local_concepts),
+                    ),
+                ) from exc
 
     def ingest_success(self, batch_job_id: str, custom_id: str, payload: Mapping[str, Any]) -> bool:
         """Atomically ingest one model result and mark the durable item complete.
@@ -1538,7 +1809,16 @@ class SQLiteBatchRepository:
         with self._store._write() as connection:
             job = self._require_job(connection, batch_job_id)
             item = self._item_for_update(connection, batch_job_id, custom_id)
-            if job["provider"] == "openai-batch" and job["job_kind"] == "CONCEPT_MENTIONS":
+            # Grounding runs before serialization so the durable response is the
+            # graph that was actually written, not the model's description of
+            # it.  A section graph packet is grounded whatever the provider,
+            # because the resolver - not the provider - is what keeps a stored
+            # span byte-exact.
+            if job["job_kind"] == "SECTION_GRAPH":
+                payload = self._ground_section_graph_payload(
+                    connection, version_id=job["version_id"], payload=payload
+                )
+            elif job["provider"] == "openai-batch":
                 payload = self._ground_openai_concept_payload(connection, item=item, payload=payload)
             serialized = _canonical_json(payload)
             if item["status"] == "SUCCEEDED":
@@ -1548,7 +1828,7 @@ class SQLiteBatchRepository:
             if item["status"] not in {"PENDING", "SUBMITTED", "RETRY", "FAILED"}:
                 raise BatchPayloadError(f"cannot ingest output for item state {item['status']}")
             if job["job_kind"] == "SECTION_GRAPH":
-                self._ingest_section_graph(
+                self._write_section_graph(
                     connection, version_id=job["version_id"], item=item, payload=payload
                 )
             else:
@@ -1886,9 +2166,9 @@ class BatchJobService:
                 try:
                     added += int(self._repository.ingest_success(batch_job_id, result.custom_id, result.payload))
                 except BatchPayloadError as exc:
-                    # ``exc.diagnostics`` is None for rejections that are not
-                    # instrumented (a section graph packet, for instance); the
-                    # item then simply fails without a measurement.
+                    # ``exc.diagnostics`` is None for rejections raised outside
+                    # grounding (a lifecycle violation, for instance); the item
+                    # then simply fails without a measurement.
                     failed += int(
                         self._repository.record_item_failure(
                             batch_job_id, result.custom_id, str(exc), exc.diagnostics

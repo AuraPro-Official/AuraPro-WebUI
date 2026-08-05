@@ -253,7 +253,9 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(section_graph_draft.status_code, 201)
         self.assertEqual(section_graph_draft.json()["item_count"], 1)
         self.assertEqual(section_graph_draft.json()["job_kind"], "SECTION_GRAPH")
-        self.assertEqual(section_graph_draft.json()["prompt_profile"], "zh-section-graph-v1")
+        # v2 is the default section-graph contract: v1 demands a code-point
+        # offset on every span in a packet, and a packet holds many spans.
+        self.assertEqual(section_graph_draft.json()["prompt_profile"], "zh-section-graph-v2")
 
         history = self.client.get("/api/v1/epub/admin/batches?version_id=version-1")
         self.assertEqual(history.status_code, 200)
