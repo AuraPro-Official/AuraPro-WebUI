@@ -572,6 +572,144 @@ def _safe_failure_diagnostics(serialized: Any) -> dict[str, Any] | None:
     return safe
 
 
+def _resolve_evidence_span(
+    content: str,
+    *,
+    evidence: str,
+    before: str,
+    after: str,
+    has_anchors: bool,
+    start: int | None,
+    end: int | None,
+    position: Mapping[str, Any],
+) -> tuple[int, int]:
+    """Locate ``evidence`` in one immutable passage and return its exact span.
+
+    This is the single span-resolution implementation for every cloud ingest
+    path.  Concept mentions and section-graph mentions and relation evidence
+    all reach the source through here, because two copies of fidelity-critical
+    code is exactly how the section-graph path came to have no repair at all.
+
+    Measured against four cloud samples, a model supplies a correct code-point
+    offset roughly one time in thirty-seven while naming the right text almost
+    every time.  The literal is therefore the evidence and the offset is
+    derived, never trusted.  ``start``/``end`` are ``None`` for a payload shape
+    that does not ask the model for offsets at all; when they are supplied they
+    are still verified, per SDD 4.2.1.
+
+    Raises ``BatchPayloadError`` carrying content-free diagnostics.
+    """
+    passage_codepoints = len(content)
+    evidence_codepoints = len(evidence)
+    # ``passage_codepoints`` deliberately belongs to the caller's ``position``
+    # rather than here, so a rejection raised before this helper runs still
+    # reports it and no key is contributed twice.
+    shape: dict[str, Any] = {
+        "has_anchors": has_anchors,
+        "evidence_codepoints": evidence_codepoints,
+        "anchor_before_codepoints": len(before),
+        "anchor_after_codepoints": len(after),
+    }
+
+    # Pure expressions over already-final values, evaluated before the scan so
+    # every rejection can report whether the model's own offsets were even in
+    # range.  Grounding still consults them only after the scan.
+    offsets_supplied = isinstance(start, int) and isinstance(end, int)
+    direct_offsets_in_range = bool(offsets_supplied and 0 <= start < end <= passage_codepoints)
+    direct_is_exact = direct_offsets_in_range and content[start:end] == evidence
+    direct: dict[str, Any] = {
+        "direct_offsets_in_range": direct_offsets_in_range,
+        "direct_is_exact": direct_is_exact,
+    }
+
+    occurrences: list[int] = []
+    cursor = content.find(evidence)
+    while cursor >= 0:
+        occurrences.append(cursor)
+        # Advance one code point so overlapping literals cannot be
+        # misclassified as a unique source occurrence.
+        cursor = content.find(evidence, cursor + 1)
+    if not occurrences:
+        raise BatchPayloadError(
+            "OpenAI evidence is absent from the immutable source",
+            diagnostics=_grounding_diagnostics(
+                "EVIDENCE_ABSENT", occurrence_count=0, **shape, **direct, **position
+            ),
+        )
+    if len(occurrences) > 1 and has_anchors and not (before or after):
+        raise BatchPayloadError(
+            "repeated OpenAI evidence needs a non-empty context anchor",
+            diagnostics=_grounding_diagnostics(
+                "ANCHOR_MISSING",
+                occurrence_count=len(occurrences),
+                **shape,
+                **direct,
+                **position,
+            ),
+        )
+
+    # Deliberate asymmetry with the repair path below, and not an inconsistency
+    # to "fix": when the model's own offsets already slice the evidence exactly,
+    # SDD 4.2.1 requires that direct offset to be verified against *both* the
+    # source and the anchors the model supplied.  A claim that is internally
+    # contradictory - correct offsets, but adjacent text the model says is
+    # something else - is not evidence of a located mention.  Below, by
+    # contrast, the offsets are already known to be wrong or absent and the
+    # anchors are only a disambiguation device.
+    if direct_is_exact and has_anchors:
+        if (
+            content[max(0, start - len(before)):start] != before
+            or content[end:end + len(after)] != after
+        ):
+            raise BatchPayloadError(
+                "OpenAI evidence context anchor does not match the immutable source",
+                diagnostics=_grounding_diagnostics(
+                    "ANCHOR_MISMATCH",
+                    occurrence_count=len(occurrences),
+                    **shape,
+                    **direct,
+                    **position,
+                ),
+            )
+    if direct_is_exact:
+        assert isinstance(start, int) and isinstance(end, int)
+        return start, end
+
+    # The anchors exist for exactly one purpose: to choose among repeated
+    # occurrences of the same literal.  A literal that occurs once is
+    # self-verifying - the derived span is the only slice of the immutable
+    # source that can equal this evidence - so a wrong anchor is a defect in
+    # the model's description of a mention it nonetheless located, not a reason
+    # to discard the one valid occurrence.  SDD 4.2.1 scopes the anchor filter
+    # to repeated evidence and separately sanctions unique-literal repair;
+    # filtering here would also contradict the sibling ANCHOR_MISSING check
+    # above, which is already scoped to len(occurrences) > 1.
+    candidates = occurrences
+    if has_anchors and len(occurrences) > 1:
+        candidates = [
+            occurrence
+            for occurrence in occurrences
+            if content[max(0, occurrence - len(before)):occurrence] == before
+            and content[
+                occurrence + len(evidence):occurrence + len(evidence) + len(after)
+            ] == after
+        ]
+    if len(candidates) != 1:
+        raise BatchPayloadError(
+            "OpenAI evidence cannot be uniquely located in the immutable source",
+            diagnostics=_grounding_diagnostics(
+                "EVIDENCE_AMBIGUOUS",
+                occurrence_count=len(occurrences),
+                anchored_candidate_count=len(candidates),
+                **shape,
+                **direct,
+                **position,
+            ),
+        )
+    resolved = candidates[0]
+    return resolved, resolved + evidence_codepoints
+
+
 def _canonical_json(value: Mapping[str, Any]) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -1250,115 +1388,16 @@ class SQLiteBatchRepository:
                                 **position,
                             ),
                         )
-                shape: dict[str, Any] = {
-                    "has_anchors": has_anchors,
-                    "evidence_codepoints": evidence_codepoints,
-                    "anchor_before_codepoints": len(before),
-                    "anchor_after_codepoints": len(after),
-                }
-
-                # ``direct_is_exact`` is a pure expression over values that are
-                # already final here, so it is evaluated before the occurrence
-                # scan purely so every rejection below can report whether the
-                # model's own offsets were even in range.  Grounding itself is
-                # unchanged: it is still consulted only after the scan.
-                direct_offsets_in_range = 0 <= start < end <= passage_codepoints
-                direct_is_exact = direct_offsets_in_range and content[start:end] == evidence
-                direct: dict[str, Any] = {
-                    "direct_offsets_in_range": direct_offsets_in_range,
-                    "direct_is_exact": direct_is_exact,
-                }
-
-                occurrences: list[int] = []
-                cursor = content.find(evidence)
-                while cursor >= 0:
-                    occurrences.append(cursor)
-                    # Advance one code point so overlapping literals cannot be
-                    # misclassified as a unique source occurrence.
-                    cursor = content.find(evidence, cursor + 1)
-                if not occurrences:
-                    raise BatchPayloadError(
-                        "OpenAI evidence is absent from the immutable source",
-                        diagnostics=_grounding_diagnostics(
-                            "EVIDENCE_ABSENT",
-                            occurrence_count=0,
-                            **shape,
-                            **direct,
-                            **position,
-                        ),
-                    )
-                if len(occurrences) > 1 and has_anchors and not (before or after):
-                    raise BatchPayloadError(
-                        "repeated OpenAI evidence needs a non-empty context anchor",
-                        diagnostics=_grounding_diagnostics(
-                            "ANCHOR_MISSING",
-                            occurrence_count=len(occurrences),
-                            **shape,
-                            **direct,
-                            **position,
-                        ),
-                    )
-
-                # Deliberate asymmetry with the repair path below, and not an
-                # inconsistency to "fix": when the model's own offsets already
-                # slice the evidence exactly, SDD 4.2.1 requires that direct
-                # offset to be verified against *both* the source and the
-                # anchors the model supplied.  A claim that is internally
-                # contradictory - correct offsets, but adjacent text the model
-                # says is something else - is not evidence of a located mention.
-                # Below, by contrast, the offsets are already known to be wrong
-                # and the anchors are only a disambiguation device.
-                if direct_is_exact and has_anchors:
-                    if (
-                        content[max(0, start - len(before)):start] != before
-                        or content[end:end + len(after)] != after
-                    ):
-                        raise BatchPayloadError(
-                            "OpenAI evidence context anchor does not match the immutable source",
-                            diagnostics=_grounding_diagnostics(
-                                "ANCHOR_MISMATCH",
-                                occurrence_count=len(occurrences),
-                                **shape,
-                                **direct,
-                                **position,
-                            ),
-                        )
-                if not direct_is_exact:
-                    # The anchors exist for exactly one purpose: to choose among
-                    # repeated occurrences of the same literal.  A literal that
-                    # occurs once is self-verifying - the derived span is the
-                    # only slice of the immutable source that can equal this
-                    # evidence - so a wrong anchor is a defect in the model's
-                    # description of a mention it nonetheless located, not a
-                    # reason to discard the one valid occurrence.  SDD 4.2.1
-                    # scopes the anchor filter to repeated evidence and
-                    # separately sanctions unique-literal repair; filtering here
-                    # would also contradict the sibling ANCHOR_MISSING check
-                    # above, which is already scoped to len(occurrences) > 1.
-                    candidates = occurrences
-                    if has_anchors and len(occurrences) > 1:
-                        candidates = [
-                            occurrence
-                            for occurrence in occurrences
-                            if content[max(0, occurrence - len(before)):occurrence] == before
-                            and content[
-                                occurrence + len(evidence):occurrence + len(evidence) + len(after)
-                            ] == after
-                        ]
-                    if len(candidates) != 1:
-                        raise BatchPayloadError(
-                            "OpenAI evidence cannot be uniquely located in the immutable source",
-                            diagnostics=_grounding_diagnostics(
-                                "EVIDENCE_AMBIGUOUS",
-                                occurrence_count=len(occurrences),
-                                anchored_candidate_count=len(candidates),
-                                **shape,
-                                **direct,
-                                **position,
-                            ),
-                        )
-                    start = candidates[0]
-                    end = start + len(evidence)
+                start, end = _resolve_evidence_span(
+                    content,
+                    evidence=evidence,
+                    before=before,
+                    after=after,
+                    has_anchors=has_anchors,
+                    start=start,
+                    end=end,
+                    position=position,
+                )
                 normalized = dict(mention)
                 normalized["start_codepoint"] = start
                 normalized["end_codepoint"] = end
