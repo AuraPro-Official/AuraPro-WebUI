@@ -42,7 +42,7 @@ class ConceptPayloadValidation:
     reason: str | None = None
 
 
-DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v5"
+DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v6"
 
 # Bounded, adjacent literal context distinguishes repeated evidence without
 # putting another copy of a passage into a provider response.
@@ -212,8 +212,8 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
         ),
     ),
-    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
-        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+    "zh-glossary-v5": ConceptPromptProfile(
+        profile_id="zh-glossary-v5",
         # v4's 512-token budget was the direct cause of a third of its sample
         # failures: the provider returned no JSON payload at all on the longest
         # passages (1174, 1040 and 692 code points).  The worst case this
@@ -246,6 +246,67 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
             "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
             "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":1,\"evidence\":\"…\","
+            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
+            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
+            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+        ),
+    ),
+    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
+        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+        # v6 is v5 plus one clause: a minimum evidence span.  Everything else --
+        # the 2_048-token budget, the conditional anchors, the verbatim-copy
+        # rule, the object shape, the leading-"{" rule and the six-concept cap --
+        # is v5's text byte for byte, so running v6 beside the two in-flight v5
+        # samples isolates exactly this variable.
+        #
+        # Why a minimum at all: every v3/gpt-4.1 EVIDENCE_AMBIGUOUS failure cited
+        # a span of 1, 2, 3, 3, 3, 3 and 6 code points, occurring 38, 4, 3, 3, 7,
+        # 10 and 2 times in its passage; the pre-grounding-fix v4 failures had the
+        # same 1-2 code-point shape.  A one-character citation is both useless to
+        # a reader and almost certain to repeat, and repetition is what drives the
+        # ambiguity.  Requiring the span to be a phrase *containing* the term,
+        # rather than the bare term, keeps it a byte-exact source substring -- so
+        # source fidelity is untouched -- while making it far likelier to be
+        # unique.
+        #
+        # Why 10: it sits strictly above the whole observed failure distribution
+        # (max 6) with margin, and it is about the length of a short Chinese
+        # clause, so it asks for a real citation rather than padding.  It stays
+        # well below MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48, the only
+        # length bound the code path imposes and one that applies to the anchors
+        # rather than to the evidence, so the two cannot collide; nothing caps
+        # evidence length anywhere.  It also stays inside the 40 code points the
+        # v5 token budget above already reserves per evidence string.
+        #
+        # Why the passage-length escape hatch: 10 code points is unreachable in
+        # eight of the twenty sampled passages.  Measured over the sample, the
+        # lengths are 9, 9, 10, 10, 10, 10, 10, 10, 12, 17, 18, 28, 87, 105, 166,
+        # 270, 406, 692, 1_040 and 1_174 code points -- mostly headings at the
+        # short end, two of them shorter than the minimum itself.  Without the
+        # escape hatch those passages would put the model in an impossible bind
+        # and invite it to invent text, which strict validation would then reject.
+        max_tokens=2_048,
+        uses_context_anchors=True,
+        system_instruction=(
+            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
+            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
+            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
+            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
+            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
+            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
+            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、"
+            "end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，"
+            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
+            "包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、"
+            "全角与半角标点、空格和大小写。evidence 至少 10 个 Unicode 字符，"
+            "且必须是包含该概念的完整、有意义的短语或分句，不得只给出概念本身，"
+            "也不得截取无意义的字符片段；本段总长不足 10 个 Unicode 字符时，evidence 取本段全文。"
+            "evidence 在本段只出现一次时，"
+            "context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，"
+            "两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，"
+            "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
+            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
+            "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":10,\"evidence\":\"…\","
             "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
             "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
