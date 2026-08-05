@@ -25,6 +25,10 @@ auth_dependencies.get_verified_user = lambda: None
 sys.modules.setdefault("open_webui.utils.auth", auth_dependencies)
 
 from open_webui.retrieval.epub.batch import BatchPayloadError, BatchServiceError  # noqa: E402
+from open_webui.retrieval.epub.prompt_profiles import (  # noqa: E402
+    DEFAULT_CONCEPT_PROMPT_PROFILE,
+    available_prompt_profiles,
+)
 from open_webui.retrieval.epub.store import SQLiteEpubStore  # noqa: E402
 from open_webui.routers.epub import get_epub_concept_service, router  # noqa: E402
 from open_webui.services.epub_concept import EpubConceptService, EpubServiceError  # noqa: E402
@@ -174,6 +178,7 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             ("post", "/api/v1/epub/admin/batches/missing/submit", None),
             ("post", "/api/v1/epub/admin/batches/missing/poll", None),
             ("post", "/api/v1/epub/admin/batches/missing/retry", None),
+            ("get", "/api/v1/epub/admin/prompt-profiles", None),
             ("get", "/api/v1/epub/admin/batches", None),
             ("get", "/api/v1/epub/admin/batches/missing", None),
             ("post", "/api/v1/epub/admin/batches/recover", None),
@@ -195,6 +200,28 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         )
         self.assertEqual(upload.status_code, 401)
         self.assertIsNone(self.service.get_book("new-book"))
+
+    def test_admin_sees_every_implemented_prompt_profile_without_its_instructions(self) -> None:
+        """The administrator UI must be able to select the server's own default.
+
+        A client-side option list silently drops each new profile, so the server
+        publishes the identifiers it actually implements.  Instruction text and
+        output schemas stay server-owned and must not appear in the response.
+        """
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        response = self.client.get("/api/v1/epub/admin/prompt-profiles")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(set(payload), {"prompt_profiles", "default_prompt_profile"})
+        self.assertEqual(
+            payload["prompt_profiles"],
+            list(available_prompt_profiles()),
+        )
+        self.assertEqual(payload["default_prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE)
+        self.assertIn(DEFAULT_CONCEPT_PROMPT_PROFILE, payload["prompt_profiles"])
+        self.assertNotIn("抽取器", response.text)
+        self.assertNotIn("system_instruction", response.text)
 
     def test_admin_can_create_a_concept_and_batch_draft(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user

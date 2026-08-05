@@ -22,7 +22,7 @@ from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class IntegrityError(ValueError):
@@ -350,6 +350,19 @@ _MIGRATION_3: tuple[str, ...] = (
 )
 
 
+_MIGRATION_4: tuple[str, ...] = (
+    # A failed Batch item deliberately keeps ``response_json`` NULL, so the
+    # durable record retains only a failure class string.  This column holds a
+    # content-free numeric record of *why* grounding rejected the result:
+    # counts, code point lengths and booleans only, never source text,
+    # evidence, anchors, prompts, model output, or raw provider errors.  It is
+    # nullable because most failures (provider transport errors, missing
+    # terminal results) have no such measurement, and because rows written
+    # before this migration cannot gain one retroactively.
+    "ALTER TABLE batch_items ADD COLUMN failure_diagnostics_json TEXT",
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
@@ -411,7 +424,12 @@ class SQLiteEpubStore:
                 row[0]
                 for row in connection.execute("SELECT version FROM schema_migrations")
             }
-            migrations = ((1, _MIGRATION_1), (2, _MIGRATION_2), (3, _MIGRATION_3))
+            migrations = (
+                (1, _MIGRATION_1),
+                (2, _MIGRATION_2),
+                (3, _MIGRATION_3),
+                (4, _MIGRATION_4),
+            )
             try:
                 connection.execute("BEGIN")
                 for version, statements in migrations:

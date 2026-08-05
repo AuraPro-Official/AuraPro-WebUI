@@ -6,6 +6,7 @@ import {
 	getEpubBatchJob,
 	getEpubBatchJobs,
 	getEpubBooks,
+	getEpubPromptProfiles,
 	getEpubRelationAssertions,
 	getEpubSampleBatchReviews,
 	importEpub,
@@ -179,6 +180,27 @@ describe('EPUB concept API client', () => {
 		expect(fetchMock).toHaveBeenCalledWith(
 			'/api/v1/epub/admin/versions/version-1/index',
 			expect.objectContaining({ method: 'POST', body: JSON.stringify({ rebuild: true }) })
+		);
+	});
+
+	it('reads the selectable prompt profiles from the server instead of a hardcoded list', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse({
+				prompt_profiles: ['zh-glossary-v1', 'zh-glossary-v2', 'zh-glossary-v3', 'zh-glossary-v4'],
+				default_prompt_profile: 'zh-glossary-v4'
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const profiles = await getEpubPromptProfiles('admin-token');
+
+		expect(profiles.default_prompt_profile).toBe('zh-glossary-v4');
+		expect(profiles.prompt_profiles).toContain('zh-glossary-v4');
+		expect(fetchMock).toHaveBeenCalledWith(
+			'/api/v1/epub/admin/prompt-profiles',
+			expect.objectContaining({
+				headers: expect.objectContaining({ authorization: 'Bearer admin-token' })
+			})
 		);
 	});
 

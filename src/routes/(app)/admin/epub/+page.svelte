@@ -11,6 +11,7 @@
 		getEpubBatchJobs,
 		getEpubBook,
 		getEpubBooks,
+		getEpubPromptProfiles,
 		getEpubRelationAssertions,
 		getEpubSampleBatchReviews,
 		importEpub,
@@ -38,6 +39,10 @@
 	const token = () => localStorage.token ?? '';
 	const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+	// 服务器是 prompt profile 的唯一权威。仅当接口不可用时才退回这个值，
+	// 以免管理页在无法读取列表时完全无法创建 Batch 或本地校准。
+	const FALLBACK_PROMPT_PROFILE = 'zh-glossary-v4';
+
 	let loading = true;
 	let busy = false;
 	let books: EpubBook[] = [];
@@ -45,7 +50,9 @@
 	let selectedVersionId = '';
 	let selectedFile: File | null = null;
 	let profileName = '';
-	let promptProfile = 'zh-glossary-v3';
+	let promptProfiles: string[] = [FALLBACK_PROMPT_PROFILE];
+	let defaultPromptProfile = FALLBACK_PROMPT_PROFILE;
+	let promptProfile = FALLBACK_PROMPT_PROFILE;
 	let sampleOnly = true;
 	let sampleLimit = 20;
 	let batchJobId = '';
@@ -62,6 +69,25 @@
 	let versionIndexState: EpubVersionIndexResult | null = null;
 	let relationAssertions: RelationAssertion[] = [];
 	let sampleBatchReviews: SampleBatchReview[] = [];
+
+	// 非默认 profile 一律标记为“历史”，这样新增 v5 时无需再改前端。
+	$: promptProfileOptions = promptProfiles.map((profileId) => ({
+		id: profileId,
+		label: profileId === defaultPromptProfile ? profileId : `${profileId}（历史）`
+	}));
+
+	const loadPromptProfiles = async () => {
+		try {
+			const result = await getEpubPromptProfiles(token());
+			if (result.prompt_profiles?.length) promptProfiles = result.prompt_profiles;
+			defaultPromptProfile = promptProfiles.includes(result.default_prompt_profile)
+				? result.default_prompt_profile
+				: promptProfiles[0];
+			promptProfile = defaultPromptProfile;
+		} catch (error) {
+			toast.error(errorMessage(error));
+		}
+	};
 
 	const chooseFile = (event: Event) => {
 		selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
@@ -361,6 +387,7 @@
 			await goto('/epub');
 			return;
 		}
+		await loadPromptProfiles();
 		await loadBooks();
 		await loadBatchHistory();
 	});
@@ -512,9 +539,9 @@
 				>Prompt profile<select
 					bind:value={promptProfile}
 					class="mt-1 w-full rounded border bg-transparent px-2 py-1"
-					><option value="zh-glossary-v3">zh-glossary-v3</option><option value="zh-glossary-v2"
-						>zh-glossary-v2（历史）</option
-					><option value="zh-glossary-v1">zh-glossary-v1（历史）</option></select
+					>{#each promptProfileOptions as option (option.id)}<option value={option.id}
+							>{option.label}</option
+						>{/each}</select
 				></label
 			><label class="text-sm"
 				>样本上限<input
@@ -566,9 +593,9 @@
 				>Prompt profile<select
 					bind:value={promptProfile}
 					class="mt-1 w-full rounded border bg-transparent px-2 py-1"
-					><option value="zh-glossary-v3">zh-glossary-v3</option><option value="zh-glossary-v2"
-						>zh-glossary-v2（历史）</option
-					><option value="zh-glossary-v1">zh-glossary-v1（历史）</option></select
+					>{#each promptProfileOptions as option (option.id)}<option value={option.id}
+							>{option.label}</option
+						>{/each}</select
 				></label
 			><label class="text-sm"
 				>样本上限<input

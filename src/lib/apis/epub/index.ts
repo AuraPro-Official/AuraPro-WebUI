@@ -98,6 +98,34 @@ export type SectionGraphBatchDraftInput = Omit<BatchDraftInput, 'prompt_profile'
 
 export type BatchStatus = Record<string, string | number | boolean | null | undefined>;
 
+/**
+ * Why an item failed, as counts and flags only. A failed item stores no model
+ * output, so this is the only tunable signal a prompt author has. It is
+ * validated server-side on write and again on read: no source text, evidence,
+ * anchor, prompt, model output or raw provider error can appear here.
+ */
+export type EpubBatchItemFailureDiagnostics = {
+	/** Stable failure class, e.g. `EVIDENCE_ABSENT`, `EVIDENCE_AMBIGUOUS`. */
+	reason: string;
+	/** Position of the concept/mention within the model response. */
+	concept_index?: number;
+	concept_count?: number;
+	mention_index?: number;
+	mention_count?: number;
+	passage_codepoints?: number;
+	evidence_codepoints?: number;
+	/** How many times the literal evidence occurs in the immutable passage. */
+	occurrence_count?: number;
+	/** Whether the mention used the anchored (v4) mention shape. */
+	has_anchors?: boolean;
+	anchor_before_codepoints?: number;
+	anchor_after_codepoints?: number;
+	/** Occurrences still selected after context-anchor filtering. */
+	anchored_candidate_count?: number;
+	direct_offsets_in_range?: boolean;
+	direct_is_exact?: boolean;
+};
+
 export type EpubBatchItemSummary = {
 	batch_item_id: string;
 	passage_id: string;
@@ -106,6 +134,7 @@ export type EpubBatchItemSummary = {
 	attempt_count: number;
 	has_response: boolean;
 	has_error: boolean;
+	failure_diagnostics: EpubBatchItemFailureDiagnostics | null;
 	updated_at: string | null;
 };
 
@@ -128,6 +157,8 @@ export type EpubBatchSummary = {
 	results_pending_retrieval: boolean;
 	item_count: number;
 	item_status_counts: Record<string, number>;
+	/** Failed items grouped by failure class; always sums to the FAILED count. */
+	item_failure_reason_counts: Record<string, number>;
 	items?: EpubBatchItemSummary[];
 };
 
@@ -412,3 +443,13 @@ export const indexEpubVersion = (token: string, versionId: string, rebuild = fal
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ rebuild })
 	});
+
+/** Identifiers only. Prompt text, instructions and schemas stay server-owned. */
+export type EpubPromptProfiles = {
+	prompt_profiles: string[];
+	default_prompt_profile: string;
+};
+
+/** The server is the only authority on which prompt profiles exist. */
+export const getEpubPromptProfiles = (token: string) =>
+	request<EpubPromptProfiles>(token, '/admin/prompt-profiles');

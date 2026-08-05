@@ -28,6 +28,7 @@ from open_webui.retrieval.epub.calibration import LocalConceptCalibrationRunner
 from open_webui.retrieval.epub.prompt_profiles import (
     DEFAULT_CONCEPT_PROMPT_PROFILE,
     PromptProfileError,
+    available_prompt_profiles,
     build_concept_completion_request,
     select_stratified_passages,
 )
@@ -282,6 +283,20 @@ class EpubConceptService:
                 )
                 created_or_reused += 1
         return created_or_reused
+
+    def list_prompt_profiles(self) -> dict[str, Any]:
+        """List the selectable concept prompt profile identifiers only.
+
+        An administrator has to be able to choose any profile the server
+        actually implements, including the current default; hardcoding a
+        client-side list silently strips newer profiles from the UI.  Only the
+        identifiers travel: instruction text and output schemas stay server-
+        owned so no browser can read or replace the extraction policy.
+        """
+        return {
+            "prompt_profiles": list(available_prompt_profiles()),
+            "default_prompt_profile": DEFAULT_CONCEPT_PROMPT_PROFILE,
+        }
 
     def create_batch_draft(
         self,

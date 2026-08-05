@@ -163,6 +163,20 @@ async def import_epub(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
+@router.get("/admin/prompt-profiles")
+async def list_concept_prompt_profiles(
+    service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, Any]:
+    """List selectable prompt profile IDs and the server's current default.
+
+    Batch and calibration configuration is administrator surface, so this is
+    gated like every other ``/admin/`` route.  The response carries identifiers
+    only; prompt text, system instructions and output schemas are never
+    exposed through an administrator surface.
+    """
+    return service.list_prompt_profiles()
+
+
 @router.post("/admin/batches", status_code=status.HTTP_201_CREATED)
 async def create_batch_draft(
     form_data: BatchDraftForm, service: ServiceDep, user=Depends(get_admin_user)

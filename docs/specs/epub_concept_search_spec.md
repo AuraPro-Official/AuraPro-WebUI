@@ -100,8 +100,9 @@
   | `concept_relation_assertions` | 关系在某一图书版本上的断言与状态 | `assertion_id`, `relation_id`, `version_id`, `status`, `source` |
   | `concept_relation_evidence` | 关系断言的原文证据 | `relation_evidence_id`, `assertion_id`, `passage_id`, `start_codepoint`, `end_codepoint`, `evidence` |
   | `batch_jobs` | Batch 作业记录 | `batch_job_id`, `version_id`, `provider`, `provider_job_id`, `profile_name`, `status` |
-  | `batch_items` | Batch 单条请求与回收结果 | `batch_item_id`, `batch_job_id`, `passage_id`, `custom_id`, `status`, `request_json`, `response_json` |
-- **特性**：WAL journal mode、线程安全连接管理、带版本号的迁移执行器（`schema_migrations` 表 + `PRAGMA user_version`，当前 `SCHEMA_VERSION = 3`），启动时自动建库与增量迁移
+  | `batch_items` | Batch 单条请求与回收结果 | `batch_item_id`, `batch_job_id`, `passage_id`, `custom_id`, `status`, `request_json`, `response_json`, `failure_diagnostics_json` |
+- **特性**：WAL journal mode、线程安全连接管理、带版本号的迁移执行器（`schema_migrations` 表 + `PRAGMA user_version`，当前 `SCHEMA_VERSION = 4`），启动时自动建库与增量迁移
+- `failure_diagnostics_json` 只记录失败条目的**无内容**量化指标（失败类别 slug、码点长度、出现次数、布尔标志），用于调优 Prompt；绝不写入原文、证据串、锚点、模型输出或原始供应商错误。
 - **远程/私有部署**：后续可替换为 PostgreSQL + `pgvector`，当前先以 SQLite 为主。
 - 保留 100% 原文，不存储任何篡改或加工后的段落内容。
 
