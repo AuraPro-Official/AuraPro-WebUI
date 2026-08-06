@@ -265,6 +265,106 @@ class SQLiteEpubStoreTest(unittest.TestCase):
             {"TCP", "Transmission Control Protocol"},
         )
 
+    def _graph_span_fixture(self) -> list[str]:
+        """Mentions that duplicate, nest and partially overlap in two passages.
+
+        The passages are inserted out of book order so the graph read surface
+        has to sort by ``spine_index``/``ordinal`` rather than by insertion.
+        """
+        self.store.add_passages(
+            "version-a",
+            [
+                self._passage(passage_id="passage-b", source_fragment="second", ordinal=1),
+                self._passage(),
+            ],
+        )
+        alpha = self.store.upsert_concept("Alpha")
+        beta = self.store.upsert_concept("Beta")
+        gamma = self.store.upsert_concept("Gamma")
+        # passage-a: Alpha and Beta anchor the identical [0,2) span, and
+        # Alpha's [4,6) sits wholly inside Gamma's [3,7).
+        self.store.add_concept_mention(alpha, "passage-a", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(beta, "passage-a", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(gamma, "passage-a", start_codepoint=3, end_codepoint=7)
+        self.store.add_concept_mention(alpha, "passage-a", start_codepoint=4, end_codepoint=6)
+        # passage-b: [0,4) and [2,7) overlap without either containing the other.
+        self.store.add_concept_mention(alpha, "passage-b", start_codepoint=0, end_codepoint=4)
+        self.store.add_concept_mention(gamma, "passage-b", start_codepoint=2, end_codepoint=7)
+        return [alpha, beta, gamma]
+
+    @staticmethod
+    def _span_keys(rows: list[dict[str, object]]) -> list[tuple[object, object, object]]:
+        return [(row["passage_id"], row["start_codepoint"], row["end_codepoint"]) for row in rows]
+
+    def test_graph_occurrences_enumerate_distinct_source_spans_not_mention_rows(self) -> None:
+        """One row per distinct piece of source, attributed to every concept.
+
+        Six mention rows describe four distinct source spans: the two mentions
+        of ``[0,2)`` are the same characters, and ``[4,6)`` is already visible
+        inside ``[3,7)``.  A reader wants each piece of source once, so the
+        maximal span survives and carries the concepts it absorbed.
+        """
+        concept_ids = self._graph_span_fixture()
+        rows = self.store.list_concept_occurrences(concept_ids, offset=0, limit=20)
+
+        self.assertEqual(
+            self._span_keys(rows),
+            [("passage-a", 0, 2), ("passage-a", 3, 7), ("passage-b", 0, 4), ("passage-b", 2, 7)],
+        )
+        # The exact duplicate collapses; neither concept is dropped.
+        self.assertEqual(rows[0]["canonical_names"], ("Alpha", "Beta"))
+        self.assertEqual(rows[0]["concept_ids"], tuple(sorted(concept_ids[:2])))
+        # The nested span collapses into its container, which carries both.
+        self.assertEqual(rows[1]["canonical_names"], ("Alpha", "Gamma"))
+        # Every surviving span is still a byte-exact slice of its passage.
+        for row in rows:
+            start, end = row["start_codepoint"], row["end_codepoint"]
+            self.assertEqual(
+                row["content"][start:end],
+                self.store.get_passage(row["passage_id"])["content"][start:end],
+            )
+
+    def test_partially_overlapping_graph_spans_are_not_merged(self) -> None:
+        """Only containment collapses; a union would cite text nobody anchored."""
+        concept_ids = self._graph_span_fixture()
+        rows = [
+            row
+            for row in self.store.list_concept_occurrences(concept_ids, offset=0, limit=20)
+            if row["passage_id"] == "passage-b"
+        ]
+
+        self.assertEqual(self._span_keys(rows), [("passage-b", 0, 4), ("passage-b", 2, 7)])
+        self.assertEqual(rows[0]["canonical_names"], ("Alpha",))
+        self.assertEqual(rows[1]["canonical_names"], ("Gamma",))
+
+    def test_graph_occurrence_total_equals_every_page_walked_one_by_one(self) -> None:
+        """The count and the pages must apply the same de-duplication predicate.
+
+        Filtering duplicates after ``LIMIT``/``OFFSET`` would give ragged pages
+        and a total that disagrees with them, so this walks the pages instead
+        of recomputing the expectation.
+        """
+        concept_ids = self._graph_span_fixture()
+        total = self.store.count_concept_occurrences(concept_ids)
+
+        walked: list[dict[str, object]] = []
+        offset = 0
+        while True:
+            page = self.store.list_concept_occurrences(concept_ids, offset=offset, limit=1)
+            if not page:
+                break
+            self.assertEqual(len(page), 1)
+            walked.extend(page)
+            offset += 1
+            self.assertLessEqual(offset, 20, "graph pagination did not terminate")
+
+        self.assertEqual(len(walked), total)
+        keys = self._span_keys(walked)
+        self.assertEqual(len(set(keys)), len(keys))
+        self.assertEqual(
+            keys, self._span_keys(self.store.list_concept_occurrences(concept_ids, offset=0, limit=20))
+        )
+
 
 class SQLiteEpubConceptMergeTest(unittest.TestCase):
     """An administrator remedy for a model-suggested duplicate concept.
