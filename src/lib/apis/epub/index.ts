@@ -145,6 +145,12 @@ export type EpubBatchSummary = {
 	provider: string;
 	provider_job_id: string | null;
 	profile_name: string;
+	/**
+	 * Extraction instruction identifier, never its text. `null` means the job
+	 * predates the column: the full-run approval gate binds to this value, so an
+	 * unknown one unlocks nothing until the backfill derives it.
+	 */
+	prompt_profile: string | null;
 	job_kind: 'CONCEPT_MENTIONS' | 'SECTION_GRAPH';
 	status: string;
 	is_sample: boolean;
@@ -166,6 +172,25 @@ export type EpubBatchPage = { total: number; offset: number; items: EpubBatchSum
 export type EpubBatchRecovery = {
 	recovered: Array<{ job_id: string; state: string; ingested: number; failed: number }>;
 	skipped: Array<{ job_id: string; provider: string; reason: string }>;
+};
+
+/**
+ * Per-job outcome of recovering the prompt profile of jobs created before it
+ * was recorded. Identifiers and content-free reason classes only: an
+ * unresolved job keeps no profile and therefore keeps failing the gate.
+ */
+export type EpubBatchPromptProfileBackfill = {
+	examined: number;
+	resolved: Array<{
+		batch_job_id: string;
+		job_kind: 'CONCEPT_MENTIONS' | 'SECTION_GRAPH';
+		prompt_profile: string;
+	}>;
+	unresolved: Array<{
+		batch_job_id: string;
+		job_kind: string;
+		reason: string;
+	}>;
 };
 
 export type LocalCalibrationInput = {
@@ -270,6 +295,8 @@ export type SampleBatchReview = {
 	sample_batch_job_id: string;
 	version_id: string;
 	job_kind: 'CONCEPT_MENTIONS' | 'SECTION_GRAPH';
+	/** Which extraction instruction this approval covers; `null` if unrecorded. */
+	prompt_profile: string | null;
 	status: 'APPROVED' | 'REJECTED';
 	reviewed_by: string;
 	reviewed_at: string;
@@ -381,6 +408,16 @@ export const getEpubBatchJob = (token: string, batchJobId: string) =>
 /** Poll durable submitted/running jobs only; this endpoint never submits a draft. */
 export const recoverEpubBatches = (token: string) =>
 	request<EpubBatchRecovery>(token, '/admin/batches/recover', { method: 'POST' });
+
+/**
+ * Derive the prompt profile of jobs that predate the column, from the
+ * instruction each job actually sent. Never guesses: a job that matches no
+ * registered profile exactly is reported unresolved and keeps failing the gate.
+ */
+export const backfillEpubBatchPromptProfiles = (token: string) =>
+	request<EpubBatchPromptProfileBackfill>(token, '/admin/batches/backfill-prompt-profiles', {
+		method: 'POST'
+	});
 
 export const submitEpubBatch = (token: string, batchJobId: string) =>
 	request<BatchStatus>(token, `/admin/batches/${encodeURIComponent(batchJobId)}/submit`, {

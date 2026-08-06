@@ -234,14 +234,28 @@ is reviewed may a full-version Batch be created.
 The server enforces this cloud quality gate durably, rather than relying on the
 administrator UI: a full `openai-batch` job may be created only when an
 administrator has approved an OpenAI **sample** for the same immutable
-`version_id`, `job_kind` (`CONCEPT_MENTIONS` or `SECTION_GRAPH`), and exact
-model `profile_name`/snapshot. A sample is eligible for review only after its
-durable job state is `SUCCEEDED`, it contains at least one item, and every item
-has reached `SUCCEEDED` after strict atomic ingest. The approval audit record
-contains only version ID, job kind, sample job ID, reviewer identity, decision,
-and review time—never source text, prompt, model output, provider response, or
-credentials. An approval for one job kind or model profile cannot unlock
-another. Only an administrator may list or approve/reject these sample reviews.
+`version_id`, `job_kind` (`CONCEPT_MENTIONS` or `SECTION_GRAPH`), exact model
+`profile_name`/snapshot, and the same `prompt_profile`. A sample is eligible
+for review only after its durable job state is `SUCCEEDED`, it contains at
+least one item, and every item has reached `SUCCEEDED` after strict atomic
+ingest. The approval audit record contains only version ID, job kind, sample
+job ID, prompt profile identifier, reviewer identity, decision, and review
+time—never source text, prompt, model output, provider response, or
+credentials. An approval for one job kind, model profile, or prompt profile
+cannot unlock another. Only an administrator may list or approve/reject these
+sample reviews.
+
+`prompt_profile` is recorded on the job itself, because the model snapshot
+alone says nothing about the extraction instruction that was sent: reviewed
+quality belongs to one specific instruction, so promoting a new default prompt
+profile must not ride an older profile's approval. The column is nullable only
+because jobs predating it cannot gain a value inside a SQL migration. A null
+is read as *unknown* and never satisfies the gate from either side—an
+unbackfilled approved sample unlocks nothing, and a full run that names no
+prompt profile is refused. An administrator-only backfill recovers the value
+for such jobs by matching the system instruction in the job's own stored
+request against the registered profiles by exact equality; anything that
+matches none, or more than one, stays unknown rather than being guessed.
 
 ### 4.2.2 Concept-relation graph (required first-release capability)
 
