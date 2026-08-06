@@ -5,6 +5,7 @@
 
 	import { user, WEBUI_NAME } from '$lib/stores';
 	import {
+		applyEpubOverlay,
 		createEpubBatchDraft,
 		createEpubSectionGraphBatchDraft,
 		getEpubBatchJob,
@@ -14,6 +15,7 @@
 		getEpubPromptProfiles,
 		getEpubRelationAssertions,
 		getEpubSampleBatchReviews,
+		getEpubVersionOverlay,
 		importEpub,
 		indexEpubVersion,
 		indexEpubRetrievalUnit,
@@ -30,6 +32,7 @@
 		type EpubBatchSummary,
 		type EpubBook,
 		type EpubBookDetail,
+		type EpubOverlayApplyResult,
 		type EpubVersionIndexResult,
 		type LocalCalibrationReport,
 		type RelationAssertion,
@@ -67,6 +70,10 @@
 	let conceptStatus: 'PROVISIONAL' | 'APPROVED' | 'REJECTED' = 'APPROVED';
 	let retrievalUnitId = '';
 	let versionIndexState: EpubVersionIndexResult | null = null;
+	let overlayFile: File | null = null;
+	let exportedOverlaySha = '';
+	let exportedOverlaySummary = '';
+	let overlayApplyState: EpubOverlayApplyResult | null = null;
 	let relationAssertions: RelationAssertion[] = [];
 	let sampleBatchReviews: SampleBatchReview[] = [];
 
@@ -356,6 +363,50 @@
 			const result = await indexEpubRetrievalUnit(token(), retrievalUnitId.trim());
 			toast.success(`索引请求完成：${String(result.state ?? 'unknown')}`);
 		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
+	const chooseOverlayFile = (event: Event) => {
+		overlayFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
+	};
+
+	// 下载的必须是服务器返回的原始字节：X-Overlay-SHA256 覆盖的正是这些字节，
+	// 重新序列化会得到不同的摘要，发布出去就无法校验了。
+	const exportOverlay = async () => {
+		if (!selectedVersionId) return;
+		busy = true;
+		try {
+			const download = await getEpubVersionOverlay(token(), selectedVersionId);
+			const url = URL.createObjectURL(new Blob([download.text], { type: 'application/json' }));
+			const anchor = document.createElement('a');
+			anchor.href = url;
+			anchor.download = `${selectedVersionId.slice(0, 8)}-overlay.json`;
+			anchor.click();
+			URL.revokeObjectURL(url);
+			exportedOverlaySha = download.overlay_sha256;
+			exportedOverlaySummary = `${download.overlay.concepts.length} 个概念 · ${download.overlay.mentions.length} 处提及 · ${download.overlay.relations.length} 条关系 · 指纹 ${download.overlay.passage_fingerprint.count} 段`;
+			toast.success('分析层已导出；请连同 SHA-256 一起发布。');
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
+	const applyOverlay = async () => {
+		if (!overlayFile) return;
+		busy = true;
+		try {
+			overlayApplyState = await applyEpubOverlay(token(), overlayFile);
+			overlayFile = null;
+			toast.success(
+				`分析层已应用：新增 ${overlayApplyState.applied} 项，跳过 ${overlayApplyState.skipped} 项。请接着重建当前版本的向量索引。`
+			);
+		} catch (error) {
+			overlayApplyState = null;
 			toast.error(errorMessage(error));
 		} finally {
 			busy = false;
@@ -727,6 +778,75 @@
 			</ul>{:else}<p class="mt-3 text-sm text-gray-500">
 				尚未加载待审核关系，或当前版本没有待审核项。
 			</p>{/if}
+	</section>
+
+	<section
+		class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
+	>
+		<h2 class="font-medium">分析层导出与导入</h2>
+		<p class="mt-1 text-xs text-gray-500">
+			概念图只需由一位管理员用云端 Batch 构建一次，其余安装导入这份分析层即可，无需再付费跑
+			Batch。分析层只携带概念名称、别名、定义和<strong>位置</strong>（段落序号 + content_sha256 +
+			码点区间），<strong>不含任何原文、证据文本、EPUB 文件或向量</strong
+			>；导入方用自己那本书按位置重新取出证据原文。因此双方必须持有同一个 EPUB：archive
+			哈希、解析器版本和整本书的段落指纹都必须一致，任何一项不符都会整体拒绝，不会写入半份图。
+		</p>
+		<div class="mt-3 flex flex-wrap items-center gap-3">
+			<button
+				class="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50"
+				disabled={busy || !selectedVersionId}
+				on:click={exportOverlay}>导出当前版本分析层</button
+			>
+			<input
+				aria-label="选择分析层 JSON 文件"
+				type="file"
+				accept=".json,application/json"
+				on:change={chooseOverlayFile}
+			/><button
+				class="rounded border px-3 py-2 text-sm disabled:opacity-50"
+				disabled={busy || !overlayFile}
+				on:click={applyOverlay}>应用分析层</button
+			>
+		</div>
+		{#if exportedOverlaySha}<div class="mt-3 rounded bg-gray-50 p-3 text-sm dark:bg-gray-800">
+				<p>已导出：{exportedOverlaySummary}</p>
+				<p class="mt-1 break-all text-xs text-gray-500">
+					导出文件 SHA-256：<code>{exportedOverlaySha}</code>（请与文件一同发布，供接收方校验）
+				</p>
+			</div>{/if}
+		{#if overlayApplyState}<div class="mt-3 rounded bg-gray-50 p-3 text-sm dark:bg-gray-800">
+				<p>
+					已应用到版本 <code>{overlayApplyState.version_id.slice(0, 8)}</code>：新增 {overlayApplyState.applied}
+					项，跳过 {overlayApplyState.skipped} 项，拒绝 {overlayApplyState.rejected} 项。
+				</p>
+				<p class="mt-1 text-xs text-gray-500">
+					新增明细：概念 {overlayApplyState.applied_detail.concepts_created ?? 0}，更新概念 {overlayApplyState
+						.applied_detail.concepts_updated ?? 0}，提及 {overlayApplyState.applied_detail
+						.mentions_created ?? 0}，关系 {overlayApplyState.applied_detail.relations_created ??
+						0}，关系证据
+					{overlayApplyState.applied_detail.relation_evidence_created ?? 0}。
+				</p>
+				{#if Object.keys(overlayApplyState.skipped_reasons).length}<ul
+						class="mt-2 list-disc space-y-1 pl-5 text-xs text-gray-500"
+					>
+						{#each Object.entries(overlayApplyState.skipped_reasons) as [reason, count] (reason)}<li
+							>
+								<code>{reason}</code>：{count} 项（本地已有的判定优先，已批准的概念不会被降级，管理员录入的提及不会被模型输出覆盖）
+							</li>{/each}
+					</ul>{/if}
+				<p class="mt-1 break-all text-xs text-gray-500">
+					上传文件 SHA-256：<code>{overlayApplyState.uploaded_overlay_sha256}</code>
+					{#if overlayApplyState.canonical_overlay_sha256 !== overlayApplyState.uploaded_overlay_sha256}
+						· 规范化后 SHA-256：<code>{overlayApplyState.canonical_overlay_sha256}</code>
+					{/if}
+				</p>
+				{#if overlayApplyState.vectors_require_reindex}<p
+						class="mt-2 text-xs text-amber-700 dark:text-amber-300"
+					>
+						导入的分析层不含向量。请在下方“派生向量索引”中对当前版本执行<strong>重建当前版本</strong
+						>，新概念才可被检索。
+					</p>{/if}
+			</div>{/if}
 	</section>
 
 	<section class="grid gap-6 lg:grid-cols-2">
