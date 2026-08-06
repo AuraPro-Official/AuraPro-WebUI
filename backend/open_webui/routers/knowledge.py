@@ -2144,9 +2144,11 @@ async def export_knowledge_by_id(id: str, user=Depends(get_admin_user), db: Asyn
 async def export_knowledge_with_vectors(
     id: str,
     include_vectors: bool = True,
+    request_id: str | None = Query(None),
     user=Depends(get_admin_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    from open_webui.socket.main import get_event_emitter
     from open_webui.utils.knowledge_export_import import create_knowledge_export_zip
 
     knowledge = await Knowledges.get_knowledge_by_id(id=id, db=db)
@@ -2158,9 +2160,38 @@ async def export_knowledge_with_vectors(
     if is_external_knowledge(knowledge):
         external_knowledge_error()
 
+    event_emitter = None
+    if request_id:
+        try:
+            event_emitter = await get_event_emitter(
+                {
+                    'user_id': user.id,
+                    'chat_id': f'local:knowledge-export:{request_id}',
+                    'message_id': f'knowledge-export:{request_id}',
+                },
+                update_db=False,
+            )
+        except Exception as e:
+            log.warning('Failed to initialize knowledge export event emitter: %s', e)
+
+    async def _emit_progress(percent: int, message: str):
+        if event_emitter is None:
+            return
+        await event_emitter(
+            {
+                'type': 'knowledge:export_progress',
+                'data': {
+                    'request_id': request_id,
+                    'percent': percent,
+                    'message': message,
+                },
+            }
+        )
+
     zip_buffer = await create_knowledge_export_zip(
         id,
         include_vectors=include_vectors,
+        progress_callback=_emit_progress,
     )
     safe_name = ''.join(c if c.isascii() and (c.isalnum() or c in ' -_') else '_' for c in knowledge.name)
     zip_filename = f'{safe_name}_with_vectors.zip'
@@ -2248,8 +2279,6 @@ async def import_knowledge_with_vectors(
         await import_knowledge_from_zip(
             knowledge_id,
             zip_buffer,
-            db=db,
-            user_id=user.id,
         )
         restored = await Knowledges.get_knowledge_by_id(knowledge_id, db=db)
         if not restored:

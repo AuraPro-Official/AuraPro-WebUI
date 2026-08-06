@@ -7,14 +7,17 @@
 	import { onMount, getContext, tick, onDestroy } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
+	import type { Socket } from 'socket.io-client';
 
 	const i18n = getContext<Writable<i18nType>>('i18n');
 
 	import { WEBUI_NAME, knowledge, user } from '$lib/stores';
+	import { socket } from '$lib/stores';
 	import {
 		deleteKnowledgeById,
 		searchKnowledgeBases,
 		exportKnowledgeById,
+		exportKnowledgeByIdStream,
 		importKnowledgeWithVectors
 	} from '$lib/apis/knowledge';
 
@@ -45,6 +48,17 @@
 		};
 	};
 
+	type KnowledgeExportProgressEvent = {
+		data?: {
+			type?: string;
+			data?: {
+				request_id?: string;
+				percent?: number;
+				message?: string;
+			};
+		};
+	};
+
 	let loaded = false;
 	let showDeleteConfirm = false;
 	let tagsContainerElement: HTMLDivElement;
@@ -52,6 +66,13 @@
 	let importInput: HTMLInputElement;
 	let importTarget: KnowledgeListItem | null = null;
 	let selectedItem: KnowledgeListItem | null = null;
+
+	let exportProgress = false;
+	let exportProgressPercent = 0;
+	let exportProgressMessage = '';
+	let exportSocketEventHandler: ((event: KnowledgeExportProgressEvent) => void) | null = null;
+	let exportActiveSocket: Socket | null = null;
+	let exportRequestId: string | null = null;
 
 	let page = 1;
 	let query = '';
@@ -74,6 +95,9 @@
 
 	onDestroy(() => {
 		clearTimeout(searchDebounceTimer);
+		if (exportActiveSocket && exportSocketEventHandler) {
+			exportActiveSocket.off('events', exportSocketEventHandler);
+		}
 	});
 
 	$: if (loaded && viewOption !== undefined && sourceOption !== undefined) {
@@ -151,7 +175,37 @@
 	};
 
 	const exportHandler = async (item: KnowledgeListItem) => {
+		const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+		exportRequestId = requestId;
+		exportProgress = true;
+		exportProgressPercent = 0;
+		exportProgressMessage = $i18n.t('Preparing export...') ?? '正在准备导出...';
+
 		try {
+			// File System Access API (Chromium): pop the save dialog first, then stream the data to the chosen path
+			if (typeof window.showSaveFilePicker === 'function') {
+				const streamPromise = exportKnowledgeByIdStream(localStorage.token, item.id, requestId);
+
+				const fileHandle = await window.showSaveFilePicker({
+					suggestedName: `${item.name}_with_vectors.zip`,
+					types: [
+						{
+							description: 'ZIP',
+							accept: { 'application/zip': ['.zip'] }
+						}
+					]
+				});
+
+				const writable = await fileHandle.createWritable();
+				const res = await streamPromise;
+				if (res.body) {
+					await res.body.pipeTo(writable);
+					exportProgressPercent = 100;
+					toast.success($i18n.t('Knowledge exported successfully'));
+				}
+				return;
+			}
+
 			const blob = await exportKnowledgeById(localStorage.token, item.id);
 			if (blob) {
 				const url = URL.createObjectURL(blob);
@@ -165,7 +219,28 @@
 				toast.success($i18n.t('Knowledge exported successfully'));
 			}
 		} catch (e) {
-			toast.error(`${e}`);
+			if (e?.name !== 'AbortError') {
+				toast.error(`${e}`);
+			}
+		} finally {
+			setTimeout(() => {
+				exportProgress = false;
+				exportRequestId = null;
+			}, 500);
+		}
+	};
+
+	const handleExportSocketEvent = (event: KnowledgeExportProgressEvent) => {
+		if (event?.data?.type !== 'knowledge:export_progress') return;
+
+		const payload = event?.data?.data ?? {};
+		if (!exportRequestId || payload?.request_id !== exportRequestId) return;
+
+		if (typeof payload?.percent === 'number') {
+			exportProgressPercent = payload.percent;
+		}
+		if (payload?.message) {
+			exportProgressMessage = payload.message;
 		}
 	};
 
@@ -196,6 +271,17 @@
 		viewOption = localStorage?.workspaceViewOption || '';
 		sourceOption = localStorage?.workspaceKnowledgeSourceOption || '';
 		loaded = true;
+
+		exportSocketEventHandler = handleExportSocketEvent;
+		socket.subscribe((value) => {
+			if (exportActiveSocket && exportSocketEventHandler) {
+				exportActiveSocket.off('events', exportSocketEventHandler);
+			}
+			exportActiveSocket = value;
+			if (exportActiveSocket && exportSocketEventHandler) {
+				exportActiveSocket.on('events', exportSocketEventHandler);
+			}
+		});
 	});
 </script>
 
@@ -212,6 +298,26 @@
 			deleteHandler(selectedItem);
 		}}
 	/>
+
+	{#if exportProgress}
+		<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+			<div class="w-full max-w-sm rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-6 shadow-xl">
+				<div class="flex items-center justify-between mb-3">
+					<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
+						{$i18n.t('Exporting knowledge...') ?? '正在导出知识库...'}
+					</div>
+					<div class="text-xs font-semibold text-gray-500 dark:text-gray-400">{exportProgressPercent}%</div>
+				</div>
+				<div class="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+					<div
+						class="h-1.5 bg-blue-500 rounded-full transition-all duration-300"
+						style="width: {exportProgressPercent}%"
+					></div>
+				</div>
+				<div class="mt-2 text-xs text-gray-500 dark:text-gray-400 truncate">{exportProgressMessage}</div>
+			</div>
+		</div>
+	{/if}
 
 	<input
 		type="file"

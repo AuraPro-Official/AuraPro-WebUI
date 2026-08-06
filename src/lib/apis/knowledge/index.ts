@@ -980,6 +980,18 @@ export const exportKnowledgeById = async (token: string, id: string) => {
 	return res;
 };
 
+export const exportKnowledgeByIdStream = async (token: string, id: string, requestId?: string) => {
+	const url = `${WEBUI_API_BASE_URL}/knowledge/${id}/export-with-vectors${requestId ? `?request_id=${requestId}` : ''}`;
+	const res = await fetch(url, {
+		method: 'GET',
+		headers: {
+			authorization: `Bearer ${token}`
+		}
+	});
+	if (!res.ok) throw await res.json();
+	return res;
+};
+
 // ── Directory API ───────────────────────────────────────────────────
 
 export const importKnowledgeWithVectors = async (token: string, file: File, id: string) => {
