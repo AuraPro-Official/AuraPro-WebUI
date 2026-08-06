@@ -439,6 +439,24 @@ def _normalize(value: str) -> str:
     return normalized
 
 
+def _span_contains(
+    start: Any, end: Any, other_start: Any, other_end: Any
+) -> bool:
+    """Report whether span ``[start, end)`` covers span ``[other_start, other_end)``.
+
+    Equal spans count as containment: this is the attribution rule that puts
+    every concept anchored on a span onto the one row that survives the
+    de-duplication in :meth:`SQLiteEpubStore._occurrence_span_source`.  An
+    unanchored (``NULL``) mention is not a span, so it is attributed only to
+    the unanchored row for the same passage.
+    """
+    if start is None or end is None:
+        return other_start is None or other_end is None
+    if other_start is None or other_end is None:
+        return False
+    return int(other_start) >= int(start) and int(other_end) <= int(end)
+
+
 class SQLiteEpubStore:
     """SQLite implementation of :class:`EpubStore` interface version 1.
 
@@ -1126,40 +1144,129 @@ class SQLiteEpubStore:
             if changed != 1:
                 raise IntegrityError("unknown concept relation assertion")
 
+    def _occurrence_span_source(self, concept_ids: Sequence[str]) -> tuple[str, tuple[str, ...]]:
+        """Return the one FROM/WHERE/GROUP BY clause both occurrence queries use.
+
+        The unit of enumeration is a **distinct source span**, not a mention
+        row.  A reader asking for the graph occurrences of a query wants each
+        piece of source text once; two concepts anchored on the very same
+        characters, or one concept anchored inside another concept's span, are
+        still one piece of source text.  So the clause below
+
+        * collapses exact duplicates with ``GROUP BY`` on
+          ``(passage_id, start_codepoint, end_codepoint)``, and
+        * drops a span that some *other* span in the same passage wholly
+          contains, keeping the maximal one.
+
+        Only containment collapses.  A partial overlap keeps both spans,
+        because widening a span to their union would render a citation that
+        no concept actually anchored.  Unanchored (``NULL``) mentions are not
+        spans, so they neither contain nor are contained; they group together
+        per passage and are enumerated once.
+
+        ``count_concept_occurrences`` and ``list_concept_occurrences`` share
+        this text verbatim.  If the two ever applied different predicates the
+        total would disagree with the pages, and pagination would silently
+        drop or repeat source.
+        """
+        placeholders = ", ".join("?" for _ in concept_ids)
+        clause = f"""
+            FROM concept_mentions AS m
+            JOIN passages AS p ON p.passage_id = m.passage_id
+            JOIN book_versions AS v ON v.version_id = p.version_id
+            JOIN books AS b ON b.book_id = v.book_id
+            WHERE m.concept_id IN ({placeholders})
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM concept_mentions AS wider
+                  WHERE wider.passage_id = m.passage_id
+                    AND wider.concept_id IN ({placeholders})
+                    AND wider.start_codepoint IS NOT NULL
+                    AND m.start_codepoint IS NOT NULL
+                    AND wider.start_codepoint <= m.start_codepoint
+                    AND wider.end_codepoint >= m.end_codepoint
+                    AND (wider.start_codepoint < m.start_codepoint
+                         OR wider.end_codepoint > m.end_codepoint)
+              )
+            GROUP BY m.passage_id, m.start_codepoint, m.end_codepoint
+        """
+        return clause, (*concept_ids, *concept_ids)
+
     def count_concept_occurrences(self, concept_ids: Sequence[str]) -> int:
+        """Count the distinct source spans the graph channel will enumerate.
+
+        See :meth:`_occurrence_span_source` for why a span, and not a mention
+        row, is the unit that is counted and paged.
+        """
         if not concept_ids:
             return 0
-        placeholders = ", ".join("?" for _ in concept_ids)
+        clause, parameters = self._occurrence_span_source(concept_ids)
         row = self._connection().execute(
-            f"SELECT COUNT(*) AS count FROM concept_mentions WHERE concept_id IN ({placeholders})",
-            tuple(concept_ids),
+            f"SELECT COUNT(*) AS count FROM (SELECT 1 {clause})", parameters
         ).fetchone()
         return int(row["count"])
 
     def list_concept_occurrences(
         self, concept_ids: Sequence[str], *, offset: int, limit: int
     ) -> list[dict[str, Any]]:
-        """Page all matching graph occurrences in a stable source order."""
+        """Page the distinct graph source spans in a stable source order.
+
+        Each returned row carries ``concept_ids``/``canonical_names`` for every
+        queried concept anchored on the span — including the concepts of the
+        spans this one absorbed — so collapsing a duplicate never drops an
+        attribution.  See :meth:`_occurrence_span_source` for the unit of
+        enumeration and for why the count agrees with these pages.
+        """
         if not concept_ids:
             return []
         if offset < 0 or limit < 1:
             raise IntegrityError("concept occurrence pagination values are invalid")
-        placeholders = ", ".join("?" for _ in concept_ids)
+        clause, parameters = self._occurrence_span_source(concept_ids)
         rows = self._connection().execute(
-            f"""SELECT m.mention_id, m.concept_id, m.passage_id, m.start_codepoint,
-                       m.end_codepoint, c.canonical_name, p.content, p.content_sha256,
-                       p.toc_node_id, b.title AS book_title
+            f"""SELECT m.passage_id, m.start_codepoint, m.end_codepoint,
+                       p.content, p.content_sha256, p.toc_node_id,
+                       b.title AS book_title
+                {clause}
+                ORDER BY p.spine_index, p.ordinal, m.start_codepoint, MIN(m.mention_id)
+                LIMIT ? OFFSET ?""",
+            (*parameters, limit, offset),
+        ).fetchall()
+        spans = [self._search_row_with_toc(dict(row)) for row in rows]
+        self._attribute_span_concepts(spans, concept_ids)
+        return spans
+
+    def _attribute_span_concepts(
+        self, spans: list[dict[str, Any]], concept_ids: Sequence[str]
+    ) -> None:
+        """Attach every queried concept anchored inside each surviving span."""
+        if not spans:
+            return
+        passage_ids = tuple(dict.fromkeys(str(span["passage_id"]) for span in spans))
+        concept_placeholders = ", ".join("?" for _ in concept_ids)
+        passage_placeholders = ", ".join("?" for _ in passage_ids)
+        rows = self._connection().execute(
+            f"""SELECT DISTINCT m.passage_id, m.start_codepoint, m.end_codepoint,
+                       m.concept_id, c.canonical_name
                 FROM concept_mentions AS m
                 JOIN concepts AS c ON c.concept_id = m.concept_id
-                JOIN passages AS p ON p.passage_id = m.passage_id
-                JOIN book_versions AS v ON v.version_id = p.version_id
-                JOIN books AS b ON b.book_id = v.book_id
-                WHERE m.concept_id IN ({placeholders})
-                ORDER BY p.spine_index, p.ordinal, m.start_codepoint, m.mention_id
-                LIMIT ? OFFSET ?""",
-            (*concept_ids, limit, offset),
+                WHERE m.concept_id IN ({concept_placeholders})
+                  AND m.passage_id IN ({passage_placeholders})""",
+            (*concept_ids, *passage_ids),
         ).fetchall()
-        return [self._search_row_with_toc(dict(row)) for row in rows]
+        mentions_by_passage: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            mentions_by_passage.setdefault(str(row["passage_id"]), []).append(row)
+        for span in spans:
+            start, end = span["start_codepoint"], span["end_codepoint"]
+            attributed = [
+                row
+                for row in mentions_by_passage.get(str(span["passage_id"]), ())
+                if _span_contains(start, end, row["start_codepoint"], row["end_codepoint"])
+            ]
+            span["concept_ids"] = tuple(sorted({str(row["concept_id"]) for row in attributed}))
+            span["canonical_names"] = tuple(
+                sorted({str(row["canonical_name"]) for row in attributed})
+            )
 
     def get_search_passage(self, passage_id: str) -> dict[str, Any] | None:
         row = self._connection().execute(

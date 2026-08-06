@@ -290,8 +290,19 @@ relationship affects retrieval provenance and ranking, never citation text.
 - Tier 2 uses a local/private small LLM to resolve a concept only when Tier 1
   has no useful match. If unavailable, return an explicit degraded state rather
   than calling a cloud fallback.
-- Channel A enumerates all graph occurrences and exposes an exhaustive count and
-  pagination. Channel B returns vector candidates from derived retrieval units.
+- Channel A enumerates all distinct graph source spans and exposes an exhaustive
+  count and pagination over them. The unit of enumeration is a distinct
+  `(passage, start_codepoint, end_codepoint)` span, not a mention row: several
+  concepts anchored on the same characters yield one result, and a span wholly
+  contained by another span in the same result set is not returned separately —
+  the maximal span survives and is attributed to every concept it absorbed.
+  Partially overlapping spans that are not in a containment relation are returned
+  separately; spans are never widened to their union, since that would render a
+  citation no concept anchored. The exhaustive count and the paged list apply the
+  identical predicate, so paging through the channel yields exactly `graph_total`
+  results. Deduplication is scoped within one passage, so the set of passages the
+  channel reaches is unchanged. Channel B returns vector candidates from derived
+  retrieval units.
 - Candidate windows are locally cross-encoder reranked, then diversified with
   MMR before their parent passages are rendered.
 
