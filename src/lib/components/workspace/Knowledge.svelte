@@ -181,47 +181,59 @@
 		exportProgressPercent = 0;
 		exportProgressMessage = $i18n.t('Preparing export...') ?? '正在准备导出...';
 
-		try {
-			// File System Access API (Chromium): pop the save dialog first, then stream the data to the chosen path
-			if (typeof window.showSaveFilePicker === 'function') {
-				const streamPromise = exportKnowledgeByIdStream(localStorage.token, item.id, requestId);
-
-				const fileHandle = await window.showSaveFilePicker({
-					suggestedName: `${item.name}_with_vectors.zip`,
-					types: [
-						{
-							description: 'ZIP',
-							accept: { 'application/zip': ['.zip'] }
-						}
-					]
-				});
-
-				const writable = await fileHandle.createWritable();
-				const res = await streamPromise;
-				if (res.body) {
-					await res.body.pipeTo(writable);
-					exportProgressPercent = 100;
-					toast.success($i18n.t('Knowledge exported successfully'));
-				}
-				return;
-			}
-
+		const downloadBlob = async () => {
 			const blob = await exportKnowledgeById(localStorage.token, item.id);
 			if (blob) {
 				const url = URL.createObjectURL(blob);
 				const a = document.createElement('a');
 				a.href = url;
-				a.download = `${item.name}.zip`;
+				a.download = `${item.name}_with_vectors.zip`;
 				document.body.appendChild(a);
 				a.click();
 				document.body.removeChild(a);
 				URL.revokeObjectURL(url);
+				exportProgressPercent = 100;
 				toast.success($i18n.t('Knowledge exported successfully'));
 			}
-		} catch (e) {
-			if (e?.name !== 'AbortError') {
-				toast.error(`${e}`);
+		};
+
+		try {
+			// File System Access API (Chromium): pop the save dialog first, then stream the data to the chosen path.
+			// Not all contexts allow this (e.g. iframes) — fall back to a blob download when it fails.
+			if (typeof window.showSaveFilePicker === 'function') {
+				let streamed = false;
+				try {
+					const streamPromise = exportKnowledgeByIdStream(localStorage.token, item.id, requestId);
+
+					const fileHandle = await window.showSaveFilePicker({
+						suggestedName: `${item.name}_with_vectors.zip`,
+						types: [
+							{
+								description: 'ZIP',
+								accept: { 'application/zip': ['.zip'] }
+							}
+						]
+					});
+
+					const writable = await fileHandle.createWritable();
+					const res = await streamPromise;
+					if (res.body) {
+						await res.body.pipeTo(writable);
+						exportProgressPercent = 100;
+						toast.success($i18n.t('Knowledge exported successfully'));
+						streamed = true;
+					}
+				} catch (e) {
+					if (e?.name === 'AbortError') {
+						return;
+					}
+				}
+				if (streamed) return;
 			}
+
+			await downloadBlob();
+		} catch (e) {
+			toast.error(`${e}`);
 		} finally {
 			setTimeout(() => {
 				exportProgress = false;
