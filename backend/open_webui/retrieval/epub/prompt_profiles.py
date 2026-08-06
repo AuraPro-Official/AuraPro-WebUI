@@ -30,6 +30,12 @@ class ConceptPromptProfile:
     # currently the default": a superseded anchored profile must keep sending
     # the anchored schema so an existing sample stays replayable.
     uses_context_anchors: bool = False
+    # Whether the instruction asks the model for code-point offsets.  Same
+    # reasoning as the flag above, and the same name the section graph path
+    # already uses for the same decision.  Ingest never reads it: it recognises
+    # the shape per mention, from the field set the model actually returned, so
+    # a stored request built from any registered profile still replays.
+    asks_for_offsets: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +48,7 @@ class ConceptPayloadValidation:
     reason: str | None = None
 
 
-DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v6"
+DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v7"
 
 # Bounded, adjacent literal context distinguishes repeated evidence without
 # putting another copy of a passage into a provider response.
@@ -53,91 +59,127 @@ MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
 # supports Structured Outputs. Local llama.cpp still uses json_object plus the
 # same textual contract because smaller GGUF models and server builds do not
 # reliably implement the complete json_schema surface.
-_LEGACY_CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = {
+#
+# Three mention shapes are registered, and all three stay live: a durable Batch
+# request is built once and replayed from its stored row, so a superseded shape
+# has to keep being buildable byte for byte.
+_LEGACY_MENTION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["concepts"],
+    "required": ["start_codepoint", "end_codepoint", "evidence"],
     "properties": {
-        "concepts": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["name", "aliases", "definition", "mentions"],
-                "properties": {
-                    "name": {"type": "string", "minLength": 1},
-                    "aliases": {"type": "array", "items": {"type": "string"}},
-                    "definition": {"type": "string"},
-                    "mentions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["start_codepoint", "end_codepoint", "evidence"],
-                            "properties": {
-                                "start_codepoint": {"type": "integer", "minimum": 0},
-                                "end_codepoint": {"type": "integer", "minimum": 1},
-                                "evidence": {"type": "string", "minLength": 1},
-                            },
-                        },
-                    },
-                },
-            },
-        }
+        "start_codepoint": {"type": "integer", "minimum": 0},
+        "end_codepoint": {"type": "integer", "minimum": 1},
+        "evidence": {"type": "string", "minLength": 1},
+    },
+}
+
+_ANCHORED_MENTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "start_codepoint", "end_codepoint", "evidence",
+        "context_before", "context_after",
+    ],
+    "properties": {
+        "start_codepoint": {"type": "integer", "minimum": 0},
+        "end_codepoint": {"type": "integer", "minimum": 1},
+        "evidence": {"type": "string", "minLength": 1},
+        "context_before": {
+            "type": "string",
+            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        },
+        "context_after": {
+            "type": "string",
+            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        },
+    },
+}
+
+# ``zh-glossary-v7`` asks for no offsets at all.  The measurement that justifies
+# this came from these very concept samples: across four of them a model
+# supplies a correct ``start_codepoint``/``end_codepoint`` pair about one time
+# in thirty-seven while naming the right evidence text almost every time, and
+# every stored citation is byte-exact only because grounding re-derives the
+# offset from the literal.  ``zh-section-graph-v2`` acted on that evidence and
+# the concept path did not; this is that correction.  The adjacent context
+# anchor is what remains: it is the only thing a model has to supply for the
+# server to choose between repeated literals.
+_ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["evidence", "context_before", "context_after"],
+    "properties": {
+        "evidence": {"type": "string", "minLength": 1},
+        "context_before": {
+            "type": "string",
+            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        },
+        "context_after": {
+            "type": "string",
+            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        },
     },
 }
 
 
-CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["concepts"],
-    "properties": {
-        "concepts": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["name", "aliases", "definition", "mentions"],
-                "properties": {
-                    "name": {"type": "string", "minLength": 1},
-                    "aliases": {"type": "array", "items": {"type": "string"}},
-                    "definition": {"type": "string"},
-                    "mentions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": [
-                                "start_codepoint", "end_codepoint", "evidence",
-                                "context_before", "context_after",
-                            ],
-                            "properties": {
-                                "start_codepoint": {"type": "integer", "minimum": 0},
-                                "end_codepoint": {"type": "integer", "minimum": 1},
-                                "evidence": {"type": "string", "minLength": 1},
-                                "context_before": {
-                                    "type": "string",
-                                    "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
-                                },
-                                "context_after": {
-                                    "type": "string",
-                                    "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
-                                },
-                            },
-                        },
+def _concept_output_schema(mention_schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the concept output schema around one mention shape.
+
+    Only the mention differs between the registered contracts, so the concept
+    envelope is written once here rather than copied per shape - the same
+    reason :func:`section_graph._output_schema` exists.
+    """
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["concepts"],
+        "properties": {
+            "concepts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["name", "aliases", "definition", "mentions"],
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1},
+                        "aliases": {"type": "array", "items": {"type": "string"}},
+                        "definition": {"type": "string"},
+                        "mentions": {"type": "array", "items": dict(mention_schema)},
                     },
                 },
-            },
-        }
-    },
-}
+            }
+        },
+    }
+
+
+# The same three shapes as field sets, for validating a payload that has
+# already been decoded.  Cloud ingest keeps its own copies in ``batch.py``: it
+# must recognise a shape without importing an extraction-policy module, and the
+# durable store is the only place where a mismatch could corrupt a citation.
+_LEGACY_MENTION_FIELDS = set(_LEGACY_MENTION_SCHEMA["required"])
+_ANCHORED_MENTION_FIELDS = set(_ANCHORED_MENTION_SCHEMA["required"])
+_ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS = set(
+    _ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS["required"]
+)
+
+
+_LEGACY_CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = _concept_output_schema(_LEGACY_MENTION_SCHEMA)
+
+CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = _concept_output_schema(_ANCHORED_MENTION_SCHEMA)
+
+CONCEPT_OUTPUT_SCHEMA_WITHOUT_OFFSETS: dict[str, Any] = _concept_output_schema(
+    _ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS
+)
 
 
 # A registered profile is immutable.  Durable cloud sample approvals key on the
-# profile ID, so editing v1-v4 in place would silently re-point an existing
+# profile ID, so editing v1-v6 in place would silently re-point an existing
 # approval at an instruction that was never sampled.  A change is always a new
-# entry, and the superseded entries stay exactly as they were submitted.
+# entry, and the superseded entries stay exactly as they were submitted.  v6 in
+# particular now carries the one approved sample and the full-book job that
+# approval unlocked, so it is digest-pinned in test_epub_prompt_profiles.py
+# exactly as v1-v5 are.
 _PROFILES: dict[str, ConceptPromptProfile] = {
     "zh-glossary-v1": ConceptPromptProfile(
         profile_id="zh-glossary-v1",
@@ -251,8 +293,8 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
         ),
     ),
-    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
-        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+    "zh-glossary-v6": ConceptPromptProfile(
+        profile_id="zh-glossary-v6",
         # v6 is v5 plus one clause: a minimum evidence span.  Everything else --
         # the 2_048-token budget, the conditional anchors, the verbatim-copy
         # rule, the object shape, the leading-"{" rule and the six-concept cap --
@@ -312,6 +354,79 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
         ),
     ),
+    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
+        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+        # v7 is v6 minus the offsets, and nothing else.  Every lever v6 earned
+        # its 20/20 with survives byte for byte: the >=10 code-point minimum
+        # evidence span with its short-passage escape hatch, the conditional
+        # anchors, the verbatim-copy clause naming the normalizations to avoid,
+        # the six-concept cap, the strict object shape, the leading-"{" rule and
+        # the no-Markdown rule.
+        #
+        # Why drop them: the measurement that justified dropping offsets from
+        # ``zh-section-graph-v2`` was taken on *these* samples.  Across four
+        # cloud concept samples the model supplies a correct
+        # ``start_codepoint``/``end_codepoint`` pair about one time in
+        # thirty-seven, while naming the right evidence text almost every time;
+        # every stored citation is byte-exact only because
+        # ``_resolve_evidence_span`` re-derives the offset from the literal.
+        # The conclusion was applied to the section graph path and not to this
+        # one.  Asking for a number that is wrong 97% of the time and then
+        # thrown away costs output tokens on every span, and sustains the
+        # ``ANCHOR_MISMATCH`` failure class, which exists only on the
+        # ``direct_is_exact`` branch that fires ~3% of the time.  Under this
+        # contract that branch is unreachable, so the class cannot occur.
+        #
+        # This is a cost and cleanliness change, not a correctness fix: v6
+        # scored 20/20 and grounding repairs its offsets, so nothing about the
+        # in-flight v6 full-book job needs revisiting.  That job replays from
+        # its persisted ``request_json``, and ingest recognises a mention shape
+        # from the fields the model returned rather than from whichever profile
+        # is currently the default, so promoting v7 cannot reach it.
+        #
+        # max_tokens stays at v6's 2_048 deliberately, for two reasons.  First,
+        # it is a ceiling on generation, not a spend: a response is billed for
+        # the tokens it actually emits, and v7 emits fewer by construction -
+        # roughly 20 per span for two field names, their digits and two commas,
+        # about 120 over the six mentions this contract permits.  Lowering the
+        # ceiling would bank no saving; it would only move the worst case closer
+        # to truncation, and a truncated response is not JSON at all - the
+        # single most expensive failure mode there is, paid for and unusable,
+        # and the exact one that forced v4's 512 up to v5's 2_048.  Second, v7
+        # exists to isolate one variable against the approved v6 sample; a
+        # different decoding budget would confound that comparison, which is why
+        # v6 kept v5's budget and ``zh-section-graph-v3`` kept v2's.  The v5
+        # arithmetic still bounds this contract, and now over-bounds it: the
+        # worst case shrinks from ~1_780 tokens to ~1_660.
+        max_tokens=2_048,
+        uses_context_anchors=True,
+        asks_for_offsets=False,
+        system_instruction=(
+            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
+            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
+            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
+            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
+            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
+            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
+            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 evidence、"
+            "context_before、context_after 三个字段；不要输出任何字符位置，"
+            "字符位置由程序依据 evidence 在本段中重新推导。"
+            "evidence 必须与本段中的一段原文完全一致，"
+            "包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、"
+            "全角与半角标点、空格和大小写。evidence 至少 10 个 Unicode 字符，"
+            "且必须是包含该概念的完整、有意义的短语或分句，不得只给出概念本身，"
+            "也不得截取无意义的字符片段；本段总长不足 10 个 Unicode 字符时，evidence 取本段全文。"
+            "evidence 在本段只出现一次时，"
+            "context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，"
+            "两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，"
+            "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
+            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
+            "\"mentions\":[{\"evidence\":\"…\","
+            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
+            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
+            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+        ),
+    ),
 }
 
 
@@ -324,6 +439,18 @@ def get_prompt_profile(profile_id: str) -> ConceptPromptProfile:
     if profile is None:
         raise PromptProfileError(f"unknown EPUB concept prompt profile: {profile_id}")
     return profile
+
+
+def _strict_schema_for(profile: ConceptPromptProfile) -> dict[str, Any]:
+    """Pick the Structured Outputs schema one profile's instruction asks for."""
+    if not profile.uses_context_anchors:
+        # v1-v3: offsets, no anchors.  No registered profile asks for neither,
+        # because a payload with no offsets and no anchors could not resolve a
+        # repeated literal at all.
+        return _LEGACY_CONCEPT_OUTPUT_SCHEMA
+    if profile.asks_for_offsets:
+        return CONCEPT_OUTPUT_SCHEMA
+    return CONCEPT_OUTPUT_SCHEMA_WITHOUT_OFFSETS
 
 
 def build_concept_completion_request(
@@ -346,11 +473,10 @@ def build_concept_completion_request(
             "json_schema": {
                 "name": "epub_concepts",
                 "strict": True,
-                "schema": (
-                    CONCEPT_OUTPUT_SCHEMA
-                    if profile.uses_context_anchors
-                    else _LEGACY_CONCEPT_OUTPUT_SCHEMA
-                ),
+                # Both flags come from the profile, never from the current
+                # default, so a superseded profile keeps sending the exact
+                # schema it was sampled with.
+                "schema": _strict_schema_for(profile),
             },
         }
     else:
@@ -426,18 +552,33 @@ def validate_concept_payload(payload: Any, *, passage: str) -> ConceptPayloadVal
         if not isinstance(concept_mentions, list) or not concept_mentions:
             return ConceptPayloadValidation(False, 0, mentions, "each concept needs a visible mention")
         for mention in concept_mentions:
-            if not isinstance(mention, Mapping) or (
-                set(mention) != {"start_codepoint", "end_codepoint", "evidence"}
-                and set(mention)
-                != {
-                    "start_codepoint", "end_codepoint", "evidence",
-                    "context_before", "context_after",
-                }
+            if not isinstance(mention, Mapping) or set(mention) not in (
+                _LEGACY_MENTION_FIELDS,
+                _ANCHORED_MENTION_FIELDS,
+                _ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS,
             ):
                 return ConceptPayloadValidation(False, 0, mentions, "each mention has an invalid schema")
-            start = mention["start_codepoint"]
-            end = mention["end_codepoint"]
             evidence = mention["evidence"]
+            if set(mention) == _ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS:
+                # A v7 payload carries no offsets at all, so this validator
+                # derives them from the literal exactly as cloud ingest does.
+                # The checks below are then run unchanged against the derived
+                # span, which keeps one definition of "valid mention" rather
+                # than a second, looser one for the newer shape.
+                located = _locate_evidence(
+                    passage,
+                    evidence if isinstance(evidence, str) else "",
+                    mention["context_before"],
+                    mention["context_after"],
+                )
+                if located is None:
+                    return ConceptPayloadValidation(
+                        False, 0, mentions, "mention evidence cannot be uniquely located"
+                    )
+                start, end = located
+            else:
+                start = mention["start_codepoint"]
+                end = mention["end_codepoint"]
             if (
                 isinstance(start, bool)
                 or isinstance(end, bool)
@@ -510,6 +651,45 @@ def normalize_local_payload_offsets(payload: Any, *, passage: str) -> Any:
         normalized_concept["mentions"] = normalized_mentions
         normalized_concepts.append(normalized_concept)
     return {**payload, "concepts": normalized_concepts}
+
+
+def _locate_evidence(
+    passage: str, evidence: str, before: Any, after: Any
+) -> tuple[int, int] | None:
+    """Derive the span of an offsets-free mention, or ``None`` if it is unsafe.
+
+    This is the read-only twin of the no-offsets branch of
+    ``batch._resolve_evidence_span`` and follows the same rule: a literal that
+    occurs once is self-verifying, a literal that repeats must be selected by a
+    non-empty adjacent anchor, and anything else is not a located mention.  The
+    durable path deliberately stays in ``batch.py`` with its diagnostics; this
+    one exists because a local calibration run has to be able to score the
+    default profile, and it writes nothing.
+    """
+    if not evidence or not isinstance(before, str) or not isinstance(after, str):
+        return None
+    occurrences: list[int] = []
+    cursor = passage.find(evidence)
+    while cursor >= 0:
+        occurrences.append(cursor)
+        cursor = passage.find(evidence, cursor + 1)
+    if not occurrences:
+        return None
+    candidates = occurrences
+    if len(occurrences) > 1:
+        if not (before or after):
+            return None
+        candidates = [
+            occurrence
+            for occurrence in occurrences
+            if passage[max(0, occurrence - len(before)):occurrence] == before
+            and passage[
+                occurrence + len(evidence):occurrence + len(evidence) + len(after)
+            ] == after
+        ]
+    if len(candidates) != 1:
+        return None
+    return candidates[0], candidates[0] + len(evidence)
 
 
 def _evenly_spaced(values: Sequence[Any], count: int) -> list[Any]:

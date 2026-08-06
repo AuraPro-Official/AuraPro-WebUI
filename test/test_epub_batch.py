@@ -751,6 +751,147 @@ class EpubBatchServiceTest(unittest.TestCase):
             "OpenAI evidence context anchor does not match the immutable source",
         )
 
+    # ------------------------------------------------------------------
+    # The offsets-free concept shape (``zh-glossary-v7``)
+    #
+    # A mention now arrives as evidence plus two anchors and no numbers at all.
+    # Nothing about resolution changes - the offset was always derived from the
+    # literal - so these tests exist to prove the shape is recognised, that the
+    # older shapes still are, and that the stored citation is still a byte-exact
+    # slice of the immutable passage.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _v7_mention(evidence: str, before: str = "", after: str = "") -> dict:
+        return {"evidence": evidence, "context_before": before, "context_after": after}
+
+    def test_a_v7_mention_carrying_no_offsets_ingests_as_an_exact_source_slice(self) -> None:
+        self._ingest_openai_item(
+            job_id="v7-no-offsets",
+            passage_id="p2",
+            payload=self._concept_payload([self._v7_mention("datagram based")]),
+        )
+        self.assertEqual(self._only_mention(), ("p2", 7, 21, "datagram based"))
+        self.assertEqual(self._assert_mention_slices_the_immutable_source(), (7, 21))
+
+    def test_a_v7_repeated_literal_is_resolved_by_the_anchor_the_model_supplied(self) -> None:
+        # "TCP" occurs twice in p1; the anchor is now the only thing the model
+        # supplies that can choose between them.
+        self._ingest_openai_item(
+            job_id="v7-anchored-repeat",
+            passage_id="p1",
+            payload=self._concept_payload([self._v7_mention("TCP", "connects ", " endpoints")]),
+        )
+        self.assertEqual(self._only_mention(), ("p1", 13, 16, "TCP"))
+        self._assert_mention_slices_the_immutable_source()
+
+    def test_a_v7_repeated_literal_without_an_anchor_fails_anchor_missing(self) -> None:
+        self._fail_openai_item(
+            job_id="v7-unanchored-repeat",
+            passage_id="p1",
+            payload=self._concept_payload([self._v7_mention("TCP")]),
+        )
+        diagnostics = self._item_diagnostics("v7-unanchored-repeat")
+        self.assertEqual(
+            diagnostics,
+            {
+                "reason": "ANCHOR_MISSING",
+                "concept_index": 0,
+                "concept_count": 1,
+                "mention_index": 0,
+                "mention_count": 1,
+                "passage_codepoints": len("TCP connects TCP endpoints."),
+                "evidence_codepoints": 3,
+                "occurrence_count": 2,
+                "has_anchors": True,
+                "anchor_before_codepoints": 0,
+                "anchor_after_codepoints": 0,
+            },
+        )
+        # ``has_anchors`` is reported truthfully, but this shape supplies no
+        # offsets, so the two direct-offset flags are absent rather than false:
+        # "not measurable here" must not aggregate as "measured wrong".
+        self.assertNotIn("direct_offsets_in_range", diagnostics)
+        self.assertNotIn("direct_is_exact", diagnostics)
+        self.assertEqual(
+            self.repository.list_items("v7-unanchored-repeat")[0]["error_text"],
+            "repeated OpenAI evidence needs a non-empty context anchor",
+        )
+
+    def test_a_v7_mention_can_never_reach_the_anchor_mismatch_branch(self) -> None:
+        # ANCHOR_MISMATCH lives on the direct-exact-offset branch.  With no
+        # offsets in the payload that branch is unreachable by construction, so
+        # anchors that contradict the source cost nothing on a unique literal -
+        # while the same anchors on the v6 shape with exact offsets still fail.
+        self._ingest_openai_item(
+            job_id="v7-wrong-anchor-unique",
+            passage_id="p2",
+            payload=self._concept_payload(
+                [self._v7_mention("datagram based", "never in the source ", " nor is this")]
+            ),
+        )
+        self.assertEqual(self._only_mention(), ("p2", 7, 21, "datagram based"))
+        self._assert_mention_slices_the_immutable_source()
+
+    def test_older_concept_shapes_still_ingest_after_v7_becomes_the_default(self) -> None:
+        # The replay guarantee.  v1-v6 requests are already persisted and the
+        # approved v6 sample must stay re-ingestable, so the shape is read from
+        # the mention rather than from whichever profile is current.  Both
+        # legacy shapes carry deliberately wrong offsets, which unique-literal
+        # repair is expected to overrule.
+        for job_id, mention, expected in (
+            (
+                "replay-v3-shape",
+                {"start_codepoint": 99, "end_codepoint": 113, "evidence": "datagram based"},
+                ("p2", 7, 21, "datagram based"),
+            ),
+            (
+                "replay-v6-shape",
+                {
+                    "start_codepoint": 0,
+                    "end_codepoint": 14,
+                    "evidence": "datagram based",
+                    "context_before": "",
+                    "context_after": "",
+                },
+                ("p2", 7, 21, "datagram based"),
+            ),
+        ):
+            with self.subTest(shape=job_id):
+                self._ingest_openai_item(
+                    job_id=job_id, passage_id="p2", payload=self._concept_payload([mention])
+                )
+                self.assertEqual(self._only_mention(), expected)
+                self._assert_mention_slices_the_immutable_source()
+                with self.store._write() as connection:
+                    connection.execute("DELETE FROM concept_mentions")
+                    connection.execute("DELETE FROM concept_aliases")
+                    connection.execute("DELETE FROM concepts")
+
+    def test_a_half_offset_concept_mention_is_still_an_invalid_shape(self) -> None:
+        # Three shapes are recognised and nothing between them: dropping only
+        # one of the two offsets, or keeping offsets without anchors while also
+        # sending anchors, is a schema failure rather than a resolvable mention.
+        for label, mention in (
+            ("one-offset", {"end_codepoint": 21, "evidence": "datagram based"}),
+            (
+                "offsets-and-one-anchor",
+                {
+                    "start_codepoint": 7,
+                    "end_codepoint": 21,
+                    "evidence": "datagram based",
+                    "context_before": "",
+                },
+            ),
+            ("evidence-only", {"evidence": "datagram based"}),
+        ):
+            with self.subTest(shape=label):
+                job_id = f"v7-invalid-{label}"
+                self._fail_openai_item(
+                    job_id=job_id, passage_id="p2", payload=self._concept_payload([mention])
+                )
+                self.assertEqual(self._item_diagnostics(job_id)["reason"], "INVALID_SCHEMA")
+
     def test_openai_repeat_poll_can_reingest_a_previously_failed_item_without_rewriting_success(self) -> None:
         job_id = self.service.create_draft(
             version_id="version",
