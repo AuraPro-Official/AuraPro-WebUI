@@ -30,6 +30,7 @@ from open_webui.retrieval.epub.prompt_profiles import (
     PromptProfileError,
     available_prompt_profiles,
     build_concept_completion_request,
+    get_prompt_profile,
     select_stratified_passages,
 )
 from open_webui.retrieval.epub.overlay import (
@@ -44,6 +45,7 @@ from open_webui.retrieval.epub.section_graph import (
     DEFAULT_SECTION_GRAPH_PROFILE,
     SECTION_GRAPH_MAX_CHARACTERS,
     SectionGraphError,
+    available_section_graph_profiles,
     build_section_graph_completion_request,
     build_section_graph_packets,
     get_section_graph_profile,
@@ -431,6 +433,10 @@ class EpubConceptService:
             profile_name=profile_name,
             items=items,
             is_sample=is_sample,
+            # Passed explicitly rather than re-derived from the built items:
+            # the batch layer must record what this caller asked for, and it
+            # deliberately knows nothing about extraction policy.
+            prompt_profile=prompt_profile,
         )
         return {
             "batch_job_id": job_id,
@@ -493,6 +499,7 @@ class EpubConceptService:
             job_kind="SECTION_GRAPH",
             items=items,
             is_sample=is_sample,
+            prompt_profile=section_graph_profile,
         )
         return {
             "batch_job_id": job_id,
@@ -502,6 +509,113 @@ class EpubConceptService:
             "is_sample": is_sample,
             "prompt_profile": section_graph_profile,
         }
+
+    def backfill_batch_prompt_profiles(self) -> dict[str, Any]:
+        """Recover the prompt profile of jobs created before it was recorded.
+
+        The durable sample-review gate now binds to the prompt profile, so
+        every job predating that column would otherwise be permanently unable
+        to unlock -- or, for an already-approved sample, to keep unlocking --
+        a full run.  The information is not lost: each item's stored request
+        holds the exact system instruction that was sent.
+
+        Matching is exact string equality against the registered profiles'
+        instructions, and nothing else.  A near match is not a match: the
+        whole point of the gate is that the approved quality belongs to one
+        specific instruction, so a "probably v6" guess would reintroduce
+        precisely the confusion being fixed.  Anything unresolved keeps its
+        NULL and therefore keeps being refused; an administrator can create a
+        fresh sample instead.
+
+        This lives in the service because it needs both the batch persistence
+        layer and the extraction-policy registries, and the store and its SQL
+        migrations must not import the latter.
+
+        The report is identifier-only: job IDs, kinds, a resolved profile
+        identifier, or a content-free reason class.  The request envelope it
+        reads never leaves this method.
+        """
+        instructions: dict[str, dict[str, set[str]]] = {
+            "CONCEPT_MENTIONS": {},
+            "SECTION_GRAPH": {},
+        }
+        for profile_id in available_prompt_profiles():
+            instruction = get_prompt_profile(profile_id).system_instruction
+            instructions["CONCEPT_MENTIONS"].setdefault(instruction, set()).add(profile_id)
+        for profile_id in available_section_graph_profiles():
+            instruction = get_section_graph_profile(profile_id).system_instruction
+            instructions["SECTION_GRAPH"].setdefault(instruction, set()).add(profile_id)
+
+        resolved: list[dict[str, Any]] = []
+        unresolved: list[dict[str, Any]] = []
+        try:
+            pending = self._batch.list_jobs_without_prompt_profile()
+        except BatchServiceError as error:
+            raise EpubServiceError(str(error)) from error
+        for job in pending:
+            job_id = str(job["batch_job_id"])
+            job_kind = str(job["job_kind"])
+            record = {"batch_job_id": job_id, "job_kind": job_kind}
+            candidates = instructions.get(job_kind)
+            if candidates is None:
+                unresolved.append({**record, "reason": "UNSUPPORTED_JOB_KIND"})
+                continue
+            try:
+                request = self._batch.first_item_request(job_id)
+            except BatchServiceError as error:
+                raise EpubServiceError(str(error)) from error
+            instruction = self._system_instruction(request)
+            if instruction is None:
+                unresolved.append({**record, "reason": "NO_STORED_INSTRUCTION"})
+                continue
+            matches = candidates.get(instruction, set())
+            if not matches:
+                unresolved.append({**record, "reason": "NO_REGISTERED_PROFILE_MATCHES"})
+                continue
+            if len(matches) > 1:
+                # Two registered profiles sharing one instruction cannot be
+                # told apart from what was sent, and picking either would
+                # attribute an approval to a profile that may not have been
+                # the one requested.
+                unresolved.append({**record, "reason": "AMBIGUOUS_REGISTERED_PROFILES"})
+                continue
+            profile_id = next(iter(matches))
+            try:
+                self._batch.backfill_prompt_profile(job_id, profile_id)
+            except BatchServiceError as error:
+                raise EpubServiceError(str(error)) from error
+            resolved.append({**record, "prompt_profile": profile_id})
+        return {
+            "examined": len(pending),
+            "resolved": resolved,
+            "unresolved": unresolved,
+        }
+
+    @staticmethod
+    def _system_instruction(request: Mapping[str, Any] | None) -> str | None:
+        """Read the single system message out of a stored Batch envelope.
+
+        Returns ``None`` for any shape this server did not write, rather than
+        reaching for whatever string is nearby: an unrecognised envelope is an
+        unknown profile, and unknown must stay unknown.
+        """
+        if not isinstance(request, Mapping):
+            return None
+        body = request.get("body")
+        if not isinstance(body, Mapping):
+            return None
+        messages = body.get("messages")
+        if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+            return None
+        found: list[str] = []
+        for message in messages:
+            if not isinstance(message, Mapping) or message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                return None
+            found.append(content)
+        return found[0] if len(found) == 1 else None
 
     def submit_batch(self, batch_job_id: str) -> dict[str, Any]:
         provider = self._provider_for_job(batch_job_id)

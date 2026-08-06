@@ -6,6 +6,7 @@
 	import { user, WEBUI_NAME } from '$lib/stores';
 	import {
 		applyEpubOverlay,
+		backfillEpubBatchPromptProfiles,
 		createEpubBatchDraft,
 		createEpubSectionGraphBatchDraft,
 		getEpubBatchJob,
@@ -28,6 +29,7 @@
 		submitEpubBatch,
 		upsertEpubConcept,
 		type BatchStatus,
+		type EpubBatchPromptProfileBackfill,
 		type EpubBatchRecovery,
 		type EpubBatchSummary,
 		type EpubBook,
@@ -63,6 +65,7 @@
 	let batchHistory: EpubBatchSummary[] = [];
 	let batchDetail: EpubBatchSummary | null = null;
 	let batchRecovery: EpubBatchRecovery | null = null;
+	let promptProfileBackfill: EpubBatchPromptProfileBackfill | null = null;
 	let calibrationState: LocalCalibrationReport | null = null;
 	let conceptName = '';
 	let conceptAliases = '';
@@ -250,6 +253,23 @@
 			batchRecovery = await recoverEpubBatches(token());
 			await loadBatchHistory();
 			toast.success(`已恢复轮询 ${batchRecovery.recovered.length} 个未终态任务。`);
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
+	// 全量任务的审批门现在绑定 prompt profile。列存在之前创建的任务没有记录该
+	// 标识，因此既不能解锁、也不能被解锁；这里从任务自身已发送的请求中精确还原。
+	const backfillPromptProfiles = async () => {
+		busy = true;
+		try {
+			promptProfileBackfill = await backfillEpubBatchPromptProfiles(token());
+			await loadBatchHistory();
+			toast.success(
+				`已还原 ${promptProfileBackfill.resolved.length} 个任务的 prompt profile；${promptProfileBackfill.unresolved.length} 个仍未知。`
+			);
 		} catch (error) {
 			toast.error(errorMessage(error));
 		} finally {
@@ -499,12 +519,21 @@
 					class="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50"
 					disabled={busy}
 					on:click={recoverBatches}>恢复未终态任务</button
+				><button
+					class="rounded border px-3 py-2 text-sm disabled:opacity-50"
+					disabled={busy}
+					on:click={backfillPromptProfiles}>还原缺失的 Prompt profile</button
 				>
 			</div>
 		</div>
 		{#if batchRecovery}<p class="mt-3 text-xs text-gray-500">
 				本次恢复：轮询 {batchRecovery.recovered.length} 项；因未配置 Provider 而跳过 {batchRecovery
 					.skipped.length} 项。
+			</p>{/if}
+		{#if promptProfileBackfill}<p class="mt-3 text-xs text-gray-500">
+				本次还原：检查 {promptProfileBackfill.examined} 个未记录 prompt profile 的任务，精确匹配成功 {promptProfileBackfill
+					.resolved.length} 个；{promptProfileBackfill.unresolved.length}
+				个无法确定，保持未知并继续被审批门拒绝（不做近似猜测）。
 			</p>{/if}
 		{#if batchHistory.length}<ul class="mt-3 space-y-2">
 				{#each batchHistory as job (job.batch_job_id)}<li class="rounded border p-3 text-sm">
@@ -513,7 +542,7 @@
 								<p class="font-medium"><code>{job.batch_job_id}</code></p>
 								<p class="mt-1 text-xs text-gray-500">
 									{job.job_kind} · {job.status} · {job.is_sample ? '样本' : '全量'} · {job.item_count}
-									项
+									项 · prompt {job.prompt_profile ?? '未知'}
 									{#if job.has_error}· 有错误{/if}
 									{#if job.results_pending_retrieval}· 结果待重新获取{/if}
 								</p>
@@ -714,7 +743,8 @@
 			</div>{/if}
 		<div class="mt-4 flex items-center justify-between gap-2">
 			<p class="text-xs text-gray-500">
-				已审核样本仅保存任务标识、审核状态和时间，不复制原文或云端输出。
+					已审核样本仅保存任务标识、prompt profile 标识、审核状态和时间，不复制原文、prompt
+				正文或云端输出。批准只对同一 prompt profile 生效。
 			</p>
 			<button
 				class="rounded border px-2 py-1 text-xs disabled:opacity-50"
@@ -726,7 +756,8 @@
 				class="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300"
 			>
 				{#each sampleBatchReviews as review (review.sample_batch_job_id)}<li>
-						<code>{review.sample_batch_job_id}</code> · {review.job_kind} · {review.status} · {review.reviewed_at}
+						<code>{review.sample_batch_job_id}</code> · {review.job_kind} · prompt {review.prompt_profile ??
+							'未知'} · {review.status} · {review.reviewed_at}
 					</li>{/each}
 			</ul>{/if}
 	</section>

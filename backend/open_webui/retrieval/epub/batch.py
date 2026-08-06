@@ -382,6 +382,7 @@ class BatchRepository(Protocol):
         is_sample: bool,
         items: Sequence[BatchItemInput],
         batch_job_id: str | None = None,
+        prompt_profile: str | None = None,
     ) -> str: ...
 
     def get_job(self, batch_job_id: str) -> dict[str, Any]: ...
@@ -426,6 +427,12 @@ class BatchRepository(Protocol):
         self, *, version_id: str | None = None, job_kind: str | None = None
     ) -> list[dict[str, Any]]: ...
 
+    def list_jobs_without_prompt_profile(self) -> list[dict[str, Any]]: ...
+
+    def first_item_request(self, batch_job_id: str) -> dict[str, Any] | None: ...
+
+    def backfill_prompt_profile(self, batch_job_id: str, prompt_profile: str) -> bool: ...
+
 
 _ACTIVE_JOB_STATES = {"DRAFT", "SUBMITTED", "RUNNING"}
 _TERMINAL_JOB_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
@@ -446,6 +453,16 @@ _SENSITIVE_REQUEST_KEYS = {
     "x-api-key",
 }
 _SAMPLE_REVIEW_STATUSES = {"APPROVED", "REJECTED"}
+# One message for every way the gate can refuse, so a refusal never tells a
+# caller which of the four coordinates missed and therefore never becomes a
+# probe for what has already been approved on this server.
+_UNAPPROVED_SAMPLE_MESSAGE = (
+    "creating a full OpenAI EPUB Batch requires an administrator-approved sample "
+    "for the same version and job kind, with the same model profile and the same "
+    "prompt profile; the sample must be SUCCEEDED with every item ingested, and a "
+    "job whose prompt profile is unknown can neither be approved for nor created "
+    "as a full run"
+)
 _RESULTS_PENDING_RETRIEVAL = "RESULTS_PENDING_RETRIEVAL"
 _TERMINAL_MISSING_RESULT = "TERMINAL_WITHOUT_ITEM_RESULT"
 # The three concept mention shapes, recognised per mention from the field set
@@ -915,6 +932,23 @@ class SQLiteBatchRepository:
                 """CREATE INDEX IF NOT EXISTS idx_epub_batch_sample_reviews_gate
                    ON epub_batch_sample_reviews(version_id, job_kind, status, reviewed_at)"""
             )
+            # An approval must state on its face which extraction instruction
+            # it approved, not merely which model snapshot.  This is a plain
+            # identifier copied from the reviewed job, never instruction text.
+            # ``CREATE TABLE IF NOT EXISTS`` cannot add a column to a table an
+            # earlier release already created, so the column is added
+            # separately and idempotently.  It is nullable for the same reason
+            # ``batch_jobs.prompt_profile`` is: an approval recorded before
+            # this change has no value, and the gate reads the job rather than
+            # this audit copy, so a NULL here can never widen it.
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(epub_batch_sample_reviews)")
+            }
+            if "prompt_profile" not in columns:
+                connection.execute(
+                    "ALTER TABLE epub_batch_sample_reviews ADD COLUMN prompt_profile TEXT"
+                )
 
     @staticmethod
     def _require_job(connection: Any, batch_job_id: str) -> Any:
@@ -950,11 +984,21 @@ class SQLiteBatchRepository:
         is_sample: bool = False,
         items: Sequence[BatchItemInput],
         batch_job_id: str | None = None,
+        prompt_profile: str | None = None,
     ) -> str:
         if not provider.strip() or not profile_name.strip():
             raise BatchServiceError("provider and profile_name cannot be empty")
         if job_kind not in _JOB_KINDS:
             raise BatchServiceError(f"unsupported EPUB Batch job kind: {job_kind}")
+        # A blank identifier is not "no profile": it would be a second value
+        # that compares equal to itself and could quietly satisfy the gate.
+        # Reject it, and keep exactly one representation of "unknown": NULL.
+        if prompt_profile is not None:
+            prompt_profile = prompt_profile.strip()
+            if not prompt_profile:
+                raise BatchServiceError("Batch prompt_profile cannot be blank")
+            if len(prompt_profile) > 100:
+                raise BatchServiceError("Batch prompt_profile identifier is too long")
         self._validate_items(items)
         job_id = batch_job_id or str(uuid4())
         expected_items = {
@@ -970,6 +1014,7 @@ class SQLiteBatchRepository:
                     and existing["provider"] == provider
                     and existing["profile_name"] == profile_name
                     and existing["job_kind"] == job_kind
+                    and existing["prompt_profile"] == prompt_profile
                     and bool(existing["is_sample"]) == is_sample
                 )
                 actual_items = {
@@ -1005,11 +1050,22 @@ class SQLiteBatchRepository:
                     version_id=version_id,
                     job_kind=job_kind,
                     profile_name=profile_name,
+                    prompt_profile=prompt_profile,
                 )
             connection.execute(
-                """INSERT INTO batch_jobs(batch_job_id, version_id, provider, profile_name, job_kind, is_sample)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (job_id, version_id, provider, profile_name, job_kind, int(is_sample)),
+                """INSERT INTO batch_jobs(
+                       batch_job_id, version_id, provider, profile_name, job_kind,
+                       prompt_profile, is_sample
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    job_id,
+                    version_id,
+                    provider,
+                    profile_name,
+                    job_kind,
+                    prompt_profile,
+                    int(is_sample),
+                ),
             )
             for item in items:
                 connection.execute(
@@ -1022,16 +1078,35 @@ class SQLiteBatchRepository:
 
     @staticmethod
     def _require_approved_sample(
-        connection: Any, *, version_id: str, job_kind: str, profile_name: str
+        connection: Any,
+        *,
+        version_id: str,
+        job_kind: str,
+        profile_name: str,
+        prompt_profile: str | None,
     ) -> None:
         """Keep the cloud quality gate inside the durable creation transaction.
 
         An OpenAI Batch can reach the provider's successful terminal state
         while an individual item fails schema validation or ingestion.  A full
         job is therefore permitted only after an administrator approves a
-        sample with the same pinned model profile whose every item was durably
-        ingested.
+        sample with the same pinned model profile *and the same prompt
+        profile* whose every item was durably ingested.
+
+        ``profile_name`` pins the model snapshot; ``prompt_profile`` pins the
+        extraction instruction.  Binding only the former means an approval of
+        one instruction unlocks a full book on any other instruction sent to
+        the same model -- the reviewed quality says nothing about the
+        unreviewed prompt.
+
+        An unknown prompt profile on either side is never a match.  The
+        requested side is refused outright below; the stored side falls out of
+        SQL three-valued logic, since ``job.prompt_profile = ?`` is NULL rather
+        than true for a row that has no recorded profile.  The explicit check
+        exists so the rule does not rest on that subtlety alone.
         """
+        if prompt_profile is None:
+            raise BatchServiceError(_UNAPPROVED_SAMPLE_MESSAGE)
         approved = connection.execute(
             """SELECT review.sample_batch_job_id
                  FROM epub_batch_sample_reviews AS review
@@ -1041,6 +1116,8 @@ class SQLiteBatchRepository:
                   AND review.status = 'APPROVED'
                   AND job.provider = 'openai-batch'
                   AND job.profile_name = ?
+                  AND job.prompt_profile IS NOT NULL
+                  AND job.prompt_profile = ?
                   AND job.is_sample = 1
                   AND job.status = 'SUCCEEDED'
                   AND EXISTS (
@@ -1054,14 +1131,10 @@ class SQLiteBatchRepository:
                   )
                 ORDER BY review.reviewed_at DESC, review.sample_batch_job_id DESC
                 LIMIT 1""",
-            (version_id, job_kind, profile_name),
+            (version_id, job_kind, profile_name, prompt_profile),
         ).fetchone()
         if approved is None:
-            raise BatchServiceError(
-                "creating a full OpenAI EPUB Batch requires an administrator-approved sample "
-                "for the same version and job kind, with the same model profile; "
-                "the sample must be SUCCEEDED with every item ingested"
-            )
+            raise BatchServiceError(_UNAPPROVED_SAMPLE_MESSAGE)
 
     def get_job(self, batch_job_id: str) -> dict[str, Any]:
         row = self._require_job(self._store._connection(), batch_job_id)
@@ -1110,6 +1183,10 @@ class SQLiteBatchRepository:
             "provider": row["provider"],
             "provider_job_id": row["provider_job_id"],
             "profile_name": row["profile_name"],
+            # The extraction instruction identifier only, never its text.  An
+            # administrator has to be able to see which prompt a job actually
+            # used, because that is now what the approval gate binds to.
+            "prompt_profile": row["prompt_profile"],
             "job_kind": row["job_kind"],
             "status": row["status"],
             "is_sample": bool(row["is_sample"]),
@@ -1209,16 +1286,29 @@ class SQLiteBatchRepository:
                 )
             connection.execute(
                 """INSERT INTO epub_batch_sample_reviews(
-                       sample_batch_job_id, version_id, job_kind, status, reviewed_by, reviewed_at
-                   ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                       sample_batch_job_id, version_id, job_kind, prompt_profile,
+                       status, reviewed_by, reviewed_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                    ON CONFLICT(sample_batch_job_id) DO UPDATE SET
+                       prompt_profile = excluded.prompt_profile,
                        status = excluded.status,
                        reviewed_by = excluded.reviewed_by,
                        reviewed_at = CURRENT_TIMESTAMP""",
-                (batch_job_id, job["version_id"], job["job_kind"], status, reviewer),
+                (
+                    batch_job_id,
+                    job["version_id"],
+                    job["job_kind"],
+                    # Identifier copied from the job under review, so the audit
+                    # row states which extraction instruction was approved
+                    # rather than only which model snapshot.
+                    job["prompt_profile"],
+                    status,
+                    reviewer,
+                ),
             )
             row = connection.execute(
-                """SELECT sample_batch_job_id, version_id, job_kind, status, reviewed_by, reviewed_at
+                """SELECT sample_batch_job_id, version_id, job_kind, prompt_profile,
+                          status, reviewed_by, reviewed_at
                      FROM epub_batch_sample_reviews WHERE sample_batch_job_id = ?""",
                 (batch_job_id,),
             ).fetchone()
@@ -1241,8 +1331,8 @@ class SQLiteBatchRepository:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._store._connection().execute(
             f"""SELECT review.sample_batch_job_id, review.version_id, review.job_kind,
-                       review.status, review.reviewed_by, review.reviewed_at,
-                       job.status AS batch_status
+                       review.prompt_profile, review.status, review.reviewed_by,
+                       review.reviewed_at, job.status AS batch_status
                   FROM epub_batch_sample_reviews AS review
                   JOIN batch_jobs AS job ON job.batch_job_id = review.sample_batch_job_id
                   {where}
@@ -1250,6 +1340,75 @@ class SQLiteBatchRepository:
             parameters,
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_jobs_without_prompt_profile(self) -> list[dict[str, Any]]:
+        """List identifier-only descriptors of jobs predating the column.
+
+        Deriving the missing value needs the registered extraction policy,
+        which this layer must not import, so the persistence half of the
+        backfill is split from the matching half: this returns what to look
+        at, the service decides what it is.
+        """
+        return [
+            {
+                "batch_job_id": row["batch_job_id"],
+                "version_id": row["version_id"],
+                "job_kind": row["job_kind"],
+                "is_sample": bool(row["is_sample"]),
+            }
+            for row in self._store._connection().execute(
+                """SELECT batch_job_id, version_id, job_kind, is_sample FROM batch_jobs
+                   WHERE prompt_profile IS NULL
+                   ORDER BY created_at, batch_job_id"""
+            )
+        ]
+
+    def first_item_request(self, batch_job_id: str) -> dict[str, Any] | None:
+        """Return one stored request envelope for server-side inspection only.
+
+        Unlike every operator-facing accessor on this class, the value can
+        contain the passage that was sent, so it must never be returned to a
+        caller outside the server.  Its only in-tree use is the prompt-profile
+        backfill, which reads the system instruction, matches it against the
+        registered profiles, and keeps nothing but the resulting identifier.
+        """
+        row = self._store._connection().execute(
+            """SELECT request_json FROM batch_items
+               WHERE batch_job_id = ? ORDER BY custom_id LIMIT 1""",
+            (batch_job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        request = json.loads(row["request_json"])
+        return request if isinstance(request, dict) else None
+
+    def backfill_prompt_profile(self, batch_job_id: str, prompt_profile: str) -> bool:
+        """Record a derived prompt profile on a job that has none.
+
+        This only ever fills a NULL.  A stored profile is what the gate binds
+        to, so overwriting one would silently re-point an existing approval;
+        the ``IS NULL`` predicate makes that impossible even if a caller asks
+        for it, and makes a repeated backfill a no-op.
+
+        The matching approval row, if any, is completed the same way and under
+        the same restriction.  That is the same derivation applied to the audit
+        copy of the same fact -- no decision, reviewer or timestamp changes.
+        """
+        if not prompt_profile.strip():
+            raise BatchServiceError("Batch prompt_profile cannot be blank")
+        with self._store._write() as connection:
+            self._require_job(connection, batch_job_id)
+            updated = connection.execute(
+                """UPDATE batch_jobs SET prompt_profile = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE batch_job_id = ? AND prompt_profile IS NULL""",
+                (prompt_profile, batch_job_id),
+            ).rowcount
+            connection.execute(
+                """UPDATE epub_batch_sample_reviews SET prompt_profile = ?
+                   WHERE sample_batch_job_id = ? AND prompt_profile IS NULL""",
+                (prompt_profile, batch_job_id),
+            )
+        return bool(updated)
 
     def list_items(self, batch_job_id: str) -> list[dict[str, Any]]:
         self.get_job(batch_job_id)
@@ -2107,14 +2266,21 @@ class SQLiteBatchRepository:
                 raise BatchServiceError("Batch job has no failed items to retry")
             child_id = str(uuid4())
             connection.execute(
-                """INSERT INTO batch_jobs(batch_job_id, version_id, provider, profile_name, job_kind, is_sample)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO batch_jobs(
+                       batch_job_id, version_id, provider, profile_name, job_kind,
+                       prompt_profile, is_sample
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     child_id,
                     parent["version_id"],
                     parent["provider"],
                     parent["profile_name"],
                     parent["job_kind"],
+                    # A retry replays the parent's own stored requests, so it
+                    # is the same prompt profile by construction.  It does not
+                    # re-enter the approval gate for the same reason: nothing
+                    # new is being sent.
+                    parent["prompt_profile"],
                     parent["is_sample"],
                 ),
             )
@@ -2180,6 +2346,7 @@ class BatchJobService:
         job_kind: str = "CONCEPT_MENTIONS",
         is_sample: bool = False,
         batch_job_id: str | None = None,
+        prompt_profile: str | None = None,
     ) -> str:
         return self._repository.create_draft(
             version_id=version_id,
@@ -2189,6 +2356,7 @@ class BatchJobService:
             is_sample=is_sample,
             items=items,
             batch_job_id=batch_job_id,
+            prompt_profile=prompt_profile,
         )
 
     def get_job(self, batch_job_id: str) -> dict[str, Any]:
@@ -2217,6 +2385,16 @@ class BatchJobService:
         self, *, version_id: str | None = None, job_kind: str | None = None
     ) -> list[dict[str, Any]]:
         return self._repository.list_sample_reviews(version_id=version_id, job_kind=job_kind)
+
+    def list_jobs_without_prompt_profile(self) -> list[dict[str, Any]]:
+        return self._repository.list_jobs_without_prompt_profile()
+
+    def first_item_request(self, batch_job_id: str) -> dict[str, Any] | None:
+        """Server-internal accessor; the envelope must not reach a caller."""
+        return self._repository.first_item_request(batch_job_id)
+
+    def backfill_prompt_profile(self, batch_job_id: str, prompt_profile: str) -> bool:
+        return self._repository.backfill_prompt_profile(batch_job_id, prompt_profile)
 
     def submit(self, batch_job_id: str, provider: BatchProvider) -> str:
         job = self._repository.get_job(batch_job_id)

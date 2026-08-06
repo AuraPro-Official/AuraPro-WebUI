@@ -34,7 +34,7 @@ from .overlay import (
 )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class IntegrityError(ValueError):
@@ -421,6 +421,25 @@ _MIGRATION_5: tuple[str, ...] = (
 )
 
 
+_MIGRATION_6: tuple[str, ...] = (
+    # ``profile_name`` pins the *model* snapshot; the extraction *instruction*
+    # lived only inside each item's request envelope.  The durable sample
+    # review gate could therefore let an approval of one prompt profile unlock
+    # a full run on a different one, which is exactly what the review exists
+    # to prevent.  This column records the requested prompt profile identifier
+    # on the job itself so the gate can bind to it.
+    #
+    # It is an identifier only: never instruction text, never model output.
+    # It is nullable because rows written before this migration cannot gain a
+    # value inside a SQL migration -- deriving one requires the registered
+    # extraction policy, which this module must not import.  A NULL is read as
+    # "unknown", and the gate treats unknown as "does not match", so a
+    # legacy row unlocks nothing until an administrator runs the service-level
+    # backfill.
+    "ALTER TABLE batch_jobs ADD COLUMN prompt_profile TEXT",
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
@@ -513,6 +532,7 @@ class SQLiteEpubStore:
                 (3, _MIGRATION_3),
                 (4, _MIGRATION_4),
                 (5, _MIGRATION_5),
+                (6, _MIGRATION_6),
             )
             try:
                 connection.execute("BEGIN")

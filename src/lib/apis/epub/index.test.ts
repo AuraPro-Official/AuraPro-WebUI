@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
 	applyEpubOverlay,
+	backfillEpubBatchPromptProfiles,
 	createEpubBatchDraft,
 	createEpubSectionGraphBatchDraft,
 	getEpubBatchJob,
@@ -286,6 +287,46 @@ describe('EPUB concept API client', () => {
 		expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/epub/admin/batches/batch-1');
 		expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/epub/admin/batches/recover');
 		expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST' });
+	});
+
+	it('recovers missing prompt profiles through its own administrator endpoint', async () => {
+		// The full-run approval gate binds to the prompt profile, so a job that
+		// predates the column unlocks nothing. The client reports per job what
+		// was derived and what stays unknown, without ever carrying prompt text.
+		const fetchMock = vi.fn().mockResolvedValueOnce(
+			jsonResponse({
+				examined: 2,
+				resolved: [
+					{
+						batch_job_id: 'batch-1',
+						job_kind: 'CONCEPT_MENTIONS',
+						prompt_profile: 'zh-glossary-v6'
+					}
+				],
+				unresolved: [
+					{
+						batch_job_id: 'batch-2',
+						job_kind: 'CONCEPT_MENTIONS',
+						reason: 'NO_REGISTERED_PROFILE_MATCHES'
+					}
+				]
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		await expect(backfillEpubBatchPromptProfiles('admin-token')).resolves.toMatchObject({
+			examined: 2,
+			resolved: [{ batch_job_id: 'batch-1', prompt_profile: 'zh-glossary-v6' }],
+			unresolved: [{ batch_job_id: 'batch-2', reason: 'NO_REGISTERED_PROFILE_MATCHES' }]
+		});
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			'/api/v1/epub/admin/batches/backfill-prompt-profiles',
+			expect.objectContaining({
+				method: 'POST',
+				headers: expect.objectContaining({ authorization: 'Bearer admin-token' })
+			})
+		);
 	});
 
 	it('downloads the exact overlay bytes with the digest an administrator publishes', async () => {
