@@ -133,6 +133,7 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
                 }
             ],
         )
+        self.store = store
         self.service = EpubConceptService(store=store)
         self.app = FastAPI()
         self.app.include_router(router)
@@ -403,7 +404,11 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(review.json()["job_kind"], "CONCEPT_MENTIONS")
         self.assertEqual(review.json()["status"], "APPROVED")
         self.assertEqual(review.json()["reviewed_by"], "administrator")
+        # The approval names the extraction instruction it approved.  The
+        # identifier travels; the instruction text never does.
+        self.assertEqual(review.json()["prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE)
         self.assertNotIn("TCP", review.text)
+        self.assertNotIn("抽取器", review.text)
 
         wrong_kind = self.client.post(
             "/api/v1/epub/admin/section-graph-batches",
@@ -423,16 +428,203 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(wrong_profile.status_code, 400)
         self.assertIn("same model profile", wrong_profile.json()["detail"])
 
+        # Same version, same job kind, same model snapshot, superseded prompt
+        # profile.  The sample says nothing about that instruction's quality,
+        # so it cannot be sent as a full book on this approval.
+        other_prompt_profile = next(
+            profile
+            for profile in available_prompt_profiles()
+            if profile != DEFAULT_CONCEPT_PROMPT_PROFILE
+        )
+        wrong_prompt_profile = self.client.post(
+            "/api/v1/epub/admin/batches",
+            json={
+                "version_id": "version-1",
+                "profile_name": "cloud-model-snapshot",
+                "prompt_profile": other_prompt_profile,
+                "is_sample": False,
+            },
+        )
+        self.assertEqual(wrong_prompt_profile.status_code, 400)
+        self.assertIn("same prompt profile", wrong_prompt_profile.json()["detail"])
+
         full = self.client.post(
             "/api/v1/epub/admin/batches",
             json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": False},
         )
         self.assertEqual(full.status_code, 201)
         self.assertFalse(full.json()["is_sample"])
+        self.assertEqual(full.json()["prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE)
 
         reviews = self.client.get("/api/v1/epub/admin/sample-batch-reviews?version_id=version-1")
         self.assertEqual(reviews.status_code, 200)
         self.assertEqual(reviews.json()["items"][0]["sample_batch_job_id"], sample_id)
+        self.assertEqual(
+            reviews.json()["items"][0]["prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE
+        )
+
+    def test_batch_history_reports_the_prompt_profile_each_job_recorded(self) -> None:
+        """Both job kinds persist the instruction identifier they requested."""
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        concept = self.client.post(
+            "/api/v1/epub/admin/batches",
+            json={
+                "version_id": "version-1",
+                "profile_name": "cloud-model-snapshot",
+                "prompt_profile": "zh-glossary-v6",
+                "is_sample": True,
+            },
+        )
+        self.assertEqual(concept.status_code, 201)
+        section_graph = self.client.post(
+            "/api/v1/epub/admin/section-graph-batches",
+            json={
+                "version_id": "version-1",
+                "profile_name": "cloud-model-snapshot",
+                "is_sample": True,
+            },
+        )
+        self.assertEqual(section_graph.status_code, 201)
+
+        history = self.client.get("/api/v1/epub/admin/batches?version_id=version-1")
+        self.assertEqual(history.status_code, 200)
+        recorded = {
+            job["batch_job_id"]: job["prompt_profile"] for job in history.json()["items"]
+        }
+        self.assertEqual(recorded[concept.json()["batch_job_id"]], "zh-glossary-v6")
+        self.assertEqual(
+            recorded[section_graph.json()["batch_job_id"]],
+            section_graph.json()["prompt_profile"],
+        )
+        # The identifier is exposed; no instruction text ever is.
+        self.assertNotIn("抽取器", history.text)
+
+    def test_admin_backfill_derives_a_missing_prompt_profile_from_what_was_sent(self) -> None:
+        """A job predating the column is recovered from its own request.
+
+        Without this an approval recorded before the column existed stops
+        unlocking anything, and the administrator cannot recreate the full run
+        it authorised.  The instruction is still in the stored request, so the
+        profile is derived by exact match rather than reviewed again.
+        """
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        sample = self.client.post(
+            "/api/v1/epub/admin/batches",
+            json={
+                "version_id": "version-1",
+                "profile_name": "cloud-model-snapshot",
+                "prompt_profile": "zh-glossary-v6",
+                "is_sample": True,
+            },
+        )
+        self.assertEqual(sample.status_code, 201)
+        sample_id = sample.json()["batch_job_id"]
+
+        repository = self.service._batch._repository
+        repository.mark_submitted(sample_id, "remote-sample")
+        repository.set_provider_state(sample_id, "SUCCEEDED", None)
+        for item in repository.list_items(sample_id):
+            self.assertTrue(repository.ingest_success(sample_id, item["custom_id"], {"concepts": []}))
+        self.assertEqual(
+            self.client.put(
+                f"/api/v1/epub/admin/sample-batches/{sample_id}/review", json={"status": "APPROVED"}
+            ).status_code,
+            200,
+        )
+
+        # A job whose stored request this server did not build cannot be
+        # attributed to any registered profile, and must stay unknown.
+        unknown_id = self.store.create_batch_job(
+            "version-1", provider="openai-batch", profile_name="cloud-model-snapshot", is_sample=True
+        )
+        self.store.add_batch_item(
+            unknown_id,
+            "passage-1",
+            custom_id="foreign",
+            request={"body": {"messages": [{"role": "system", "content": "some other instruction"}]}},
+        )
+
+        # Simulate the pre-migration state: the profile was never recorded.
+        connection = self.store._connection()
+        connection.execute("UPDATE batch_jobs SET prompt_profile = NULL")
+        connection.execute("UPDATE epub_batch_sample_reviews SET prompt_profile = NULL")
+        connection.commit()
+
+        blocked = self.client.post(
+            "/api/v1/epub/admin/batches",
+            json={
+                "version_id": "version-1",
+                "profile_name": "cloud-model-snapshot",
+                "prompt_profile": "zh-glossary-v6",
+                "is_sample": False,
+            },
+        )
+        self.assertEqual(blocked.status_code, 400)
+
+        backfill = self.client.post("/api/v1/epub/admin/batches/backfill-prompt-profiles")
+        self.assertEqual(backfill.status_code, 200)
+        report = backfill.json()
+        self.assertEqual(report["examined"], 2)
+        self.assertEqual(
+            report["resolved"],
+            [
+                {
+                    "batch_job_id": sample_id,
+                    "job_kind": "CONCEPT_MENTIONS",
+                    "prompt_profile": "zh-glossary-v6",
+                }
+            ],
+        )
+        self.assertEqual(
+            report["unresolved"],
+            [
+                {
+                    "batch_job_id": unknown_id,
+                    "job_kind": "CONCEPT_MENTIONS",
+                    "reason": "NO_REGISTERED_PROFILE_MATCHES",
+                }
+            ],
+        )
+        # A report is an operator surface: identifiers and reason classes only.
+        self.assertNotIn("抽取器", backfill.text)
+        self.assertNotIn("TCP", backfill.text)
+
+        # The recovered approval unlocks its own prompt profile again, and
+        # still unlocks nothing else.
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/epub/admin/batches",
+                json={
+                    "version_id": "version-1",
+                    "profile_name": "cloud-model-snapshot",
+                    "prompt_profile": "zh-glossary-v6",
+                    "is_sample": False,
+                },
+            ).status_code,
+            201,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/epub/admin/batches",
+                json={
+                    "version_id": "version-1",
+                    "profile_name": "cloud-model-snapshot",
+                    "is_sample": False,
+                },
+            ).status_code,
+            400,
+        )
+
+        # The unmatched job is still unknown, and a repeated backfill neither
+        # resolves it by a second attempt nor disturbs what it already fixed.
+        again = self.client.post("/api/v1/epub/admin/batches/backfill-prompt-profiles")
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(again.json()["resolved"], [])
+        self.assertEqual(
+            [job["batch_job_id"] for job in again.json()["unresolved"]], [unknown_id]
+        )
+        reviews = self.client.get("/api/v1/epub/admin/sample-batch-reviews?version_id=version-1")
+        self.assertEqual(reviews.json()["items"][0]["prompt_profile"], "zh-glossary-v6")
 
     def test_admin_can_run_local_calibration_without_exposing_source_text(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user

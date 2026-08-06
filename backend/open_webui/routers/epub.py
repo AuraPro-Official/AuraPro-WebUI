@@ -343,6 +343,27 @@ async def review_sample_batch(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
+@router.post("/admin/batches/backfill-prompt-profiles")
+async def backfill_batch_prompt_profiles(
+    service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, Any]:
+    """Recover the prompt profile of jobs created before it was recorded.
+
+    The full-run approval gate binds to the prompt profile, so a job that
+    never stored one can neither unlock nor be unlocked.  This derives it from
+    the instruction each job actually sent, by exact match against the
+    registered profiles, and leaves anything uncertain unresolved rather than
+    guessing.
+
+    The response is identifier-only, like every other administrator surface
+    here: job IDs, kinds, a resolved profile identifier or a reason class.
+    """
+    try:
+        return service.backfill_batch_prompt_profiles()
+    except EpubServiceError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
 @router.post("/admin/batches/recover")
 async def recover_batch_jobs(
     service: ServiceDep, user=Depends(get_admin_user)
