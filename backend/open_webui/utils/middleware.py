@@ -3551,16 +3551,16 @@ async def background_tasks_handler(ctx):
                         except Exception as e:
                             pass
 
-        if messages:
-            await review_memory_after_turn(
-                request=request,
-                user=user,
-                model=ctx['model'],
-                metadata=metadata,
-                form_data=form_data,
-                assistant_message=ctx.get('assistant_message') or {},
-                messages=messages,
-            )
+    if messages:
+        await review_memory_after_turn(
+            request=request,
+            user=user,
+            model=ctx['model'],
+            metadata=metadata,
+            form_data=form_data,
+            assistant_message=ctx.get('assistant_message') or {},
+            messages=messages,
+        )
 
 
 async def outlet_filter_handler(ctx):
@@ -3765,7 +3765,7 @@ async def non_streaming_chat_response_handler(response, ctx):
             response_output = response_data.get('output')
             content = message.get('content') or ''
 
-            if choices and (content or response_output):
+            if content or response_output:
                 if content or response_output:
                     await event_emitter(
                         {
@@ -3876,14 +3876,16 @@ async def non_streaming_chat_response_handler(response, ctx):
     choices = response_data.get('choices', [])
     output = response_data.get('output')
     content = choices[0].get('message', {}).get('content') if choices else ''
-    if ENABLE_API_OUTLET_FILTERS and (content or output):
+    if content or output:
         usage = normalize_usage(response_data.get('usage', {}) or {})
         ctx['assistant_message'] = {
             **({'content': content} if content else {}),
             **({'output': output} if output else {}),
             **({'usage': usage} if usage else {}),
         }
-        await outlet_filter_handler(ctx)
+        if ENABLE_API_OUTLET_FILTERS:
+            await outlet_filter_handler(ctx)
+        await background_tasks_handler(ctx)
 
     if isinstance(response, dict):
         response = merge_events_into_response(response_data, events)
@@ -5568,6 +5570,7 @@ async def streaming_chat_response_handler(response, ctx):
                 )
 
                 ctx['assistant_message'] = {
+                    'content': content,
                     'output': output,
                     **({'usage': usage} if usage else {}),
                 }
@@ -5646,13 +5649,14 @@ async def streaming_chat_response_handler(response, ctx):
                 )
 
                 if data:
-                    if ENABLE_API_OUTLET_FILTERS:
-                        update_assistant_message_from_stream(assistant_message, data)
+                    update_assistant_message_from_stream(assistant_message, data)
                     yield data
 
-            if ENABLE_API_OUTLET_FILTERS and assistant_message:
+            if assistant_message:
                 ctx['assistant_message'] = assistant_message
-                await outlet_filter_handler(ctx)
+                if ENABLE_API_OUTLET_FILTERS:
+                    await outlet_filter_handler(ctx)
+                await background_tasks_handler(ctx)
 
         return StreamingResponse(
             stream_wrapper(response.body_iterator, events),

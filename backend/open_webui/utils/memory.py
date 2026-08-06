@@ -12,7 +12,11 @@ from fastapi import HTTPException
 
 from open_webui.models.config import Config
 from open_webui.models.memories import Memories
-from open_webui.utils.misc import add_or_update_system_message, get_content_from_message
+from open_webui.utils.misc import (
+    add_or_update_system_message,
+    convert_output_to_messages,
+    get_content_from_message,
+)
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +86,26 @@ def _last_user_content(messages: list[dict]) -> str:
         if isinstance(content, str) and content.strip():
             return content.strip()
     return ''
+
+
+def get_memory_message_content(message: dict) -> str:
+    """Return visible message text from chat-completion or Responses API storage."""
+    content = get_content_from_message(message)
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+
+    output = message.get('output')
+    if not isinstance(output, list):
+        return ''
+
+    contents = []
+    for output_message in convert_output_to_messages(output):
+        if output_message.get('role') != 'assistant':
+            continue
+        output_content = get_content_from_message(output_message)
+        if isinstance(output_content, str) and output_content.strip():
+            contents.append(output_content.strip())
+    return '\n'.join(contents)
 
 
 def memory_review_candidate(
@@ -579,6 +603,7 @@ async def review_memory_after_turn(
     saved_memory_enabled = bool(features.get('memory'))
     chat_history_enabled = bool(features.get('chat_history_memory'))
     if not saved_memory_enabled and not chat_history_enabled:
+        _set_memory_review_status(user.id, state='skipped', reason='memory_features_disabled')
         return
 
     chat_id = metadata.get('chat_id') or ''
@@ -586,8 +611,8 @@ async def review_memory_after_turn(
         _set_memory_review_status(user.id, state='skipped', reason='temporary_chat')
         return
 
-    assistant_content = assistant_message.get('content', '')
-    if not isinstance(assistant_content, str) or not assistant_content.strip():
+    assistant_content = get_memory_message_content(assistant_message)
+    if not assistant_content:
         _set_memory_review_status(user.id, state='skipped', reason='empty_assistant_response')
         return
 
@@ -797,20 +822,14 @@ async def _review_memory(
     transcript_lines = []
     for message in messages[-14:]:
         role = message.get('role', '')
-        content = message.get('content', '')
-        if not isinstance(content, str):
-            content = get_content_from_message(message)
-        content = content.strip()
+        content = get_memory_message_content(message)
         if role not in {'user', 'assistant'} or not content:
             continue
         if len(content) > 1400:
             content = f'{content[:900]}\n...(truncated)...\n{content[-300:]}'
         transcript_lines.append(f'{role}: {content}')
 
-    assistant_content = assistant_message.get('content', '')
-    if not isinstance(assistant_content, str):
-        assistant_content = get_content_from_message(assistant_message)
-    assistant_final = assistant_content.strip()
+    assistant_final = get_memory_message_content(assistant_message)
     if assistant_final:
         if len(assistant_final) > 1400:
             assistant_final = f'{assistant_final[:900]}\n...(truncated)...\n{assistant_final[-300:]}'

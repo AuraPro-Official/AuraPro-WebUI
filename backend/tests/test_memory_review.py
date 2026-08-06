@@ -44,10 +44,26 @@ sys.modules['open_webui.models.memories'] = memories_module
 misc_module = types.ModuleType('open_webui.utils.misc')
 misc_module.add_or_update_system_message = lambda content, messages, append=False: messages
 misc_module.get_content_from_message = lambda message: message.get('content', '')
+
+
+def convert_output_to_messages(output):
+    messages = []
+    for item in output:
+        if item.get('type') != 'message':
+            continue
+        content = ''.join(
+            part.get('text', '') for part in item.get('content', []) if part.get('type') == 'output_text'
+        )
+        messages.append({'role': item.get('role', 'assistant'), 'content': content})
+    return messages
+
+
+misc_module.convert_output_to_messages = convert_output_to_messages
 sys.modules['open_webui.utils.misc'] = misc_module
 
 from open_webui.utils.memory import (  # noqa: E402
     _sanitize_memory_operations,
+    get_memory_message_content,
     memory_review_candidate,
     parse_memory_review_response,
 )
@@ -106,6 +122,32 @@ class TestMemoryReviewCandidate(unittest.TestCase):
 
 
 class TestMemoryReviewParsing(unittest.TestCase):
+    def test_extracts_assistant_text_from_responses_output(self):
+        message = {
+            'content': '',
+            'output': [
+                {
+                    'type': 'message',
+                    'role': 'assistant',
+                    'content': [{'type': 'output_text', 'text': 'I will remember that.'}],
+                }
+            ],
+        }
+        self.assertEqual(get_memory_message_content(message), 'I will remember that.')
+
+    def test_prefers_plain_content_over_responses_output(self):
+        message = {
+            'content': 'Plain response',
+            'output': [
+                {
+                    'type': 'message',
+                    'role': 'assistant',
+                    'content': [{'type': 'output_text', 'text': 'Stored response'}],
+                }
+            ],
+        }
+        self.assertEqual(get_memory_message_content(message), 'Plain response')
+
     def test_parses_fenced_json_after_reasoning(self):
         parsed = parse_memory_review_response(
             '<think>private reasoning</think>\n```json\n'
