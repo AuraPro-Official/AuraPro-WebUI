@@ -32,6 +32,12 @@ from open_webui.retrieval.epub.prompt_profiles import (
     build_concept_completion_request,
     select_stratified_passages,
 )
+from open_webui.retrieval.epub.overlay import (
+    ConceptOverlay,
+    OverlayError,
+    overlay_sha256,
+    parse_overlay_json,
+)
 from open_webui.retrieval.epub.retrieval_units import plan_retrieval_windows
 from open_webui.retrieval.epub.search import EpubSearchService, SearchResponse
 from open_webui.retrieval.epub.section_graph import (
@@ -47,7 +53,7 @@ from open_webui.retrieval.epub.store import (
     SQLiteEpubStore,
     UnknownConceptError,
 )
-from open_webui.retrieval.parsers.epub.parser import EPUBParser
+from open_webui.retrieval.parsers.epub.parser import PARSER_FORMAT_VERSION, EPUBParser
 
 
 class EpubServiceError(ValueError):
@@ -97,6 +103,8 @@ class EpubApiRepository(Protocol):
     def list_concept_relation_assertions(self, **kwargs: Any) -> list[dict[str, Any]]: ...
     def count_concept_relation_assertions(self, **kwargs: Any) -> int: ...
     def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
+    def export_concept_overlay(self, version_id: str) -> ConceptOverlay: ...
+    def apply_overlay(self, overlay: ConceptOverlay, **kwargs: Any) -> dict[str, Any]: ...
 
 
 class EpubConceptService:
@@ -295,6 +303,79 @@ class EpubConceptService:
                 )
                 created_or_reused += 1
         return created_or_reused
+
+    def export_concept_overlay(self, version_id: str) -> dict[str, Any]:
+        """Publish one version's analysis as portable, text-free artifact bytes.
+
+        The canonical JSON *text* is returned rather than a decoded object:
+        the published SHA-256 has to cover the exact bytes an administrator
+        redistributes, and re-serializing the object downstream would not
+        reproduce them.
+        """
+        if self._store.get_version(version_id) is None:
+            raise EpubResourceNotFound("unknown EPUB version")
+        try:
+            overlay = self._store.export_concept_overlay(version_id)
+        except (IntegrityError, OverlayError) as error:
+            raise EpubServiceError(str(error)) from error
+        overlay_json = overlay.to_json()
+        return {
+            "version_id": version_id,
+            "epub_sha256": overlay.epub_sha256,
+            "parser_version": overlay.parser_version,
+            "overlay_format_version": overlay.overlay_format_version,
+            "overlay_json": overlay_json,
+            "overlay_sha256": overlay_sha256(overlay_json),
+            "passage_count": overlay.fingerprint.count,
+            "concept_count": len(overlay.concepts),
+            "mention_count": len(overlay.mentions),
+            "relation_count": len(overlay.relations),
+        }
+
+    def apply_concept_overlay(self, *, overlay_bytes: bytes) -> dict[str, Any]:
+        """Attach a published analysis to this server's own copy of the book.
+
+        The uploaded artifact never supplies passage text, so this cannot add
+        source material: the store re-derives every mention and evidence
+        string from its own passages, and refuses the whole upload if a single
+        location fails to verify.  An applied overlay has no vectors, so the
+        caller is told to rebuild the version's derived index afterwards.
+        """
+        if not overlay_bytes:
+            raise EpubServiceError("the uploaded overlay artifact cannot be empty")
+        try:
+            overlay = parse_overlay_json(overlay_bytes)
+        except OverlayError as error:
+            raise EpubServiceError(str(error)) from error
+        if overlay.parser_version != str(PARSER_FORMAT_VERSION):
+            # The store checks this again against the target version's own
+            # recorded format.  Both matter: this one refuses an artifact no
+            # build of this server could ever have produced, before any
+            # version is even resolved.
+            raise EpubServiceError(
+                "the overlay was produced by an EPUB parser format this server does not implement"
+            )
+        version = self._store.find_version_by_sha256(overlay.epub_sha256)
+        if version is None:
+            raise EpubResourceNotFound(
+                "no EPUB version in this library matches the overlay's archive hash"
+            )
+        try:
+            summary = self._store.apply_overlay(overlay, version_id=str(version["version_id"]))
+        except IntegrityError as error:
+            raise EpubServiceError(
+                f"{getattr(error, 'reason', 'overlay_rejected')}: {error}"
+            ) from error
+        return {
+            **summary,
+            "book_id": version.get("book_id"),
+            "book_title": version.get("book_title"),
+            "uploaded_overlay_sha256": sha256(overlay_bytes).hexdigest(),
+            "canonical_overlay_sha256": overlay.digest(),
+            # An imported overlay carries no vectors by design; the derived
+            # index has to be rebuilt before the new concepts are searchable.
+            "vectors_require_reindex": True,
+        }
 
     def list_prompt_profiles(self) -> dict[str, Any]:
         """List the selectable concept prompt profile identifiers only.

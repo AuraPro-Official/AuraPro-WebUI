@@ -2,24 +2,48 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 import os
 import importlib.util
+from pathlib import Path
+import sqlite3
 import sys
 import tempfile
+import types
 import unittest
 
 
-STORE_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../backend/open_webui/retrieval/epub/store.py")
-)
-STORE_SPEC = importlib.util.spec_from_file_location("epub_store_for_test", STORE_PATH)
-assert STORE_SPEC is not None and STORE_SPEC.loader is not None
-STORE_MODULE = importlib.util.module_from_spec(STORE_SPEC)
-sys.modules[STORE_SPEC.name] = STORE_MODULE
-STORE_SPEC.loader.exec_module(STORE_MODULE)
+# The store now shares its concept-key folding rule and its artifact contract
+# with the pure ``overlay`` module, so it is loaded as a member of a synthetic
+# package rather than as a lone file.  ``test_epub_search`` established this
+# pattern; the tests stay independent of the OpenWebUI application package.
+EPUB_DIR = Path(__file__).resolve().parents[1] / "backend/open_webui/retrieval/epub"
+PACKAGE_NAME = "epub_store_sdd_test_package"
+PACKAGE = types.ModuleType(PACKAGE_NAME)
+PACKAGE.__path__ = [str(EPUB_DIR)]  # type: ignore[attr-defined]
+sys.modules[PACKAGE_NAME] = PACKAGE
+
+
+def _load(name: str):
+    spec = importlib.util.spec_from_file_location(f"{PACKAGE_NAME}.{name}", EPUB_DIR / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+OVERLAY_MODULE = _load("overlay")
+STORE_MODULE = _load("store")
 IntegrityError = STORE_MODULE.IntegrityError
+OverlayRejected = STORE_MODULE.OverlayRejected
 SQLiteEpubStore = STORE_MODULE.SQLiteEpubStore
 UnknownConceptError = STORE_MODULE.UnknownConceptError
+OverlayError = OVERLAY_MODULE.OverlayError
+OverlayMention = OVERLAY_MODULE.OverlayMention
+PassageFingerprint = OVERLAY_MODULE.PassageFingerprint
+parse_overlay_json = OVERLAY_MODULE.parse_overlay_json
 
 # Every table with a foreign key to ``concepts(concept_id)``.  A merge that
 # forgets one of these would orphan rows or trip the foreign key, so the tests
@@ -631,6 +655,413 @@ class SQLiteEpubConceptMergeTest(unittest.TestCase):
             self.store.list_concepts(offset=0, limit=0)
         with self.assertRaisesRegex(IntegrityError, "invalid concept status"):
             self.store.count_concepts(status="UNKNOWN")
+
+
+class PortableAnalysisOverlayTest(unittest.TestCase):
+    """T-170a: an analysis must travel without a single character of the book.
+
+    Every store built here holds the *same* book, created independently of any
+    overlay, which is the situation the feature exists for: one administrator
+    pays for the Batch run, everyone else already owns the EPUB.
+    """
+
+    MARKER = "MARKER-DO-NOT-EXPORT-7f3"
+    PASSAGES = (f"TCP 是传输控制协议。{MARKER}", "第二段落，说明 TCP 与 IP。")
+    EPUB_BYTES = b"one complete deterministic epub archive"
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.stores: list[object] = []
+        self.source, self.source_version = self._book("source.db")
+        self.tcp = self.source.upsert_concept(
+            "TCP",
+            aliases=["Transmission Control Protocol"],
+            definition="传输层协议",
+            status="APPROVED",
+        )
+        self.ip = self.source.upsert_concept("IP", status="PROVISIONAL")
+        first, second = (row["passage_id"] for row in self.source.list_passages(self.source_version))
+        # An ADMIN mention proves the artifact carries no authority claim: the
+        # receiving store must record its own copy as model output.
+        self.source.add_concept_mention(
+            self.tcp, first, start_codepoint=0, end_codepoint=3, source="ADMIN"
+        )
+        self.source.add_concept_mention(self.tcp, second, start_codepoint=8, end_codepoint=11)
+        self.source.add_concept_mention(self.ip, second, start_codepoint=14, end_codepoint=16)
+        self.source.add_concept_relation(
+            self.source_version,
+            self.tcp,
+            "CONTRASTS",
+            self.ip,
+            evidence=[
+                {
+                    "passage_id": second,
+                    "start_codepoint": 8,
+                    "end_codepoint": 16,
+                    "evidence": "TCP 与 IP",
+                }
+            ],
+        )
+        self.overlay = self.source.export_concept_overlay(self.source_version)
+
+    def tearDown(self) -> None:
+        for store in self.stores:
+            store.close()
+        self.tempdir.cleanup()
+
+    def _book(self, name: str, *, passages: tuple[str, ...] | None = None) -> tuple[object, str]:
+        """Build a store holding this book, independent of any overlay."""
+        path = os.path.join(self.tempdir.name, name)
+        store = SQLiteEpubStore(path)
+        self.stores.append(store)
+        book_id = store.create_book("原书")
+        version = store.create_book_version(book_id, epub_bytes=self.EPUB_BYTES)
+        store.add_passages(
+            version.version_id,
+            [
+                {
+                    "source_href": "chapter.xhtml",
+                    "spine_index": 0,
+                    "ordinal": ordinal,
+                    "content_kind": "paragraph",
+                    "content": content,
+                }
+                for ordinal, content in enumerate(passages or self.PASSAGES)
+            ],
+        )
+        store.set_version_status(version.version_id, "READY")
+        store.path_for_test = path  # type: ignore[attr-defined]
+        return store, version.version_id
+
+    def _graph(self, store: object, version_id: str) -> dict[str, object]:
+        """Read the whole applied graph as comparable, order-independent sets."""
+        connection = sqlite3.connect(store.path_for_test)  # type: ignore[attr-defined]
+        try:
+            return {
+                "concepts": set(
+                    connection.execute(
+                        "SELECT canonical_name, normalized_name, definition, status FROM concepts"
+                    )
+                ),
+                "aliases": set(connection.execute("SELECT alias, normalized_alias FROM concept_aliases")),
+                "mentions": set(
+                    connection.execute(
+                        """SELECT c.normalized_name, p.ordinal, m.start_codepoint,
+                                  m.end_codepoint, m.evidence
+                             FROM concept_mentions AS m
+                             JOIN concepts AS c ON c.concept_id = m.concept_id
+                             JOIN passages AS p ON p.passage_id = m.passage_id"""
+                    )
+                ),
+                "relations": set(
+                    connection.execute(
+                        """SELECT s.normalized_name, r.predicate, o.normalized_name, a.status,
+                                  p.ordinal, e.start_codepoint, e.end_codepoint, e.evidence
+                             FROM concept_relation_evidence AS e
+                             JOIN concept_relation_assertions AS a ON a.assertion_id = e.assertion_id
+                             JOIN concept_relations AS r ON r.relation_id = a.relation_id
+                             JOIN concepts AS s ON s.concept_id = r.subject_concept_id
+                             JOIN concepts AS o ON o.concept_id = r.object_concept_id
+                             JOIN passages AS p ON p.passage_id = e.passage_id"""
+                    )
+                ),
+            }
+        finally:
+            connection.close()
+
+    def _assert_spans_are_own_source(self, store: object) -> None:
+        """Every stored span must be a byte-exact slice of *this* store's book."""
+        connection = sqlite3.connect(store.path_for_test)  # type: ignore[attr-defined]
+        try:
+            spans = list(
+                connection.execute(
+                    """SELECT p.content, m.start_codepoint, m.end_codepoint, m.evidence
+                         FROM concept_mentions AS m JOIN passages AS p ON p.passage_id = m.passage_id"""
+                )
+            ) + list(
+                connection.execute(
+                    """SELECT p.content, e.start_codepoint, e.end_codepoint, e.evidence
+                         FROM concept_relation_evidence AS e
+                         JOIN passages AS p ON p.passage_id = e.passage_id"""
+                )
+            )
+            self.assertTrue(spans)
+            for content, start, end, evidence in spans:
+                self.assertEqual(evidence, content[start:end])
+        finally:
+            connection.close()
+
+    def test_the_artifact_contains_no_passage_text_at_all(self) -> None:
+        """The invariant the whole design rests on."""
+        serialized = self.overlay.to_json()
+
+        self.assertNotIn(self.MARKER, serialized)
+        for passage in self.PASSAGES:
+            self.assertNotIn(passage, serialized)
+        # A concept label that also occurs in the book still travels: labels
+        # and definitions are the analysis product, not source material.
+        self.assertIn("传输层协议", serialized)
+
+        # Labels and definitions are short by construction - the prompt profile
+        # caps a definition at 30 code points - so no *contiguous* run of source
+        # longer than that can ride along inside one.  Measured on the real book
+        # the longest definition is 23 code points and exactly one 12-code-point
+        # window of 56,634 appears at all, via a label.  This bound is what would
+        # fail loudly if a later profile ever let a definition quote a sentence,
+        # which is the only way this artifact could start carrying real source.
+        longest_permitted_run = 40
+        for passage in self.PASSAGES:
+            for start in range(0, max(1, len(passage) - longest_permitted_run)):
+                window = passage[start:start + longest_permitted_run]
+                if len(window) == longest_permitted_run:
+                    self.assertNotIn(window, serialized)
+        payload = json.loads(serialized)
+        self.assertEqual(
+            set(payload),
+            {
+                "overlay_format_version",
+                "epub_sha256",
+                "parser_version",
+                "book_title",
+                "passage_fingerprint",
+                "concepts",
+                "mentions",
+                "relations",
+            },
+        )
+        for mention in payload["mentions"]:
+            self.assertEqual(
+                set(mention),
+                {"concept_key", "ordinal", "content_sha256", "start_codepoint", "end_codepoint"},
+            )
+        for relation in payload["relations"]:
+            for span in relation["evidence"]:
+                self.assertEqual(
+                    set(span), {"ordinal", "content_sha256", "start_codepoint", "end_codepoint"}
+                )
+
+    def test_exporting_the_same_graph_twice_yields_identical_bytes(self) -> None:
+        self.assertEqual(
+            self.source.export_concept_overlay(self.source_version).to_json(),
+            self.overlay.to_json(),
+        )
+        self.assertEqual(
+            self.source.export_concept_overlay(self.source_version).digest(), self.overlay.digest()
+        )
+
+    def test_overlay_round_trips_into_an_independently_built_store(self) -> None:
+        target, version_id = self._book("target.db")
+
+        summary = target.apply_overlay(parse_overlay_json(self.overlay.to_json()), version_id=version_id)
+
+        self.assertEqual(summary["applied_detail"]["concepts_created"], 2)
+        self.assertEqual(summary["applied_detail"]["mentions_created"], 3)
+        self.assertEqual(summary["applied_detail"]["relations_created"], 1)
+        self.assertEqual(summary["rejected"], 0)
+        self.assertEqual(self._graph(target, version_id), self._graph(self.source, self.source_version))
+        self._assert_spans_are_own_source(target)
+        # Re-exporting the imported graph reproduces the publisher's bytes.
+        self.assertEqual(target.export_concept_overlay(version_id).to_json(), self.overlay.to_json())
+        # The publisher's ADMIN mention arrives as model output, never as this
+        # operator's own decision.
+        connection = sqlite3.connect(target.path_for_test)
+        try:
+            self.assertEqual(
+                sorted(connection.execute("SELECT DISTINCT source FROM concept_mentions")), [("MODEL",)]
+            )
+        finally:
+            connection.close()
+
+    def test_applying_the_same_overlay_twice_changes_nothing(self) -> None:
+        target, version_id = self._book("target.db")
+        overlay = parse_overlay_json(self.overlay.to_json())
+
+        # Without an explicit target the archive hash resolves the version,
+        # which is how a reader who never saw the publisher's identifiers
+        # reattaches the analysis to their own copy.
+        target.apply_overlay(overlay)
+        before = self._graph(target, version_id)
+        second = target.apply_overlay(overlay, version_id=version_id)
+
+        self.assertEqual(second["applied"], 0)
+        self.assertEqual(second["skipped_detail"]["mentions_existing"], 3)
+        self.assertEqual(second["skipped_detail"]["relations_existing"], 1)
+        self.assertEqual(self._graph(target, version_id), before)
+
+    def test_a_local_decision_outranks_the_published_analysis(self) -> None:
+        """Never downgrade APPROVED, never overwrite an ADMIN mention."""
+        target, version_id = self._book("target.db")
+        local_concept = target.upsert_concept(
+            "TCP", definition="本地定义", status="APPROVED", alias_source="ADMIN"
+        )
+        first = target.list_passages(version_id)[0]["passage_id"]
+        target.add_concept_mention(
+            local_concept, first, start_codepoint=0, end_codepoint=3, source="ADMIN"
+        )
+        published = replace(
+            self.overlay,
+            concepts=tuple(
+                replace(concept, status="PROVISIONAL", definition="覆盖层定义")
+                if concept.key == "tcp"
+                else concept
+                for concept in self.overlay.concepts
+            ),
+        )
+
+        summary = target.apply_overlay(published, version_id=version_id)
+
+        surviving = next(
+            concept for concept in target.list_concepts() if concept["canonical_name"] == "TCP"
+        )
+        self.assertEqual(surviving["status"], "APPROVED")
+        self.assertEqual(surviving["definition"], "本地定义")
+        # The published spelling still arrives as an alias, so a later model
+        # response naming it resolves to this concept.
+        self.assertIn("Transmission Control Protocol", surviving["aliases"])
+        self.assertEqual(summary["skipped_reasons"]["concept_status_locked"], 1)
+        self.assertEqual(summary["skipped_reasons"]["concept_definition_locked"], 1)
+        self.assertEqual(summary["skipped_reasons"]["mention_admin_owned"], 1)
+        connection = sqlite3.connect(target.path_for_test)
+        try:
+            self.assertEqual(
+                list(
+                    connection.execute(
+                        """SELECT source FROM concept_mentions
+                            WHERE start_codepoint = 0 AND end_codepoint = 3"""
+                    )
+                ),
+                [("ADMIN",)],
+            )
+        finally:
+            connection.close()
+
+    def test_an_overlay_for_a_different_archive_is_refused(self) -> None:
+        target, version_id = self._book("target.db")
+        foreign = replace(self.overlay, epub_sha256="b" * 64)
+
+        with self.assertRaises(OverlayRejected) as refusal:
+            target.apply_overlay(foreign, version_id=version_id)
+
+        self.assertEqual(refusal.exception.reason, "epub_sha256_mismatch")
+        self.assertEqual(target.count_concepts(), 0)
+        with self.assertRaises(OverlayRejected) as unresolvable:
+            target.apply_overlay(foreign)
+        self.assertEqual(unresolvable.exception.reason, "epub_sha256_mismatch")
+
+    def test_a_published_spelling_owned_by_another_local_concept_is_refused(self) -> None:
+        """A duplicate is an administrator merge decision, not an import's."""
+        target, version_id = self._book("target.db")
+        # Locally, the published concept's spelling is already an alias of a
+        # different concept, so silently attaching the analysis to either one
+        # would be a guess.
+        target.upsert_concept("网络协议", aliases=["TCP"], status="APPROVED")
+
+        with self.assertRaises(OverlayRejected) as refusal:
+            target.apply_overlay(self.overlay, version_id=version_id)
+
+        self.assertEqual(refusal.exception.reason, "alias_conflict")
+        self.assertNotIn("TCP", str(refusal.exception))
+        self.assertEqual(self._graph(target, version_id)["mentions"], set())
+
+    def test_an_overlay_from_another_parser_format_is_refused(self) -> None:
+        """A parser change can shift every offset, so the format must match."""
+        target, version_id = self._book("target.db")
+        stale = replace(self.overlay, parser_version="2")
+
+        with self.assertRaises(OverlayRejected) as refusal:
+            target.apply_overlay(stale, version_id=version_id)
+
+        self.assertEqual(refusal.exception.reason, "parser_version_mismatch")
+        self.assertEqual(target.count_concepts(), 0)
+
+    def test_a_store_whose_passage_set_differs_is_refused(self) -> None:
+        target, version_id = self._book("target.db", passages=(*self.PASSAGES, "多出来的一段。"))
+
+        with self.assertRaises(OverlayRejected) as refusal:
+            target.apply_overlay(self.overlay, version_id=version_id)
+
+        self.assertEqual(refusal.exception.reason, "passage_fingerprint_mismatch")
+        self.assertEqual(target.count_concepts(), 0)
+        # A tampered digest is refused by the same gate.
+        matching, matching_version = self._book("matching.db")
+        with self.assertRaises(OverlayRejected) as tampered:
+            matching.apply_overlay(
+                replace(self.overlay, fingerprint=PassageFingerprint(count=2, digest="c" * 64)),
+                version_id=matching_version,
+            )
+        self.assertEqual(tampered.exception.reason, "passage_fingerprint_mismatch")
+
+    def test_a_single_drifted_passage_hash_rejects_the_whole_artifact(self) -> None:
+        target, version_id = self._book("target.db")
+        drifted = replace(
+            self.overlay,
+            mentions=(
+                replace(self.overlay.mentions[0], content_sha256="d" * 64),
+                *self.overlay.mentions[1:],
+            ),
+        )
+
+        with self.assertRaises(OverlayRejected) as refusal:
+            target.apply_overlay(drifted, version_id=version_id)
+
+        self.assertEqual(refusal.exception.reason, "passage_content_drift")
+        # Atomicity: the concepts written earlier in the same transaction are
+        # gone too, so no partial graph survives a refused artifact.
+        self.assertEqual(target.count_concepts(), 0)
+        self.assertEqual(self._graph(target, version_id)["mentions"], set())
+
+    def test_an_out_of_range_span_rejects_the_whole_artifact(self) -> None:
+        target, version_id = self._book("target.db")
+        overrun = replace(
+            self.overlay,
+            mentions=(
+                replace(self.overlay.mentions[0], end_codepoint=9_999),
+                *self.overlay.mentions[1:],
+            ),
+        )
+
+        with self.assertRaises(OverlayRejected) as refusal:
+            target.apply_overlay(overrun, version_id=version_id)
+
+        self.assertEqual(refusal.exception.reason, "offsets_out_of_range")
+        self.assertEqual(target.count_concepts(), 0)
+
+    def test_a_location_that_names_no_passage_is_refused(self) -> None:
+        target, version_id = self._book("target.db")
+        missing = replace(
+            self.overlay,
+            mentions=(replace(self.overlay.mentions[0], ordinal=99), *self.overlay.mentions[1:]),
+        )
+
+        with self.assertRaises(OverlayRejected) as refusal:
+            target.apply_overlay(missing, version_id=version_id)
+
+        self.assertEqual(refusal.exception.reason, "passage_missing")
+        self.assertEqual(target.count_concepts(), 0)
+
+    def test_a_malformed_artifact_never_reaches_the_store(self) -> None:
+        serialized = json.loads(self.overlay.to_json())
+        serialized["concepts"][0]["key"] = "not-the-normalized-name"
+        with self.assertRaisesRegex(OverlayError, "normalized form"):
+            parse_overlay_json(json.dumps(serialized))
+
+        smuggled = json.loads(self.overlay.to_json())
+        smuggled["mentions"][0]["evidence"] = self.MARKER
+        with self.assertRaisesRegex(OverlayError, "list of objects|unsupported fields|must be"):
+            parse_overlay_json(json.dumps(smuggled))
+
+        with self.assertRaisesRegex(OverlayError, "UTF-8 JSON"):
+            parse_overlay_json(b"\xff\xfe not json")
+
+    def test_a_mention_naming_an_undeclared_concept_cannot_be_built(self) -> None:
+        with self.assertRaisesRegex(OverlayError, "does not declare"):
+            OVERLAY_MODULE.build_overlay(
+                epub_sha256="a" * 64,
+                parser_version="1",
+                book_title="原书",
+                fingerprint=self.overlay.fingerprint,
+                mentions=[OverlayMention("ghost", 0, "e" * 64, 0, 3)],
+            )
 
 
 if __name__ == "__main__":
