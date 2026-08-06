@@ -510,6 +510,121 @@ export const indexEpubVersion = (token: string, versionId: string, rebuild = fal
 		body: JSON.stringify({ rebuild })
 	});
 
+/**
+ * A published analysis overlay. Concept labels, aliases and definitions are
+ * the analysis product and travel; passage text never does. Mentions and
+ * relation evidence are locations only — `(ordinal, content_sha256)` plus
+ * code-point offsets — which the receiving server verifies against its own
+ * copy of the book before deriving each evidence string from it.
+ */
+export type EpubOverlayLocation = {
+	ordinal: number;
+	content_sha256: string;
+	start_codepoint: number;
+	end_codepoint: number;
+};
+
+export type EpubOverlayConcept = {
+	/** Normalized canonical name; the join key for mentions and relations. */
+	key: string;
+	canonical_name: string;
+	aliases: string[];
+	definition: string;
+	status: EpubConcept['status'];
+};
+
+export type EpubOverlayMention = EpubOverlayLocation & { concept_key: string };
+
+export type EpubOverlayRelation = {
+	subject_key: string;
+	predicate: string;
+	object_key: string;
+	status: EpubConcept['status'];
+	evidence: EpubOverlayLocation[];
+};
+
+export type EpubConceptOverlay = {
+	overlay_format_version: number;
+	epub_sha256: string;
+	parser_version: string;
+	book_title: string;
+	/** Digest of the whole ordered passage set the analysis was built against. */
+	passage_fingerprint: { count: number; digest: string };
+	concepts: EpubOverlayConcept[];
+	mentions: EpubOverlayMention[];
+	relations: EpubOverlayRelation[];
+};
+
+export type EpubOverlayDownload = {
+	overlay: EpubConceptOverlay;
+	/** SHA-256 of the exact bytes below, for publishing alongside the file. */
+	overlay_sha256: string;
+	/** Canonical artifact bytes; re-serializing the object would not match. */
+	text: string;
+};
+
+/** Counts and stable reason classes only; never passage text or labels. */
+export type EpubOverlayApplyResult = {
+	version_id: string;
+	epub_sha256: string;
+	overlay_format_version: number;
+	applied: number;
+	skipped: number;
+	rejected: number;
+	applied_detail: Record<string, number>;
+	skipped_detail: Record<string, number>;
+	skipped_reasons: Record<string, number>;
+	rejection_reasons: Record<string, number>;
+	book_id?: string | null;
+	book_title?: string | null;
+	uploaded_overlay_sha256: string;
+	canonical_overlay_sha256: string;
+	/** An imported overlay carries no vectors; rebuild the version index. */
+	vectors_require_reindex: boolean;
+};
+
+/**
+ * Download one version's analysis as publishable artifact bytes. The exact
+ * body is kept because the server's `X-Overlay-SHA256` covers those bytes;
+ * `JSON.stringify` of the parsed object would produce a different digest.
+ */
+export const getEpubVersionOverlay = async (
+	token: string,
+	versionId: string
+): Promise<EpubOverlayDownload> => {
+	const response = await fetch(
+		epubUrl(`/admin/versions/${encodeURIComponent(versionId)}/overlay`),
+		{
+			headers: { Accept: 'application/json', authorization: `Bearer ${token}` }
+		}
+	);
+	const text = await response.text();
+	if (!response.ok) {
+		let body: unknown = text;
+		try {
+			body = JSON.parse(text);
+		} catch {
+			/* a non-JSON error body is reported verbatim */
+		}
+		throw new Error(errorDetail(body, response.statusText));
+	}
+	return {
+		overlay: JSON.parse(text) as EpubConceptOverlay,
+		overlay_sha256: response.headers.get('X-Overlay-SHA256') ?? '',
+		text
+	};
+};
+
+/** Apply a published overlay to this server's own copy of the same EPUB. */
+export const applyEpubOverlay = (token: string, file: File) => {
+	const data = new FormData();
+	data.append('file', file);
+	return request<EpubOverlayApplyResult>(token, '/admin/overlays', {
+		method: 'POST',
+		body: data
+	});
+};
+
 /** Identifiers only. Prompt text, instructions and schemas stay server-owned. */
 export type EpubPromptProfiles = {
 	prompt_profiles: string[];

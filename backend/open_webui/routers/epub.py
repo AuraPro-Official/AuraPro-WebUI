@@ -11,7 +11,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
+import re
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from open_webui.retrieval.epub.batch import BatchPayloadError, BatchServiceError
@@ -29,6 +32,10 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 
 router = APIRouter(prefix="/api/v1/epub", tags=["epub"])
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+# An overlay is compact JSON that carries no book text, so it is bounded far
+# below an EPUB archive; a larger upload is a mistake or an attack, not a graph.
+MAX_OVERLAY_BYTES = 32 * 1024 * 1024
+_SAFE_FILENAME = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 class SearchForm(BaseModel):
@@ -180,6 +187,71 @@ async def import_epub(
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="EPUB upload exceeds 200 MiB")
     try:
         return service.import_epub(filename=filename, epub_bytes=epub_bytes, source_locator=filename)
+    except (EpubServiceError, IntegrityError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.get("/admin/versions/{version_id}/overlay")
+async def export_epub_overlay(
+    version_id: str, service: ServiceDep, user=Depends(get_admin_user)
+) -> Response:
+    """Download one version's analysis as a portable, text-free artifact.
+
+    The body is the artifact's exact canonical bytes and ``X-Overlay-SHA256``
+    is their digest, so an administrator can publish the file and the hash
+    together and any recipient can verify what they downloaded.  Concept
+    labels, aliases and definitions are the analysis product and do travel;
+    passage text, evidence strings, EPUB blobs and vectors never do.
+    """
+    try:
+        result = service.export_concept_overlay(version_id)
+    except EpubResourceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (EpubServiceError, IntegrityError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    filename = f"{_SAFE_FILENAME.sub('-', version_id)[:64]}-overlay.json"
+    return Response(
+        content=result["overlay_json"].encode("utf-8"),
+        media_type="application/json",
+        headers={
+            "X-Overlay-SHA256": result["overlay_sha256"],
+            "X-Overlay-Epub-SHA256": result["epub_sha256"],
+            "X-Overlay-Concept-Count": str(result["concept_count"]),
+            "X-Overlay-Mention-Count": str(result["mention_count"]),
+            "X-Overlay-Relation-Count": str(result["relation_count"]),
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+@router.post("/admin/overlays")
+async def apply_epub_overlay(
+    service: ServiceDep,
+    user=Depends(get_admin_user),
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Apply a published analysis overlay to this server's own EPUB copy.
+
+    The response is deliberately content-free: counts and stable reason
+    classes only.  A failed source-fidelity gate rejects the whole artifact
+    and answers 400 with its reason class, never with the passage, span or
+    label that failed.
+    """
+    filename = file.filename or ""
+    if not filename.lower().endswith(".json"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="uploaded file must be a .json overlay"
+        )
+    overlay_bytes = await file.read(MAX_OVERLAY_BYTES + 1)
+    if len(overlay_bytes) > MAX_OVERLAY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="overlay upload exceeds 32 MiB",
+        )
+    try:
+        return service.apply_concept_overlay(overlay_bytes=overlay_bytes)
+    except EpubResourceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except (EpubServiceError, IntegrityError, ValueError) as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 

@@ -21,6 +21,18 @@ import threading
 from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 from uuid import uuid4
 
+from .overlay import (
+    OVERLAY_FORMAT_VERSION,
+    ConceptOverlay,
+    OverlayConcept,
+    OverlayMention,
+    OverlayRelation,
+    OverlaySpan,
+    build_overlay,
+    normalize_concept_key,
+    passage_fingerprint,
+)
+
 
 SCHEMA_VERSION = 5
 
@@ -35,6 +47,19 @@ class DuplicateEpubError(IntegrityError):
 
 class UnknownConceptError(IntegrityError):
     """A referenced concept identifier does not exist in the graph."""
+
+
+class OverlayRejected(IntegrityError):
+    """An analysis overlay failed a source-fidelity gate and was not applied.
+
+    ``reason`` is a stable, content-free class name so an operator surface can
+    report *why* an artifact was refused without echoing passage text, a
+    concept label, or an offset back to the caller.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -111,6 +136,12 @@ class EpubStore(Protocol):
     ) -> int: ...
 
     def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
+
+    def export_concept_overlay(self, version_id: str) -> ConceptOverlay: ...
+
+    def apply_overlay(
+        self, overlay: ConceptOverlay, *, version_id: str | None = None
+    ) -> dict[str, Any]: ...
 
 
 _MIGRATION_1: tuple[str, ...] = (
@@ -395,7 +426,14 @@ def _sha256_text(value: str) -> str:
 
 
 def _normalize(value: str) -> str:
-    normalized = " ".join(value.split()).casefold()
+    # The folding rule is shared with the portable overlay artifact, whose
+    # concept key *is* ``normalized_name``.  A second copy of the rule here
+    # would eventually disagree and reattach an imported analysis to the wrong
+    # concept, so the pure module owns it and this wrapper only adds the
+    # store's own emptiness invariant.
+    if not isinstance(value, str):
+        raise IntegrityError("a concept name or alias must be a string")
+    normalized = normalize_concept_key(value)
     if not normalized:
         raise IntegrityError("a concept name or alias cannot be empty")
     return normalized
@@ -1186,6 +1224,34 @@ class SQLiteEpubStore:
         alias_source: str = "MODEL",
     ) -> str:
         """Create/update a concept without replacing its foreign-key parent row."""
+        with self._write() as connection:
+            return self._upsert_concept(
+                connection,
+                canonical_name,
+                aliases=aliases,
+                definition=definition,
+                status=status,
+                concept_id=concept_id,
+                alias_source=alias_source,
+            )
+
+    def _upsert_concept(
+        self,
+        connection: sqlite3.Connection,
+        canonical_name: str,
+        *,
+        aliases: Iterable[str] = (),
+        definition: str = "",
+        status: str = "PROVISIONAL",
+        concept_id: str | None = None,
+        alias_source: str = "MODEL",
+    ) -> str:
+        """Create/update a concept using an existing store transaction.
+
+        :meth:`apply_overlay` uses this private primitive so a whole imported
+        analysis — concepts, mentions, relations and evidence — commits or
+        rolls back together.  Public callers should use :meth:`upsert_concept`.
+        """
         if status not in {"PROVISIONAL", "APPROVED", "REJECTED"}:
             raise IntegrityError(f"invalid concept status: {status}")
         if alias_source not in {"SEED", "MODEL", "ADMIN"}:
@@ -1194,42 +1260,41 @@ class SQLiteEpubStore:
         requested_aliases: dict[str, str] = {normalized_name: canonical_name}
         for alias in aliases:
             requested_aliases[_normalize(alias)] = alias
-        with self._write() as connection:
-            existing = connection.execute(
-                "SELECT concept_id FROM concepts WHERE normalized_name = ?", (normalized_name,)
+        existing = connection.execute(
+            "SELECT concept_id FROM concepts WHERE normalized_name = ?", (normalized_name,)
+        ).fetchone()
+        resolved_id = concept_id or (existing["concept_id"] if existing else str(uuid4()))
+        if existing is not None and concept_id is not None and existing["concept_id"] != concept_id:
+            raise IntegrityError("canonical name already belongs to a different concept")
+        canonical_alias_owner = connection.execute(
+            "SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?", (normalized_name,)
+        ).fetchone()
+        if canonical_alias_owner is not None and canonical_alias_owner["concept_id"] != resolved_id:
+            raise IntegrityError("canonical name is already an alias of a different concept")
+        if existing is None:
+            connection.execute(
+                """INSERT INTO concepts(concept_id, canonical_name, normalized_name, definition, status)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (resolved_id, canonical_name, normalized_name, definition, status),
+            )
+        else:
+            connection.execute(
+                """UPDATE concepts SET canonical_name = ?, definition = ?, status = ?,
+                           updated_at = CURRENT_TIMESTAMP WHERE concept_id = ?""",
+                (canonical_name, definition, status, resolved_id),
+            )
+        for normalized_alias, alias in requested_aliases.items():
+            owner = connection.execute(
+                "SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?", (normalized_alias,)
             ).fetchone()
-            resolved_id = concept_id or (existing["concept_id"] if existing else str(uuid4()))
-            if existing is not None and concept_id is not None and existing["concept_id"] != concept_id:
-                raise IntegrityError("canonical name already belongs to a different concept")
-            canonical_alias_owner = connection.execute(
-                "SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?", (normalized_name,)
-            ).fetchone()
-            if canonical_alias_owner is not None and canonical_alias_owner["concept_id"] != resolved_id:
-                raise IntegrityError("canonical name is already an alias of a different concept")
-            if existing is None:
+            if owner is not None and owner["concept_id"] != resolved_id:
+                raise IntegrityError(f"alias already belongs to another concept: {alias}")
+            if owner is None:
                 connection.execute(
-                    """INSERT INTO concepts(concept_id, canonical_name, normalized_name, definition, status)
+                    """INSERT INTO concept_aliases(alias_id, concept_id, alias, normalized_alias, source)
                        VALUES (?, ?, ?, ?, ?)""",
-                    (resolved_id, canonical_name, normalized_name, definition, status),
+                    (str(uuid4()), resolved_id, alias, normalized_alias, alias_source),
                 )
-            else:
-                connection.execute(
-                    """UPDATE concepts SET canonical_name = ?, definition = ?, status = ?,
-                               updated_at = CURRENT_TIMESTAMP WHERE concept_id = ?""",
-                    (canonical_name, definition, status, resolved_id),
-                )
-            for normalized_alias, alias in requested_aliases.items():
-                owner = connection.execute(
-                    "SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?", (normalized_alias,)
-                ).fetchone()
-                if owner is not None and owner["concept_id"] != resolved_id:
-                    raise IntegrityError(f"alias already belongs to another concept: {alias}")
-                if owner is None:
-                    connection.execute(
-                        """INSERT INTO concept_aliases(alias_id, concept_id, alias, normalized_alias, source)
-                           VALUES (?, ?, ?, ?, ?)""",
-                        (str(uuid4()), resolved_id, alias, normalized_alias, alias_source),
-                    )
         return resolved_id
 
     def count_concepts(self, *, status: str | None = None) -> int:
@@ -1606,33 +1671,555 @@ class SQLiteEpubStore:
         mention_id: str | None = None,
     ) -> str:
         """Link an existing concept to an existing source passage in FK-safe order."""
+        with self._write() as connection:
+            return self._add_concept_mention(
+                connection,
+                concept_id,
+                passage_id,
+                start_codepoint=start_codepoint,
+                end_codepoint=end_codepoint,
+                evidence=evidence,
+                source=source,
+                mention_id=mention_id,
+            )
+
+    def _add_concept_mention(
+        self,
+        connection: sqlite3.Connection,
+        concept_id: str,
+        passage_id: str,
+        *,
+        start_codepoint: int | None = None,
+        end_codepoint: int | None = None,
+        evidence: str | None = None,
+        source: str = "MODEL",
+        mention_id: str | None = None,
+    ) -> str:
+        """Link a concept to a passage using an existing store transaction.
+
+        The evidence string is always *derived* from the immutable passage;
+        a caller may supply one only to have it checked.  :meth:`apply_overlay`
+        relies on that: a portable overlay ships no text at all, so the
+        receiving store reconstructs each mention from its own copy of the book.
+        """
         if source not in {"SEED", "MODEL", "ADMIN"}:
             raise IntegrityError(f"invalid mention source: {source}")
         if (start_codepoint is None) != (end_codepoint is None):
             raise IntegrityError("mention offsets must be supplied together")
-        with self._write() as connection:
-            if connection.execute("SELECT 1 FROM concepts WHERE concept_id = ?", (concept_id,)).fetchone() is None:
-                raise IntegrityError(f"unknown concept_id: {concept_id}")
-            passage = connection.execute(
-                "SELECT content FROM passages WHERE passage_id = ?", (passage_id,)
-            ).fetchone()
-            if passage is None:
-                raise IntegrityError(f"unknown passage_id: {passage_id}")
-            if start_codepoint is not None:
-                if start_codepoint < 0 or end_codepoint is None or end_codepoint <= start_codepoint or end_codepoint > len(passage["content"]):
-                    raise IntegrityError("mention offsets must identify a non-empty source substring")
-                expected = passage["content"][start_codepoint:end_codepoint]
-                if evidence is not None and evidence != expected:
-                    raise IntegrityError("mention evidence must equal the source substring")
-                evidence = expected
-            mention = mention_id or str(uuid4())
-            connection.execute(
-                """INSERT INTO concept_mentions(
-                     mention_id, concept_id, passage_id, start_codepoint, end_codepoint, evidence, source
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (mention, concept_id, passage_id, start_codepoint, end_codepoint, evidence, source),
-            )
+        if connection.execute("SELECT 1 FROM concepts WHERE concept_id = ?", (concept_id,)).fetchone() is None:
+            raise IntegrityError(f"unknown concept_id: {concept_id}")
+        passage = connection.execute(
+            "SELECT content FROM passages WHERE passage_id = ?", (passage_id,)
+        ).fetchone()
+        if passage is None:
+            raise IntegrityError(f"unknown passage_id: {passage_id}")
+        if start_codepoint is not None:
+            if start_codepoint < 0 or end_codepoint is None or end_codepoint <= start_codepoint or end_codepoint > len(passage["content"]):
+                raise IntegrityError("mention offsets must identify a non-empty source substring")
+            expected = passage["content"][start_codepoint:end_codepoint]
+            if evidence is not None and evidence != expected:
+                raise IntegrityError("mention evidence must equal the source substring")
+            evidence = expected
+        mention = mention_id or str(uuid4())
+        connection.execute(
+            """INSERT INTO concept_mentions(
+                 mention_id, concept_id, passage_id, start_codepoint, end_codepoint, evidence, source
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (mention, concept_id, passage_id, start_codepoint, end_codepoint, evidence, source),
+        )
         return mention
+
+    def export_concept_overlay(self, version_id: str) -> ConceptOverlay:
+        """Read one version's analysis as a portable, text-free artifact.
+
+        Concept labels, aliases and definitions are the analysis product and
+        do travel.  Everything that points *into* the book travels as a
+        location — ``(ordinal, content_sha256, start, end)`` — so a receiving
+        store can verify it against its own copy and derive the evidence
+        string itself.  No passage text, evidence string, EPUB blob or vector
+        is read here, let alone written to the artifact.
+
+        A mention without code-point offsets cannot be located in another copy
+        of the book and is therefore not exportable; the grounded ingest paths
+        always record offsets, so this omits nothing they produced.
+        """
+        connection = self._connection()
+        version = connection.execute(
+            """SELECT v.version_id, v.epub_sha256, v.parser_version, b.title AS book_title
+                 FROM book_versions AS v JOIN books AS b ON b.book_id = v.book_id
+                WHERE v.version_id = ?""",
+            (version_id,),
+        ).fetchone()
+        if version is None:
+            raise IntegrityError(f"unknown version_id: {version_id}")
+
+        passages = connection.execute(
+            "SELECT passage_id, ordinal, content_sha256 FROM passages WHERE version_id = ? ORDER BY ordinal",
+            (version_id,),
+        ).fetchall()
+        located = {
+            str(row["passage_id"]): (int(row["ordinal"]), str(row["content_sha256"]))
+            for row in passages
+        }
+        fingerprint = passage_fingerprint(
+            (int(row["ordinal"]), str(row["content_sha256"])) for row in passages
+        )
+
+        aliases: dict[str, list[str]] = {}
+        for row in connection.execute(
+            """SELECT DISTINCT a.concept_id, a.alias
+                 FROM concept_aliases AS a
+                 JOIN concept_mentions AS m ON m.concept_id = a.concept_id
+                 JOIN passages AS p ON p.passage_id = m.passage_id
+                WHERE p.version_id = ?""",
+            (version_id,),
+        ):
+            aliases.setdefault(str(row["concept_id"]), []).append(str(row["alias"]))
+
+        concept_keys: dict[str, str] = {}
+        concepts: list[OverlayConcept] = []
+        for row in connection.execute(
+            """SELECT DISTINCT c.concept_id, c.canonical_name, c.normalized_name, c.definition, c.status
+                 FROM concepts AS c
+                 JOIN concept_mentions AS m ON m.concept_id = c.concept_id
+                 JOIN passages AS p ON p.passage_id = m.passage_id
+                WHERE p.version_id = ?""",
+            (version_id,),
+        ):
+            concept_id = str(row["concept_id"])
+            concept_keys[concept_id] = str(row["normalized_name"])
+            concepts.append(
+                OverlayConcept(
+                    key=str(row["normalized_name"]),
+                    canonical_name=str(row["canonical_name"]),
+                    aliases=tuple(aliases.get(concept_id, ())),
+                    definition=str(row["definition"]),
+                    status=str(row["status"]),
+                )
+            )
+
+        mentions = [
+            OverlayMention(
+                concept_key=concept_keys[str(row["concept_id"])],
+                ordinal=located[str(row["passage_id"])][0],
+                content_sha256=located[str(row["passage_id"])][1],
+                start_codepoint=int(row["start_codepoint"]),
+                end_codepoint=int(row["end_codepoint"]),
+            )
+            for row in connection.execute(
+                """SELECT m.concept_id, m.passage_id, m.start_codepoint, m.end_codepoint
+                     FROM concept_mentions AS m
+                     JOIN passages AS p ON p.passage_id = m.passage_id
+                    WHERE p.version_id = ? AND m.start_codepoint IS NOT NULL""",
+                (version_id,),
+            )
+        ]
+
+        evidence: dict[str, list[OverlaySpan]] = {}
+        for row in connection.execute(
+            """SELECT e.assertion_id, e.passage_id, e.start_codepoint, e.end_codepoint
+                 FROM concept_relation_evidence AS e
+                 JOIN concept_relation_assertions AS a ON a.assertion_id = e.assertion_id
+                WHERE a.version_id = ?""",
+            (version_id,),
+        ):
+            ordinal, digest = located[str(row["passage_id"])]
+            evidence.setdefault(str(row["assertion_id"]), []).append(
+                OverlaySpan(ordinal, digest, int(row["start_codepoint"]), int(row["end_codepoint"]))
+            )
+
+        relations: list[OverlayRelation] = []
+        for row in connection.execute(
+            """SELECT a.assertion_id, a.status, r.subject_concept_id, r.predicate, r.object_concept_id
+                 FROM concept_relation_assertions AS a
+                 JOIN concept_relations AS r ON r.relation_id = a.relation_id
+                WHERE a.version_id = ?""",
+            (version_id,),
+        ):
+            subject = concept_keys.get(str(row["subject_concept_id"]))
+            object_ = concept_keys.get(str(row["object_concept_id"]))
+            spans = evidence.get(str(row["assertion_id"]), [])
+            # An endpoint with no mention in this version cannot be named by a
+            # key the artifact declares, and an assertion with no surviving
+            # evidence is not verifiable against another copy of the book.
+            if subject is None or object_ is None or subject == object_ or not spans:
+                continue
+            relations.append(
+                OverlayRelation(
+                    subject_key=subject,
+                    predicate=str(row["predicate"]),
+                    object_key=object_,
+                    status=str(row["status"]),
+                    evidence=tuple(spans),
+                )
+            )
+
+        return build_overlay(
+            epub_sha256=str(version["epub_sha256"]),
+            parser_version=str(version["parser_version"]),
+            book_title=str(version["book_title"]),
+            fingerprint=fingerprint,
+            concepts=concepts,
+            mentions=mentions,
+            relations=relations,
+        )
+
+    def apply_overlay(
+        self, overlay: ConceptOverlay, *, version_id: str | None = None
+    ) -> dict[str, Any]:
+        """Attach a portable analysis to this store's own copy of the book.
+
+        Everything below happens in one transaction: a half-applied graph is
+        worse than none, so a single failed gate leaves the store untouched.
+        The gates run in order, and nothing can be stored that was not already
+        in the importer's own passages:
+
+        1. ``epub_sha256`` must identify the target version.
+        2. ``parser_version`` must equal the format that produced the target
+           version's passages — a parser change can shift every offset.
+        3. The artifact's fingerprint, recomputed over this store's complete
+           ordered passage set, must match.
+        4. Every mention and evidence location must name a passage that exists
+           at that ordinal *and* whose ``content_sha256`` still matches.
+        5. Offsets must satisfy ``0 <= start < end <= len(content)``; the
+           evidence string is then derived from this store's own passage.
+
+        Conflict policy — an overlay is other people's analysis arriving in a
+        store whose administrator may already have curated the same graph, so
+        it is strictly additive and never overrides a local decision:
+
+        * A concept's status is adopted only while the local one is still
+          ``PROVISIONAL``, the sole undecided state.  A local ``APPROVED`` is
+          never downgraded and a local ``REJECTED`` is never resurrected.
+        * A local canonical spelling and a non-empty local definition win; the
+          overlay's spelling survives as an alias and its definition fills an
+          empty one.  Aliases are unioned, never removed.
+        * Rows are written with source ``MODEL``: an overlay is published
+          model output, and must never masquerade as this operator's own
+          ``ADMIN`` decision.  An existing mention for the same concept,
+          passage and span is left exactly as it is, so an ``ADMIN`` mention
+          is never overwritten by ``PROVISIONAL`` model output.
+        * A relation assertion is scoped to (relation, version, source), so an
+          ``ADMIN`` assertion is a different row and is untouched; an existing
+          ``MODEL`` assertion keeps its reviewed status and only gains
+          evidence spans it did not already hold.
+
+        Applying the same artifact twice therefore changes nothing the second
+        time.
+        """
+        if overlay.overlay_format_version != OVERLAY_FORMAT_VERSION:
+            raise OverlayRejected(
+                "overlay_format_version_unsupported",
+                f"this server applies overlay format version {OVERLAY_FORMAT_VERSION}",
+            )
+        applied = {
+            "concepts_created": 0,
+            "concepts_updated": 0,
+            "mentions_created": 0,
+            "relations_created": 0,
+            "relation_evidence_created": 0,
+        }
+        skipped = {
+            "concepts_unchanged": 0,
+            "mentions_existing": 0,
+            "relations_existing": 0,
+        }
+        reasons: dict[str, int] = {}
+
+        def note(reason: str) -> None:
+            reasons[reason] = reasons.get(reason, 0) + 1
+
+        with self._write() as connection:
+            version = self._overlay_target(connection, overlay, version_id)
+            resolved_version_id = str(version["version_id"])
+            if overlay.parser_version != str(version["parser_version"]):
+                raise OverlayRejected(
+                    "parser_version_mismatch",
+                    "the overlay was produced by a different EPUB parser format version",
+                )
+            passages = {
+                int(row["ordinal"]): row
+                for row in connection.execute(
+                    "SELECT passage_id, ordinal, content, content_sha256 FROM passages WHERE version_id = ?",
+                    (resolved_version_id,),
+                )
+            }
+            local = passage_fingerprint(
+                (ordinal, str(row["content_sha256"])) for ordinal, row in passages.items()
+            )
+            if local != overlay.fingerprint:
+                raise OverlayRejected(
+                    "passage_fingerprint_mismatch",
+                    "this store's passages are not the ones the overlay was built against",
+                )
+
+            concept_ids: dict[str, str] = {}
+            for concept in overlay.concepts:
+                existing = connection.execute(
+                    "SELECT concept_id, canonical_name, definition, status FROM concepts WHERE normalized_name = ?",
+                    (concept.key,),
+                ).fetchone()
+                if existing is None:
+                    # A key with no concept row can still be an alias of a
+                    # local concept, which is a genuine duplicate an
+                    # administrator has to merge rather than something an
+                    # import may quietly decide.
+                    concept_ids[concept.key] = self._overlay_concept(
+                        connection,
+                        concept.canonical_name,
+                        aliases=concept.aliases,
+                        definition=concept.definition,
+                        status=concept.status,
+                    )
+                    applied["concepts_created"] += 1
+                    continue
+                concept_id = str(existing["concept_id"])
+                before = (
+                    str(existing["canonical_name"]),
+                    str(existing["definition"]),
+                    str(existing["status"]),
+                    self._alias_count(connection, concept_id),
+                )
+                status = concept.status if before[2] == "PROVISIONAL" else before[2]
+                if status != concept.status:
+                    note("concept_status_locked")
+                definition = before[1] or concept.definition
+                if concept.definition and definition != concept.definition:
+                    note("concept_definition_locked")
+                concept_ids[concept.key] = self._overlay_concept(
+                    connection,
+                    before[0],
+                    aliases=(*concept.aliases, concept.canonical_name),
+                    definition=definition,
+                    status=status,
+                    concept_id=concept_id,
+                )
+                after = (before[0], definition, status, self._alias_count(connection, concept_id))
+                if after == before:
+                    skipped["concepts_unchanged"] += 1
+                else:
+                    applied["concepts_updated"] += 1
+
+            for mention in overlay.mentions:
+                passage = self._overlay_passage(passages, mention.span)
+                existing = connection.execute(
+                    """SELECT source FROM concept_mentions
+                        WHERE concept_id = ? AND passage_id = ? AND start_codepoint = ? AND end_codepoint = ?""",
+                    (
+                        concept_ids[mention.concept_key],
+                        passage["passage_id"],
+                        mention.start_codepoint,
+                        mention.end_codepoint,
+                    ),
+                ).fetchone()
+                if existing is not None:
+                    skipped["mentions_existing"] += 1
+                    note(
+                        "mention_admin_owned"
+                        if str(existing["source"]) == "ADMIN"
+                        else "mention_already_present"
+                    )
+                    continue
+                self._add_concept_mention(
+                    connection,
+                    concept_ids[mention.concept_key],
+                    str(passage["passage_id"]),
+                    start_codepoint=mention.start_codepoint,
+                    end_codepoint=mention.end_codepoint,
+                    source="MODEL",
+                )
+                applied["mentions_created"] += 1
+
+            assertions_before, evidence_before = self._relation_counts(connection, resolved_version_id)
+            for relation in overlay.relations:
+                if relation.predicate not in _RELATION_PREDICATES:
+                    raise OverlayRejected(
+                        "unsupported_predicate",
+                        "the overlay uses a relation predicate this server does not implement",
+                    )
+                subject_id = concept_ids[relation.subject_key]
+                object_id = concept_ids[relation.object_key]
+                if not self._has_mention_in_version(
+                    connection, resolved_version_id, (subject_id, object_id)
+                ):
+                    note("relation_endpoint_unmentioned")
+                    continue
+                existing = connection.execute(
+                    """SELECT a.status FROM concept_relation_assertions AS a
+                         JOIN concept_relations AS r ON r.relation_id = a.relation_id
+                        WHERE r.subject_concept_id = ? AND r.predicate = ? AND r.object_concept_id = ?
+                          AND a.version_id = ? AND a.source = 'MODEL'""",
+                    (subject_id, relation.predicate, object_id, resolved_version_id),
+                ).fetchone()
+                if existing is not None:
+                    skipped["relations_existing"] += 1
+                    if str(existing["status"]) != relation.status:
+                        note("relation_status_locked")
+                self._add_concept_relation(
+                    connection,
+                    version_id=resolved_version_id,
+                    subject_concept_id=subject_id,
+                    predicate=relation.predicate,
+                    object_concept_id=object_id,
+                    evidence=[
+                        self._overlay_evidence(passages, span) for span in relation.evidence
+                    ],
+                    status=relation.status,
+                    source="MODEL",
+                )
+            assertions_after, evidence_after = self._relation_counts(connection, resolved_version_id)
+            applied["relations_created"] = assertions_after - assertions_before
+            applied["relation_evidence_created"] = evidence_after - evidence_before
+
+        return {
+            "version_id": resolved_version_id,
+            "epub_sha256": overlay.epub_sha256,
+            "overlay_format_version": overlay.overlay_format_version,
+            "applied": sum(applied.values()),
+            "skipped": sum(skipped.values()),
+            "rejected": 0,
+            "applied_detail": applied,
+            "skipped_detail": skipped,
+            "skipped_reasons": reasons,
+            "rejection_reasons": {},
+        }
+
+    def _overlay_concept(
+        self,
+        connection: sqlite3.Connection,
+        canonical_name: str,
+        *,
+        aliases: Iterable[str],
+        definition: str,
+        status: str,
+        concept_id: str | None = None,
+    ) -> str:
+        """Write one overlay concept, reporting a spelling clash as its class.
+
+        Overlay concepts are written with alias source ``MODEL``: a published
+        analysis is model output and must never be recorded as this operator's
+        own ``ADMIN`` decision.
+        """
+        try:
+            return self._upsert_concept(
+                connection,
+                canonical_name,
+                aliases=aliases,
+                definition=definition,
+                status=status,
+                concept_id=concept_id,
+                alias_source="MODEL",
+            )
+        except IntegrityError as error:
+            raise OverlayRejected(
+                "alias_conflict",
+                "an overlay spelling already belongs to a different local concept",
+            ) from error
+
+    @staticmethod
+    def _overlay_target(
+        connection: sqlite3.Connection, overlay: ConceptOverlay, version_id: str | None
+    ) -> sqlite3.Row:
+        """Resolve and verify the version an overlay claims to describe."""
+        if version_id is not None:
+            version = connection.execute(
+                "SELECT version_id, epub_sha256, parser_version FROM book_versions WHERE version_id = ?",
+                (version_id,),
+            ).fetchone()
+            if version is None:
+                raise IntegrityError(f"unknown version_id: {version_id}")
+            if str(version["epub_sha256"]) != overlay.epub_sha256:
+                raise OverlayRejected(
+                    "epub_sha256_mismatch",
+                    "the overlay describes a different EPUB archive than the target version",
+                )
+            return version
+        version = connection.execute(
+            "SELECT version_id, epub_sha256, parser_version FROM book_versions WHERE epub_sha256 = ?",
+            (overlay.epub_sha256,),
+        ).fetchone()
+        if version is None:
+            raise OverlayRejected(
+                "epub_sha256_mismatch",
+                "no stored EPUB version has the archive hash this overlay describes",
+            )
+        return version
+
+    @staticmethod
+    def _overlay_passage(
+        passages: Mapping[int, sqlite3.Row], span: OverlaySpan
+    ) -> sqlite3.Row:
+        """Resolve one artifact location against this store's own passages."""
+        passage = passages.get(span.ordinal)
+        if passage is None:
+            raise OverlayRejected(
+                "passage_missing", "the overlay points at a passage ordinal this store does not have"
+            )
+        if str(passage["content_sha256"]) != span.content_sha256:
+            raise OverlayRejected(
+                "passage_content_drift",
+                "a passage this overlay points at differs from the one it was built against",
+            )
+        if (
+            span.start_codepoint < 0
+            or span.end_codepoint <= span.start_codepoint
+            or span.end_codepoint > len(passage["content"])
+        ):
+            raise OverlayRejected(
+                "offsets_out_of_range",
+                "an overlay span falls outside the passage it points at",
+            )
+        return passage
+
+    @classmethod
+    def _overlay_evidence(
+        cls, passages: Mapping[int, sqlite3.Row], span: OverlaySpan
+    ) -> dict[str, Any]:
+        """Derive one relation evidence row from the importer's own passage."""
+        passage = cls._overlay_passage(passages, span)
+        return {
+            "passage_id": str(passage["passage_id"]),
+            "start_codepoint": span.start_codepoint,
+            "end_codepoint": span.end_codepoint,
+            "evidence": str(passage["content"])[span.start_codepoint : span.end_codepoint],
+        }
+
+    @staticmethod
+    def _alias_count(connection: sqlite3.Connection, concept_id: str) -> int:
+        return int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM concept_aliases WHERE concept_id = ?", (concept_id,)
+            ).fetchone()["count"]
+        )
+
+    @staticmethod
+    def _has_mention_in_version(
+        connection: sqlite3.Connection, version_id: str, concept_ids: Sequence[str]
+    ) -> bool:
+        return all(
+            connection.execute(
+                """SELECT 1 FROM concept_mentions AS m
+                     JOIN passages AS p ON p.passage_id = m.passage_id
+                    WHERE m.concept_id = ? AND p.version_id = ?""",
+                (concept_id, version_id),
+            ).fetchone()
+            is not None
+            for concept_id in concept_ids
+        )
+
+    @staticmethod
+    def _relation_counts(connection: sqlite3.Connection, version_id: str) -> tuple[int, int]:
+        assertions = connection.execute(
+            "SELECT COUNT(*) AS count FROM concept_relation_assertions WHERE version_id = ?",
+            (version_id,),
+        ).fetchone()["count"]
+        evidence = connection.execute(
+            """SELECT COUNT(*) AS count FROM concept_relation_evidence AS e
+                 JOIN concept_relation_assertions AS a ON a.assertion_id = e.assertion_id
+                WHERE a.version_id = ?""",
+            (version_id,),
+        ).fetchone()["count"]
+        return int(assertions), int(evidence)
 
     def create_batch_job(
         self,

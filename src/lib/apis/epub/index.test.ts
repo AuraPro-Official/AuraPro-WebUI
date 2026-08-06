@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+	applyEpubOverlay,
 	createEpubBatchDraft,
 	createEpubSectionGraphBatchDraft,
 	getEpubBatchJob,
@@ -9,6 +10,7 @@ import {
 	getEpubConcepts,
 	getEpubPromptProfiles,
 	getEpubRelationAssertions,
+	getEpubVersionOverlay,
 	getEpubSampleBatchReviews,
 	importEpub,
 	indexEpubVersion,
@@ -284,5 +286,87 @@ describe('EPUB concept API client', () => {
 		expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/epub/admin/batches/batch-1');
 		expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/epub/admin/batches/recover');
 		expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST' });
+	});
+
+	it('downloads the exact overlay bytes with the digest an administrator publishes', async () => {
+		// Deliberately not the shape `JSON.stringify` would produce: the digest
+		// covers the server's canonical bytes, so the client must keep them.
+		const canonical =
+			'{"book_title":"共享书","concepts":[{"aliases":["TCP"],"canonical_name":"TCP","definition":"","key":"tcp","status":"APPROVED"}],"epub_sha256":"a1","mentions":[],"overlay_format_version":1,"parser_version":"1","passage_fingerprint":{"count":2,"digest":"b2"},"relations":[]}';
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(canonical, {
+				status: 200,
+				headers: { 'Content-Type': 'application/json', 'X-Overlay-SHA256': 'digest-1' }
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const download = await getEpubVersionOverlay('admin-token', 'version-1');
+
+		expect(download.text).toBe(canonical);
+		expect(download.overlay_sha256).toBe('digest-1');
+		expect(download.overlay.concepts[0].key).toBe('tcp');
+		// An artifact never carries passage text; only labels and locations.
+		expect(download.overlay.mentions).toEqual([]);
+		expect(fetchMock).toHaveBeenCalledWith(
+			'/api/v1/epub/admin/versions/version-1/overlay',
+			expect.objectContaining({
+				headers: expect.objectContaining({ authorization: 'Bearer admin-token' })
+			})
+		);
+	});
+
+	it('uploads an overlay to the administrator-only apply endpoint', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse({
+				version_id: 'version-1',
+				epub_sha256: 'a1',
+				overlay_format_version: 1,
+				applied: 4,
+				skipped: 1,
+				rejected: 0,
+				applied_detail: { concepts_created: 2, mentions_created: 2 },
+				skipped_detail: { mentions_existing: 1 },
+				skipped_reasons: { mention_admin_owned: 1 },
+				rejection_reasons: {},
+				uploaded_overlay_sha256: 'digest-1',
+				canonical_overlay_sha256: 'digest-1',
+				vectors_require_reindex: true
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const result = await applyEpubOverlay(
+			'admin-token',
+			new File(['{}'], 'overlay.json', { type: 'application/json' })
+		);
+
+		expect(result.applied).toBe(4);
+		expect(result.vectors_require_reindex).toBe(true);
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/epub/admin/overlays');
+		expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+		expect(fetchMock.mock.calls[0][1].body).toBeInstanceOf(FormData);
+	});
+
+	it('surfaces a refused overlay gate as its actionable reason class', async () => {
+		// Each call needs its own Response: a body can only be read once.
+		vi.stubGlobal(
+			'fetch',
+			vi
+				.fn()
+				.mockImplementation(async () =>
+					jsonResponse(
+						{ detail: 'passage_fingerprint_mismatch: this store’s passages differ' },
+						400
+					)
+				)
+		);
+
+		await expect(applyEpubOverlay('admin-token', new File(['{}'], 'overlay.json'))).rejects.toThrow(
+			'passage_fingerprint_mismatch'
+		);
+		await expect(getEpubVersionOverlay('admin-token', 'version-1')).rejects.toThrow(
+			'passage_fingerprint_mismatch'
+		);
 	});
 });

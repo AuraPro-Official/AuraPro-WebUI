@@ -9,10 +9,19 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import types
 from types import SimpleNamespace
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+# ``store`` imports the pure ``overlay`` module for the concept-key folding
+# rule it shares with the portable analysis artifact, so it is loaded as a
+# member of a synthetic package instead of as a lone file.
+PACKAGE_NAME = "epub_batch_sdd_test_package"
+PACKAGE = types.ModuleType(PACKAGE_NAME)
+PACKAGE.__path__ = [os.path.join(ROOT, "backend/open_webui/retrieval/epub")]
+sys.modules[PACKAGE_NAME] = PACKAGE
 
 
 def _load_module(name: str, relative_path: str):
@@ -24,7 +33,8 @@ def _load_module(name: str, relative_path: str):
     return module
 
 
-STORE = _load_module("epub_store_batch_test", "backend/open_webui/retrieval/epub/store.py")
+_load_module(f"{PACKAGE_NAME}.overlay", "backend/open_webui/retrieval/epub/overlay.py")
+STORE = _load_module(f"{PACKAGE_NAME}.store", "backend/open_webui/retrieval/epub/store.py")
 BATCH = _load_module("epub_batch_test", "backend/open_webui/retrieval/epub/batch.py")
 SQLiteEpubStore = STORE.SQLiteEpubStore
 BatchItemInput = BATCH.BatchItemInput
