@@ -7,7 +7,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-DEFAULT_SECTION_GRAPH_PROFILE = "zh-section-graph-v2"
+DEFAULT_SECTION_GRAPH_PROFILE = "zh-section-graph-v3"
 SECTION_GRAPH_MAX_CHARACTERS = 12_000
 
 # Bounded, adjacent literal context distinguishes repeated evidence without
@@ -172,6 +172,63 @@ relations：只连接本响应 concepts 中的两个不同 local_id；predicate 
 没有合格概念或关系时返回相应空数组。只返回严格 JSON 对象，不要 Markdown 或解释。"""
 
 
+# v3 is v2 with one variable changed: ``toc_path`` is no longer quotable source.
+#
+# Two SECTION_GRAPH samples on v2 scored 12/16 (gpt-4.1) and 11/16
+# (gpt-4o-mini), every failure surfacing as EVIDENCE_ABSENT.  Classifying the
+# raw provider output span by span shows that reading is wrong for most of
+# them: of gpt-4.1's failing spans, six were exact copies of a *section title*
+# handed to the model in the packet's per-passage ``toc_path`` and none were
+# invented; gpt-4o-mini had three of the same kind.  The model was not
+# paraphrasing, which is what v2's verbatim-copy clause defends against - it
+# was copying verbatim from a field we sent it and never scoped.
+#
+# The primary fix is therefore structural rather than textual, the same
+# reasoning that led v2 to drop offsets rather than ask harder for correct
+# ones: ``build_section_graph_completion_request`` no longer emits per-passage
+# ``toc_path`` at all.  It was redundant - a packet is already a TOC-scoped
+# subtree, the packet carries its own ``toc_path``, and SDD 4.2.2 point 1 makes
+# structural provenance a deterministic server-side write that a model never
+# infers - so removing it costs the contract nothing.  The packet-level
+# ``toc_path`` stays, because SDD 4.2.2 point 2 justifies the packet shape by
+# one request carrying enough local context to recognise a section-level
+# concept and its parts together.
+#
+# The clause below is the belt to that structural brace: the one remaining TOC
+# string in the payload is named as navigation and excluded from evidence
+# explicitly, so the model is not left to infer why the field it used to quote
+# has disappeared.  Everything else is v2 byte for byte - no offsets,
+# conditional anchors, the minimum evidence span with its short-passage escape
+# hatch, verbatim copy, the predicate vocabulary, ``local_id``, the strict JSON
+# shape and the 8_192-token budget - so a v3 sample isolates exactly this
+# variable against the two submitted v2 samples.
+_SYSTEM_INSTRUCTION_V3 = """你是中文 EPUB 的章节概念图抽取器。输入是一个 TOC 范围内的原文段落列表；
+每条段落都有不可变 passage_id 和原文。一次输出 concepts 与 relations。
+
+concepts：只抽取可检索且有明确文本依据的专名、术语、人物、组织、事件、制度或作品。每个 concept
+使用本响应唯一的 local_id。本包最多输出 12 个最值得检索的概念；name 是最适合索引的规范写法，
+aliases 最多 2 个且只包含本包可见的等价写法，definition 是不超过 30 个汉字的一句说明，
+且只能依据本包原文。每个概念只保留一个最有代表性的出现位置。不要依据外部知识补充事实。
+
+mentions 与 relations 的 evidence 使用同一种定位方式：必须写明该证据所在的 passage_id，
+但不要输出任何字符位置，字符位置由程序依据 evidence 在该 passage 中重新推导。
+evidence 必须从该 passage 逐字复制：不得改写、翻译或统一引号、全角与半角标点、空格和大小写。
+evidence 只能取自 passage_id 所指那条段落的 content 字段；顶层 toc_path 只是本包在目录中的导航
+位置，不是可引用的原文，任何情况下都不得把 toc_path 或其中的章节标题当作 evidence 或其一部分。
+evidence 至少 10 个 Unicode 字符，且必须是包含该概念或该关系的完整、有意义的短语或分句，
+不得只给出概念本身，也不得截取无意义的字符片段；
+该 passage 总长不足 10 个 Unicode 字符时，evidence 取该 passage 全文。
+evidence 在该 passage 中只出现一次时，context_before 和 context_after 必须都是空字符串；
+在该 passage 中重复出现时，两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，
+且至少一个非空，以唯一确定该出现位置。
+
+relations：只连接本响应 concepts 中的两个不同 local_id；predicate 只能使用指定枚举。关系必须由
+本章节包内的原文证据支持，本包最多输出 12 条关系，每条只给出一条最有代表性的 evidence。TOC 父子
+结构已经由程序保存，不要把单纯目录层级重复写成语义关系；只有原文支持概念层面的关系才输出。
+
+没有合格概念或关系时返回相应空数组。只返回严格 JSON 对象，不要 Markdown 或解释。"""
+
+
 @dataclass(frozen=True, slots=True)
 class SectionGraphProfile:
     """One immutable packet instruction with its output contract and budget."""
@@ -200,8 +257,8 @@ _SECTION_GRAPH_PROFILES: dict[str, SectionGraphProfile] = {
         max_tokens=1_800,
         asks_for_offsets=True,
     ),
-    DEFAULT_SECTION_GRAPH_PROFILE: SectionGraphProfile(
-        profile_id=DEFAULT_SECTION_GRAPH_PROFILE,
+    "zh-section-graph-v2": SectionGraphProfile(
+        profile_id="zh-section-graph-v2",
         system_instruction=_SYSTEM_INSTRUCTION_V2,
         output_schema=SECTION_GRAPH_OUTPUT_SCHEMA_V2,
         asks_for_offsets=False,
@@ -235,6 +292,18 @@ _SECTION_GRAPH_PROFILES: dict[str, SectionGraphProfile] = {
         # 8_192 clears ~6_650 with about 20% margin.  Typical responses are far
         # smaller: the anchors are empty unless the evidence actually repeats,
         # and most packets do not hold twelve retrievable concepts.
+        max_tokens=8_192,
+    ),
+    DEFAULT_SECTION_GRAPH_PROFILE: SectionGraphProfile(
+        profile_id=DEFAULT_SECTION_GRAPH_PROFILE,
+        system_instruction=_SYSTEM_INSTRUCTION_V3,
+        output_schema=SECTION_GRAPH_OUTPUT_SCHEMA_V2,
+        asks_for_offsets=False,
+        # v3 changes the instruction and the packet payload, never the decoding
+        # budget: a difference in max_tokens or temperature would confound the
+        # comparison against the two submitted v2 samples.  The payload got
+        # strictly smaller (one fewer field per passage, on packets holding up
+        # to 191 of them), so v2's worst-case arithmetic above still bounds it.
         max_tokens=8_192,
     ),
 }
@@ -297,7 +366,17 @@ def build_section_graph_completion_request(
     """Return a remote Structured Outputs request for one immutable TOC packet.
 
     ``profile_id`` selects the packet contract.  A superseded profile stays
-    selectable and byte-identical so a stored request replays exactly.
+    selectable and byte-identical so a stored request replays exactly.  An
+    already-submitted request replays from its persisted row rather than from
+    this builder, so the payload shape below is free to shrink.
+
+    A passage carries only its ``passage_id`` and its ``content``.  It used to
+    carry ``toc_path`` too, and that field was the measured cause of most of
+    the v2 sample's rejections: the model quoted section titles as evidence,
+    which is verbatim copying from something we handed it, so no instruction
+    against paraphrasing could catch it.  Nothing needs the field - a packet is
+    one TOC subtree, ``packet.toc_path`` names it once, and TOC provenance is
+    written server-side per SDD 4.2.2 point 1 - so it is not sent.
     """
     if not model.strip():
         raise SectionGraphError("section graph model cannot be empty")
@@ -305,7 +384,6 @@ def build_section_graph_completion_request(
     visible_passages = [
         {
             "passage_id": str(passage["passage_id"]),
-            "toc_path": list(passage.get("toc_path", ())),
             "content": str(passage["content"]),
         }
         for passage in packet.passages
