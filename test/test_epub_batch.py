@@ -36,6 +36,9 @@ def _load_module(name: str, relative_path: str):
 _load_module(f"{PACKAGE_NAME}.overlay", "backend/open_webui/retrieval/epub/overlay.py")
 STORE = _load_module(f"{PACKAGE_NAME}.store", "backend/open_webui/retrieval/epub/store.py")
 BATCH = _load_module("epub_batch_test", "backend/open_webui/retrieval/epub/batch.py")
+SECTION_GRAPH = _load_module(
+    "epub_section_graph_batch_test", "backend/open_webui/retrieval/epub/section_graph.py"
+)
 SQLiteEpubStore = STORE.SQLiteEpubStore
 BatchItemInput = BATCH.BatchItemInput
 BatchJobService = BATCH.BatchJobService
@@ -947,13 +950,17 @@ class EpubBatchServiceTest(unittest.TestCase):
             "evidence": evidence,
         }
 
-    def _ingest_packet(self, payload: dict, *, job_id: str = "section-graph") -> dict:
+    def _ingest_packet(
+        self, payload: dict, *, job_id: str = "section-graph", request: dict | None = None
+    ) -> dict:
         self.service.create_draft(
             version_id="version",
             provider="fake-batch",
             profile_name="zh-section-graph-v2",
             job_kind="SECTION_GRAPH",
-            items=[BatchItemInput("p1", "section-1", {"body": {"packet": True}})],
+            items=[
+                BatchItemInput("p1", "section-1", request or {"body": {"packet": True}})
+            ],
             batch_job_id=job_id,
         )
         remote_id = self.service.submit(job_id, self.provider)
@@ -1168,6 +1175,140 @@ class EpubBatchServiceTest(unittest.TestCase):
                 self.assertEqual((result["ingested"], result["failed"]), (0, 1))
                 self._assert_no_graph_rows()
                 self.assertEqual(self._item_diagnostics(job_id)["reason"], reason)
+
+    _ROOT_TITLE = "Networking"
+    _LEAF_TITLE = "Transport protocols"
+
+    def _packet_request(self, *, legacy_per_passage_toc_path: bool = False) -> dict:
+        """The durable request row for one packet, as the service stores it."""
+        packet = SECTION_GRAPH.build_section_graph_packets(
+            [
+                {
+                    "passage_id": "p1",
+                    "ordinal": 0,
+                    "toc_path": [self._ROOT_TITLE, self._LEAF_TITLE],
+                    "content": self._P1,
+                },
+                {
+                    "passage_id": "p2",
+                    "ordinal": 1,
+                    "toc_path": [self._ROOT_TITLE, self._LEAF_TITLE],
+                    "content": self._P2,
+                },
+            ]
+        )[0]
+        body = SECTION_GRAPH.build_section_graph_completion_request(
+            model="batch-model", packet=packet
+        )
+        if legacy_per_passage_toc_path:
+            # A request submitted before the per-passage field was removed.  It
+            # is durable and replays as it was sent, so the reader has to
+            # recognise the titles it actually carried, not the ones the current
+            # builder would emit.
+            message = json.loads(body["messages"][1]["content"])
+            for passage in message["passages"]:
+                passage["toc_path"] = [self._ROOT_TITLE, self._LEAF_TITLE]
+            body = {
+                **body,
+                "messages": [
+                    body["messages"][0],
+                    {"role": "user", "content": json.dumps(message, ensure_ascii=False)},
+                ],
+            }
+        return {"method": "POST", "url": "/v1/chat/completions", "body": body}
+
+    def test_evidence_quoted_from_a_toc_title_is_named_rather_than_called_absent(self) -> None:
+        # The failure class that cost a whole diagnosis cycle.  Both spans below
+        # are equally unlocatable in the passage they name, so both are rejected
+        # and neither writes anything; what differs is the slug, and therefore
+        # what a prompt author goes and fixes.  "quoted a field we sent" is
+        # repaired by not sending it; invented prose is not.
+        for label, evidence, request, reason in (
+            (
+                "packet-level-title",
+                self._ROOT_TITLE,
+                self._packet_request(),
+                "EVIDENCE_FROM_TOC_PATH",
+            ),
+            (
+                "legacy-per-passage-title",
+                self._LEAF_TITLE,
+                self._packet_request(legacy_per_passage_toc_path=True),
+                "EVIDENCE_FROM_TOC_PATH",
+            ),
+            (
+                "hallucinated",
+                "TCP was standardised in Geneva",
+                self._packet_request(),
+                "EVIDENCE_ABSENT",
+            ),
+        ):
+            with self.subTest(case=label):
+                self.assertNotIn(evidence, self._P1)
+                job_id = f"section-graph-toc-{label}"
+                result = self._ingest_packet(
+                    {
+                        "concepts": [
+                            self._graph_concept(
+                                "good", "UDP", [self._v2_span("p2", "UDP is datagram based")]
+                            ),
+                            self._graph_concept("bad", "TCP", [self._v2_span("p1", evidence)]),
+                        ],
+                        "relations": [
+                            self._graph_relation(
+                                "good", "bad", [self._v2_span("p2", "UDP is datagram based")]
+                            )
+                        ],
+                    },
+                    job_id=job_id,
+                    request=request,
+                )
+
+                self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+                # A packet is one item and an item is all or nothing: the first
+                # concept was perfectly good and must not survive either.
+                self._assert_no_graph_rows()
+                diagnostics = self._item_diagnostics(job_id)
+                self.assertEqual(diagnostics["reason"], reason)
+                self.assertEqual(diagnostics["concept_index"], 1)
+                self.assertEqual(diagnostics["occurrence_count"], 0)
+                self.assertEqual(diagnostics["evidence_codepoints"], len(evidence))
+                self.assertEqual(diagnostics["passage_codepoints"], len(self._P1))
+                # Still content-free: the slug and numbers, never the title.
+                self.assertTrue(
+                    all(
+                        key == "reason" or isinstance(value, (bool, int))
+                        for key, value in diagnostics.items()
+                    )
+                )
+                self.assertNotIn(evidence, json.dumps(diagnostics))
+
+    def test_a_toc_title_that_also_occurs_in_the_passage_is_still_a_normal_span(self) -> None:
+        # The slug only ever splits an already-failing span.  A title that is
+        # genuinely quotable from the passage it names grounds exactly as
+        # before, so naming this class cannot cost a legitimate citation.
+        request = self._packet_request()
+        self.assertIn("UDP is datagram based", json.loads(
+            request["body"]["messages"][1]["content"]
+        )["passages"][1]["content"])
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "only", "UDP", [self._v2_span("p2", "UDP is datagram based")]
+                    )
+                ],
+                "relations": [],
+            },
+            job_id="section-graph-toc-locatable",
+            request=request,
+        )
+
+        self.assertEqual(result["ingested"], 1)
+        self.assertEqual(
+            self._stored_spans("concept_mentions"),
+            [("p2", *self._expected_span(self._P2, "UDP is datagram based"))],
+        )
 
     def test_relation_evidence_is_grounded_exactly_like_a_mention(self) -> None:
         # Same resolver, same repair.  A relation span is not a second, weaker

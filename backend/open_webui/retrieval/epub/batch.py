@@ -458,8 +458,8 @@ _GROUNDED_CONCEPT_MENTION_FIELDS = {
 }
 _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
 # A section graph span names its own passage.  ``zh-section-graph-v1`` asks for
-# offsets and no anchors; ``zh-section-graph-v2`` asks for anchors and no
-# offsets.  Ingest accepts both, per span rather than per payload, so a stored
+# offsets and no anchors; ``zh-section-graph-v2`` and ``-v3`` ask for anchors
+# and no offsets.  Ingest accepts both, per span rather than per payload, so a stored
 # v1 request still replays and a mixed response is not a special case.  Neither
 # shape's offsets are trusted: v1's are re-derived exactly like v2's.
 _SECTION_GRAPH_SPAN_FIELDS_V1 = {"passage_id", "start_codepoint", "end_codepoint", "evidence"}
@@ -482,6 +482,15 @@ _GROUNDING_FAILURE_REASONS = frozenset(
         # The literal evidence does not occur in the immutable source at all:
         # the model paraphrased, normalized, or translated instead of copying.
         "EVIDENCE_ABSENT",
+        # Section graph only, and a strict subset of the case above: the
+        # evidence is absent from the passage it names but is exactly a TOC
+        # title this packet showed the model.  Conflating the two cost a whole
+        # diagnosis cycle on the zh-section-graph-v2 sample - every failing
+        # item read as "the model invented text", when most of them were the
+        # model quoting a ``toc_path`` field the packet handed it and never
+        # scoped.  The two need opposite fixes: this one is repaired by not
+        # sending the field (and saying so), hallucination is not.
+        "EVIDENCE_FROM_TOC_PATH",
         # Repeated evidence arrived with both anchors empty, so nothing can
         # select an occurrence.
         "ANCHOR_MISSING",
@@ -604,6 +613,57 @@ def _safe_failure_diagnostics(serialized: Any) -> dict[str, Any] | None:
     return safe
 
 
+def _packet_toc_titles(request_json: Any) -> frozenset[str]:
+    """Recover the TOC strings one section-graph packet actually showed a model.
+
+    The durable request row is the only honest source for this: it is what the
+    provider was sent, so a title that is in it is a title the model could copy
+    without inventing anything.  Reading it back here classifies a rejection
+    without widening what is persisted - no new column, and the titles never
+    leave this function's caller, which turns them into a slug and nothing else.
+
+    Deliberately tolerant.  A request predating this code carries per-passage
+    ``toc_path`` as well as the packet-level one and both are collected; a
+    request that is not a section-graph packet at all yields an empty set and
+    every span then classifies exactly as it did before.
+    """
+    if not isinstance(request_json, str) or not request_json:
+        return frozenset()
+    try:
+        request = json.loads(request_json)
+    except ValueError:
+        return frozenset()
+    body = request.get("body") if isinstance(request, Mapping) else None
+    messages = body.get("messages") if isinstance(body, Mapping) else None
+    if not isinstance(messages, list):
+        return frozenset()
+    titles: set[str] = set()
+    for message in messages:
+        if not isinstance(message, Mapping) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            _collect_toc_titles(json.loads(content), titles)
+        except ValueError:
+            continue
+    return frozenset(title for title in titles if title)
+
+
+def _collect_toc_titles(value: Any, titles: set[str]) -> None:
+    """Gather every ``toc_path`` element in a decoded packet user message."""
+    if isinstance(value, Mapping):
+        path = value.get("toc_path")
+        if isinstance(path, (list, tuple)):
+            titles.update(part.strip() for part in path if isinstance(part, str))
+        for nested in value.values():
+            _collect_toc_titles(nested, titles)
+    elif isinstance(value, list):
+        for nested in value:
+            _collect_toc_titles(nested, titles)
+
+
 def _resolve_evidence_span(
     content: str,
     *,
@@ -614,6 +674,7 @@ def _resolve_evidence_span(
     start: int | None,
     end: int | None,
     position: Mapping[str, Any],
+    toc_titles: frozenset[str] = frozenset(),
 ) -> tuple[int, int]:
     """Locate ``evidence`` in one immutable passage and return its exact span.
 
@@ -628,6 +689,12 @@ def _resolve_evidence_span(
     derived, never trusted.  ``start``/``end`` are ``None`` for a payload shape
     that does not ask the model for offsets at all; when they are supplied they
     are still verified, per SDD 4.2.1.
+
+    ``toc_titles`` changes no outcome: an unlocatable span is rejected either
+    way.  It only splits the rejection's *slug*, because "quoted a navigational
+    field we sent it" and "invented fluent prose" are the same symptom with
+    opposite fixes.  The concept path passes none, because a single-passage
+    concept request contains no TOC string to quote.
 
     Raises ``BatchPayloadError`` carrying content-free diagnostics.
     """
@@ -662,10 +729,20 @@ def _resolve_evidence_span(
         # misclassified as a unique source occurrence.
         cursor = content.find(evidence, cursor + 1)
     if not occurrences:
+        # Exact equality against the strings the packet actually carried, not a
+        # substring or fuzzy test: a false attribution here would send a prompt
+        # author to fix a field that was never quoted.
+        from_toc_path = evidence.strip() in toc_titles
         raise BatchPayloadError(
-            "OpenAI evidence is absent from the immutable source",
+            "OpenAI evidence quotes a TOC title instead of the passage it names"
+            if from_toc_path
+            else "OpenAI evidence is absent from the immutable source",
             diagnostics=_grounding_diagnostics(
-                "EVIDENCE_ABSENT", occurrence_count=0, **shape, **direct, **position
+                "EVIDENCE_FROM_TOC_PATH" if from_toc_path else "EVIDENCE_ABSENT",
+                occurrence_count=0,
+                **shape,
+                **direct,
+                **position,
             ),
         )
     if len(occurrences) > 1 and has_anchors and not (before or after):
@@ -1500,7 +1577,12 @@ class SQLiteBatchRepository:
 
     @staticmethod
     def _ground_section_graph_span(
-        connection: Any, *, version_id: str, span: Any, position: Mapping[str, Any]
+        connection: Any,
+        *,
+        version_id: str,
+        span: Any,
+        position: Mapping[str, Any],
+        toc_titles: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Return one packet span as an exact slice of the passage it names.
 
@@ -1607,6 +1689,7 @@ class SQLiteBatchRepository:
             start=start,
             end=end,
             position=span_position,
+            toc_titles=toc_titles,
         )
         return {
             "passage_id": passage_id,
@@ -1616,7 +1699,12 @@ class SQLiteBatchRepository:
         }
 
     def _ground_section_graph_payload(
-        self, connection: Any, *, version_id: str, payload: Mapping[str, Any]
+        self,
+        connection: Any,
+        *,
+        version_id: str,
+        payload: Mapping[str, Any],
+        toc_titles: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Validate and ground a whole packet without writing anything.
 
@@ -1625,7 +1713,12 @@ class SQLiteBatchRepository:
         repaired exactly the way a concept result is instead of being rejected
         wholesale.  Both packet shapes are accepted: ``zh-section-graph-v1``
         supplies offsets, which are verified and re-derived rather than
-        trusted, and ``zh-section-graph-v2`` supplies none at all.
+        trusted, and ``zh-section-graph-v2`` and ``-v3`` supply none at all.
+
+        ``toc_titles`` are the TOC strings this packet's stored request carried.
+        They classify an unlocatable span - a section title quoted as evidence
+        is a different defect from invented prose - and are used for nothing
+        else; no title is stored, compared for idempotency, or written.
 
         This pass is deliberately read-only and complete.  Ingest is atomic per
         item and the enclosing transaction would roll back anyway, but doing
@@ -1693,6 +1786,7 @@ class SQLiteBatchRepository:
                         "mention_index": mention_index,
                         "mention_count": len(mentions),
                     },
+                    toc_titles=toc_titles,
                 )
                 for mention_index, mention in enumerate(mentions)
             ]
@@ -1750,6 +1844,7 @@ class SQLiteBatchRepository:
                         "evidence_index": evidence_index,
                         "evidence_count": len(evidence),
                     },
+                    toc_titles=toc_titles,
                 )
                 for evidence_index, span in enumerate(evidence)
             ]
@@ -1816,7 +1911,12 @@ class SQLiteBatchRepository:
             # span byte-exact.
             if job["job_kind"] == "SECTION_GRAPH":
                 payload = self._ground_section_graph_payload(
-                    connection, version_id=job["version_id"], payload=payload
+                    connection,
+                    version_id=job["version_id"],
+                    payload=payload,
+                    # Read back from the request that was actually sent, so a
+                    # rejection can name the field the model copied from.
+                    toc_titles=_packet_toc_titles(item["request_json"]),
                 )
             elif job["provider"] == "openai-batch":
                 payload = self._ground_openai_concept_payload(connection, item=item, payload=payload)
