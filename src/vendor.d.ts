@@ -10,3 +10,16 @@ declare module '@sveltejs/svelte-virtual-list' {
 }
 
 declare module 'katex/contrib/mhchem';
+
+interface SaveFilePickerOptions {
+	excludeAcceptAllOption?: boolean;
+	suggestedName?: string;
+	types?: {
+		description?: string;
+		accept: Record<string, string[]>;
+	}[];
+}
+
+interface Window {
+	showSaveFilePicker(options?: SaveFilePickerOptions): Promise<FileSystemFileHandle>;
+}
