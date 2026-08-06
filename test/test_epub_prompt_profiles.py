@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -36,6 +37,28 @@ _PUBLISHED_PROFILE_DIGESTS = {
     # immutable the moment those requests left the machine; editing it now would
     # invalidate results already paid for and still in flight.
     "zh-glossary-v5": "16f32d361d70fc596a930cea4b0899846fb1e930ca9e80d7732930c2ad2f0630",
+    # v6 has the one approved sample in the system (005a7a20, 20/20) and the
+    # 1,224-item full-book job that approval unlocked.  Editing it would
+    # invalidate both at once - the approval would point at an instruction that
+    # was never sampled, and the in-flight job's stored requests would no longer
+    # correspond to any registered profile.  Same reason as v5 and
+    # zh-section-graph-v2, so it is pinned the moment v7 supersedes it.
+    "zh-glossary-v6": "311514e90f29448505645484bcbf944c8535188640cfed0f1ea32383a7d1ba1d",
+}
+
+# ``asks_for_offsets`` postdates the digests above and is pinned beside them
+# rather than folded into the hash: recomputing every historical digest to add
+# one field would destroy the only thing they are for, which is proving that
+# nobody has touched the bytes since they were sampled.  Together the two maps
+# pin the whole strict contract, because the schema a profile sends is a pure
+# function of these two flags (see ``_strict_schema_for``).
+_PUBLISHED_PROFILE_OFFSET_CONTRACTS = {
+    "zh-glossary-v1": True,
+    "zh-glossary-v2": True,
+    "zh-glossary-v3": True,
+    "zh-glossary-v4": True,
+    "zh-glossary-v5": True,
+    "zh-glossary-v6": True,
 }
 
 
@@ -51,6 +74,11 @@ def _profile_digest(profile) -> str:
             )
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _mention_schema(request) -> dict:
+    schema = request["response_format"]["json_schema"]["schema"]
+    return schema["properties"]["concepts"]["items"]["properties"]["mentions"]["items"]
 
 
 class PromptProfileTest(unittest.TestCase):
@@ -81,24 +109,35 @@ class PromptProfileTest(unittest.TestCase):
             passage="甲甲",
             remote_structured_output=True,
         )
-        mention = remote["response_format"]["json_schema"]["schema"]["properties"]["concepts"]["items"]["properties"]["mentions"]["items"]
-        self.assertEqual(
-            mention["required"],
-            ["start_codepoint", "end_codepoint", "evidence", "context_before", "context_after"],
-        )
+        mention = _mention_schema(remote)
+        # The anchors are the whole locating mechanism now: they are the only
+        # thing the model supplies that can choose between repeated literals.
+        self.assertEqual(mention["required"], ["evidence", "context_before", "context_after"])
         self.assertEqual(
             mention["properties"]["context_before"]["maxLength"],
             PROMPTS.MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
         )
 
-    def test_superseded_profiles_are_frozen_and_v6_is_the_registered_default(self) -> None:
+    def test_superseded_profiles_are_frozen_and_v7_is_the_registered_default(self) -> None:
         registered = PROMPTS.available_prompt_profiles()
-        self.assertEqual(PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE, "zh-glossary-v6")
-        self.assertIn("zh-glossary-v6", registered)
+        self.assertEqual(PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE, "zh-glossary-v7")
+        self.assertIn("zh-glossary-v7", registered)
         for profile_id, digest in _PUBLISHED_PROFILE_DIGESTS.items():
             with self.subTest(profile=profile_id):
                 self.assertIn(profile_id, registered)
                 self.assertEqual(_profile_digest(PROMPTS.get_prompt_profile(profile_id)), digest)
+        for profile_id, asks in _PUBLISHED_PROFILE_OFFSET_CONTRACTS.items():
+            with self.subTest(profile=profile_id, flag="asks_for_offsets"):
+                self.assertEqual(PROMPTS.get_prompt_profile(profile_id).asks_for_offsets, asks)
+        # Every published profile is pinned on both axes, so a new one cannot be
+        # added without deciding what it froze.
+        self.assertEqual(
+            set(_PUBLISHED_PROFILE_DIGESTS), set(_PUBLISHED_PROFILE_OFFSET_CONTRACTS)
+        )
+        self.assertEqual(
+            set(registered) - set(_PUBLISHED_PROFILE_DIGESTS),
+            {PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE},
+        )
         # A superseded anchored profile keeps the anchored strict schema even
         # though it is no longer the default, so an existing cloud sample stays
         # replayable byte for byte.
@@ -195,21 +234,24 @@ class PromptProfileTest(unittest.TestCase):
         self.assertTrue(repeated.valid, repeated.reason)
         self.assertEqual((unique.concept_count, unique.mention_count), (1, 1))
 
-    def test_v6_is_the_default_anchored_profile_and_keeps_v5_decoding_limits(self) -> None:
+    def test_v6_keeps_v5_decoding_limits_and_its_anchored_offset_schema(self) -> None:
         v5 = PROMPTS.get_prompt_profile("zh-glossary-v5")
         v6 = PROMPTS.get_prompt_profile("zh-glossary-v6")
-        self.assertEqual(PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE, "zh-glossary-v6")
         self.assertEqual(v6.profile_id, "zh-glossary-v6")
         # v6 changes the instruction, never the decoding budget: a difference in
         # max_tokens or temperature would confound the comparison against the two
         # in-flight v5 samples.
         self.assertEqual(v6.max_tokens, v5.max_tokens)
         self.assertEqual(v6.temperature, v5.temperature)
-        # The flag, not the default, decides which strict schema is sent.
+        # The flags, not the default, decide which strict schema is sent.  v6
+        # has an approved sample and a full-book job whose stored requests carry
+        # this schema, so it must keep being built byte for byte after v7
+        # supersedes it.
         self.assertTrue(v6.uses_context_anchors)
+        self.assertTrue(v6.asks_for_offsets)
         request = PROMPTS.build_concept_completion_request(
             model="remote-model-snapshot",
-            profile_id=PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE,
+            profile_id="zh-glossary-v6",
             passage="甲甲",
             remote_structured_output=True,
         )
@@ -217,6 +259,10 @@ class PromptProfileTest(unittest.TestCase):
             request["response_format"]["json_schema"]["schema"], PROMPTS.CONCEPT_OUTPUT_SCHEMA
         )
         self.assertEqual(request["max_tokens"], 2_048)
+        self.assertEqual(
+            _mention_schema(request)["required"],
+            ["start_codepoint", "end_codepoint", "evidence", "context_before", "context_after"],
+        )
 
     def test_v6_adds_only_a_minimum_evidence_span_on_top_of_v5(self) -> None:
         v5 = PROMPTS.get_prompt_profile("zh-glossary-v5").system_instruction
@@ -339,6 +385,145 @@ class PromptProfileTest(unittest.TestCase):
         # The longer span is exactly what makes the citation resolvable: the bare
         # concept term repeats, the phrase carrying it is uniquely anchored.
         self.assertEqual(passage.count("第一节指出" + repeated_evidence), 1)
+
+    def test_v7_is_the_default_and_asks_the_model_for_no_offsets_at_all(self) -> None:
+        v6 = PROMPTS.get_prompt_profile("zh-glossary-v6")
+        v7 = PROMPTS.get_prompt_profile("zh-glossary-v7")
+        self.assertEqual(PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE, "zh-glossary-v7")
+        self.assertEqual(v7.profile_id, "zh-glossary-v7")
+        self.assertTrue(v7.uses_context_anchors)
+        self.assertFalse(v7.asks_for_offsets)
+        # The budget is a ceiling on generation, not a spend, and v7 exists to
+        # isolate one variable against the approved v6 sample: keeping it equal
+        # is what makes that comparison readable, and lowering it would only
+        # move the worst case nearer to a truncated, unparseable response.
+        self.assertEqual(v7.max_tokens, v6.max_tokens)
+        self.assertEqual(v7.temperature, v6.temperature)
+        request = PROMPTS.build_concept_completion_request(
+            model="remote-model-snapshot",
+            profile_id=PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE,
+            passage="甲甲",
+            remote_structured_output=True,
+        )
+        schema = request["response_format"]["json_schema"]["schema"]
+        self.assertEqual(schema, PROMPTS.CONCEPT_OUTPUT_SCHEMA_WITHOUT_OFFSETS)
+        mention = _mention_schema(request)
+        self.assertEqual(mention["required"], ["evidence", "context_before", "context_after"])
+        self.assertEqual(set(mention["properties"]), {"evidence", "context_before", "context_after"})
+        self.assertFalse(mention["additionalProperties"])
+        # Nothing anywhere in the contract - schema or instruction - still names
+        # an offset, so a model has nothing to be wrong about.
+        self.assertNotIn("codepoint", json.dumps(schema))
+        self.assertNotIn("codepoint", v7.system_instruction)
+        self.assertNotIn("passage[", v7.system_instruction)
+
+    def test_v7_removes_the_offsets_from_v6_and_changes_nothing_else(self) -> None:
+        v6 = PROMPTS.get_prompt_profile("zh-glossary-v6").system_instruction
+        v7 = PROMPTS.get_prompt_profile("zh-glossary-v7").system_instruction
+        self.assertNotEqual(v6, v7)
+        # One variable, expressed as exactly two edits: the field-list clause
+        # loses the two integers, and the shape example loses them with it.  An
+        # example still showing "start_codepoint":0,"end_codepoint":10 beside a
+        # contract that forbids offsets would be self-contradictory - the same
+        # defect that was corrected when v6 was authored - so the two cannot be
+        # separated.  Applying both to v6 must reproduce v7 byte for byte.
+        offsets_clause_v6 = (
+            "每个 mention 必须有且只能有 start_codepoint、end_codepoint、evidence、"
+            "context_before、context_after 五个字段；start_codepoint 从 0 开始，"
+            "end_codepoint 为排他位置，"
+            "evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，包括标点和空格。"
+        )
+        offsets_clause_v7 = (
+            "每个 mention 必须有且只能有 evidence、context_before、context_after 三个字段；"
+            "不要输出任何字符位置，字符位置由程序依据 evidence 在本段中重新推导。"
+            "evidence 必须与本段中的一段原文完全一致，包括标点和空格。"
+        )
+        example_v6 = "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":10,\"evidence\":\"…\","
+        example_v7 = "\"mentions\":[{\"evidence\":\"…\","
+        self.assertIn(offsets_clause_v6, v6)
+        self.assertIn(example_v6, v6)
+        self.assertEqual(
+            v6.replace(offsets_clause_v6, offsets_clause_v7).replace(example_v6, example_v7), v7
+        )
+        # The replacement re-states the source-fidelity half of what it removed
+        # and hands the position back to the server, exactly as
+        # zh-section-graph-v2 does.
+        self.assertIn("不要输出任何字符位置", v7)
+        self.assertIn("由程序依据 evidence 在本段中重新推导", v7)
+        self.assertIn("包括标点和空格", v7)
+        # Every v6 lever survives verbatim, so v7 is one variable and not a
+        # rewrite: the minimum evidence span with its short-passage escape
+        # hatch, the conditional anchors, verbatim copy, the concept cap and the
+        # output-format rules.
+        for clause in (
+            "evidence 至少 10 个 Unicode 字符",
+            "完整、有意义的短语或分句",
+            "不得只给出概念本身",
+            "本段总长不足 10 个 Unicode 字符时，evidence 取本段全文",
+            "只出现一次时",
+            "必须都是空字符串",
+            "重复出现时",
+            "最多 48 个 Unicode 字符",
+            "紧邻",
+            "逐字复制",
+            "不得改写、翻译或统一引号",
+            "最多抽取 6 个",
+            "\"context_before\":\"\",\"context_after\":\"\"",
+            "第一个字符必须是 {",
+            "Markdown 代码块",
+        ):
+            with self.subTest(clause=clause):
+                self.assertIn(clause, v6)
+                self.assertIn(clause, v7)
+
+    def test_v7_payloads_without_offsets_still_pass_strict_payload_validation(self) -> None:
+        # The offsets are gone from the contract, so validation has to locate
+        # the citation the same way ingest does - from the literal, and from the
+        # anchor when the literal repeats.
+        passage = (
+            "丁戊己在导论中被定义为一种制度安排。"
+            "第一节指出甲乙丙是本章讨论的核心名称。"
+            "第二节重申甲乙丙是本章讨论的核心名称。"
+        )
+        unique_evidence = "丁戊己在导论中被定义为一种制度安排"
+        repeated_evidence = "甲乙丙是本章讨论的核心名称"
+        self.assertEqual(passage.count(repeated_evidence), 2)
+
+        def payload(evidence: str, before: str, after: str) -> dict:
+            return {
+                "concepts": [
+                    {
+                        "name": "甲乙丙",
+                        "aliases": [],
+                        "definition": "本章讨论的核心名称。",
+                        "mentions": [
+                            {
+                                "evidence": evidence,
+                                "context_before": before,
+                                "context_after": after,
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        unique = PROMPTS.validate_concept_payload(
+            payload(unique_evidence, "", ""), passage=passage
+        )
+        anchored = PROMPTS.validate_concept_payload(
+            payload(repeated_evidence, "第一节指出", "。"), passage=passage
+        )
+        unanchored = PROMPTS.validate_concept_payload(
+            payload(repeated_evidence, "", ""), passage=passage
+        )
+        absent = PROMPTS.validate_concept_payload(payload("从未出现的原文", "", ""), passage=passage)
+        self.assertTrue(unique.valid, unique.reason)
+        self.assertTrue(anchored.valid, anchored.reason)
+        self.assertEqual((anchored.concept_count, anchored.mention_count), (1, 1))
+        # Repeated evidence with both anchors empty selects nothing, and a
+        # literal that is not in the passage is not a citation at all.
+        self.assertFalse(unanchored.valid)
+        self.assertFalse(absent.valid)
 
     def test_stratified_selection_covers_chapters_instead_of_taking_first_rows(self) -> None:
         passages = [

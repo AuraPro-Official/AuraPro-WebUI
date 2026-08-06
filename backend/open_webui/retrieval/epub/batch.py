@@ -448,6 +448,14 @@ _SENSITIVE_REQUEST_KEYS = {
 _SAMPLE_REVIEW_STATUSES = {"APPROVED", "REJECTED"}
 _RESULTS_PENDING_RETRIEVAL = "RESULTS_PENDING_RETRIEVAL"
 _TERMINAL_MISSING_RESULT = "TERMINAL_WITHOUT_ITEM_RESULT"
+# The three concept mention shapes, recognised per mention from the field set
+# the model actually returned rather than from the job's profile.  All three
+# stay live: v1-v6 requests replay from their persisted ``request_json``, and
+# the approved v6 sample has to remain re-ingestable.  ``zh-glossary-v1`` to
+# ``-v3`` ask for offsets and no anchors; ``-v4`` to ``-v6`` ask for both;
+# ``-v7`` asks for anchors and no offsets, for the reason recorded on that
+# profile - a model gets the offset pair right about one time in thirty-seven,
+# and grounding re-derives it from the literal regardless.
 _LEGACY_CONCEPT_MENTION_FIELDS = {"start_codepoint", "end_codepoint", "evidence"}
 _GROUNDED_CONCEPT_MENTION_FIELDS = {
     "start_codepoint",
@@ -456,6 +464,7 @@ _GROUNDED_CONCEPT_MENTION_FIELDS = {
     "context_before",
     "context_after",
 }
+_OFFSETLESS_CONCEPT_MENTION_FIELDS = {"evidence", "context_before", "context_after"}
 _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
 # A section graph span names its own passage.  ``zh-section-graph-v1`` asks for
 # offsets and no anchors; ``zh-section-graph-v2`` and ``-v3`` ask for anchors
@@ -716,9 +725,14 @@ def _resolve_evidence_span(
     offsets_supplied = isinstance(start, int) and isinstance(end, int)
     direct_offsets_in_range = bool(offsets_supplied and 0 <= start < end <= passage_codepoints)
     direct_is_exact = direct_offsets_in_range and content[start:end] == evidence
+    # A shape that never asks for offsets reports neither flag rather than
+    # reporting both as false: "not measurable here" and "measured false" are
+    # different readings, and an aggregate that conflates them would show a
+    # fleet-wide collapse in offset accuracy the moment such a profile is
+    # promoted.  ``_grounding_diagnostics`` drops ``None`` for exactly this.
     direct: dict[str, Any] = {
-        "direct_offsets_in_range": direct_offsets_in_range,
-        "direct_is_exact": direct_is_exact,
+        "direct_offsets_in_range": direct_offsets_in_range if offsets_supplied else None,
+        "direct_is_exact": direct_is_exact if offsets_supplied else None,
     }
 
     occurrences: list[int] = []
@@ -757,6 +771,13 @@ def _resolve_evidence_span(
             ),
         )
 
+    # Reachable only for a shape that asks for offsets - ``zh-glossary-v1`` to
+    # ``-v6`` and ``zh-section-graph-v1``.  Where no offsets are supplied
+    # ``direct_is_exact`` is false by construction, so ANCHOR_MISMATCH cannot
+    # occur; the branch stays because those older shapes still replay from
+    # stored requests, and retiring the failure class is one of the reasons for
+    # dropping the offsets in the first place.
+    #
     # Deliberate asymmetry with the repair path below, and not an inconsistency
     # to "fix": when the model's own offsets already slice the evidence exactly,
     # SDD 4.2.1 requires that direct offset to be verified against *both* the
@@ -1376,7 +1397,15 @@ class SQLiteBatchRepository:
         whose literal occurrence is unique, or - when that literal repeats -
         whose short adjacent context anchor selects exactly one of those
         occurrences.  Legacy v1-v3 output carries no anchors, so for it a
-        repeated literal is always a hard failure.
+        repeated literal is always a hard failure.  ``zh-glossary-v7`` output
+        carries no offsets, which changes nothing about the resolution: the
+        offset was already derived from the literal on every shape, so the only
+        difference is that there is no wrong number to ignore.
+
+        The shape is read per mention from the returned field set, never from
+        the job's profile.  That is what lets one poll ingest a mixed response,
+        keeps every stored v1-v6 request replayable, and keeps the approved v6
+        sample re-ingestable after v7 becomes the default.
 
         Every rejection below also carries content-free diagnostics.  A failed
         item persists no result payload at all, so without them the durable
@@ -1445,22 +1474,32 @@ class SQLiteBatchRepository:
                         diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
                     )
                 fields = set(mention)
-                if fields != _LEGACY_CONCEPT_MENTION_FIELDS and fields != _GROUNDED_CONCEPT_MENTION_FIELDS:
+                if fields not in (
+                    _LEGACY_CONCEPT_MENTION_FIELDS,
+                    _GROUNDED_CONCEPT_MENTION_FIELDS,
+                    _OFFSETLESS_CONCEPT_MENTION_FIELDS,
+                ):
                     raise BatchPayloadError(
                         "OpenAI concept mention has an invalid schema",
                         diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
                     )
-                has_anchors = fields == _GROUNDED_CONCEPT_MENTION_FIELDS
+                has_anchors = fields != _LEGACY_CONCEPT_MENTION_FIELDS
+                supplies_offsets = fields != _OFFSETLESS_CONCEPT_MENTION_FIELDS
+                # ``None`` for a v7 mention, and passed through as ``None``:
+                # ``_resolve_evidence_span`` treats absent offsets as "derive
+                # the span from the literal", which is what it does with a
+                # supplied offset 97% of the time anyway.
                 start = mention.get("start_codepoint")
                 end = mention.get("end_codepoint")
                 evidence = mention.get("evidence")
-                if (
-                    isinstance(start, bool)
-                    or isinstance(end, bool)
-                    or not isinstance(start, int)
-                    or not isinstance(end, int)
-                    or not isinstance(evidence, str)
-                    or not evidence
+                if not isinstance(evidence, str) or not evidence or (
+                    supplies_offsets
+                    and (
+                        isinstance(start, bool)
+                        or isinstance(end, bool)
+                        or not isinstance(start, int)
+                        or not isinstance(end, int)
+                    )
                 ):
                     raise BatchPayloadError(
                         "OpenAI concept mention has invalid offsets or evidence",
