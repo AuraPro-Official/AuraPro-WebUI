@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 from types import ModuleType, SimpleNamespace
@@ -14,6 +17,7 @@ from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # The router needs only these two dependency identities.  Importing the full
 # application auth module also bootstraps its database models, which is outside
@@ -34,6 +38,11 @@ from open_webui.routers.epub import get_epub_concept_service, router  # noqa: E4
 from open_webui.services.epub_concept import EpubConceptService, EpubServiceError  # noqa: E402
 from open_webui.services.epub_runtime import initialize_epub_concept_service  # noqa: E402
 from open_webui.utils.auth import get_admin_user, get_verified_user  # noqa: E402
+
+# The real EPUB fixture builder already lives with the parser acceptance test.
+# Reusing it is the point: the overlay round trip is only meaningful if both
+# stores parse a genuine archive rather than hand-written passage rows.
+from test_epub_parser_sdd import build_fixture_epub  # noqa: E402
 
 
 def _ordinary_user():
@@ -194,6 +203,7 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             ("put", "/api/v1/epub/admin/relation-assertions/missing", {"status": "APPROVED"}),
             ("post", "/api/v1/epub/admin/retrieval-units/missing/index", None),
             ("post", "/api/v1/epub/admin/versions/version-1/index", {"rebuild": False}),
+            ("get", "/api/v1/epub/admin/versions/version-1/overlay", None),
         ]
         for method, url, payload in mutations:
             kwargs = {"json": payload} if payload is not None else {}
@@ -206,6 +216,12 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         )
         self.assertEqual(upload.status_code, 401)
         self.assertIsNone(self.service.get_book("new-book"))
+
+        overlay_upload = self.client.post(
+            "/api/v1/epub/admin/overlays",
+            files={"file": ("overlay.json", b"{}", "application/json")},
+        )
+        self.assertEqual(overlay_upload.status_code, 401)
 
     def test_admin_sees_every_implemented_prompt_profile_without_its_instructions(self) -> None:
         """The administrator UI must be able to select the server's own default.
@@ -537,6 +553,240 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
         app.state.EPUB_CONCEPT_STORE.close()
+
+
+class PortableAnalysisOverlayApiTest(unittest.TestCase):
+    """T-170a acceptance: one paid analysis, applied to a second installation.
+
+    The reader's store is built by importing the *same EPUB bytes* through the
+    real parser, so its passages, ordinals and hashes are produced
+    independently of anything the publisher sends.  Only the overlay travels.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        directory = Path(self.temporary.name)
+        archive = directory / "fixture.epub"
+        build_fixture_epub(archive)
+        self.epub_bytes = archive.read_bytes()
+
+        self.publisher_path = directory / "publisher.db"
+        self.reader_path = directory / "reader.db"
+        self.publisher_store = SQLiteEpubStore(str(self.publisher_path))
+        self.reader_store = SQLiteEpubStore(str(self.reader_path))
+        self.publisher = EpubConceptService(store=self.publisher_store)
+        self.reader = EpubConceptService(store=self.reader_store)
+        self.published_version = self._import(self.publisher)
+        self.reader_version = self._import(self.reader)
+        self._publish_analysis()
+
+        self.publisher_client = self._client(self.publisher)
+        self.client = self._client(self.reader)
+
+    def tearDown(self) -> None:
+        self.publisher_store.close()
+        self.reader_store.close()
+        self.temporary.cleanup()
+
+    def _import(self, service: EpubConceptService) -> str:
+        result = service.import_epub(filename="fixture.epub", epub_bytes=self.epub_bytes)
+        self.assertTrue(result["created"])
+        return str(result["version_id"])
+
+    def _client(self, service: EpubConceptService) -> TestClient:
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_epub_concept_service] = lambda: service
+        app.dependency_overrides[get_verified_user] = _ordinary_user
+        app.dependency_overrides[get_admin_user] = _admin_user
+        return TestClient(app)
+
+    def _publish_analysis(self) -> None:
+        """Build the graph the publisher paid a cloud Batch run to produce."""
+        passages = self.publisher_store.list_passages(self.published_version)
+        self.english = next(item for item in passages if item["content"].startswith("Hello"))
+        self.quote = next(item for item in passages if item["content"].startswith("引用"))
+        hello = self.publisher_store.upsert_concept(
+            "Hello", aliases=["招呼语"], definition="示例问候", status="APPROVED"
+        )
+        quotation = self.publisher_store.upsert_concept("引用文本", status="PROVISIONAL")
+        self.publisher_store.add_concept_mention(
+            hello, self.english["passage_id"], start_codepoint=0, end_codepoint=5, source="ADMIN"
+        )
+        self.publisher_store.add_concept_mention(
+            quotation, self.quote["passage_id"], start_codepoint=0, end_codepoint=4
+        )
+        self.publisher_store.add_concept_relation(
+            self.published_version,
+            hello,
+            "CONTRASTS",
+            quotation,
+            evidence=[
+                {
+                    "passage_id": self.english["passage_id"],
+                    "start_codepoint": 0,
+                    "end_codepoint": 11,
+                    "evidence": self.english["content"][0:11],
+                }
+            ],
+        )
+
+    def _download(self) -> tuple[bytes, str]:
+        response = self.publisher_client.get(
+            f"/api/v1/epub/admin/versions/{self.published_version}/overlay"
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.content, response.headers["x-overlay-sha256"]
+
+    def _spans(self, path: Path) -> list[tuple[str, int, int, str]]:
+        connection = sqlite3.connect(str(path))
+        try:
+            return list(
+                connection.execute(
+                    """SELECT p.content, m.start_codepoint, m.end_codepoint, m.evidence
+                         FROM concept_mentions AS m JOIN passages AS p ON p.passage_id = m.passage_id"""
+                )
+            ) + list(
+                connection.execute(
+                    """SELECT p.content, e.start_codepoint, e.end_codepoint, e.evidence
+                         FROM concept_relation_evidence AS e
+                         JOIN passages AS p ON p.passage_id = e.passage_id"""
+                )
+            )
+        finally:
+            connection.close()
+
+    def test_admin_downloads_a_publishable_artifact_and_its_digest(self) -> None:
+        body, digest = self._download()
+
+        self.assertEqual(sha256(body).hexdigest(), digest)
+        text = body.decode("utf-8")
+        # Not one character of the book may leave the publisher's server.
+        for passage in self.publisher_store.list_passages(self.published_version):
+            self.assertNotIn(passage["content"], text)
+        self.assertNotIn("Hello world", text)
+        self.assertNotIn("引用文本。", text)
+        # Concept labels and definitions are the analysis product and do ship.
+        payload = json.loads(text)
+        self.assertEqual([concept["key"] for concept in payload["concepts"]], ["hello", "引用文本"])
+        self.assertEqual(payload["parser_version"], "1")
+        self.assertEqual(payload["passage_fingerprint"]["count"], 6)
+        self.assertEqual(payload["overlay_format_version"], 1)
+
+    def test_a_second_installation_applies_the_overlay_to_its_own_book(self) -> None:
+        body, digest = self._download()
+
+        applied = self.client.post(
+            "/api/v1/epub/admin/overlays",
+            files={"file": ("overlay.json", body, "application/json")},
+        )
+
+        self.assertEqual(applied.status_code, 200)
+        summary = applied.json()
+        self.assertEqual(summary["version_id"], self.reader_version)
+        self.assertNotEqual(self.reader_version, self.published_version)
+        self.assertEqual(summary["uploaded_overlay_sha256"], digest)
+        self.assertEqual(summary["canonical_overlay_sha256"], digest)
+        self.assertEqual(summary["applied_detail"]["concepts_created"], 2)
+        self.assertEqual(summary["applied_detail"]["mentions_created"], 2)
+        self.assertEqual(summary["applied_detail"]["relations_created"], 1)
+        self.assertEqual(summary["rejected"], 0)
+        self.assertEqual(summary["rejection_reasons"], {})
+        self.assertTrue(summary["vectors_require_reindex"])
+        # A content-free summary: no passage text, no evidence, no labels.
+        self.assertNotIn("Hello", applied.text)
+        self.assertNotIn("引用", applied.text)
+
+        # The reader's graph is the publisher's graph, re-derived locally.
+        self.assertEqual(
+            self.reader.export_concept_overlay(self.reader_version)["overlay_json"],
+            body.decode("utf-8"),
+        )
+        spans = self._spans(self.reader_path)
+        self.assertEqual(len(spans), 3)
+        for content, start, end, evidence in spans:
+            self.assertEqual(evidence, content[start:end])
+        # An imported overlay has no vectors; the derived index is still empty.
+        self.assertEqual(
+            [
+                unit["vector_state"]
+                for unit in self.reader_store.list_retrieval_units_for_version(self.reader_version)
+                if unit["vector_state"] == "READY"
+            ],
+            [],
+        )
+
+    def test_applying_the_same_artifact_twice_is_a_no_op(self) -> None:
+        body, _ = self._download()
+        files = {"file": ("overlay.json", body, "application/json")}
+
+        self.client.post("/api/v1/epub/admin/overlays", files=files)
+        second = self.client.post(
+            "/api/v1/epub/admin/overlays",
+            files={"file": ("overlay.json", body, "application/json")},
+        )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["applied"], 0)
+        self.assertEqual(second.json()["skipped_detail"]["mentions_existing"], 2)
+
+    def test_an_overlay_for_a_book_this_library_lacks_is_a_404(self) -> None:
+        body, _ = self._download()
+        payload = json.loads(body)
+        payload["epub_sha256"] = "a" * 64
+
+        response = self.client.post(
+            "/api/v1/epub/admin/overlays",
+            files={"file": ("overlay.json", json.dumps(payload).encode(), "application/json")},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("matches the overlay", response.json()["detail"])
+        self.assertEqual(self.reader_store.count_concepts(), 0)
+
+    def test_a_failed_fidelity_gate_reports_its_class_and_stores_nothing(self) -> None:
+        body, _ = self._download()
+        payload = json.loads(body)
+        payload["passage_fingerprint"]["digest"] = "b" * 64
+
+        response = self.client.post(
+            "/api/v1/epub/admin/overlays",
+            files={"file": ("overlay.json", json.dumps(payload).encode(), "application/json")},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("passage_fingerprint_mismatch", response.json()["detail"])
+        self.assertEqual(self.reader_store.count_concepts(), 0)
+        self.assertEqual(self._spans(self.reader_path), [])
+
+    def test_a_malformed_or_wrongly_named_upload_is_refused(self) -> None:
+        wrong_extension = self.client.post(
+            "/api/v1/epub/admin/overlays",
+            files={"file": ("overlay.epub", b"{}", "application/epub+zip")},
+        )
+        self.assertEqual(wrong_extension.status_code, 400)
+        self.assertIn(".json overlay", wrong_extension.json()["detail"])
+
+        not_json = self.client.post(
+            "/api/v1/epub/admin/overlays",
+            files={"file": ("overlay.json", b"not json at all", "application/json")},
+        )
+        self.assertEqual(not_json.status_code, 400)
+        self.assertIn("UTF-8 JSON", not_json.json()["detail"])
+
+        smuggled = json.loads(self._download()[0])
+        smuggled["mentions"][0]["evidence"] = "Hello"
+        refused = self.client.post(
+            "/api/v1/epub/admin/overlays",
+            files={"file": ("overlay.json", json.dumps(smuggled).encode(), "application/json")},
+        )
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("unsupported fields", refused.json()["detail"])
+        self.assertEqual(self.reader_store.count_concepts(), 0)
+
+    def test_exporting_an_unknown_version_is_a_404(self) -> None:
+        response = self.publisher_client.get("/api/v1/epub/admin/versions/missing/overlay")
+        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":
