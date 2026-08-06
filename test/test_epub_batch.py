@@ -277,11 +277,15 @@ class EpubBatchServiceTest(unittest.TestCase):
             )
 
     def test_full_openai_job_requires_a_completed_and_approved_matching_sample(self) -> None:
+        # Every full run below names its prompt profile explicitly.  The gate
+        # binds to it, so a full job that omitted it would be refused for that
+        # reason alone and this test would stop proving what it is about.
         with self.assertRaisesRegex(BatchServiceError, "administrator-approved sample"):
             self.service.create_draft(
                 version_id="version",
                 provider="openai-batch",
                 profile_name="cloud-model-snapshot",
+                prompt_profile="zh-glossary-v6",
                 items=self._items(),
                 batch_job_id="full-without-sample",
             )
@@ -290,6 +294,7 @@ class EpubBatchServiceTest(unittest.TestCase):
             version_id="version",
             provider="openai-batch",
             profile_name="cloud-model-snapshot",
+            prompt_profile="zh-glossary-v6",
             items=self._items(),
             is_sample=True,
             batch_job_id="openai-sample",
@@ -310,6 +315,9 @@ class EpubBatchServiceTest(unittest.TestCase):
         self.assertEqual(approved["version_id"], "version")
         self.assertEqual(approved["job_kind"], "CONCEPT_MENTIONS")
         self.assertEqual(approved["status"], "APPROVED")
+        # The audit row states which extraction instruction was approved, not
+        # only which model snapshot ran it.
+        self.assertEqual(approved["prompt_profile"], "zh-glossary-v6")
         self.assertTrue(approved["reviewed_at"])
 
         with self.assertRaisesRegex(BatchServiceError, "same model profile"):
@@ -317,6 +325,7 @@ class EpubBatchServiceTest(unittest.TestCase):
                 version_id="version",
                 provider="openai-batch",
                 profile_name="other-cloud-model-snapshot",
+                prompt_profile="zh-glossary-v6",
                 items=self._items(),
                 batch_job_id="full-after-other-model-sample",
             )
@@ -325,6 +334,7 @@ class EpubBatchServiceTest(unittest.TestCase):
             version_id="version",
             provider="openai-batch",
             profile_name="cloud-model-snapshot",
+            prompt_profile="zh-glossary-v6",
             items=self._items(),
             batch_job_id="full-after-sample",
         )
@@ -332,6 +342,150 @@ class EpubBatchServiceTest(unittest.TestCase):
         reloaded = SQLiteBatchRepository(self.store).list_sample_reviews(version_id="version")
         self.assertEqual(reloaded[0]["sample_batch_job_id"], sample_id)
         self.assertEqual(reloaded[0]["reviewed_by"], "administrator")
+        self.assertEqual(reloaded[0]["prompt_profile"], "zh-glossary-v6")
+
+    def _approved_sample(self, prompt_profile: str, *, job_id: str = "openai-sample") -> str:
+        """Run one cloud sample to a fully ingested, approved state."""
+        sample_id = self.service.create_draft(
+            version_id="version",
+            provider="openai-batch",
+            profile_name="cloud-model-snapshot",
+            prompt_profile=prompt_profile,
+            items=self._items(),
+            is_sample=True,
+            batch_job_id=job_id,
+        )
+        openai_provider = FakeProvider()
+        openai_provider.name = "openai-batch"
+        remote_id = self.service.submit(sample_id, openai_provider)
+        openai_provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        openai_provider.results[remote_id] = [
+            ProviderItemResult("p1", payload={"concepts": []}),
+            ProviderItemResult("p2", payload={"concepts": []}),
+        ]
+        self.assertEqual(self.service.poll_and_ingest(sample_id, openai_provider)["failed"], 0)
+        self.service.review_sample_job(sample_id, status="APPROVED", reviewed_by="administrator")
+        return sample_id
+
+    def test_approving_one_prompt_profile_does_not_unlock_another(self) -> None:
+        """The reviewed quality belongs to one instruction, not to the model.
+
+        Same version, same job kind, same pinned model snapshot: only the
+        extraction instruction differs.  Before the job recorded its prompt
+        profile this was indistinguishable from an approved configuration, so
+        promoting a new default silently sent a whole book on unreviewed
+        prompt quality.
+        """
+        self._approved_sample("zh-glossary-v6")
+
+        with self.assertRaisesRegex(BatchServiceError, "same prompt profile"):
+            self.service.create_draft(
+                version_id="version",
+                provider="openai-batch",
+                profile_name="cloud-model-snapshot",
+                prompt_profile="zh-glossary-v7",
+                items=self._items(),
+                batch_job_id="full-on-unreviewed-prompt",
+            )
+
+        # The same prompt profile is exactly what was approved, and unlocks.
+        self.assertEqual(
+            self.service.create_draft(
+                version_id="version",
+                provider="openai-batch",
+                profile_name="cloud-model-snapshot",
+                prompt_profile="zh-glossary-v6",
+                items=self._items(),
+                batch_job_id="full-on-reviewed-prompt",
+            ),
+            "full-on-reviewed-prompt",
+        )
+        self.assertEqual(
+            self.repository.get_job("full-on-reviewed-prompt")["prompt_profile"],
+            "zh-glossary-v6",
+        )
+
+    def test_a_full_run_without_a_prompt_profile_is_refused(self) -> None:
+        """Unknown must never read as "matches"."""
+        self._approved_sample("zh-glossary-v6")
+
+        with self.assertRaisesRegex(BatchServiceError, "administrator-approved sample"):
+            self.service.create_draft(
+                version_id="version",
+                provider="openai-batch",
+                profile_name="cloud-model-snapshot",
+                items=self._items(),
+                batch_job_id="full-without-a-prompt-profile",
+            )
+        # A blank string is not a second spelling of "unknown" either: it
+        # would compare equal to itself and could satisfy the gate.
+        with self.assertRaisesRegex(BatchServiceError, "prompt_profile cannot be blank"):
+            self.service.create_draft(
+                version_id="version",
+                provider="openai-batch",
+                profile_name="cloud-model-snapshot",
+                prompt_profile="   ",
+                items=self._items(),
+                batch_job_id="full-with-a-blank-prompt-profile",
+            )
+
+    def test_an_unbackfilled_approved_sample_unlocks_nothing(self) -> None:
+        """A legacy approval whose prompt profile is unknown stays inert.
+
+        SQL equality against NULL is NULL rather than true, so the stored side
+        cannot match; the test exists because "unknown silently matches" is
+        the exact defect, and it must be proven absent, not assumed.
+        """
+        sample_id = self._approved_sample("zh-glossary-v6")
+        connection = self.store._connection()
+        connection.execute(
+            "UPDATE batch_jobs SET prompt_profile = NULL WHERE batch_job_id = ?", (sample_id,)
+        )
+        connection.execute(
+            "UPDATE epub_batch_sample_reviews SET prompt_profile = NULL "
+            "WHERE sample_batch_job_id = ?",
+            (sample_id,),
+        )
+        connection.commit()
+        self.assertEqual(
+            self.repository.get_job(sample_id)["status"], "SUCCEEDED"
+        )
+
+        for requested in ("zh-glossary-v6", "zh-glossary-v7"):
+            with self.assertRaisesRegex(BatchServiceError, "administrator-approved sample"):
+                self.service.create_draft(
+                    version_id="version",
+                    provider="openai-batch",
+                    profile_name="cloud-model-snapshot",
+                    prompt_profile=requested,
+                    items=self._items(),
+                    batch_job_id=f"full-after-legacy-{requested}",
+                )
+
+    def test_a_retry_successor_keeps_the_prompt_profile_it_replays(self) -> None:
+        sample_id = self._approved_sample("zh-glossary-v6")
+        full_id = self.service.create_draft(
+            version_id="version",
+            provider="openai-batch",
+            profile_name="cloud-model-snapshot",
+            prompt_profile="zh-glossary-v6",
+            items=self._items(),
+            batch_job_id="full-to-retry",
+        )
+        self.assertNotEqual(full_id, sample_id)
+        openai_provider = FakeProvider()
+        openai_provider.name = "openai-batch"
+        remote_id = self.service.submit(full_id, openai_provider)
+        openai_provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        openai_provider.results[remote_id] = [
+            ProviderItemResult("p1", payload={"concepts": []}),
+            ProviderItemResult("p2", error="provider rejected the item"),
+        ]
+        self.service.poll_and_ingest(full_id, openai_provider)
+        child_id = self.repository.create_retry_child(full_id)
+        self.assertEqual(
+            self.repository.get_job(child_id)["prompt_profile"], "zh-glossary-v6"
+        )
 
     def test_draft_or_partial_sample_cannot_be_approved(self) -> None:
         sample_id = self.service.create_draft(
@@ -2136,7 +2290,7 @@ class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4, 5},
+            {1, 2, 3, 4, 5, 6},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
         item = connection.execute("SELECT * FROM batch_items").fetchone()
@@ -2164,6 +2318,125 @@ class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
                 for row in second._connection().execute("PRAGMA table_info(batch_items)")
             ].count("failure_diagnostics_json"),
             1,
+        )
+
+
+class EpubBatchPromptProfileMigrationTest(unittest.TestCase):
+    """``batch_jobs.prompt_profile`` must arrive through the same runner.
+
+    A store that already holds a submitted cloud run and an approved sample
+    must gain the column without losing either, and the pre-existing rows must
+    read as NULL rather than as any default that could satisfy the gate.
+    """
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.path = os.path.join(self.tempdir.name, "schema-5.db")
+        self._create_previous_schema_version()
+
+    def _create_previous_schema_version(self) -> None:
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations "
+            "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+        migrations = (
+            (1, STORE._MIGRATION_1),
+            (2, STORE._MIGRATION_2),
+            (3, STORE._MIGRATION_3),
+            (4, STORE._MIGRATION_4),
+            (5, STORE._MIGRATION_5),
+        )
+        for version, statements in migrations:
+            for statement in statements[1:] if version == 1 else statements:
+                connection.execute(statement)
+            connection.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
+        connection.execute("PRAGMA user_version = 5")
+        connection.execute("INSERT INTO books(book_id, title) VALUES ('book', 'Legacy book')")
+        connection.execute(
+            "INSERT INTO book_versions(version_id, book_id, epub_sha256, status) "
+            "VALUES ('version', 'book', 'legacy-hash', 'READY')"
+        )
+        connection.execute(
+            """INSERT INTO passages(
+                   passage_id, version_id, source_href, spine_index, ordinal,
+                   content_kind, content, content_sha256
+               ) VALUES ('p1', 'version', 'chapter.xhtml', 0, 0, 'paragraph', 'TCP endpoints.', 'hash')"""
+        )
+        for job_id, is_sample, state in (
+            ("legacy-sample", 1, "SUCCEEDED"),
+            ("legacy-full", 0, "SUBMITTED"),
+        ):
+            connection.execute(
+                """INSERT INTO batch_jobs(
+                       batch_job_id, version_id, provider, profile_name, status, is_sample
+                   ) VALUES (?, 'version', 'openai-batch', 'gpt-4.1-2025-04-14', ?, ?)""",
+                (job_id, state, is_sample),
+            )
+        connection.execute(
+            """INSERT INTO batch_items(
+                   batch_item_id, batch_job_id, passage_id, custom_id, status, request_json
+               ) VALUES ('legacy-item', 'legacy-sample', 'p1', 'p1', 'SUCCEEDED', '{}')"""
+        )
+        connection.commit()
+        connection.close()
+
+    def test_previous_schema_version_gains_the_column_without_losing_data(self) -> None:
+        self.assertNotIn(
+            "prompt_profile",
+            {row[1] for row in sqlite3.connect(self.path).execute("PRAGMA table_info(batch_jobs)")},
+        )
+
+        store = SQLiteEpubStore(self.path)
+        self.addCleanup(store.close)
+        connection = store._connection()
+
+        self.assertEqual(
+            {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
+            {1, 2, 3, 4, 5, 6},
+        )
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
+        self.assertEqual(STORE.SCHEMA_VERSION, 6)
+        jobs = {
+            row["batch_job_id"]: row
+            for row in connection.execute("SELECT * FROM batch_jobs")
+        }
+        self.assertEqual(set(jobs), {"legacy-sample", "legacy-full"})
+        # The submitted full run keeps every field it had; it simply has no
+        # recorded prompt profile until the service-level backfill derives one.
+        self.assertEqual(jobs["legacy-full"]["status"], "SUBMITTED")
+        self.assertEqual(jobs["legacy-full"]["profile_name"], "gpt-4.1-2025-04-14")
+        self.assertIsNone(jobs["legacy-full"]["prompt_profile"])
+        self.assertIsNone(jobs["legacy-sample"]["prompt_profile"])
+        self.assertEqual(
+            connection.execute("SELECT COUNT(*) FROM batch_items").fetchone()[0], 1
+        )
+
+    def test_migration_is_idempotent_across_reopens(self) -> None:
+        first = SQLiteEpubStore(self.path)
+        first.close()
+        second = SQLiteEpubStore(self.path)
+        self.addCleanup(second.close)
+        columns = [
+            row[1] for row in second._connection().execute("PRAGMA table_info(batch_jobs)")
+        ]
+        self.assertEqual(columns.count("prompt_profile"), 1)
+        # The namespaced service table adds its audit column outside the
+        # versioned runner, so its idempotency is checked the same way.
+        repository = SQLiteBatchRepository(second)
+        SQLiteBatchRepository(second)
+        review_columns = [
+            row[1]
+            for row in second._connection().execute(
+                "PRAGMA table_info(epub_batch_sample_reviews)"
+            )
+        ]
+        self.assertEqual(review_columns.count("prompt_profile"), 1)
+        self.assertEqual(
+            {job["batch_job_id"] for job in repository.list_jobs_without_prompt_profile()},
+            {"legacy-sample", "legacy-full"},
         )
 
 
