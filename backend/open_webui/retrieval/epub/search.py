@@ -85,6 +85,11 @@ class EpubSearchRepository(Protocol):
 
     def list_concept_terms(self) -> list[Mapping[str, Any]]: ...
 
+    # Both occurrence methods enumerate *distinct source spans*, never mention
+    # rows: exact duplicates and spans nested inside another span collapse into
+    # one row that carries ``concept_ids``/``canonical_names`` for every
+    # concept it absorbed.  The count must apply that same rule, or the total
+    # disagrees with the pages.
     def count_concept_occurrences(self, concept_ids: Sequence[str]) -> int: ...
 
     def list_concept_occurrences(
@@ -362,10 +367,18 @@ class EpubSearchService:
         start = row.get("start_codepoint")
         end = row.get("end_codepoint")
         excerpt = _verified_excerpt(passage["content"], passage["content_sha256"], start, end)
-        name = row.get("canonical_name")
-        matched = (str(name),) if isinstance(name, str) and name else tuple(resolved_names)
-        concept_id = row.get("concept_id")
-        relation_depth = relation_depths.get(concept_id) if isinstance(concept_id, str) else 0
+        # A graph row is one distinct source span, not one mention: the store
+        # collapses duplicate and nested spans, so a single row can carry every
+        # concept that anchored on that span.
+        names = _row_strings(row, "canonical_names")
+        matched = names or tuple(resolved_names)
+        concept_ids = _row_strings(row, "concept_ids")
+        # A span that a directly matched concept anchored is a direct hit even
+        # when it also absorbed a relation-derived concept, so the shallowest
+        # depth wins.  A span reached only through HAS_PART keeps its relation
+        # provenance.
+        depths = [relation_depths.get(concept_id, 0) for concept_id in concept_ids]
+        relation_depth = min(depths) if depths else 0
         provenance = ("graph",) if not relation_depth else ("graph", f"relation:HAS_PART:{relation_depth}")
         return SearchHit(
             passage_id=passage["passage_id"],
@@ -765,6 +778,14 @@ def _validated_scores(scores: Sequence[float], *, expected: int) -> tuple[float,
             raise SearchError("local reranker returned a non-finite score")
         result.append(float(score))
     return tuple(result)
+
+
+def _row_strings(row: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    """Read a repository row's list-valued column of non-empty strings."""
+    value = row.get(key)
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item)
 
 
 def _merged_strings(*values: Sequence[str]) -> tuple[str, ...]:
