@@ -62,7 +62,8 @@
 		addOpenAIConnection,
 		removeOpenAIConnection,
 		addTerminalConnection,
-		removeTerminalConnection
+		removeTerminalConnection,
+		normalizeAuraProLocalLlamaConnections
 	} from '$lib/utils/connections';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL, WEBUI_HOSTNAME } from '$lib/constants';
@@ -136,7 +137,9 @@
 	const DISCONNECT_TOAST_DELAY_MS = 2000;
 
 	const setupSocket = async (enableWebsocket) => {
+		socketConnected.set(false);
 		const _socket = io(`${WEBUI_BASE_URL}` || undefined, {
+			autoConnect: false,
 			reconnection: true,
 			reconnectionDelay: 1000,
 			reconnectionDelayMax: 5000,
@@ -145,9 +148,10 @@
 			transports: enableWebsocket ? ['websocket'] : ['polling', 'websocket'],
 			auth: { token: localStorage.token }
 		});
-		await socket.set(_socket);
+		socket.set(_socket);
 
 		_socket.on('connect_error', (err) => {
+			socketConnected.set(false);
 			console.log('connect_error', err);
 		});
 
@@ -162,15 +166,15 @@
 				disconnectToastTimer = null;
 			}
 
-			if (hasConnectedOnce) {
-				socketConnected.set(true);
-				// Only show "Reconnected" if the user actually saw the disconnect warning
-				if (disconnectWarningShown) {
-					toast.success($i18n.t('Reconnected'));
-					disconnectWarningShown = false;
-				}
-			}
+			const wasReconnect = hasConnectedOnce;
 			hasConnectedOnce = true;
+			socketConnected.set(true);
+
+			// Only show "Reconnected" if the user actually saw the disconnect warning.
+			if (wasReconnect && disconnectWarningShown) {
+				toast.success($i18n.t('Reconnected'));
+				disconnectWarningShown = false;
+			}
 
 			const res = await getVersion(localStorage.token);
 
@@ -208,10 +212,7 @@
 			console.log('version', version);
 
 			if (localStorage.getItem('token')) {
-				// Emit user-join event with auth token
 				_socket.emit('user-join', { auth: { token: localStorage.token } });
-			} else {
-				console.warn('No token found in localStorage, user-join event not emitted');
 			}
 		});
 
@@ -248,6 +249,9 @@
 				console.log('Additional details:', details);
 			}
 		});
+
+		// Register listeners before connecting so fast local connections cannot be missed.
+		_socket.connect();
 	};
 
 	/**
@@ -1248,6 +1252,11 @@
 
 					if (sessionUser) {
 						await user.set(sessionUser);
+						if (sessionUser.role === 'admin') {
+							await normalizeAuraProLocalLlamaConnections(localStorage.token).catch((error) => {
+								console.error('Failed to migrate local llama.cpp connection:', error);
+							});
+						}
 						try {
 							await config.set(await getBackendConfig());
 						} catch (error) {

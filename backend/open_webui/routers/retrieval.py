@@ -14,7 +14,7 @@ import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, Iterator, List, Optional, Sequence, Union
+from typing import Any, Awaitable, Callable, Iterator, List, Optional, Sequence, Union
 
 import tiktoken
 from fastapi import (
@@ -30,7 +30,9 @@ from fastapi import (
     status,
 )
 from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from langchain_core.documents import Document
 from open_webui.config import (
     DEFAULT_LOCALE,
@@ -1677,6 +1679,7 @@ def save_docs_to_vector_db(
     split: bool = True,
     add: bool = False,
     user=None,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> bool:
     from langchain_text_splitters import (
         MarkdownHeaderTextSplitter,
@@ -1685,6 +1688,16 @@ def save_docs_to_vector_db(
     )
 
     log.info(f'save_docs_to_vector_db: collection_name={collection_name}')
+
+    def report_progress(stage: str, progress: int, **details) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback({'stage': stage, 'progress': progress, **details})
+        except Exception:
+            log.warning('Failed to report knowledge import progress', exc_info=True)
+
+    report_progress('preparing_vectors', 84, total=len(docs))
 
     def _get_docs_info(docs: list[Document]) -> str:
         docs_info = set()
@@ -1726,6 +1739,7 @@ def save_docs_to_vector_db(
                     raise ValueError(ERROR_MESSAGES.DUPLICATE_CONTENT)
 
     if split:
+        report_progress('splitting_documents', 85, total=len(docs))
         if config.ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER:
             log.info('Using markdown header text splitter')
             # Define headers to split on - covering most common markdown header levels
@@ -1817,6 +1831,18 @@ def save_docs_to_vector_db(
 
         log.info(f'generating embeddings for {collection_name}')
         log.info(f'RAG_EMBEDDING_BATCH_SIZE: {config.RAG_EMBEDDING_BATCH_SIZE}')
+        embedding_model_cold = (
+            config.RAG_EMBEDDING_ENGINE == ''
+            and isinstance(request.app.state.ef, LazyModel)
+            and not request.app.state.ef.is_loaded
+        )
+        report_progress(
+            'search_embeddings',
+            88,
+            current=0,
+            total=len(texts),
+            cold_start=embedding_model_cold,
+        )
         embedding_function = get_embedding_function(
             config.RAG_EMBEDDING_ENGINE,
             config.RAG_EMBEDDING_MODEL,
@@ -1868,6 +1894,12 @@ def save_docs_to_vector_db(
                 log.debug(f'Embedding coroutine submitted, waiting for result (timeout={embedding_timeout}s)...')
                 embeddings = future.result(timeout=embedding_timeout)
                 log.info(f'embeddings generated {len(embeddings)} for {len(texts)} items')
+                report_progress(
+                    'saving_vectors',
+                    97,
+                    current=len(embeddings),
+                    total=len(texts),
+                )
             except TimeoutError as te:
                 log.error(
                     f'Embedding generation timeout after {embedding_timeout}s. Check if embedding service is responsive.'
@@ -1897,6 +1929,7 @@ def save_docs_to_vector_db(
         )
 
         log.info(f'added {len(items)} items to collection {collection_name}')
+        report_progress('finalizing', 99, current=len(items), total=len(items))
         return True
     except Exception as e:
         log.exception(e)
@@ -1930,6 +1963,21 @@ async def process_file(
 
     if file:
         try:
+            progress_started_at = int(datetime.now().timestamp())
+
+            async def update_file_progress(stage: str, progress: int, **details) -> None:
+                await Files.update_file_data_by_id(
+                    file.id,
+                    {
+                        'status': 'processing',
+                        'progress_stage': stage,
+                        'progress': progress,
+                        'progress_started_at': progress_started_at,
+                        **details,
+                    },
+                )
+
+            await update_file_progress('preparing', 2)
             collection_name = form_data.collection_name
 
             if collection_name is None:
@@ -1938,6 +1986,7 @@ async def process_file(
                 await _validate_collection_access([collection_name], user, access_type='write')
 
             if form_data.content:
+                await update_file_progress('reading_content', 10)
                 # Update the content in the file
                 # Usage: /files/{file_id}/data/content/update, /files/ (audio file upload pipeline)
 
@@ -1963,6 +2012,7 @@ async def process_file(
 
                 text_content = form_data.content
             elif form_data.collection_name:
+                await update_file_progress('linking_to_knowledge', 10)
                 # Check if the file has already been processed and save the content
                 # Usage: /knowledge/{id}/file/add, /knowledge/{id}/file/update
 
@@ -1994,6 +2044,7 @@ async def process_file(
 
                 text_content = file.data.get('content', '')
             else:
+                await update_file_progress('extracting_content', 10)
                 # Process the file and save the content
                 # Usage: /files/
                 file_path = file.path
@@ -2038,6 +2089,7 @@ async def process_file(
                 text_content = ' '.join([doc.page_content for doc in docs])
 
             log.debug('Extracted file content length=%d', len(text_content))
+            await update_file_progress('content_extracted', 30, total=len(docs))
             await Files.update_file_data_by_id(
                 file.id,
                 {'content': text_content},
@@ -2046,7 +2098,11 @@ async def process_file(
             hash = calculate_sha256_string(text_content)
 
             if config.BYPASS_EMBEDDING_AND_RETRIEVAL:
-                await Files.update_file_data_by_id(file.id, {'status': 'completed'}, db=db)
+                await Files.update_file_data_by_id(
+                    file.id,
+                    {'status': 'completed', 'progress_stage': 'complete', 'progress': 100},
+                    db=db,
+                )
                 await Files.update_file_hash_by_id(file.id, hash, db=db)
                 await publish_event(
                     request,
@@ -2074,6 +2130,24 @@ async def process_file(
                     # calls asyncio.run_coroutine_threadsafe(..., main_loop).result()
                     # which blocks the calling thread.  We MUST run it in a
                     # worker thread to avoid deadlocking the event loop.
+                    event_loop = asyncio.get_running_loop()
+
+                    def file_vector_progress(event: dict) -> None:
+                        future = asyncio.run_coroutine_threadsafe(
+                            Files.update_file_data_by_id(
+                                file.id,
+                                {
+                                    'status': 'processing',
+                                    'progress_stage': event.get('stage'),
+                                    'progress': event.get('progress', 30),
+                                    'progress_started_at': progress_started_at,
+                                    **{key: value for key, value in event.items() if key not in {'stage', 'progress'}},
+                                },
+                            ),
+                            event_loop,
+                        )
+                        future.result(timeout=5)
+
                     result = await run_in_threadpool(
                         save_docs_to_vector_db,
                         request,
@@ -2087,6 +2161,7 @@ async def process_file(
                         },
                         add=(True if form_data.collection_name else False),
                         user=user,
+                        progress_callback=file_vector_progress,
                     )
                     log.info(f'added {len(docs)} items to collection {collection_name}')
 
@@ -2103,7 +2178,11 @@ async def process_file(
 
                             await Files.update_file_data_by_id(
                                 file.id,
-                                {'status': 'completed'},
+                                {
+                                    'status': 'completed',
+                                    'progress_stage': 'complete',
+                                    'progress': 100,
+                                },
                                 db=session,
                             )
                             await Files.update_file_hash_by_id(file.id, hash, db=session)
@@ -2133,7 +2212,11 @@ async def process_file(
             async with get_async_db() as session:
                 await Files.update_file_data_by_id(
                     file.id,
-                    {'status': 'failed'},
+                    {
+                        'status': 'failed',
+                        'progress_stage': 'failed',
+                        'progress_error': str(e),
+                    },
                     db=session,
                 )
                 # Clear the hash so the file can be re-uploaded after fixing the issue
@@ -2284,20 +2367,27 @@ async def import_google_sheet(
     return result.to_dict()
 
 
-@router.post('/process/bilingual/epub')
-async def process_bilingual_epub(
+async def _process_bilingual_epub(
     request: Request,
-    collection_name: str = Form(...),
-    primaryLang: str = Form(...),
-    files: List[UploadFile] = File(...),
-    langs: List[str] = Form(default=[]),
-    user=Depends(get_verified_user),
+    collection_name: str,
+    primaryLang: str,
+    files: List[UploadFile],
+    langs: List[str],
+    user,
+    progress_callback: KnowledgeProgressCallback | None = None,
 ):
     from open_webui.utils.bilingual.bilingual_epub_parse import (
         extract_chapters_from_epub,
         parse_file_name,
     )
 
+    await _report_knowledge_progress(
+        progress_callback,
+        'preparing_epub',
+        2,
+        current=0,
+        total=len(files),
+    )
     if len(files) > 32:
         raise HTTPException(status_code=400, detail='A maximum of 32 EPUB files can be processed at once.')
 
@@ -2307,7 +2397,14 @@ async def process_bilingual_epub(
     temp_epub_dict = {}
     try:
         extraction_dict = {}
-        for file in files:
+        for file_index, file in enumerate(files):
+            await _report_knowledge_progress(
+                progress_callback,
+                'reading_epub',
+                3 + round((file_index / max(len(files), 1)) * 5),
+                current=file_index,
+                total=len(files),
+            )
             lang, _ = parse_file_name(file.filename or '')
             if not lang:
                 raise ValueError(f'Could not determine the language from filename: {file.filename}')
@@ -2341,6 +2438,13 @@ async def process_bilingual_epub(
             except zipfile.BadZipFile as exc:
                 raise ValueError(f'Invalid EPUB archive: {file.filename}') from exc
 
+            await _report_knowledge_progress(
+                progress_callback,
+                'extracting_epub',
+                8 + round((file_index / max(len(files), 1)) * 4),
+                current=file_index,
+                total=len(files),
+            )
             extraction_result = await asyncio.to_thread(extract_chapters_from_epub, temp_epub_dict[lang], lang)
             extraction_dict[lang] = extraction_result
 
@@ -2357,6 +2461,13 @@ async def process_bilingual_epub(
         )
 
         chapters = reference_result.get('chapters', [])
+        await _report_knowledge_progress(
+            progress_callback,
+            'assembling_epub_chapters',
+            12,
+            current=0,
+            total=len(chapters),
+        )
         for index, chapter in enumerate(chapters):
             files_langs = {primaryLang: chapter['content']}
             for lang, extraction_result in extraction_dict.items():
@@ -2374,7 +2485,23 @@ async def process_bilingual_epub(
             )
             result.files.append(file)
 
-        await process_bilingual(request, result, user=user)
+        async def nested_progress(event: dict) -> None:
+            if progress_callback is None:
+                return
+            nested_value = int(event.get('progress', 0))
+            await progress_callback(
+                {
+                    **event,
+                    'progress': 12 + round(nested_value * 0.88),
+                }
+            )
+
+        await _process_bilingual(
+            request,
+            result,
+            user=user,
+            progress_callback=nested_progress,
+        )
         return result.files
     except ValueError as e:
         log.error(f'Validation error: {str(e)}')
@@ -2389,6 +2516,38 @@ async def process_bilingual_epub(
                     os.remove(epub_path)
             except:
                 pass
+
+
+@router.post('/process/bilingual/epub')
+async def process_bilingual_epub(
+    request: Request,
+    collection_name: str = Form(...),
+    primaryLang: str = Form(...),
+    files: List[UploadFile] = File(...),
+    langs: List[str] = Form(default=[]),
+    stream: bool = Query(False),
+    user=Depends(get_verified_user),
+):
+    if stream:
+        return _knowledge_progress_stream(
+            lambda progress: _process_bilingual_epub(
+                request,
+                collection_name,
+                primaryLang,
+                files,
+                langs,
+                user,
+                progress_callback=progress,
+            )
+        )
+    return await _process_bilingual_epub(
+        request,
+        collection_name,
+        primaryLang,
+        files,
+        langs,
+        user,
+    )
 
 
 class BilingualFile(BaseModel):
@@ -2426,14 +2585,84 @@ def _meta_load(value, default=None):
                 return default if default is not None else value
     return value
 
-@router.post('/process/bilingual')
-async def process_bilingual(
+
+KnowledgeProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+async def _report_knowledge_progress(
+    progress_callback: KnowledgeProgressCallback | None,
+    stage: str,
+    progress: int,
+    **details,
+) -> None:
+    if progress_callback is not None:
+        await progress_callback({'stage': stage, 'progress': progress, **details})
+
+
+def _knowledge_progress_stream(
+    worker: Callable[[KnowledgeProgressCallback], Awaitable[dict | list]],
+) -> StreamingResponse:
+    async def event_stream():
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+        async def progress_callback(event: dict) -> None:
+            await queue.put({'type': 'progress', **event})
+
+        async def run_worker() -> None:
+            try:
+                result = await worker(progress_callback)
+                await queue.put({'type': 'result', 'result': result})
+            except HTTPException as exc:
+                await queue.put({'type': 'error', 'error': str(exc.detail)})
+            except Exception as exc:
+                log.exception('Knowledge import stream failed')
+                await queue.put({'type': 'error', 'error': str(exc)})
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(run_worker())
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=10)
+                except TimeoutError:
+                    yield json.dumps({'type': 'heartbeat'}) + '\n'
+                    continue
+
+                if event is None:
+                    break
+                yield json.dumps(jsonable_encoder(event), ensure_ascii=False, default=str) + '\n'
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type='application/x-ndjson',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        },
+    )
+
+
+async def _process_bilingual(
     request: Request,
     form_data: ProcessBilingualForm,
-    user=Depends(get_verified_user),
+    user,
+    progress_callback: KnowledgeProgressCallback | None = None,
 ):
     from open_webui.utils.bilingual.bilingual_build import bilingual_aligner
     from open_webui.utils.bilingual.word_aligner import GlossaryBuilder, WordAligner
+
+    await _report_knowledge_progress(
+        progress_callback,
+        'preparing',
+        2,
+        current=0,
+        total=len(form_data.files),
+    )
 
     collection_name = form_data.collection_name
     if collection_name is None:
@@ -2528,6 +2757,13 @@ async def process_bilingual(
         metadatas = result.get('metadatas', []) or []
         return {m['bilingual_id'] for m in metadatas if m and 'bilingual_id' in m}
 
+    await _report_knowledge_progress(
+        progress_callback,
+        'checking_existing',
+        6,
+        current=0,
+        total=len(all_bilingual_ids),
+    )
     existing_ids = await run_in_threadpool(_query_existing_ids)
     files_to_process = [f for f in form_data.files if f.id not in existing_ids]
     skipped_files = [f for f in form_data.files if f.id in existing_ids]
@@ -2580,10 +2816,20 @@ async def process_bilingual(
     await _emit_bilingual_progress('开始进行双语句子对齐与文档块构建...', step='align')
     docs_per_file = await bilingual_aligner.align_batch_to_documents(items)
     all_docs = [doc for docs in docs_per_file for doc in docs]
+    if not all_docs:
+        raise HTTPException(status_code=400, detail='No aligned documents generated')
 
-    prim_lang = docs_per_file[0][0].metadata.get('primary_lang')
+    prim_lang = all_docs[0].metadata.get('primary_lang')
+    word_aligner_cold = WordAligner._instance is None
+    await _report_knowledge_progress(
+        progress_callback,
+        'loading_word_alignment_model',
+        65,
+        cold_start=word_aligner_cold,
+    )
+    word_aligner = await asyncio.to_thread(WordAligner.get_instance)
 
-    for docs in docs_per_file:
+    for file_index, docs in enumerate(docs_per_file):
         if not docs:
             continue
 
@@ -2599,6 +2845,13 @@ async def process_bilingual(
             groups.setdefault(group_id, {})[lang] = doc.page_content
 
         sent_langs = {lang: [] for lang in tgt_langs}
+        await _report_knowledge_progress(
+            progress_callback,
+            'building_glossary',
+            70 + round((file_index / max(len(docs_per_file), 1)) * 12),
+            current=file_index,
+            total=len(docs_per_file),
+        )
         builders = {
             lang: GlossaryBuilder(
                 src_lang=prim_lang,
@@ -2621,16 +2874,23 @@ async def process_bilingual(
         words_dict = {}
         for lang, sent_pairs in sent_langs.items():
             builder = builders.get(lang)
-            builder.add_pairs(sent_pairs)
-            entries = builder.build()
-            pairs = [(e.source, e.target) for e in entries]
-            words_dict[lang] = pairs
+
+            def build_glossary_pairs():
+                builder.add_pairs(sent_pairs)
+                return [(entry.source, entry.target) for entry in builder.build()]
+
+            words_dict[lang] = await asyncio.to_thread(build_glossary_pairs)
 
         for doc in docs:
             doc.metadata['words'] = words_dict
 
-    if not all_docs:
-        raise HTTPException(status_code=400, detail='No aligned documents generated')
+    event_loop = asyncio.get_running_loop()
+
+    def vector_progress(event: dict) -> None:
+        if progress_callback is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(progress_callback(event), event_loop)
+        future.result(timeout=5)
 
     await _emit_bilingual_progress('正在将对齐后的文档保存到向量数据库...', step='save')
     result = await run_in_threadpool(
@@ -2642,10 +2902,18 @@ async def process_bilingual(
         split=False,
         user=user,
         config=config,
+        progress_callback=vector_progress,
     )
 
     if result:
         _bilingual_cache.invalidate(collection_name)
+        await _report_knowledge_progress(
+            progress_callback,
+            'complete',
+            100,
+            current=len(files_to_process),
+            total=len(files_to_process),
+        )
 
         await _emit_bilingual_progress(
             f'双语导入已成功完成，共生成 {len(all_docs)} 个文档块。',
@@ -2666,6 +2934,25 @@ async def process_bilingual(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ERROR_MESSAGES.DEFAULT(),
         )
+
+
+@router.post('/process/bilingual')
+async def process_bilingual(
+    request: Request,
+    form_data: ProcessBilingualForm,
+    stream: bool = Query(False),
+    user=Depends(get_verified_user),
+):
+    if stream:
+        return _knowledge_progress_stream(
+            lambda progress: _process_bilingual(
+                request,
+                form_data,
+                user,
+                progress_callback=progress,
+            )
+        )
+    return await _process_bilingual(request, form_data, user)
 
 
 class BilingualFileSummary(BaseModel):
@@ -2902,7 +3189,9 @@ async def get_bilingual_align(
         para_text = g['parent_content']
         if para_index not in paragraphs_map:
             paragraphs_map[para_index] = ParagraphAlignItem(
-                para_index=para_index, para_text=para_text, sentences=[],
+                para_index=para_index,
+                para_text=para_text,
+                sentences=[],
             )
             para_cursor[para_index] = 0
 

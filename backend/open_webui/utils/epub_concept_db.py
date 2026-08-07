@@ -27,8 +27,8 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Resolve database file location
 # ---------------------------------------------------------------------------
-_DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
-EPUB_CONCEPT_DB_PATH = _DATA_DIR / "epub_concept.db"
+_DATA_DIR = Path(os.getenv('DATA_DIR', Path(__file__).resolve().parent.parent / 'data'))
+EPUB_CONCEPT_DB_PATH = _DATA_DIR / 'epub_concept.db'
 
 
 def _get_db_path() -> str:
@@ -107,10 +107,10 @@ class EpubConceptDB:
         passages = db.get_passages_by_ids(["BookA_P00001"])
     """
 
-    _instance: Optional["EpubConceptDB"] = None
+    _instance: Optional['EpubConceptDB'] = None
     _lock = threading.Lock()
 
-    def __new__(cls) -> "EpubConceptDB":
+    def __new__(cls) -> 'EpubConceptDB':
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
@@ -124,16 +124,16 @@ class EpubConceptDB:
         self._local = threading.local()
         self._ensure_schema()
         self._initialized = True
-        log.info(f"EpubConceptDB initialized at {self._db_path}")
+        log.info(f'EpubConceptDB initialized at {self._db_path}')
 
     # -- connection per thread --
     def _conn(self) -> sqlite3.Connection:
-        conn = getattr(self._local, "conn", None)
+        conn = getattr(self._local, 'conn', None)
         if conn is None:
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA foreign_keys=ON')
             self._local.conn = conn
         return conn
 
@@ -145,18 +145,19 @@ class EpubConceptDB:
     # -----------------------------------------------------------------------
     # Books
     # -----------------------------------------------------------------------
-    def save_book(self, book_id: str, book_title: str, total_passages: int = 0,
-                  file_hash: str = "", meta: Optional[Dict] = None):
+    def save_book(
+        self, book_id: str, book_title: str, total_passages: int = 0, file_hash: str = '', meta: Optional[Dict] = None
+    ):
         conn = self._conn()
         conn.execute(
             """INSERT OR REPLACE INTO books (book_id, book_title, file_hash, total_passages, meta_json)
                VALUES (?, ?, ?, ?, ?)""",
-            (book_id, book_title, file_hash, total_passages, json.dumps(meta or {}, ensure_ascii=False))
+            (book_id, book_title, file_hash, total_passages, json.dumps(meta or {}, ensure_ascii=False)),
         )
         conn.commit()
 
     def get_books(self) -> List[Dict[str, Any]]:
-        rows = self._conn().execute("SELECT * FROM books ORDER BY created_at DESC").fetchall()
+        rows = self._conn().execute('SELECT * FROM books ORDER BY created_at DESC').fetchall()
         return [dict(r) for r in rows]
 
     # -----------------------------------------------------------------------
@@ -166,20 +167,20 @@ class EpubConceptDB:
         """Batch insert passages.  Each dict must have: passage_id, book_id, book_title, toc_path, content."""
         conn = self._conn()
         for p in passages:
-            content = p["content"]
+            content = p['content']
             conn.execute(
                 """INSERT OR REPLACE INTO passages
                    (passage_id, book_id, book_title, toc_path_json, content, parent_context, char_count)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    p["passage_id"],
-                    p.get("book_id", p["passage_id"].rsplit("_P", 1)[0]),
-                    p["book_title"],
-                    json.dumps(p.get("toc_path", []), ensure_ascii=False),
+                    p['passage_id'],
+                    p.get('book_id', p['passage_id'].rsplit('_P', 1)[0]),
+                    p['book_title'],
+                    json.dumps(p.get('toc_path', []), ensure_ascii=False),
                     content,
-                    p.get("parent_context", ""),
+                    p.get('parent_context', ''),
                     len(content),
-                )
+                ),
             )
         conn.commit()
 
@@ -187,45 +188,47 @@ class EpubConceptDB:
         if not passage_ids:
             return []
         conn = self._conn()
-        placeholders = ",".join("?" for _ in passage_ids)
-        rows = conn.execute(
-            f"SELECT * FROM passages WHERE passage_id IN ({placeholders})", passage_ids
-        ).fetchall()
+        placeholders = ','.join('?' for _ in passage_ids)
+        rows = conn.execute(f'SELECT * FROM passages WHERE passage_id IN ({placeholders})', passage_ids).fetchall()
         result = []
         for r in rows:
             d = dict(r)
-            d["toc_path"] = json.loads(d.pop("toc_path_json", "[]"))
+            d['toc_path'] = json.loads(d.pop('toc_path_json', '[]'))
             result.append(d)
         return result
 
     def get_all_passages(self, book_id: Optional[str] = None) -> List[Dict[str, Any]]:
         conn = self._conn()
         if book_id:
-            rows = conn.execute("SELECT * FROM passages WHERE book_id = ? ORDER BY passage_id", (book_id,)).fetchall()
+            rows = conn.execute('SELECT * FROM passages WHERE book_id = ? ORDER BY passage_id', (book_id,)).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM passages ORDER BY passage_id").fetchall()
+            rows = conn.execute('SELECT * FROM passages ORDER BY passage_id').fetchall()
         result = []
         for r in rows:
             d = dict(r)
-            d["toc_path"] = json.loads(d.pop("toc_path_json", "[]"))
+            d['toc_path'] = json.loads(d.pop('toc_path_json', '[]'))
             result.append(d)
         return result
 
     def count_passages(self, book_id: Optional[str] = None) -> int:
         conn = self._conn()
         if book_id:
-            row = conn.execute("SELECT COUNT(*) FROM passages WHERE book_id = ?", (book_id,)).fetchone()
+            row = conn.execute('SELECT COUNT(*) FROM passages WHERE book_id = ?', (book_id,)).fetchone()
         else:
-            row = conn.execute("SELECT COUNT(*) FROM passages").fetchone()
+            row = conn.execute('SELECT COUNT(*) FROM passages').fetchone()
         return row[0] if row else 0
 
     # -----------------------------------------------------------------------
     # Concepts
     # -----------------------------------------------------------------------
-    def save_concept(self, concept_id: str, canonical_name: str,
-                     aliases: Optional[List[str]] = None,
-                     definition: str = "",
-                     related: Optional[Dict] = None):
+    def save_concept(
+        self,
+        concept_id: str,
+        canonical_name: str,
+        aliases: Optional[List[str]] = None,
+        definition: str = '',
+        related: Optional[Dict] = None,
+    ):
         conn = self._conn()
         aliases_list = aliases or []
         conn.execute(
@@ -238,15 +241,15 @@ class EpubConceptDB:
                 json.dumps(aliases_list, ensure_ascii=False),
                 definition,
                 json.dumps(related or {}, ensure_ascii=False),
-            )
+            ),
         )
         # Update alias_index
         for alias in aliases_list:
             alias_lower = alias.strip().lower()
             if alias_lower:
                 conn.execute(
-                    "INSERT OR REPLACE INTO alias_index (alias_lower, concept_id) VALUES (?, ?)",
-                    (alias_lower, concept_id)
+                    'INSERT OR REPLACE INTO alias_index (alias_lower, concept_id) VALUES (?, ?)',
+                    (alias_lower, concept_id),
                 )
         conn.commit()
 
@@ -254,67 +257,69 @@ class EpubConceptDB:
         """Batch save multiple concepts at once."""
         conn = self._conn()
         for c in concepts:
-            aliases_list = c.get("aliases", [])
+            aliases_list = c.get('aliases', [])
             conn.execute(
                 """INSERT OR REPLACE INTO concepts
                    (concept_id, canonical_name, aliases_json, definition, related_json, updated_at)
                    VALUES (?, ?, ?, ?, ?, julianday('now'))""",
                 (
-                    c["concept_id"],
-                    c["canonical_name"],
+                    c['concept_id'],
+                    c['canonical_name'],
                     json.dumps(aliases_list, ensure_ascii=False),
-                    c.get("definition", ""),
-                    json.dumps(c.get("related", {}), ensure_ascii=False),
-                )
+                    c.get('definition', ''),
+                    json.dumps(c.get('related', {}), ensure_ascii=False),
+                ),
             )
             for alias in aliases_list:
                 alias_lower = alias.strip().lower()
                 if alias_lower:
                     conn.execute(
-                        "INSERT OR REPLACE INTO alias_index (alias_lower, concept_id) VALUES (?, ?)",
-                        (alias_lower, c["concept_id"])
+                        'INSERT OR REPLACE INTO alias_index (alias_lower, concept_id) VALUES (?, ?)',
+                        (alias_lower, c['concept_id']),
                     )
         conn.commit()
 
     def get_all_concepts(self) -> List[Dict[str, Any]]:
-        rows = self._conn().execute("SELECT * FROM concepts ORDER BY canonical_name").fetchall()
+        rows = self._conn().execute('SELECT * FROM concepts ORDER BY canonical_name').fetchall()
         result = []
         for r in rows:
             d = dict(r)
-            d["aliases"] = json.loads(d.pop("aliases_json", "[]"))
-            d["related"] = json.loads(d.pop("related_json", "{}"))
+            d['aliases'] = json.loads(d.pop('aliases_json', '[]'))
+            d['related'] = json.loads(d.pop('related_json', '{}'))
             result.append(d)
         return result
 
     def get_concept_by_id(self, concept_id: str) -> Optional[Dict[str, Any]]:
-        row = self._conn().execute("SELECT * FROM concepts WHERE concept_id = ?", (concept_id,)).fetchone()
+        row = self._conn().execute('SELECT * FROM concepts WHERE concept_id = ?', (concept_id,)).fetchone()
         if not row:
             return None
         d = dict(row)
-        d["aliases"] = json.loads(d.pop("aliases_json", "[]"))
-        d["related"] = json.loads(d.pop("related_json", "{}"))
+        d['aliases'] = json.loads(d.pop('aliases_json', '[]'))
+        d['related'] = json.loads(d.pop('related_json', '{}'))
         return d
 
     def lookup_alias(self, alias: str) -> Optional[str]:
         """Returns concept_id for a given alias string (case-insensitive)."""
-        row = self._conn().execute(
-            "SELECT concept_id FROM alias_index WHERE alias_lower = ?", (alias.strip().lower(),)
-        ).fetchone()
+        row = (
+            self._conn()
+            .execute('SELECT concept_id FROM alias_index WHERE alias_lower = ?', (alias.strip().lower(),))
+            .fetchone()
+        )
         return row[0] if row else None
 
     def get_all_aliases(self) -> Dict[str, str]:
         """Returns full alias_lower -> concept_id mapping for building in-memory Trie."""
-        rows = self._conn().execute("SELECT alias_lower, concept_id FROM alias_index").fetchall()
+        rows = self._conn().execute('SELECT alias_lower, concept_id FROM alias_index').fetchall()
         return {r[0]: r[1] for r in rows}
 
     # -----------------------------------------------------------------------
     # Concept ↔ Passage Occurrences
     # -----------------------------------------------------------------------
-    def save_occurrence(self, concept_id: str, passage_id: str, book_title: str = ""):
+    def save_occurrence(self, concept_id: str, passage_id: str, book_title: str = ''):
         conn = self._conn()
         conn.execute(
-            "INSERT OR IGNORE INTO concept_occurrences (concept_id, passage_id, book_title) VALUES (?, ?, ?)",
-            (concept_id, passage_id, book_title)
+            'INSERT OR IGNORE INTO concept_occurrences (concept_id, passage_id, book_title) VALUES (?, ?, ?)',
+            (concept_id, passage_id, book_title),
         )
         conn.commit()
 
@@ -323,36 +328,41 @@ class EpubConceptDB:
         conn = self._conn()
         for occ in occurrences:
             conn.execute(
-                "INSERT OR IGNORE INTO concept_occurrences (concept_id, passage_id, book_title) VALUES (?, ?, ?)",
-                (occ["concept_id"], occ["passage_id"], occ.get("book_title", ""))
+                'INSERT OR IGNORE INTO concept_occurrences (concept_id, passage_id, book_title) VALUES (?, ?, ?)',
+                (occ['concept_id'], occ['passage_id'], occ.get('book_title', '')),
             )
         conn.commit()
 
     def get_passage_ids_for_concept(self, concept_id: str) -> List[str]:
-        rows = self._conn().execute(
-            "SELECT passage_id FROM concept_occurrences WHERE concept_id = ?", (concept_id,)
-        ).fetchall()
+        rows = (
+            self._conn()
+            .execute('SELECT passage_id FROM concept_occurrences WHERE concept_id = ?', (concept_id,))
+            .fetchall()
+        )
         return [r[0] for r in rows]
 
     def get_occurrences_for_concept(self, concept_id: str) -> List[Dict[str, str]]:
-        rows = self._conn().execute(
-            "SELECT passage_id, book_title FROM concept_occurrences WHERE concept_id = ?", (concept_id,)
-        ).fetchall()
-        return [{"passage_id": r[0], "book_title": r[1]} for r in rows]
+        rows = (
+            self._conn()
+            .execute('SELECT passage_id, book_title FROM concept_occurrences WHERE concept_id = ?', (concept_id,))
+            .fetchall()
+        )
+        return [{'passage_id': r[0], 'book_title': r[1]} for r in rows]
 
     # -----------------------------------------------------------------------
     # Full-text keyword search fallback
     # -----------------------------------------------------------------------
     def search_passages_by_keyword(self, keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Simple LIKE-based keyword search on passage content."""
-        rows = self._conn().execute(
-            "SELECT * FROM passages WHERE content LIKE ? LIMIT ?",
-            (f"%{keyword}%", limit)
-        ).fetchall()
+        rows = (
+            self._conn()
+            .execute('SELECT * FROM passages WHERE content LIKE ? LIMIT ?', (f'%{keyword}%', limit))
+            .fetchall()
+        )
         result = []
         for r in rows:
             d = dict(r)
-            d["toc_path"] = json.loads(d.pop("toc_path_json", "[]"))
+            d['toc_path'] = json.loads(d.pop('toc_path_json', '[]'))
             result.append(d)
         return result
 
@@ -361,22 +371,22 @@ class EpubConceptDB:
     # -----------------------------------------------------------------------
     def get_stats(self) -> Dict[str, int]:
         conn = self._conn()
-        books = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
-        passages = conn.execute("SELECT COUNT(*) FROM passages").fetchone()[0]
-        concepts = conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
-        aliases = conn.execute("SELECT COUNT(*) FROM alias_index").fetchone()[0]
-        occurrences = conn.execute("SELECT COUNT(*) FROM concept_occurrences").fetchone()[0]
+        books = conn.execute('SELECT COUNT(*) FROM books').fetchone()[0]
+        passages = conn.execute('SELECT COUNT(*) FROM passages').fetchone()[0]
+        concepts = conn.execute('SELECT COUNT(*) FROM concepts').fetchone()[0]
+        aliases = conn.execute('SELECT COUNT(*) FROM alias_index').fetchone()[0]
+        occurrences = conn.execute('SELECT COUNT(*) FROM concept_occurrences').fetchone()[0]
         return {
-            "books": books,
-            "passages": passages,
-            "concepts": concepts,
-            "aliases": aliases,
-            "occurrences": occurrences,
-            "db_path": self._db_path,
+            'books': books,
+            'passages': passages,
+            'concepts': concepts,
+            'aliases': aliases,
+            'occurrences': occurrences,
+            'db_path': self._db_path,
         }
 
     def close(self):
-        conn = getattr(self._local, "conn", None)
+        conn = getattr(self._local, 'conn', None)
         if conn:
             conn.close()
             self._local.conn = None

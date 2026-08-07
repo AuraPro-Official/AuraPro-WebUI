@@ -1300,9 +1300,9 @@ export const updateSentenceTranslation = async (
 	payload: { collection_name: string; align_group_id: string; lang: string; text: string }
 ): Promise<{
 	status: boolean;
-	id: string;
+	align_group_id: string;
 	lang: string;
-	langs_modified: Record<string, boolean>;
+	langs_modified: boolean;
 }> => {
 	const res = await fetch(`${WEBUI_API_BASE_URL}/retrieval/process/bilingual/sentence`, {
 		method: 'PUT',
