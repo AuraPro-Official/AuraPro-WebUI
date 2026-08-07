@@ -954,39 +954,19 @@ export const reindexKnowledgeFiles = async (token: string) => {
 	return res;
 };
 
-export const exportKnowledgeById = async (token: string, id: string) => {
-	let error = null;
-
-	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/export-with-vectors`, {
-		method: 'GET',
-		headers: {
-			authorization: `Bearer ${token}`
-		}
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.blob();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
-			return null;
-		});
-
-	if (error) {
-		throw error;
-	}
-
-	return res;
-};
-
-export const exportKnowledgeByIdStream = async (token: string, id: string, requestId?: string) => {
+export const exportKnowledgeById = async (
+	token: string,
+	id: string,
+	requestId?: string,
+	signal?: AbortSignal
+) => {
 	const url = `${WEBUI_API_BASE_URL}/knowledge/${id}/export-with-vectors${requestId ? `?request_id=${requestId}` : ''}`;
 	const res = await fetch(url, {
 		method: 'GET',
 		headers: {
 			authorization: `Bearer ${token}`
-		}
+		},
+		signal
 	});
 	if (!res.ok) throw await res.json();
 	return res;

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext } from 'svelte';
+	import { getContext, onDestroy, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import type {
 		BilingualFile,
@@ -9,6 +9,7 @@
 	} from '$lib/apis/retrieval';
 	import { importBilingualGoogleSheet } from '$lib/apis/retrieval';
 	import { LANG_LABELS, parseFileName } from '$lib/apis/knowledge';
+	import { socket } from '$lib/stores';
 
 	const i18n = getContext('i18n');
 
@@ -44,6 +45,82 @@
 	let processingMessage = '';
 
 	let alignWarnings: { baseName: string; counts: Record<LangCode, number> }[] = [];
+	interface BilingualLogEntry {
+		id: number;
+		message: string;
+		step?: string;
+		current?: number;
+		total?: number;
+	}
+	let bilingualLogs: BilingualLogEntry[] = [];
+	let currentImportRequestId: string | null = null;
+	let socketEventHandler: ((event: any) => void) | null = null;
+	let activeSocket: any = null;
+	let logSequence = 0;
+
+	function resetBilingualLogs() {
+		bilingualLogs = [];
+		currentImportRequestId = null;
+		logSequence = 0;
+	}
+
+	function appendBilingualLog(message: string, step?: string, current?: number, total?: number) {
+		if (!message) return;
+
+		const lastLog = bilingualLogs[bilingualLogs.length - 1];
+		const shouldUpdateExisting = Boolean(step) && Boolean(lastLog?.step) && lastLog.step === step;
+
+		if (shouldUpdateExisting) {
+			bilingualLogs = [
+				...bilingualLogs.slice(0, -1),
+				{
+					...lastLog,
+					message,
+					step,
+					current,
+					total,
+				}
+			];
+			return;
+		}
+
+		logSequence += 1;
+		bilingualLogs = [...bilingualLogs, { id: logSequence, message, step, current, total }].slice(-60);
+	}
+
+	function handleBilingualSocketEvent(event: any) {
+		if (event?.data?.type !== 'bilingual:progress') return;
+
+		const payload = event?.data?.data ?? {};
+		const requestId = payload?.request_id;
+		if (!currentImportRequestId && requestId) {
+			currentImportRequestId = requestId;
+		} else if (currentImportRequestId && requestId && requestId !== currentImportRequestId) {
+			return;
+		}
+
+		appendBilingualLog(payload?.message, payload?.step, payload?.current, payload?.total);
+	}
+
+	onMount(() => {
+		socketEventHandler = handleBilingualSocketEvent;
+		const unsubscribeSocket = socket.subscribe((value) => {
+			if (activeSocket && socketEventHandler) {
+				activeSocket.off('events', socketEventHandler);
+			}
+			activeSocket = value;
+			if (activeSocket && socketEventHandler) {
+				activeSocket.on('events', socketEventHandler);
+			}
+		});
+
+		return () => {
+			unsubscribeSocket();
+			if (activeSocket && socketEventHandler) {
+				activeSocket.off('events', socketEventHandler);
+			}
+		};
+	});
 
 	// ── Google Sheet 导入模式专用状态 ──────────────────────────────────────
 	let sheetUrl = '';
@@ -119,7 +196,7 @@
 	async function parseFilePairs(files: File[], is_show: boolean = true) {
 		isProcessing = true;
 		processingProgress = 0;
-		processingMessage = 'Scanning files...';
+		processingMessage = $i18n?.t('Scanning files...') ?? '正在扫描文件...';
 
 		// 只处理文本类文件
 		const textFiles = files.filter((f) => /\.(txt|md|html|xml|json|epub)$/i.test(f.name));
@@ -254,7 +331,8 @@
 	async function handleConfirm() {
 		isProcessing = true;
 		processingProgress = 0;
-		processingMessage = 'Processing paragraphs...';
+		processingMessage = $i18n?.t('Processing paragraphs...') ?? '正在处理段落...';
+		resetBilingualLogs();
 
 		const files: BilingualFile[] = [];
 
@@ -354,7 +432,7 @@
 	async function handleEpubConfirm() {
 		isProcessing = true;
 		processingProgress = 0;
-		processingMessage = 'Processing paragraphs...';
+		processingMessage = $i18n?.t('Processing paragraphs...') ?? '正在处理段落...';
 
 		const files: BilingualEpubFile[] = [];
 		const total = filePairs.length;
@@ -409,6 +487,7 @@
 		skipFirstTableRow = false;
 		googleFiles = [];
 		googleRowErrors = [];
+		resetBilingualLogs();
 		onClose();
 	}
 
@@ -955,19 +1034,42 @@
 							{/each}
 						</div>
 
+						{#if isProcessing || bilingualLogs.length > 0}
+							<div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/70 p-3">
+								<div class="flex items-center justify-between mb-2">
+									<div class="text-xs font-medium text-gray-600 dark:text-gray-300">{$i18n?.t('Import Log') ?? '导入日志'}</div>
+									<div class="text-[11px] text-gray-400">{bilingualLogs.length} {$i18n?.t('entries') ?? '条记录'}</div>
+								</div>
+								<div class="max-h-40 overflow-y-auto space-y-1 pr-1">
+									{#each bilingualLogs as log}
+										<div class="rounded bg-white/70 dark:bg-gray-900/60 px-2 py-1 text-xs text-gray-600 dark:text-gray-300">
+											<div class="flex items-start justify-between gap-2">
+												<span>• {log.message}</span>
+												{#if typeof log.current === 'number' && typeof log.total === 'number' && log.total > 0}
+													<span class="shrink-0 text-[11px] text-gray-400 dark:text-gray-500">{log.current}/{log.total}</span>
+												{/if}
+											</div>
+										</div>
+									{/each}
+									{#if bilingualLogs.length === 0}
+										<div class="text-xs text-gray-400 italic">{$i18n?.t('Waiting for server progress…') ?? '等待服务端进度…'}</div>
+									{/if}
+								</div>
+							</div>
+						{/if}
+
 						<div
 							class="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl px-4 py-3 text-sm text-blue-700 dark:text-blue-300"
 						>
-							<strong>How it works:</strong> Each paragraph pair becomes one chunk in the knowledge
-							base. The <strong>{getLangLabel(primaryLang)}</strong> text will be embedded for semantic
-							search. All language versions are stored as metadata, so retrieval returns the full translation
-							set.
+							<strong>{$i18n?.t('How it works:') ?? '工作方式：'}</strong> {$i18n?.t('Each paragraph pair becomes one chunk in the knowledge base.') ?? '每一对段落都会变成知识库中的一个块。'}
+							{$i18n?.t('The {{lang}} text will be embedded for semantic search.', { lang: getLangLabel(primaryLang) }) ?? `将对 ${getLangLabel(primaryLang)} 文本进行语义嵌入以支持检索。`}
+							{$i18n?.t('All language versions are stored as metadata, so retrieval returns the full translation set.') ?? '所有语言版本都会作为元数据保存，因此检索时会返回完整的翻译集合。'}
 						</div>
 
 						{#if isProcessing}
 							<div class="space-y-2">
 								<div class="flex justify-between text-xs text-gray-500">
-									<span>Processing paragraphs...</span>
+									<span>{$i18n?.t('Processing paragraphs...') ?? '正在处理段落...'}</span>
 									<span>{processingProgress}%</span>
 								</div>
 								<div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">

@@ -1863,7 +1863,11 @@ class BilingualKnowledgeReader:
         matcher = SequenceMatcher(None, a, b, autojunk=False)
         match = matcher.find_longest_match(0, len(a), 0, len(b))
         lcs_len = match.size
-        if lcs_len > min_overlap:
+
+        shorter_len = min(len(a), len(b))
+        ratio = lcs_len / shorter_len if shorter_len else 0.0
+
+        if lcs_len >= min_overlap and ratio >= 0.75:
             return 100.0
         return 0.0
 
@@ -2129,8 +2133,8 @@ class BilingualKnowledgeReader:
             k_final = retrieval_config.get('rag.top_k', 3)
             k_recall = max(k_final * 5, 20)
 
-            for collection_name in collection_names:
-                await self.cleanup_duplicate_collection_content(collection_name)
+            # for collection_name in collection_names:
+            #     await self.cleanup_duplicate_collection_content(collection_name)
 
             source_lang_code = self.name_to_langcode(source_lang)
             raw_result = await self.retrieve(
@@ -2275,7 +2279,7 @@ class BilingualKnowledgeReader:
 
         matched_sentences = [
             s for s in all_source_sentences
-            if self.combined_similarity(queries, s['text']) >= 50
+            if self.combined_similarity(queries, s['text']) >= 99
         ]
         if not matched_sentences:
             return [], [], True

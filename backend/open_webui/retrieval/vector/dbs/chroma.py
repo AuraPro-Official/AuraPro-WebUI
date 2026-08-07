@@ -127,20 +127,76 @@ class ChromaClient(VectorDBBase):
         except Exception:
             return None
 
-    def get(self, collection_name: str) -> Optional[GetResult]:
-        # Get all the items in the collection.
+    def get(
+        self,
+        collection_name: str,
+        offset: int = 0,
+        limit: int | None = None,
+        batch_size: int = 1000,
+    ) -> GetResult | None:
+        # Get a page of items (when limit is given) or all items (otherwise).
+        # Chroma's SQLite backend executes a single SQL statement per get();
+        # with many records the bound parameters exceed SQLite's variable limit
+        # and fail with "too many SQL variables", so the full-fetch path
+        # pages in offset/limit batches and stitches the results together.
         collection = self.client.get_collection(name=collection_name)
-        if collection:
-            result = collection.get(include=['embeddings', 'documents', 'metadatas'])
+        if not collection:
+            return None
+
+        if limit is not None:
+            result = collection.get(
+                include=['embeddings', 'documents', 'metadatas'],
+                limit=limit,
+                offset=offset,
+            )
+            ids = result['ids']
+            if not ids:
+                return None
             return GetResult(
                 **{
-                    'ids': [result['ids']],
+                    'ids': [ids],
                     'documents': [result['documents']],
                     'metadatas': [result['metadatas']],
                     'embeddings': [result['embeddings']],
                 }
             )
-        return None
+
+        all_ids = []
+        all_documents = []
+        all_metadatas = []
+        all_embeddings = []
+        page_offset = 0
+        while True:
+            result = collection.get(
+                include=['embeddings', 'documents', 'metadatas'],
+                limit=batch_size,
+                offset=page_offset,
+            )
+            ids = result['ids']
+            if not ids:
+                break
+            all_ids.extend(ids)
+            all_documents.extend(result['documents'])
+            all_metadatas.extend(result['metadatas'])
+            all_embeddings.extend(result['embeddings'])
+            if len(ids) < batch_size:
+                break
+            page_offset += batch_size
+
+        return GetResult(
+            **{
+                'ids': [all_ids],
+                'documents': [all_documents],
+                'metadatas': [all_metadatas],
+                'embeddings': [all_embeddings],
+            }
+        )
+
+    def count(self, collection_name: str) -> int:
+        collection = self.client.get_collection(name=collection_name)
+        if not collection:
+            return 0
+        return collection.count()
 
     def insert(self, collection_name: str, items: list[VectorItem]):
         # Insert the items into the collection, if the collection does not exist, it will be created.

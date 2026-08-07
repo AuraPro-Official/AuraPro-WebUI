@@ -1,6 +1,7 @@
 import re
 import gc
 import uuid
+import inspect
 
 import numpy as np
 import asyncio
@@ -301,11 +302,32 @@ class BilingualAligner:
         self._dp_sem = asyncio.Semaphore(4)
         self._split_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='sat-split')
         self._dp_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='dp-align')
+        self._event_emitter = None
 
     def set_embed_fn(self, embed_fn, user, request):
         self._embed_fn = embed_fn
         self._user = user
         self._request = request
+
+    def set_event_emitter(self, event_emitter):
+        self._event_emitter = event_emitter
+
+    async def _emit_progress(self, message: str, step: str | None = None, **extra):
+        if self._event_emitter is None:
+            return
+
+        payload = {
+            'type': 'bilingual:progress',
+            'data': {
+                'message': message,
+                'step': step,
+                **extra,
+            },
+        }
+
+        result = self._event_emitter(payload)
+        if inspect.isawaitable(result):
+            await result
 
     def split(self, text: str, lang: str) -> list[str]:
         return self.splitter.split(text, lang=lang)
@@ -472,11 +494,25 @@ class BilingualAligner:
         self.splitter.reload()
 
         with StageTimer(f'分段+切句(批量,{n}个文件)'):
+            await self._emit_progress(
+                '开始切分源文档和目标文档段落...',
+                step='split',
+                current=0,
+                total=max(n, 1),
+                detail='source-target',
+            )
             split_tasks = []
             for i, item in enumerate(items):
                 split_tasks.append(self._split_one_text(item['src_text'].strip(), item['src_lang']))
             src_split_results = await asyncio.gather(*split_tasks)  # [(paras, para_sents), ...]
             logger.info(f'[切割] 完成 {n} 个文件的源语言切割')
+            await self._emit_progress(
+                f'源文档切分完成：{n}/{n} 个文件',
+                step='split',
+                current=n,
+                total=max(n, 1),
+                detail='source',
+            )
 
             tgt_split_tasks = []
             tgt_task_index = []
@@ -486,6 +522,20 @@ class BilingualAligner:
                     tgt_task_index.append((i, lang))
             tgt_split_results = await asyncio.gather(*tgt_split_tasks) if tgt_split_tasks else []
             logger.info(f'[切割] 完成 {len(tgt_split_results)} 个目标语言切割')
+            await self._emit_progress(
+                f'目标文档切分完成：{len(tgt_split_results)}/{len(tgt_split_results) or 1} 个任务',
+                step='split',
+                current=len(tgt_split_results) if tgt_split_results else 0,
+                total=max(len(tgt_split_results), 1),
+                detail='target',
+            )
+            await self._emit_progress(
+                '段落切分完成，准备生成向量嵌入...',
+                step='split-done',
+                current=max(n, 1),
+                total=max(n, 1),
+                detail='split-done',
+            )
 
             # 整理回每个 item 的结构
             src_paras_list = [r[0] for r in src_split_results]
@@ -524,16 +574,40 @@ class BilingualAligner:
                         cursor = e
                     tgt_slices[i][lang] = slices
 
+            total_texts = max(len(all_texts), 1)
+            await self._emit_progress(
+                '正在为双语句对生成向量嵌入...',
+                step='embed',
+                current=0,
+                total=total_texts,
+                detail='embedding',
+            )
+
             if not all_texts:
                 return [[] for _ in range(n)]
 
             logger.info(f'[Embedding] 总共 {len(all_texts)} 个句子，开始调用 embedding 函数')
-            embeddings = await self._embed_fn(
-                all_texts,
-                prefix=RAG_EMBEDDING_CONTENT_PREFIX,
-                user=self._user,
-            )
-            all_embs = self._normalize(np.array(embeddings))
+            embedding_batch_size = 32 * 10
+            all_embeddings: list[list[float]] = []
+            processed_count = 0
+            for start in range(0, len(all_texts), embedding_batch_size):
+                batch_texts = all_texts[start : start + embedding_batch_size]
+                batch_embeddings = await self._embed_fn(
+                    batch_texts,
+                    prefix=RAG_EMBEDDING_CONTENT_PREFIX,
+                    user=self._user,
+                )
+                all_embeddings.extend(batch_embeddings)
+                processed_count += len(batch_texts)
+                await self._emit_progress(
+                    '正在为双语句对生成向量嵌入...',
+                    step='embed',
+                    current=min(processed_count, total_texts),
+                    total=total_texts,
+                    detail='embedding',
+                )
+
+            all_embs = self._normalize(np.array(all_embeddings))
 
             # 3. 按切片切回每个 item 的 SentBlock
             src_blocks_list: list[list[SentBlock]] = []
@@ -552,17 +626,39 @@ class BilingualAligner:
                     tgt_blocks_map_list[i][lang] = blocks
 
         with StageTimer(f'DP对齐(批量,{n}个文件)'):
+            await self._emit_progress(
+                '开始进行双语句子对齐...',
+                step='align',
+                current=0,
+                total=max(n, 1),
+                detail='alignment',
+            )
             # 4. 每个 item 独立做 DP 对齐（仍然并发，但不再重复切句/embedding）
             logger.info(f'[对齐] 开始 {n} 个文件的 DP 对齐')
-            all_pairs_list = [
-                await self._align_blocks(
+            all_pairs_list = []
+            for i in range(n):
+                pairs = await self._align_blocks(
                     src_blocks_list[i],
                     tgt_blocks_map_list[i],
                     src_paras_list[i],
                     tgt_paras_map_list[i],
                 )
-                for i in range(n)
-            ]
+                all_pairs_list.append(pairs)
+                await self._emit_progress(
+                    f'对齐完成：{i + 1}/{n} 个文件',
+                    step='align',
+                    current=i + 1,
+                    total=max(n, 1),
+                    detail='alignment',
+                )
+
+        await self._emit_progress(
+            '正在构建对齐后的文档块...',
+            step='build',
+            current=0,
+            total=max(n, 1),
+            detail='build',
+        )
 
         # 5. 组装成 Document
         result: list[list[Document]] = []
@@ -601,6 +697,14 @@ class BilingualAligner:
                         )
                     )
             result.append(docs)
+            await self._emit_progress(
+                f'文档块构建完成：{i + 1}/{n} 个文件，生成 {len(docs)} 个块',
+                step='build',
+                current=i + 1,
+                total=max(n, 1),
+                detail='build',
+                docs_count=len(docs),
+            )
 
         return result
 
