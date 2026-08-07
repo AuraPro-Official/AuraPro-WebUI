@@ -80,6 +80,7 @@ from open_webui.env import (
     AUDIT_INCLUDED_PATHS,
     AUDIT_LOG_LEVEL,
     BYPASS_MODEL_ACCESS_CONTROL,
+    CHAT_TASK_CONCURRENCY_LIMIT,
     DEPLOYMENT_ID,
     ENABLE_AUDIT_GET_REQUESTS,
     ENABLE_COMPRESSION_MIDDLEWARE,
@@ -404,6 +405,11 @@ async def lifespan(app: FastAPI):
         await Functions.deactivate_all_functions()
 
     app.state.redis = get_redis_client(async_mode=True)
+
+    # Global concurrency gate for concurrent chat sessions (see CHAT_TASK_CONCURRENCY_LIMIT).
+    # Each incoming chat prompt occupies one slot for the whole session turn;
+    # multi-model fan-out inside a session runs in parallel under that single slot.
+    app.state.chat_session_semaphore = asyncio.Semaphore(CHAT_TASK_CONCURRENCY_LIMIT)
 
     if app.state.redis is not None:
         app.state.redis_task_command_listener = asyncio.create_task(redis_task_command_listener(app))
@@ -1092,6 +1098,22 @@ async def chat_completion(
     if not request.app.state.MODELS:
         await get_all_models(request, user=user)
 
+    # Global session-level concurrency gate: one chat prompt occupies a single
+    # slot for the whole turn. With CHAT_TASK_CONCURRENCY_LIMIT=2 this allows
+    # up to 2 different conversations to generate concurrently; multi-model
+    # fan-out inside one session runs in parallel under that session's slot.
+    session_semaphore = getattr(request.app.state, 'chat_session_semaphore', None)
+    session_slot_held = False
+    if session_semaphore is not None:
+        await session_semaphore.acquire()
+        session_slot_held = True
+
+    def release_session_slot():
+        nonlocal session_slot_held
+        if session_slot_held and session_semaphore is not None:
+            session_slot_held = False
+            session_semaphore.release()
+
     model_id = form_data.get('model', None)
     model_item = form_data.pop('model_item', {})
     tasks = form_data.pop('background_tasks', None)
@@ -1546,9 +1568,11 @@ async def chat_completion(
         form_data['metadata'] = metadata
 
     except HTTPException:
+        release_session_slot()
         raise
     except Exception as e:
         log.warning(f'Error processing chat metadata: {e}')
+        release_session_slot()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
@@ -1556,6 +1580,7 @@ async def chat_completion(
 
     async def process_chat(request, form_data, user, metadata, model, tasks=None):
         metadata = metadata if isinstance(metadata, dict) else {}
+
         try:
             form_data, metadata, events = await process_chat_payload(request, form_data, user, metadata, model)
             metadata = metadata if isinstance(metadata, dict) else {}
@@ -1596,8 +1621,12 @@ async def chat_completion(
         except Exception as e:
             error_detail = e.detail if isinstance(e, HTTPException) else str(e)
             log.exception(
-                'Error processing chat payload (%s)',
+                'Error processing chat payload (%s) | task_id=%s chat_id=%s message_id=%s model=%s',
                 type(e).__name__,
+                metadata.get('task_id'),
+                metadata.get('chat_id'),
+                metadata.get('message_id'),
+                getattr(model, 'id', None) if model else None,
             )
             metadata = metadata if isinstance(metadata, dict) else {}
             if metadata.get('chat_id') and metadata.get('message_id'):
@@ -1682,53 +1711,60 @@ async def chat_completion(
     # Fan out: one task per model
     if metadata.get('session_id') and metadata.get('chat_id'):
         task_ids = []
+        spawned_tasks = []
         chat_id = metadata['chat_id']
 
-        for idx, entry in enumerate(message_ids):
-            target_model_id = entry['model_id']
-            assistant_message_id = entry['message_id']
-            if not assistant_message_id:
-                continue
+        try:
+            for idx, entry in enumerate(message_ids):
+                target_model_id = entry['model_id']
+                assistant_message_id = entry['message_id']
+                if not assistant_message_id:
+                    continue
 
-            # Per-model metadata: own message_id + model
-            per_model_metadata = {
-                **metadata,
-                'message_id': assistant_message_id,
-            }
+                # Per-model metadata: own message_id + model
+                per_model_metadata = {
+                    **metadata,
+                    'message_id': assistant_message_id,
+                }
 
-            # Per-model form_data: own model
-            model_form_data = {
-                **form_data,
-                'model': target_model_id,
-                'metadata': per_model_metadata,
-            }
+                # Per-model form_data: own model
+                model_form_data = {
+                    **form_data,
+                    'model': target_model_id,
+                    'metadata': per_model_metadata,
+                }
 
-            # Resolve the model object for this specific model
-            resolved_model = request.app.state.MODELS.get(target_model_id, model)
+                # Resolve the model object for this specific model
+                resolved_model = request.app.state.MODELS.get(target_model_id, model)
 
-            # Only the first model runs chat-level background tasks;
-            # subsequent models only run follow-ups.
-            task_id, _ = await create_task(
-                request.app.state.redis,
-                process_chat(
-                    request,
-                    model_form_data,
-                    user,
-                    per_model_metadata,
-                    resolved_model,
-                    tasks
-                    if idx == 0
-                    else {
-                        k: v
-                        for k, v in (tasks or {}).items()
-                        if k not in (TASKS.TITLE_GENERATION, TASKS.TAGS_GENERATION)
-                    }
-                    or None,
-                ),
-                id=chat_id,
-            )
-            per_model_metadata['task_id'] = task_id
-            task_ids.append(task_id)
+                # Only the first model runs chat-level background tasks;
+                # subsequent models only run follow-ups.
+                task_id, task = await create_task(
+                    request.app.state.redis,
+                    process_chat(
+                        request,
+                        model_form_data,
+                        user,
+                        per_model_metadata,
+                        resolved_model,
+                        tasks
+                        if idx == 0
+                        else {
+                            k: v
+                            for k, v in (tasks or {}).items()
+                            if k not in (TASKS.TITLE_GENERATION, TASKS.TAGS_GENERATION)
+                        }
+                        or None,
+                    ),
+                    id=chat_id,
+                )
+                per_model_metadata['task_id'] = task_id
+                task_ids.append(task_id)
+                spawned_tasks.append(task)
+        except Exception as e:
+            log.exception('Error during fan-out task creation (chat_id=%s)', chat_id)
+            release_session_slot()
+            raise
 
         # Emit chat:active=true
         if task_ids:
@@ -1739,6 +1775,19 @@ async def chat_completion(
             if event_emitter:
                 await event_emitter({'type': 'chat:active', 'data': {'active': True}})
 
+        # Release the session slot once every spawned fan-out task has finished.
+        if session_slot_held and session_semaphore is not None and spawned_tasks:
+            async def release_session_slot_after_tasks():
+                try:
+                    await asyncio.gather(*spawned_tasks, return_exceptions=True)
+                finally:
+                    release_session_slot()
+
+            asyncio.create_task(release_session_slot_after_tasks())
+        elif session_slot_held:
+            # No tasks spawned (e.g. no valid assistant messages) — release now.
+            release_session_slot()
+
         return {
             'status': True,
             'task_ids': task_ids,
@@ -1747,7 +1796,10 @@ async def chat_completion(
     else:
         # Legacy/direct: single model, synchronous
         metadata['message_id'] = message_ids[0]['message_id']
-        return await process_chat(request, form_data, user, metadata, model, tasks)
+        try:
+            return await process_chat(request, form_data, user, metadata, model, tasks)
+        finally:
+            release_session_slot()
 
 
 # Alias for chat_completion (Legacy)

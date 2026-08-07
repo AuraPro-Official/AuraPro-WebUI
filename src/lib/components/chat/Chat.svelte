@@ -719,6 +719,12 @@
 						await processNextInQueue($chatId);
 					} else {
 						message.done = true;
+						// A cancelled sibling must still release the queue once
+						// the rest of the batch has finished.
+						if (allSiblingResponsesDone(message)) {
+							processingQueueChats.delete($chatId);
+							await processNextInQueue($chatId);
+						}
 					}
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					message.content += data.content;
@@ -741,6 +747,16 @@
 					}, 100);
 				} else if (type === 'chat:message:error') {
 					message.error = data.error;
+					// A failed task must still release the queue: mark this
+					// sibling done and, once the whole batch is done/errored,
+					// advance to the next queued request.
+					if (message && !message.done) {
+						message.done = true;
+						if (allSiblingResponsesDone(message)) {
+							processingQueueChats.delete($chatId);
+							await processNextInQueue($chatId);
+						}
+					}
 				} else if (type === 'chat:message:follow_ups') {
 					message.followUps = data.follow_ups;
 
@@ -2044,6 +2060,17 @@
 		}
 	};
 
+	const allSiblingResponsesDone = (message) => {
+		const parent = message?.parentId ? history.messages[message.parentId] : null;
+		if (!parent || !Array.isArray(parent.childrenIds) || parent.childrenIds.length === 0) {
+			// No known siblings — treat the single response as the whole batch.
+			return !!message?.done;
+		}
+		return parent.childrenIds.every(
+			(childId) => history.messages[childId] && history.messages[childId].done
+		);
+	};
+
 	const chatCompletionEventHandler = async (data, message, chatId) => {
 		const { id, done, choices, content, output, sources, selected_model_id, error, usage } = data;
 
@@ -2147,9 +2174,16 @@
 		}
 
 		if (done || error) {
-			// Process next queued request if any
-			processingQueueChats.delete(chatId);
-			await processNextInQueue(chatId);
+			// In fan-out chats multiple sibling responses belong to the same
+			// user message. Only advance the queue once the whole batch has
+			// finished (all siblings done), otherwise the next queued request
+			// starts while earlier tasks are still running — which caused
+			// "swallowed" tasks and truncated output.
+			if (allSiblingResponsesDone(message)) {
+				// Process next queued request if any
+				processingQueueChats.delete(chatId);
+				await processNextInQueue(chatId);
+			}
 		}
 
 		console.log(data);

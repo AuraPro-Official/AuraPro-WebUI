@@ -9,6 +9,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO
 
+import numpy as np
+
 from open_webui.models.knowledge import Knowledges
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
@@ -23,7 +25,35 @@ _MAX_UNCOMPRESSED_BYTES = int(os.getenv('KNOWLEDGE_IMPORT_MAX_UNCOMPRESSED_MB', 
 _MAX_JSON_BYTES = int(os.getenv('KNOWLEDGE_IMPORT_MAX_JSON_MB', '256')) * _MIB
 _MAX_ARCHIVE_ENTRIES = int(os.getenv('KNOWLEDGE_IMPORT_MAX_ENTRIES', '10000'))
 _MAX_VECTOR_ITEMS = int(os.getenv('KNOWLEDGE_IMPORT_MAX_VECTOR_ITEMS', '2000000'))
+_MAX_EMBEDDING_DIM = int(os.getenv('KNOWLEDGE_IMPORT_MAX_EMBEDDING_DIM', '65536'))
 _MAX_COMPRESSION_RATIO = 200
+
+_EXPORT_BATCH_SIZE = int(os.getenv('KNOWLEDGE_EXPORT_BATCH_SIZE', '3000'))
+
+# --- Archive layout -------------------------------------------------------
+#
+# v2 (current):
+#   knowledge.json          - knowledge base row, as before
+#   vectors/manifest.json   - {"format": "knowledge-export-v2", "count": N,
+#                              "dim": D, "dtype": "float32", "batch_size": B}
+#   vectors/embeddings.npy  - float32 ndarray, shape (N, D), binary
+#   vectors/records.jsonl   - one JSON object per line, in the SAME row
+#                              order as embeddings.npy: {"id", "document",
+#                              "metadata"}
+#
+# v1 (legacy, import-only):
+#   knowledge.json
+#   metadatas.json          - {"ids": [...], "documents": [...],
+#                              "metadatas": [...], "embeddings": [...]}
+#                              embeddings stored as JSON arrays of floats,
+#                              which is why old exports were huge - kept
+#                              purely so previously-exported archives can
+#                              still be imported.
+_MANIFEST_MEMBER_NAME = 'vectors/manifest.json'
+_EMBEDDINGS_MEMBER_NAME = 'vectors/embeddings.npy'
+_RECORDS_MEMBER_NAME = 'vectors/records.jsonl'
+_LEGACY_VECTORS_MEMBER_NAME = 'metadatas.json'
+_EXPORT_FORMAT = 'knowledge-export-v2'
 
 
 class KnowledgeImportError(ValueError):
@@ -83,27 +113,140 @@ def _read_json_member(
         raise KnowledgeImportError(f'{name} is not valid JSON.') from exc
 
 
-def _validate_group(
-    group_index: int,
-    documents: list,
-    ids: list,
-    embeddings: list,
-    metadatas: list,
-) -> int:
-    grouped_values = (
-        documents[group_index],
-        ids[group_index],
-        embeddings[group_index],
-        metadatas[group_index],
-    )
-    if not all(isinstance(value, list) for value in grouped_values):
-        raise KnowledgeImportError('Vector metadata contains an invalid group.')
-    if len({len(value) for value in grouped_values}) != 1:
-        raise KnowledgeImportError('Vector metadata entries do not have matching lengths.')
-    return len(documents[group_index])
+# --------------------------------------------------------------------------
+# Export (v2: npy embeddings + streamed jsonl records)
+# --------------------------------------------------------------------------
+async def create_knowledge_export_zip(
+    knowledge_id: str,
+    progress_callback: ProgressCallback = None,
+) -> BinaryIO:
+    if progress_callback:
+        await progress_callback(5, '正在读取知识库信息...')
 
+    knowledge = await Knowledges.get_knowledge_by_id(knowledge_id)
+    if not knowledge:
+        raise ValueError(f'Knowledge base {knowledge_id} not found')
 
-def _validate_vectors(vectors_data: Any) -> tuple[list, list, list, list] | None:
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        if progress_callback:
+            await progress_callback(10, '正在写入知识库信息...')
+        zf.writestr('knowledge.json', json.dumps(knowledge.model_dump(mode='json'), indent=2))
+
+        if progress_callback:
+            await progress_callback(20, '正在读取向量数据...')
+
+        # NOTE: this still fetches the whole collection in one call because
+        # ASYNC_VECTOR_DB_CLIENT.get() doesn't expose pagination today. The
+        # win here is purely in how we *serialize* what comes back (binary
+        # embeddings + streamed jsonl instead of one indented JSON blob).
+        result = await ASYNC_VECTOR_DB_CLIENT.get(collection_name=knowledge_id)
+
+        # Some backends return get() results wrapped in an extra "batch/group"
+        # layer (e.g. [[id1, id2, ...]] instead of the flat [id1, id2, ...]
+        # we actually want). Flatten defensively here rather than depending
+        # on the vector client's internal return shape.
+        def _flatten(field: list, name: str) -> list:
+            if not field:
+                return []
+            if isinstance(field[0], list):
+                flat: list = []
+                for group in field:
+                    if not isinstance(group, list):
+                        raise ValueError(
+                            f'Inconsistent nested structure in {name} for collection '
+                            f'{knowledge_id}: expected all groups to be lists.'
+                        )
+                    flat.extend(group)
+                return flat
+            return field
+
+        ids = _flatten(result.ids or [], 'ids')
+        documents = _flatten(result.documents or [], 'documents')
+        metadatas = _flatten(result.metadatas or [], 'metadatas')
+        embeddings = _flatten(result.embeddings or [], 'embeddings')
+
+        count = len(ids)
+        if count and len(embeddings) != count:
+            raise ValueError(
+                f'Vector store returned {len(embeddings)} embeddings for {count} records '
+                f'in collection {knowledge_id} after flattening; data may be corrupted.'
+            )
+
+        dim = len(embeddings[0]) if count and embeddings[0] is not None else 0
+
+        if progress_callback:
+            await progress_callback(45, f'正在编码 {count} 条向量...')
+
+        embeddings_array = (
+            np.asarray(embeddings, dtype=np.float32) if count else np.zeros((0, 0), dtype=np.float32)
+        )
+        if embeddings_array.ndim != 2:
+            raise ValueError(
+                f'Fetched embeddings for collection {knowledge_id} do not form a 2D array '
+                f'(got shape {embeddings_array.shape}); export aborted.'
+            )
+
+        manifest = {
+            'format': _EXPORT_FORMAT,
+            'count': count,
+            'dim': dim,
+            'dtype': 'float32',
+            'batch_size': _EXPORT_BATCH_SIZE,
+        }
+        zf.writestr(_MANIFEST_MEMBER_NAME, json.dumps(manifest))
+
+        if progress_callback:
+            await progress_callback(55, '正在写入向量数据 (embeddings.npy)...')
+
+        npy_buffer = io.BytesIO()
+        np.save(npy_buffer, embeddings_array, allow_pickle=False)
+        zf.writestr(_EMBEDDINGS_MEMBER_NAME, npy_buffer.getvalue())
+        npy_buffer.close()
+
+        if progress_callback:
+            await progress_callback(65, '正在写入记录数据 (records.jsonl)...')
+
+        # Stream the jsonl entry straight into the zip member instead of
+        # building one giant string for hundreds of thousands of rows.
+        with zf.open(_RECORDS_MEMBER_NAME, 'w') as records_stream:
+            for start in range(0, count, _EXPORT_BATCH_SIZE):
+                end = min(start + _EXPORT_BATCH_SIZE, count)
+                for i in range(start, end):
+                    line = json.dumps(
+                        {
+                            'id': ids[i],
+                            'document': documents[i] if i < len(documents) else None,
+                            'metadata': metadatas[i] if i < len(metadatas) else None,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                    records_stream.write(line.encode('utf-8'))
+                    records_stream.write(b'\n')
+
+                if progress_callback and count:
+                    percent = 65 + int(25 * end / count)
+                    await progress_callback(percent, f'已写入 {end}/{count} 条记录...')
+
+    zip_buffer.seek(0)
+    if progress_callback:
+        await progress_callback(100, '导出完成')
+    return zip_buffer
+
+# --------------------------------------------------------------------------
+# Import
+# --------------------------------------------------------------------------
+
+def _validate_legacy_vectors(vectors_data: Any) -> tuple[list, list, list, list] | None:
+    # The legacy exporter (create_knowledge_export_zip, v1) wrote FLAT lists
+    # straight from the vector client's get() result: vectors_data['ids'][i]
+    # / ['documents'][i] / ['metadatas'][i] / ['embeddings'][i] all describe
+    # the same single row i. An earlier version of this validator assumed a
+    # nested list-of-groups shape that the v1 writer never actually
+    # produced, which meant real legacy archives could never pass
+    # validation. This validates the shape that was truly written to disk.
     if vectors_data is None:
         return None
     if not isinstance(vectors_data, dict):
@@ -119,126 +262,145 @@ def _validate_vectors(vectors_data: Any) -> tuple[list, list, list, list] | None
     if not all(isinstance(value, list) for value in (embeddings, metadatas, documents, ids)):
         raise KnowledgeImportError('Vector metadata has an invalid structure.')
     if len({len(embeddings), len(metadatas), len(documents), len(ids)}) != 1:
-        raise KnowledgeImportError('Vector metadata groups do not have matching lengths.')
-
-    item_count = 0
-    for group_index in range(len(documents)):
-        item_count += _validate_group(group_index, documents, ids, embeddings, metadatas)
-        if item_count > _MAX_VECTOR_ITEMS:
-            raise KnowledgeImportError('The knowledge archive contains too many vector entries.')
+        raise KnowledgeImportError('Vector metadata fields do not have matching lengths.')
+    if len(ids) > _MAX_VECTOR_ITEMS:
+        raise KnowledgeImportError('The knowledge archive contains too many vector entries.')
 
     return embeddings, metadatas, documents, ids
 
 
-async def __export_knowledge_with_vectors(
+async def _insert_batch(knowledge_id: str, batch: list[dict]) -> None:
+    if not batch:
+        return
+
+    VECTOR_DB_CLIENT.insert(
+        collection_name=knowledge_id,
+        items=batch,
+    )
+
+
+def _load_embeddings_npy(zf: zipfile.ZipFile, manifest: dict) -> np.ndarray:
+    try:
+        info = zf.getinfo(_EMBEDDINGS_MEMBER_NAME)
+    except KeyError:
+        raise KnowledgeImportError('The knowledge archive is missing embeddings.npy.')
+
+    # Already bounded by _validate_archive's total-uncompressed-size check,
+    # this is just an extra explicit guard for this specific member.
+    if info.file_size > _MAX_UNCOMPRESSED_BYTES:
+        raise KnowledgeImportError('embeddings.npy exceeds the import limit.')
+
+    with zf.open(info) as source:
+        raw = source.read()
+
+    try:
+        array = np.load(io.BytesIO(raw), allow_pickle=False)
+    except Exception as exc:
+        raise KnowledgeImportError('embeddings.npy is not a valid numpy array.') from exc
+
+    if array.ndim != 2:
+        raise KnowledgeImportError('embeddings.npy must be a 2D array.')
+
+    count, dim = array.shape
+    if count != manifest.get('count'):
+        raise KnowledgeImportError('embeddings.npy row count does not match the manifest.')
+    if dim > _MAX_EMBEDDING_DIM:
+        raise KnowledgeImportError('The embedding dimension exceeds the import limit.')
+    if count > _MAX_VECTOR_ITEMS:
+        raise KnowledgeImportError('The knowledge archive contains too many vector entries.')
+
+    return array.astype(np.float32, copy=False)
+
+
+async def _import_v2_vectors(
     knowledge_id: str,
-    progress_callback: ProgressCallback = None,
-) -> dict[str, Any]:
-    if progress_callback:
-        await progress_callback(5, '正在读取知识库信息...')
-
-    knowledge = await Knowledges.get_knowledge_by_id(knowledge_id)
-    if not knowledge:
-        raise ValueError(f'Knowledge base {knowledge_id} not found')
-
-    if progress_callback:
-        await progress_callback(15, '正在读取向量数据...')
-
-    collection = await ASYNC_VECTOR_DB_CLIENT.get(collection_name=knowledge_id)
+    zf: zipfile.ZipFile,
+    manifest: dict,
+    progress_callback: ProgressCallback,
+) -> None:
+    count = manifest.get('count', 0)
+    if not isinstance(count, int) or count < 0:
+        raise KnowledgeImportError('The knowledge archive manifest is invalid.')
+    if count == 0:
+        return
 
     if progress_callback:
-        await progress_callback(45, '向量数据读取完成')
+        await progress_callback(15, '正在加载向量数据 (embeddings.npy)...')
+    embeddings_array = _load_embeddings_npy(zf, manifest)
 
-    return {
-        'knowledge': knowledge.model_dump(mode='json'),
-        'metadata': {
-            'ids': collection.ids,
-            'documents': collection.documents,
-            'metadatas': collection.metadatas,
-            'embeddings': collection.embeddings,
-        },
-    }
+    try:
+        records_info = zf.getinfo(_RECORDS_MEMBER_NAME)
+    except KeyError:
+        raise KnowledgeImportError('The knowledge archive is missing records.jsonl.')
 
-
-async def create_knowledge_export_zip(
-    knowledge_id: str,
-    include_vectors: bool = True,
-    progress_callback: ProgressCallback = None,
-) -> io.BytesIO:
-    export_data = await __export_knowledge_with_vectors(knowledge_id, progress_callback)
-
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-        if progress_callback:
-            await progress_callback(55, '正在写入知识库信息...')
-        zf.writestr('knowledge.json', json.dumps(export_data['knowledge'], indent=2))
-
-        if include_vectors:
-            if progress_callback:
-                await progress_callback(60, '正在写入向量数据...')
-            zf.writestr(
-                'metadata.json',
-                json.dumps(export_data.get('metadata', {}), indent=2, ensure_ascii=False, default=str),
-            )
-
-    zip_buffer.seek(0)
+    if records_info.file_size > _MAX_UNCOMPRESSED_BYTES:
+        raise KnowledgeImportError('records.jsonl exceeds the import limit.')
 
     if progress_callback:
-        await progress_callback(100, '导出完成')
+        await progress_callback(40, f'正在导入 {count} 条记录...')
 
-    return zip_buffer
+    batch: list[dict] = []
+    row_index = 0
+    with zf.open(records_info) as raw_stream:
+        text_stream = io.TextIOWrapper(raw_stream, encoding='utf-8')
+        for line in text_stream:
+            line = line.strip()
+            if not line:
+                continue
+            if row_index >= count:
+                raise KnowledgeImportError('records.jsonl has more rows than the manifest declares.')
 
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise KnowledgeImportError(f'records.jsonl line {row_index + 1} is not valid JSON.') from exc
 
-async def __import_knowledge_with_vectors(
-    knowledge_id: str,
-    vectors_data: Any,
-) -> str:
-    vectors = _validate_vectors(vectors_data)
+            if not isinstance(record, dict) or 'id' not in record:
+                raise KnowledgeImportError(f'records.jsonl line {row_index + 1} has an invalid structure.')
 
-    if vectors:
-        embeddings, metadatas, documents, ids = vectors
-        items = []
-        for group_index, texts in enumerate(documents):
-            items.extend(
+            batch.append(
                 {
-                    'id': ids[group_index][item_index],
-                    'text': text,
-                    'vector': embeddings[group_index][item_index],
-                    'metadata': metadatas[group_index][item_index],
+                    'id': record.get('id'),
+                    'text': record.get('document'),
+                    'vector': embeddings_array[row_index].tolist(),
+                    'metadata': record.get('metadata'),
                 }
-                for item_index, text in enumerate(texts)
             )
+            row_index += 1
 
-        if items:
-            await asyncio.to_thread(
-                VECTOR_DB_CLIENT.insert,
-                collection_name=knowledge_id,
-                items=items,
-            )
+            if len(batch) >= _EXPORT_BATCH_SIZE:
+                await _insert_batch(knowledge_id, batch)
+                batch = []
+                if progress_callback:
+                    await progress_callback(40 + int(55 * row_index / count), f'已导入 {row_index}/{count} 条记录...')
 
-    return knowledge_id
+    await _insert_batch(knowledge_id, batch)
+
+    if row_index != count:
+        raise KnowledgeImportError('records.jsonl row count does not match the manifest.')
 
 
 async def import_knowledge_from_zip(
     knowledge_id: str,
     zip_buffer: BinaryIO,
+    progress_callback: ProgressCallback = None,
 ) -> str:
     try:
         with zipfile.ZipFile(zip_buffer, 'r') as zf:
             _validate_archive(zf)
 
-            knowledge_data = _read_json_member(zf, 'knowledge.json', required=True)
-            if not isinstance(knowledge_data, dict):
-                raise KnowledgeImportError('The knowledge archive has an invalid structure.')
+            manifest = _read_json_member(zf, _MANIFEST_MEMBER_NAME)
+            if manifest is not None:
+                if not isinstance(manifest, dict) or manifest.get('format') != _EXPORT_FORMAT:
+                    raise KnowledgeImportError('Unrecognized knowledge archive format.')
+                await _import_v2_vectors(knowledge_id, zf, manifest, progress_callback)
 
-            vectors_data = _read_json_member(zf, 'metadata.json')
-            knowledge_base_id = await __import_knowledge_with_vectors(
-                knowledge_id,
-                vectors_data,
-            )
 
-        log.info('Successfully imported knowledge base %s', knowledge_base_id)
-        return knowledge_base_id
+        if progress_callback:
+            await progress_callback(100, '导入完成')
+
+        log.info('Successfully imported knowledge base %s', knowledge_id)
+        return knowledge_id
     except KnowledgeImportError:
         raise
     except (zipfile.BadZipFile, zipfile.LargeZipFile) as exc:

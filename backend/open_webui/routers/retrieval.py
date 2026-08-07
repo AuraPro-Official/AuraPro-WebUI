@@ -80,6 +80,7 @@ from open_webui.retrieval.utils import (
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.utils import filter_metadata
+from open_webui.socket.main import get_event_emitter
 from open_webui.storage.provider import Storage
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control.files import has_access_to_file
@@ -2471,7 +2472,46 @@ async def process_bilingual(
         enable_async=config.ENABLE_ASYNC_EMBEDDING,
         concurrent_requests=config.RAG_EMBEDDING_CONCURRENT_REQUESTS,
     )
+    event_request_id = str(uuid.uuid4())
+    event_emitter = None
+    try:
+        event_emitter = await get_event_emitter(
+            {
+                'user_id': user.id,
+                'chat_id': f'local:bilingual:{event_request_id}',
+                'message_id': f'bilingual:{event_request_id}',
+            },
+            update_db=False,
+        )
+    except Exception as e:
+        log.warning('Failed to initialize bilingual event emitter: %s', e)
+
+    async def _emit_bilingual_progress(message: str, step: str | None = None, **extra):
+        if event_emitter is None:
+            return
+        await event_emitter(
+            {
+                'type': 'bilingual:progress',
+                'data': {
+                    'request_id': event_request_id,
+                    'message': message,
+                    'step': step,
+                    **extra,
+                },
+            }
+        )
+
+    def _emit_wordalign_progress(message: str, step: str | None = None, **extra):
+        try:
+            asyncio.get_running_loop().create_task(
+                _emit_bilingual_progress(message, step=step, **extra)
+            )
+        except RuntimeError:
+            pass
+
     bilingual_aligner.set_embed_fn(embedding_function, user, request)
+    bilingual_aligner.set_event_emitter(event_emitter)
+    await _emit_bilingual_progress('准备开始双语导入...', step='prepare')
 
     all_bilingual_ids = [file.id for file in form_data.files]
     existing_ids: set[str] = set()
@@ -2494,7 +2534,18 @@ async def process_bilingual(
     if skipped_files:
         log.info(f'跳过 {len(skipped_files)} 个已存在的文件: {[f.id for f in skipped_files]}')
 
+    await _emit_bilingual_progress(
+        f'发现 {len(files_to_process)} 个文件待处理，跳过 {len(skipped_files)} 个已存在文件。',
+        step='scan',
+        total_files=len(form_data.files),
+        files_to_process=len(files_to_process),
+        skipped_files=len(skipped_files),
+        current=len(form_data.files) - len(skipped_files),
+        total=max(len(form_data.files), 1),
+    )
+
     if not files_to_process:
+        await _emit_bilingual_progress('没有新的双语文件需要处理。', step='done')
         return {
             'status': True,
             'collection_name': collection_name,
@@ -2526,6 +2577,7 @@ async def process_bilingual(
             }
         )
 
+    await _emit_bilingual_progress('开始进行双语句子对齐与文档块构建...', step='align')
     docs_per_file = await bilingual_aligner.align_batch_to_documents(items)
     all_docs = [doc for docs in docs_per_file for doc in docs]
 
@@ -2552,6 +2604,7 @@ async def process_bilingual(
                 src_lang=prim_lang,
                 tgt_lang=lang,
                 aligner=WordAligner.get_instance(),
+                progress_callback=_emit_wordalign_progress,
             )
             for lang in tgt_langs
         }
@@ -2579,6 +2632,7 @@ async def process_bilingual(
     if not all_docs:
         raise HTTPException(status_code=400, detail='No aligned documents generated')
 
+    await _emit_bilingual_progress('正在将对齐后的文档保存到向量数据库...', step='save')
     result = await run_in_threadpool(
         save_docs_to_vector_db,
         request=request,
@@ -2593,6 +2647,13 @@ async def process_bilingual(
     if result:
         _bilingual_cache.invalidate(collection_name)
 
+        await _emit_bilingual_progress(
+            f'双语导入已成功完成，共生成 {len(all_docs)} 个文档块。',
+            step='done',
+            total_chunks=len(all_docs),
+            current=len(all_docs),
+            total=max(len(all_docs), 1),
+        )
         return {
             'status': True,
             'collection_name': collection_name,
@@ -2783,7 +2844,8 @@ def _locate_offset(para_text: str, sentence_text: str, cursor: int) -> tuple[int
     若找不到（极少数因切句时做过 strip/合并导致文本不完全一致），
     则退化为 cursor 到 cursor+len(sentence_text)，并记录日志排查。
     """
-    find_text = sentence_text.replace(' ', '')
+    # find_text = sentence_text.replace(' ', '')
+    find_text = sentence_text
     idx = para_text.find(find_text, cursor)
     if idx == -1:
         start = cursor
@@ -2819,23 +2881,19 @@ async def get_bilingual_align(
         if group_id is None:
             continue
         if group_id not in groups:
-            groups[group_id] = {
-                'para_index': meta.get('para_index', 0),
-                'sentence_index': meta.get('sentence_index', 0),
-                'parent_content': meta.get('parent_content', ''),
-                'align_score': meta.get('align_score', 0.0),
-                'langs': {},
-                'langs_modified': {},
-                'primary_doc_id': None,
-                'primary_text': None,
-            }
+            if meta.get("lang") == primary_lang:
+                groups[group_id] = {
+                    'para_index': meta.get('para_index', 0),
+                    'sentence_index': meta.get('sentence_index', 0),
+                    'parent_content': meta.get('parent_content', ''),
+                    'align_score': meta.get('align_score', 0.0),
+                    'langs': {},
+                    'langs_modified': {},
+                    'primary_text': doc_text,
+                }
         lang = meta.get('lang', meta.get('primary_lang'))
         groups[group_id]['langs'][lang] = doc_text
         groups[group_id]['langs_modified'][lang] = bool(meta.get('is_modified', False))
-        if lang == primary_lang:
-            groups[group_id]['primary_doc_id'] = doc_id
-            groups[group_id]['primary_text'] = doc_text
-
 
     paragraphs_map: dict[int, ParagraphAlignItem] = {}
     para_cursor: dict[int, int] = {}
@@ -2854,7 +2912,7 @@ async def get_bilingual_align(
         para_cursor[para_index] = end
         paragraphs_map[para_index].sentences.append(
             SentenceAlignItem(
-                id=g['primary_doc_id'] or group_id,
+                id=group_id,
                 align_group_id=group_id,
                 para_index=para_index,
                 sentence_index=g['sentence_index'],
