@@ -1696,6 +1696,246 @@ class EpubBatchServiceTest(unittest.TestCase):
             "section graph relation endpoint is not a packet concept",
         )
 
+    # ------------------------------------------------------------------
+    # Endpoints an administrator has already merged (SDD 4.2.2 point 6)
+    #
+    # Sample 965c2c11 sat at 15/16 on exactly this: the model asserted
+    # 双轨校准法 --HAS_PART--> 观测规程2.4-2.11 and an administrator had since
+    # merged the parable with its scripture citation, so the relation resolved
+    # to a self-loop that ``concept_relations`` forbids by CHECK.  The packet's
+    # concepts and mentions were valid and were being discarded over an edge
+    # the administrator themselves collapsed.  ``merge_concepts`` already drops
+    # such a relation rather than refusing the merge; ingest now matches it.
+    # ------------------------------------------------------------------
+
+    def _merged_endpoints(self) -> str:
+        """Two concepts an administrator merged after the response was produced.
+
+        Built through the real ``merge_concepts`` rather than by hand, so the
+        packet meets exactly the alias graph an administrator leaves behind:
+        both names now resolve, through ``_resolve_or_create_concept``, to one
+        surviving concept.
+        """
+        target = self.store.upsert_concept("TCP", concept_id="tcp")
+        source = self.store.upsert_concept("UDP", concept_id="udp")
+        self.store.merge_concepts(
+            target_concept_id=target, source_concept_id=source, merged_by="admin"
+        )
+        return target
+
+    def test_relation_between_merged_endpoints_is_skipped_and_the_packet_ingests(self) -> None:
+        concept_id = self._merged_endpoints()
+        unique_p1 = "connects TCP endpoints"
+        unique_p2 = "UDP is datagram based"
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept("parent", "TCP", [self._v2_span("p1", unique_p1)]),
+                    self._graph_concept("child", "UDP", [self._v2_span("p2", unique_p2)]),
+                ],
+                "relations": [
+                    self._graph_relation("parent", "child", [self._v2_span("p1", unique_p1)])
+                ],
+            },
+            job_id="section-graph-merged",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        # The valid part of the packet survives, byte-exact, on the one
+        # surviving concept.  This is the whole point: the mentions are not
+        # collateral damage of an edge that no longer exists.
+        self.assertEqual(
+            self._stored_spans("concept_mentions"),
+            [
+                ("p1", *self._expected_span(self._P1, unique_p1)),
+                ("p2", *self._expected_span(self._P2, unique_p2)),
+            ],
+        )
+        self.assertEqual(
+            {
+                row["concept_id"]
+                for row in self.store._connection().execute(
+                    "SELECT DISTINCT concept_id FROM concept_mentions"
+                )
+            },
+            {concept_id},
+        )
+        counts = self._graph_row_counts()
+        self.assertEqual(counts["concepts"], 1)
+        self.assertEqual(counts["concept_relations"], 0)
+        self.assertEqual(counts["concept_relation_assertions"], 0)
+        self.assertEqual(counts["concept_relation_evidence"], 0)
+
+    def test_a_skipped_self_relation_is_counted_durably_and_content_free(self) -> None:
+        self._merged_endpoints()
+        unique_p1 = "connects TCP endpoints"
+        unique_p2 = "UDP is datagram based"
+        self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept("parent", "TCP", [self._v2_span("p1", unique_p1)]),
+                    self._graph_concept("child", "UDP", [self._v2_span("p2", unique_p2)]),
+                ],
+                "relations": [
+                    self._graph_relation("parent", "child", [self._v2_span("p1", unique_p1)])
+                ],
+            },
+            job_id="section-graph-counted",
+        )
+
+        item = self.repository.list_items("section-graph-counted")[0]
+        self.assertEqual(item["skipped_self_relations"], 1)
+        # Visible without opening a response: the item, and the job aggregate an
+        # administrator sees first.
+        summary = self.service.get_job_summary("section-graph-counted")
+        self.assertEqual(summary["items"][0]["skipped_self_relations"], 1)
+        self.assertEqual(summary["item_skipped_self_relations"], 1)
+
+        # Content-free by schema, not by a validator: the column holds an
+        # integer or nothing, so it cannot carry a concept name or source text
+        # even from a hand-edited database.
+        connection = self.store._connection()
+        self.assertEqual(
+            tuple(
+                connection.execute(
+                    """SELECT skipped_self_relations, typeof(skipped_self_relations)
+                       FROM batch_items WHERE batch_job_id = ?""",
+                    ("section-graph-counted",),
+                ).fetchone()
+            ),
+            (1, "integer"),
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("UPDATE batch_items SET skipped_self_relations = '双轨校准法'")
+        connection.rollback()
+
+        # The durable response stays the grounded model output, relation and
+        # all: it is the reproducibility record of what the model returned,
+        # while the count records what the write did with it.  That is also what
+        # keeps a replay byte-identical, so re-ingest is still a no-op.
+        stored = json.loads(item["response_json"])
+        self.assertEqual(len(stored["relations"]), 1)
+        self.assertEqual(
+            self.service.poll_and_ingest("section-graph-counted", self.provider)["ingested"], 0
+        )
+        self.assertEqual(
+            self.service.get_job_summary("section-graph-counted")["item_skipped_self_relations"], 1
+        )
+
+    def test_packet_with_one_merged_and_one_valid_relation_keeps_the_valid_one(self) -> None:
+        merged = self._merged_endpoints()
+        unique_p1 = "connects TCP endpoints"
+        unique_p2 = "UDP is datagram based"
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept("parent", "TCP", [self._v2_span("p1", unique_p1)]),
+                    self._graph_concept("child", "UDP", [self._v2_span("p2", unique_p2)]),
+                    self._graph_concept("other", "IP", [self._v2_span("p2", "datagram")]),
+                ],
+                "relations": [
+                    self._graph_relation("parent", "child", [self._v2_span("p1", unique_p1)]),
+                    self._graph_relation(
+                        "parent", "other", [self._v2_span("p1", unique_p1)], predicate="PRECEDES"
+                    ),
+                ],
+            },
+            job_id="section-graph-mixed",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        self.assertEqual(self.repository.list_items("section-graph-mixed")[0]["skipped_self_relations"], 1)
+        relations = self.store._connection().execute(
+            "SELECT subject_concept_id, predicate, object_concept_id FROM concept_relations"
+        ).fetchall()
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(relations[0]["subject_concept_id"], merged)
+        self.assertEqual(relations[0]["predicate"], "PRECEDES")
+        self.assertNotEqual(relations[0]["object_concept_id"], merged)
+        # The surviving relation's evidence is still an exact slice of source.
+        self.assertEqual(
+            self._stored_spans("concept_relation_evidence"),
+            [("p1", *self._expected_span(self._P1, unique_p1))],
+        )
+
+    def test_a_merged_endpoint_does_not_rescue_an_ungrounded_one(self) -> None:
+        # The boundary that must not move.  A ``local_id`` no concept defined is
+        # ungrounded output, not a merge artefact, and point 5 still governs it:
+        # the whole packet fails and nothing it touched changed.
+        self._merged_endpoints()
+        before = self._graph_row_counts()
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "parent", "TCP", [self._v2_span("p1", "connects TCP endpoints")]
+                    ),
+                    self._graph_concept(
+                        "child", "UDP", [self._v2_span("p2", "UDP is datagram based")]
+                    ),
+                ],
+                "relations": [
+                    self._graph_relation(
+                        "parent", "child", [self._v2_span("p1", "connects TCP endpoints")]
+                    ),
+                    self._graph_relation(
+                        "parent", "ghost", [self._v2_span("p1", "connects TCP endpoints")]
+                    ),
+                ],
+            },
+            job_id="section-graph-merged-ghost",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self.assertEqual(self._graph_row_counts(), before)
+        self.assertEqual(before["concept_mentions"], 0)
+        diagnostics = self._item_diagnostics("section-graph-merged-ghost")
+        self.assertEqual(diagnostics["reason"], "RELATION_ENDPOINT_UNRESOLVED")
+        self.assertEqual(diagnostics["relation_index"], 1)
+        self.assertIsNone(
+            self.repository.list_items("section-graph-merged-ghost")[0]["skipped_self_relations"]
+        )
+
+    def test_nothing_to_skip_records_a_measured_zero_rather_than_nothing(self) -> None:
+        unique_p1 = "connects TCP endpoints"
+        unique_p2 = "UDP is datagram based"
+        self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept("parent", "TCP", [self._v2_span("p1", unique_p1)]),
+                    self._graph_concept("child", "UDP", [self._v2_span("p2", unique_p2)]),
+                ],
+                "relations": [
+                    self._graph_relation("parent", "child", [self._v2_span("p1", unique_p1)])
+                ],
+            },
+            job_id="section-graph-zero",
+        )
+
+        self.assertEqual(self._graph_row_counts()["concept_relations"], 1)
+        self.assertEqual(self.repository.list_items("section-graph-zero")[0]["skipped_self_relations"], 0)
+        self.assertEqual(
+            self.service.get_job_summary("section-graph-zero")["items"][0]["skipped_self_relations"], 0
+        )
+
+        # A CONCEPT_MENTIONS item has no relations to skip, so it measures
+        # nothing at all and must stay distinguishable from a genuine zero.
+        self._draft("plain-job")
+        remote_id = self.service.submit("plain-job", self.provider)
+        self.provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        self.provider.results[remote_id] = [
+            ProviderItemResult("p1", payload={"concepts": []}),
+            ProviderItemResult("p2", payload={"concepts": []}),
+        ]
+        self.service.poll_and_ingest("plain-job", self.provider)
+        self.assertEqual(
+            [item["skipped_self_relations"] for item in self.repository.list_items("plain-job")],
+            [None, None],
+        )
+        self.assertEqual(
+            self.service.get_job_summary("plain-job")["item_skipped_self_relations"], 0
+        )
+
     def test_duplicate_packet_local_id_is_its_own_failure_class(self) -> None:
         result = self._ingest_packet(
             {
@@ -2700,7 +2940,7 @@ class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4, 5, 6},
+            {1, 2, 3, 4, 5, 6, 7},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
         item = connection.execute("SELECT * FROM batch_items").fetchone()
@@ -2805,10 +3045,10 @@ class EpubBatchPromptProfileMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4, 5, 6},
+            {1, 2, 3, 4, 5, 6, 7},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
-        self.assertEqual(STORE.SCHEMA_VERSION, 6)
+        self.assertEqual(STORE.SCHEMA_VERSION, 7)
         jobs = {
             row["batch_job_id"]: row
             for row in connection.execute("SELECT * FROM batch_jobs")

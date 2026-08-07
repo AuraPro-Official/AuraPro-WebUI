@@ -135,6 +135,14 @@ export type EpubBatchItemSummary = {
 	has_response: boolean;
 	has_error: boolean;
 	failure_diagnostics: EpubBatchItemFailureDiagnostics | null;
+	/**
+	 * Relations this item ingested past because both endpoints had already been
+	 * merged into one concept. A count only — the column is an integer or NULL,
+	 * so it cannot carry a concept name or source text. `null` means nothing was
+	 * measured: a `CONCEPT_MENTIONS` item, an item that has not succeeded, or a
+	 * row written before the column existed.
+	 */
+	skipped_self_relations: number | null;
 	updated_at: string | null;
 };
 
@@ -165,6 +173,12 @@ export type EpubBatchSummary = {
 	item_status_counts: Record<string, number>;
 	/** Failed items grouped by failure class; always sums to the FAILED count. */
 	item_failure_reason_counts: Record<string, number>;
+	/**
+	 * Merged-away self-relations skipped across this job's succeeded items. A
+	 * succeeded item is the one an administrator never opens, so the count is
+	 * aggregated here rather than only inside each item.
+	 */
+	item_skipped_self_relations: number;
 	items?: EpubBatchItemSummary[];
 };
 
