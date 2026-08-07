@@ -167,8 +167,16 @@ class LazyVectorDBClient(VectorDBBase):
     ) -> Optional[GetResult]:
         return self._get_client().query(collection_name, filter, limit)
 
-    def get(self, collection_name: str) -> Optional[GetResult]:
-        return self._get_client().get(collection_name)
+    def get(
+        self,
+        collection_name: str,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> GetResult | None:
+        client = self._get_client()
+        if limit is None:
+            return client.get(collection_name)
+        return client.get(collection_name, offset, limit)
 
     def delete(
         self,

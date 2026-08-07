@@ -441,12 +441,22 @@ class GlossaryBuilder:
         tgt_lang: str = 'zh',
         max_phrase_len: int = 5,
         aligner: WordAligner | None = None,
+        progress_callback=None,
     ):
         self._aligner = aligner or WordAligner.get_instance()
+        self._progress_callback = progress_callback
         self._extractor = PhrasePairExtractor(max_phrase_len=max_phrase_len)
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
         self._phrase_pairs: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    def _emit_progress(self, message: str, step: str | None = None, **extra):
+        if self._progress_callback is None:
+            return
+        try:
+            self._progress_callback(message, step=step, **extra)
+        except Exception as e:
+            logger.warning('glossary wordalign 进度回调失败: %s', e)
 
     def add_pairs(self, pairs: list[tuple[str, str]]):
         if not pairs:
@@ -462,7 +472,8 @@ class GlossaryBuilder:
             return
 
         filtered_pairs, filtered_pos, filtered_lemmas = [], [], []
-        for tok_src_tokens, tok_tgt_tokens in tok_pairs:
+        self._emit_progress('开始词库词对齐...', step='wordalign', current=0, total=max(1, len(tok_pairs)))
+        for idx, (tok_src_tokens, tok_tgt_tokens) in enumerate(tok_pairs):
             src_pos, src_lemmas = POSFilter.tag_and_lemmatize(tok_src_tokens, self.src_lang)
             if src_pos is not None and not any(t in POSFilter.CONTENT_TAGS for t in src_pos):
                 continue
@@ -474,10 +485,18 @@ class GlossaryBuilder:
             return
 
         all_alignments = self._aligner.align_batch(filtered_pairs)
-        for (src_words, tgt_words), alignments, (src_pos, tgt_pos) in zip(filtered_pairs, all_alignments, filtered_pos):
+        for idx, ((src_words, tgt_words), alignments, (src_pos, tgt_pos)) in enumerate(zip(filtered_pairs, all_alignments, filtered_pos)):
+            self._emit_progress(
+                f'正在进行词库词对齐：{idx + 1}/{len(filtered_pairs)}',
+                step='wordalign',
+                current=idx + 1,
+                total=max(1, len(filtered_pairs)),
+            )
             phrase_pairs = self._extractor.extract(src_words, tgt_words, alignments, src_pos, tgt_pos)
             for src_p, tgt_p in phrase_pairs:
                 self._phrase_pairs[src_p][tgt_p] += 1
+
+        self._emit_progress('词库词对齐完成', step='wordalign', current=max(1, len(filtered_pairs)), total=max(1, len(filtered_pairs)))
 
     def build(
         self,
