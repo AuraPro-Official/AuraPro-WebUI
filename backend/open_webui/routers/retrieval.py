@@ -3143,15 +3143,19 @@ class GetBilingualAlignResponse(BaseModel):
     paragraphs: list[ParagraphAlignItem]
 
 
-def _locate_offset(para_text: str, sentence_text: str, cursor: int) -> tuple[int, int]:
+def _locate_offset(para_text: str, sentence_text: str, cursor: int, lang_code: str = None) -> tuple[int, int]:
     """
     在段落原文中定位句子的起止字符位置。
     从 cursor 位置开始查找，避免重复句子文本造成误定位。
     若找不到（极少数因切句时做过 strip/合并导致文本不完全一致），
     则退化为 cursor 到 cursor+len(sentence_text)，并记录日志排查。
     """
-    # find_text = sentence_text.replace(' ', '')
-    find_text = sentence_text
+
+    if lang_code == "zh":
+        find_text = sentence_text.replace(' ', '')
+    else:
+        find_text = sentence_text
+
     idx = para_text.find(find_text, cursor)
     if idx == -1:
         start = cursor
@@ -3216,7 +3220,7 @@ async def get_bilingual_align(
 
         cursor = para_cursor[para_index]
         primary_text = g['primary_text'] or ''
-        start, end = _locate_offset(para_text, primary_text, cursor)
+        start, end = _locate_offset(para_text, primary_text, cursor, lang_code=primary_lang)
         para_cursor[para_index] = end
         paragraphs_map[para_index].sentences.append(
             SentenceAlignItem(
