@@ -1539,6 +1539,11 @@ class SQLiteEpubStore:
           version-scoped assertions move across, and evidence spans that the
           surviving assertion already holds are deduplicated.  No grounded
           evidence span is discarded this way.
+
+        Audit rows from earlier merges *into* the source are repointed onto the
+        target before the source row is deleted, so merges chain: a concept
+        that has already absorbed another can itself be folded onward, and the
+        recorded lineage follows the mentions it describes.
         """
         if not target_concept_id or not source_concept_id:
             raise IntegrityError("a concept merge needs both a target and a source concept")
@@ -1678,6 +1683,38 @@ class SQLiteEpubStore:
                 )
                 folded_relations += 1
 
+            # An earlier merge *into* this source left audit rows naming it as
+            # their target, and ``concept_merges.target_concept_id`` is a
+            # RESTRICT reference: with those rows in place the DELETE below
+            # fails the foreign key, so a concept that has ever absorbed
+            # another could never itself be merged.  Chained consolidation is
+            # exactly how an administrator reviews a large graph, so the rows
+            # are repointed onto the surviving target rather than the
+            # constraint being dropped.  The lineage they record genuinely
+            # lives in the target now, and an audit table that nothing can
+            # verify is not worth keeping as one.
+            #
+            # The ordering is load-bearing in both directions and deliberate:
+            # this statement runs *before* the DELETE, which is what makes the
+            # delete legal at all, and *before* the INSERT of this merge's own
+            # audit row further down.  That row names the target, not the
+            # source, so it could not match this WHERE clause even if it
+            # already existed -- but writing it afterwards means the
+            # arrangement does not depend on that argument staying true.
+            #
+            # A repointed row can only end up naming the target as its own
+            # source if some caller resurrected a deleted identifier through
+            # the explicit ``concept_id`` argument of :meth:`upsert_concept`;
+            # the store never recycles one itself, since a new concept gets a
+            # fresh uuid4 and the overlay reuses an id only for a concept that
+            # still exists.  Such a row is still true -- those mentions did end
+            # up here -- and is kept, because deleting it is the one outcome
+            # that would lose history.
+            repointed_merge_audits = connection.execute(
+                "UPDATE concept_merges SET target_concept_id = ? WHERE target_concept_id = ?",
+                (target_concept_id, source_concept_id),
+            ).rowcount
+
             deleted = connection.execute(
                 "DELETE FROM concepts WHERE concept_id = ?", (source_concept_id,)
             ).rowcount
@@ -1734,6 +1771,7 @@ class SQLiteEpubStore:
             "repointed_relations": repointed_relations,
             "folded_relations": folded_relations,
             "dropped_self_relations": dropped_self_relations,
+            "repointed_merge_audits": repointed_merge_audits,
         }
 
     @staticmethod

@@ -50,7 +50,8 @@ parse_overlay_json = OVERLAY_MODULE.parse_overlay_json
 # below assert against this list rather than against the columns they happened
 # to remember.
 # ``concept_merges.target_concept_id`` is the audit row's own reference and
-# always names the surviving concept; the other four carry graph rows that a
+# always names the surviving concept, so a merge has to repoint it too when
+# that concept is itself folded onward; the other four carry graph rows that a
 # merge has to move.  ``concept_merges.source_concept_id`` is deliberately not
 # a foreign key because the row it names is deleted by the merge itself.
 CONCEPT_REFERENCING_COLUMNS = (
@@ -439,8 +440,36 @@ class SQLiteEpubConceptMergeTest(unittest.TestCase):
         arguments.update(overrides)
         return self.store.merge_concepts(**arguments)  # type: ignore[arg-type]
 
-    def test_enumerated_referencing_columns_match_the_live_schema(self) -> None:
-        """A future migration that adds a reference must fail this, not silently orphan rows."""
+    def _relation(self, subject: str, predicate: str, object_: str) -> str:
+        """Assert one relation, grounded on a real span of the first passage."""
+        return self.store.add_concept_relation(
+            "version-a",
+            subject,
+            predicate,
+            object_,
+            evidence=[
+                {
+                    "passage_id": "p1",
+                    "start_codepoint": 0,
+                    "end_codepoint": 5,
+                    "evidence": self.PASSAGE_ONE[0:5],
+                }
+            ],
+        )
+
+    def test_enumerated_referencing_columns_survive_a_chained_merge(self) -> None:
+        """A future migration that adds a reference must fail this, not silently orphan rows.
+
+        Enumerating the columns is not enough on its own, and the gap was not
+        hypothetical: ``concept_merges.target_concept_id`` was listed here from
+        the day it was added, yet no test ever put a row in it and then merged
+        the concept it named, so its ``RESTRICT`` silently forbade every second
+        merge.  The chain below therefore does two merges rather than one, and
+        asserts that the middle concept was genuinely referenced from *every*
+        enumerated column before it was merged away.  A new referencing column
+        fails the enumeration; a new referencing column that a merge cannot
+        move now fails the merge itself.
+        """
         connection = self._connection()
         tables = [
             str(row[0])
@@ -458,6 +487,149 @@ class SQLiteEpubConceptMergeTest(unittest.TestCase):
             "source_concept_id",
             {str(row[1]) for row in connection.execute("PRAGMA table_info(concept_merges)")},
         )
+
+        last = self.store.upsert_concept("撒种的比喻", concept_id="third")
+        other = self.store.upsert_concept("比喻", concept_id="parable-genre")
+        self.store.add_concept_mention(last, "p2", start_codepoint=2, end_codepoint=7)
+        self.store.add_concept_mention(other, "p1", start_codepoint=3, end_codepoint=5)
+        # Distinct predicates, so no relation folds away and every chain member
+        # occupies both the subject and the object column.
+        self._relation(self.source, "ELABORATES", other)
+        self._relation(other, "PRECEDES", self.source)
+        self._relation(self.target, "CONTRASTS", other)
+        self._relation(other, "HAS_PART", self.target)
+        self._relation(last, "PREREQUISITE", other)
+        self._relation(other, "CAUSES", last)
+
+        self._merge()
+
+        for table, column in CONCEPT_REFERENCING_COLUMNS:
+            self.assertGreater(
+                self._count(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", self.target),
+                0,
+                f"the fixture never referenced the merged concept from {table}.{column}",
+            )
+
+        # The second merge is the one the audit row's RESTRICT used to forbid.
+        self._merge(target_concept_id=last, source_concept_id=self.target)
+
+        for table, column in CONCEPT_REFERENCING_COLUMNS:
+            for gone in (self.source, self.target):
+                self.assertEqual(
+                    self._count(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", gone),
+                    0,
+                    f"{table}.{column} still references a merged-away concept",
+                )
+            self.assertEqual(
+                self._count(
+                    f"""SELECT COUNT(*) FROM {table} AS t
+                          LEFT JOIN concepts AS c ON c.concept_id = t.{column}
+                         WHERE c.concept_id IS NULL"""
+                ),
+                0,
+                f"{table}.{column} has a dangling concept reference",
+            )
+        self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_a_concept_that_already_absorbed_another_can_itself_be_merged(self) -> None:
+        """The live failure: fold A into B, then B into C.  Both must succeed.
+
+        Reproduced on a real store as 耶和华神 → 耶和华 → 独一无二的神, where the
+        second administrator decision died on the foreign key of the first
+        merge's audit row.
+        """
+        last = self.store.upsert_concept("撒种的比喻", concept_id="third")
+        self.store.add_concept_mention(last, "p2", start_codepoint=2, end_codepoint=7)
+
+        first = self._merge()
+        second = self._merge(target_concept_id=last, source_concept_id=self.target)
+
+        self.assertEqual(first["repointed_merge_audits"], 0)
+        self.assertEqual(second["repointed_merge_audits"], 1)
+        self.assertEqual(
+            [str(row[0]) for row in self._connection().execute("SELECT concept_id FROM concepts")],
+            [last],
+        )
+        self.assertEqual(
+            self._aliases(last),
+            {"撒种的比喻", "《马太福音》13:36-43", "太13:36-43", "稗子的比喻"},
+        )
+        # Every mention of all three concepts is now held by the survivor, with
+        # its own passage and offsets untouched.
+        self.assertEqual(
+            {
+                tuple(row)
+                for row in self._connection().execute(
+                    """SELECT concept_id, passage_id, start_codepoint, end_codepoint, evidence
+                         FROM concept_mentions"""
+                )
+            },
+            {
+                (last, "p1", 0, 5, "稗子的比喻"),
+                (last, "p1", 7, 21, "《马太福音》13:36-43"),
+                (last, "p2", 2, 7, "稗子的比喻"),
+            },
+        )
+        # Both audit rows survive, now pointing at the concept that holds the
+        # merged material, and neither names itself.
+        audit = {
+            (str(row["target_concept_id"]), str(row["source_concept_id"]), str(row["source_canonical_name"]))
+            for row in self._connection().execute("SELECT * FROM concept_merges")
+        }
+        self.assertEqual(
+            audit,
+            {
+                (last, self.source, "稗子的比喻"),
+                (last, self.target, "《马太福音》13:36-43"),
+            },
+        )
+        self.assertEqual(self._connection().execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_a_three_deep_merge_chain_keeps_every_folded_in_concept_on_record(self) -> None:
+        """Consolidating in several passes is normal review, not a one-off case."""
+        third = self.store.upsert_concept("撒种的比喻", concept_id="third")
+        fourth = self.store.upsert_concept("天国的比喻", concept_id="fourth")
+        self.store.add_concept_mention(third, "p2", start_codepoint=2, end_codepoint=7)
+        self.store.add_concept_mention(fourth, "p2", start_codepoint=0, end_codepoint=2)
+
+        self._merge()
+        self._merge(target_concept_id=third, source_concept_id=self.target)
+        final = self._merge(target_concept_id=fourth, source_concept_id=third)
+
+        self.assertEqual(final["repointed_merge_audits"], 2)
+        self.assertEqual(
+            [str(row[0]) for row in self._connection().execute("SELECT concept_id FROM concepts")],
+            [fourth],
+        )
+        self.assertEqual(
+            self._aliases(fourth),
+            {"天国的比喻", "撒种的比喻", "《马太福音》13:36-43", "太13:36-43", "稗子的比喻"},
+        )
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM concept_mentions WHERE concept_id = ?", fourth), 4
+        )
+        # No history is dropped by the repointing: the audit table still names
+        # every concept that was folded in, in order, all pointing at the one
+        # that now holds their mentions.
+        self.assertEqual(
+            [
+                (str(row["target_concept_id"]), str(row["source_canonical_name"]))
+                for row in self._connection().execute(
+                    "SELECT * FROM concept_merges ORDER BY merged_at, rowid"
+                )
+            ],
+            [
+                (fourth, "稗子的比喻"),
+                (fourth, "《马太福音》13:36-43"),
+                (fourth, "撒种的比喻"),
+            ],
+        )
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM concept_merges WHERE target_concept_id = source_concept_id"),
+            0,
+            "an audit row must never record a concept as merged into itself",
+        )
+        self.assertEqual(self._connection().execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_merge_moves_every_alias_including_the_source_canonical_spelling(self) -> None:
         self.store.upsert_concept("稗子的比喻", aliases=["麦子和稗子", "  稗子的比喻  "])
