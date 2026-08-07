@@ -496,13 +496,6 @@ class BilingualAligner:
         if n == 0:
             return []
 
-        await self._report_progress(
-            progress_callback,
-            'splitting',
-            12,
-            current=0,
-            total=n,
-        )
         self.splitter.reload()
 
         with StageTimer(f'分段+切句(批量,{n}个文件)'):
@@ -598,13 +591,6 @@ class BilingualAligner:
             if not all_texts:
                 return [[] for _ in range(n)]
 
-            await self._report_progress(
-                progress_callback,
-                'alignment_embeddings',
-                24,
-                current=0,
-                total=len(all_texts),
-            )
             logger.info(f'[Embedding] 总共 {len(all_texts)} 个句子，开始调用 embedding 函数')
             embedding_batch_size = 32 * 10
             all_embeddings: list[list[float]] = []

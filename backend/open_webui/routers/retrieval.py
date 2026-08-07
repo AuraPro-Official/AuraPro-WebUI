@@ -2781,7 +2781,13 @@ async def _process_bilingual(
     )
 
     if not files_to_process:
-        await _emit_bilingual_progress('没有新的双语文件需要处理。', step='done')
+        await _report_knowledge_progress(
+            progress_callback,
+            'complete',
+            100,
+            current=len(skipped_files),
+            total=len(skipped_files),
+        )
         return {
             'status': True,
             'collection_name': collection_name,
@@ -2813,8 +2819,22 @@ async def _process_bilingual(
             }
         )
 
-    await _emit_bilingual_progress('开始进行双语句子对齐与文档块构建...', step='align')
-    docs_per_file = await bilingual_aligner.align_batch_to_documents(items)
+    embedding_model_cold = (
+        config.RAG_EMBEDDING_ENGINE == ''
+        and isinstance(request.app.state.ef, LazyModel)
+        and not request.app.state.ef.is_loaded
+    )
+
+    async def alignment_progress(event: dict) -> None:
+        if event.get('stage') == 'alignment_embeddings':
+            event = {**event, 'cold_start': embedding_model_cold}
+        if progress_callback is not None:
+            await progress_callback(event)
+
+    docs_per_file = await bilingual_aligner.align_batch_to_documents(
+        items,
+        progress_callback=alignment_progress,
+    )
     all_docs = [doc for docs in docs_per_file for doc in docs]
     if not all_docs:
         raise HTTPException(status_code=400, detail='No aligned documents generated')
@@ -2856,8 +2876,7 @@ async def _process_bilingual(
             lang: GlossaryBuilder(
                 src_lang=prim_lang,
                 tgt_lang=lang,
-                aligner=WordAligner.get_instance(),
-                progress_callback=_emit_wordalign_progress,
+                aligner=word_aligner,
             )
             for lang in tgt_langs
         }

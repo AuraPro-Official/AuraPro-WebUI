@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext } from 'svelte';
+	import { getContext, onDestroy, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import type {
 		BilingualFile,
@@ -298,9 +298,7 @@
 	}
 
 	async function parseFilePairs(files: File[], is_show: boolean = true) {
-		isProcessing = true;
-		processingProgress = 0;
-		processingMessage = 'Scanning files...';
+		startProcessing($i18n.t('Scanning files...'));
 
 		// 只处理文本类文件
 		const textFiles = files.filter((f) => /\.(txt|md|html|xml|json|epub)$/i.test(f.name));
@@ -437,9 +435,7 @@
 	}
 
 	async function handleConfirm() {
-		isProcessing = true;
-		processingProgress = 0;
-		processingMessage = 'Processing paragraphs...';
+		startProcessing($i18n.t('Processing paragraphs...'));
 
 		const files: BilingualFile[] = [];
 
@@ -548,9 +544,7 @@
 	}
 
 	async function handleEpubConfirm() {
-		isProcessing = true;
-		processingProgress = 0;
-		processingMessage = 'Processing paragraphs...';
+		startProcessing($i18n.t('Processing paragraphs...'));
 
 		const files: BilingualEpubFile[] = [];
 		const total = filePairs.length;
@@ -1203,19 +1197,37 @@
 						<div
 							class="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl px-4 py-3 text-sm text-blue-700 dark:text-blue-300"
 						>
-							<strong>How it works:</strong> Each paragraph pair becomes one chunk in the knowledge
-							base. The <strong>{getLangLabel(primaryLang)}</strong> text will be embedded for semantic
-							search. All language versions are stored as metadata, so retrieval returns the full translation
-							set.
+							<strong>{$i18n.t('How it works:')}</strong>
+							{$i18n.t('Each paragraph pair becomes one chunk in the knowledge base.')}
+							{$i18n.t('The {{language}} text will be embedded for semantic search.', {
+								language: getLangLabel(primaryLang)
+							})}
+							{$i18n.t(
+								'All language versions are stored as metadata, so retrieval returns the full translation set.'
+							)}
 						</div>
 
 						{#if isProcessing}
-							<div class="space-y-2">
-								<div class="flex justify-between text-xs text-gray-500">
-									<span>Processing paragraphs...</span>
-									<span>{processingProgress}%</span>
+							<div class="space-y-3" aria-live="polite">
+								<div
+									class="flex items-start justify-between gap-4 text-xs text-gray-600 dark:text-gray-300"
+								>
+									<div class="min-w-0">
+										<div class="font-medium text-gray-800 dark:text-gray-100">
+											{processingMessage}
+										</div>
+										{#if processingCurrent !== undefined && processingTotal !== undefined && processingTotal > 0}
+											<div class="mt-0.5 text-gray-500 dark:text-gray-400">
+												{$i18n.t('Processed {{current}} of {{total}} items', {
+													current: processingCurrent,
+													total: processingTotal
+												})}
+											</div>
+										{/if}
+									</div>
+									<span class="shrink-0 font-medium">{processingProgress}%</span>
 								</div>
-								<div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+								<div class="w-full overflow-hidden bg-gray-200 dark:bg-gray-700 rounded-full h-2">
 									<div
 										class="relative bg-blue-500 h-2 rounded-full transition-[width] duration-300"
 										style="width: {processingProgress}%"
