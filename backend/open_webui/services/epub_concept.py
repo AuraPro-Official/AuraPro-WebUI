@@ -70,6 +70,35 @@ class EpubResourceNotFound(EpubServiceError):
     """A referenced EPUB record does not exist, so the route answers 404."""
 
 
+def evidence_floors() -> dict[str, int]:
+    """Map every registered prompt profile to the evidence floor it asks for.
+
+    This is the seam that lets cloud ingest enforce a per-profile minimum
+    evidence length without importing an extraction-policy module.  ``batch.py``
+    recognises a payload shape from the fields a model returned and must keep
+    doing so with no knowledge of profiles; this service layer already imports
+    both registries for entirely ordinary reasons, so it is the natural place to
+    read the contract and hand the batch repository the resulting numbers.
+
+    One flat mapping covers both job kinds because the two profile namespaces
+    are disjoint - ``zh-glossary-*`` and ``zh-section-graph-*`` - and a job
+    records exactly one identifier in ``batch_jobs.prompt_profile``.  A profile
+    that never asked for a minimum contributes ``0``, which is what keeps every
+    superseded sample replayable on the contract it was actually given.
+    """
+    floors = {
+        profile_id: get_prompt_profile(profile_id).min_evidence_codepoints
+        for profile_id in available_prompt_profiles()
+    }
+    floors.update(
+        {
+            profile_id: get_section_graph_profile(profile_id).min_evidence_codepoints
+            for profile_id in available_section_graph_profiles()
+        }
+    )
+    return floors
+
+
 class EpubApiRepository(Protocol):
     """Canonical-store surface needed by the HTTP application service.
 
@@ -135,7 +164,9 @@ class EpubConceptService:
                 raise EpubServiceUnavailable(
                     "the configured EPUB store needs a BatchRepository adapter before Batch APIs can start"
                 )
-            batch = BatchJobService(SQLiteBatchRepository(store))
+            batch = BatchJobService(
+                SQLiteBatchRepository(store, evidence_floors=evidence_floors())
+            )
         self._batch = batch
         self._providers = dict(providers or {})
         self._vector_indexer = vector_indexer

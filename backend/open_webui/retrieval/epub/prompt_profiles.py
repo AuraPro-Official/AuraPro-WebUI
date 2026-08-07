@@ -36,6 +36,26 @@ class ConceptPromptProfile:
     # the shape per mention, from the field set the model actually returned, so
     # a stored request built from any registered profile still replays.
     asks_for_offsets: bool = True
+    # The minimum evidence length, in Unicode code points, that this profile's
+    # instruction actually asks for.  Same per-profile reasoning as the two
+    # flags above, and for a sharper reason: v1-v5 never asked for a minimum at
+    # all, and their samples are still replayable, so a global constant would
+    # retroactively invalidate output that honoured the contract it was given.
+    # ``0`` means "this instruction states no floor", which is the only honest
+    # default for a profile that does not carry the clause.
+    #
+    # Unlike the two flags above, ingest *does* act on this one, because a floor
+    # that is only ever asked for is silently optional: measured on the
+    # completed full-book v6 run, 345 of 2,619 stored mentions (13.2%) came in
+    # below it, 45 of them 1-3 code points.  ``batch.py`` must not import this
+    # module - cloud ingest recognises a payload shape without importing an
+    # extraction-policy module - so the value is injected into the batch
+    # repository by the service layer rather than looked up there.
+    #
+    # The escape hatch belongs to the same clause and is enforced with it: the
+    # instruction says that a passage shorter than the floor is quoted whole, so
+    # evidence equal to the entire passage is compliant however short it is.
+    min_evidence_codepoints: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,7 +347,13 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
         # short end, two of them shorter than the minimum itself.  Without the
         # escape hatch those passages would put the model in an impossible bind
         # and invite it to invent text, which strict validation would then reject.
+        #
+        # ``min_evidence_codepoints`` states the same 10 as a machine-readable
+        # fact so ingest can enforce the clause instead of hoping for it.  It is
+        # not a new requirement on v6 and does not change a byte of the
+        # instruction: it is the number that instruction has always named.
         max_tokens=2_048,
+        min_evidence_codepoints=10,
         uses_context_anchors=True,
         system_instruction=(
             "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
@@ -399,6 +425,9 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
         # arithmetic still bounds this contract, and now over-bounds it: the
         # worst case shrinks from ~1_780 tokens to ~1_660.
         max_tokens=2_048,
+        # v7's instruction carries v6's minimum evidence clause verbatim,
+        # including the short-passage escape hatch, so it carries v6's floor.
+        min_evidence_codepoints=10,
         uses_context_anchors=True,
         asks_for_offsets=False,
         system_instruction=(
