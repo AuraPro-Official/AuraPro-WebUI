@@ -244,19 +244,26 @@ class SectionGraphProfile:
     # with.  Ingest does not read this flag: it distinguishes the two shapes per
     # span, from the field set the model actually returned.
     asks_for_offsets: bool = True
-    # The minimum evidence length, in Unicode code points, this profile's
-    # instruction asks for; ``0`` where it asks for none.  Same spelling and
-    # same per-profile reasoning as ``ConceptPromptProfile``: v1 never asked for
-    # a minimum, and its stored requests still replay, so a global constant
-    # would retroactively invalidate output that honoured its own contract.
+    # The minimum evidence length in Unicode code points, split into the number
+    # this profile's instruction *asks* for and the number ingest *applies*.
+    # Same spelling and same reasoning as ``ConceptPromptProfile``, which
+    # documents the split in full; ``0``/``0`` where the instruction names no
+    # minimum, so v1's stored requests keep replaying on the contract they were
+    # given.
     #
-    # Unlike ``asks_for_offsets``, ingest does act on this one - a floor that is
-    # only requested is silently optional - but it never reads it from here:
-    # ``batch.py`` does not import an extraction-policy module, so the service
-    # layer injects the value into the batch repository.  The escape hatch is
-    # part of the same clause: a passage shorter than the floor is quoted whole,
-    # so evidence equal to its entire passage is compliant however short it is.
-    min_evidence_codepoints: int = 0
+    # ``requested_min_evidence_codepoints`` is a transcription of the
+    # instruction and can never drift from it: the text is digest-pinned and a
+    # test asserts the two agree.  ``enforced_min_evidence_codepoints`` is
+    # lower on purpose - 10 code points is the wrong length test for Chinese,
+    # and enforcing it discarded 13 of 43 packets on the full section-graph run
+    # over citations like ``神对亚当的嘱咐`` (7) that are perfectly locatable.
+    # Ingest never reads either from here: ``batch.py`` does not import an
+    # extraction-policy module, so the service layer injects the enforced value
+    # into the batch repository.  The escape hatch is part of the requested
+    # clause: a passage shorter than the minimum is quoted whole, so evidence
+    # equal to its entire passage is compliant however short it is.
+    requested_min_evidence_codepoints: int = 0
+    enforced_min_evidence_codepoints: int = 0
 
 
 # A registered profile is immutable.  A durable cloud job stores its profile,
@@ -275,11 +282,12 @@ _SECTION_GRAPH_PROFILES: dict[str, SectionGraphProfile] = {
         system_instruction=_SYSTEM_INSTRUCTION_V2,
         output_schema=SECTION_GRAPH_OUTPUT_SCHEMA_V2,
         asks_for_offsets=False,
-        # The minimum evidence span v2's instruction names, stated as a fact
-        # ingest can enforce.  Not a new requirement and not an instruction
-        # edit: it is the number the text has always carried, including its
-        # short-passage escape hatch.
-        min_evidence_codepoints=10,
+        # The minimum evidence span v2's instruction names, transcribed.  Not a
+        # new requirement and not an instruction edit: it is the number the text
+        # has always carried, including its short-passage escape hatch.  What
+        # ingest applies is the lower enforced floor beside it.
+        requested_min_evidence_codepoints=10,
+        enforced_min_evidence_codepoints=6,
         # v1's 1_800 tokens was never sized against a real packet.  Measured on
         # the actual book, a full run is 43 packets averaging 9_465 characters,
         # the largest 11_996 at SECTION_GRAPH_MAX_CHARACTERS = 12_000, and one
@@ -318,8 +326,9 @@ _SECTION_GRAPH_PROFILES: dict[str, SectionGraphProfile] = {
         output_schema=SECTION_GRAPH_OUTPUT_SCHEMA_V2,
         asks_for_offsets=False,
         # v3 carries v2's minimum evidence clause verbatim, escape hatch
-        # included, so it carries v2's floor.
-        min_evidence_codepoints=10,
+        # included, so it requests v2's number and is enforced at v2's floor.
+        requested_min_evidence_codepoints=10,
+        enforced_min_evidence_codepoints=6,
         # v3 changes the instruction and the packet payload, never the decoding
         # budget: a difference in max_tokens or temperature would confound the
         # comparison against the two submitted v2 samples.  The payload got

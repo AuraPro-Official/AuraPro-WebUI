@@ -2486,46 +2486,66 @@ class EpubBatchServiceTest(unittest.TestCase):
 
 
 class EpubBatchEvidenceFloorTest(unittest.TestCase):
-    """The per-profile minimum evidence span, enforced rather than requested.
+    """The per-profile minimum evidence span: enforced, and enforced narrowly.
 
     ``zh-glossary-v6``/``-v7`` and ``zh-section-graph-v2``/``-v3`` all instruct
     the model that evidence must be at least ten Unicode code points, with one
-    escape hatch: a passage shorter than the floor is quoted whole.  Nothing
-    verified it, so a model that ignored the clause was silently obeyed - on the
+    escape hatch: a passage shorter than that is quoted whole.  Nothing verified
+    it, so a model that ignored the clause was silently obeyed - on the
     completed full-book run, 345 of 2,619 stored mentions (13.2%) came in below
-    the floor and 45 of those were one to three code points.  A single-character
-    citation is useless to a reader and, being ubiquitous, pollutes the graph
-    channel, so the decision is to reject it at ingest.
+    the requested minimum and 45 of those were one to three code points.  A
+    one-character citation is useless to a reader and, being ubiquitous,
+    pollutes the graph channel.
+
+    Two things about *how* it is enforced were wrong and are fixed here, and
+    this class is where both are stated as behaviour.
+
+    First, the level.  A sub-floor span is dropped from the payload during
+    grounding; it does not fail its item.  Ingest is atomic per item, so
+    rejecting one degenerate span discarded everything that arrived with it:
+    measured on the full section-graph run, 13 of 43 packets died on this alone,
+    taking 140 concepts, 140 mentions and 105 relations - more than a third of
+    the potential relation graph - with them.  This is the same shape as the
+    merged-away self-relation of SDD 4.2.2 point 6, and is resolved the same
+    way: skip the element, count it durably, keep the packet.
+
+    Second, the number.  The instruction asks for 10 and ingest enforces 6, and
+    the gap is deliberate.  10 was a proxy for "distinctive and locatable" and
+    overshoots in Chinese: ``神对亚当的嘱咐`` (7) and ``万口在称独一真神`` (8) are
+    complete, distinctive citations, while the pathology the floor was aimed at
+    is the bare term - ``神``, ``撒但``, ``耶和华神`` (4).  Requesting more than is
+    enforced encourages a substantive citation without discarding a usable one.
 
     The floor is a property of the profile, never a global constant: v1-v5 and
     ``zh-section-graph-v1`` never asked for one and their stored requests are
-    still replayable, so enforcing ten everywhere would retroactively invalidate
-    output that honoured the contract it was given.  ``batch.py`` must not
-    import ``prompt_profiles`` - cloud ingest recognises a payload shape without
-    importing an extraction-policy module - so the numbers are injected into the
-    repository, which is exactly what this fixture does.  That the numbers match
-    the registries is pinned separately, in test_epub_prompt_profiles.py and
-    test_epub_section_graph.py.
+    still replayable, so enforcing anything on them would retroactively
+    invalidate output that honoured the contract it was given.  ``batch.py``
+    must not import ``prompt_profiles`` - cloud ingest recognises a payload
+    shape without importing an extraction-policy module - so the numbers are
+    injected into the repository, which is exactly what this fixture does.  That
+    the numbers match the registries, and that the requested number still
+    matches the instruction text, is pinned separately in
+    test_epub_prompt_profiles.py and test_epub_section_graph.py.
     """
 
     # Both namespaces in one flat mapping, exactly as the service layer supplies
-    # it.  Two floored profiles and two unfloored ones, because the interesting
-    # property is the difference between them.
+    # it, and carrying the *enforced* numbers.  Two floored profiles and two
+    # unfloored ones, because the interesting property is the difference.
     _FLOORS = {
         "zh-glossary-v1": 0,
-        "zh-glossary-v6": 10,
+        "zh-glossary-v6": 6,
         "zh-section-graph-v1": 0,
-        "zh-section-graph-v3": 10,
+        "zh-section-graph-v3": 6,
     }
-    _FLOOR = 10
+    _FLOOR = 6
 
     # 27 code points: long enough that the floor is reachable, so a sub-floor
     # citation from it is the model's choice rather than the passage's.
     _LONG = "UDP is a datagram protocol."
-    # 6 code points.  Eight of the twenty sampled passages are at or below the
-    # floor and two are 9, mostly headings like this one, so the escape hatch
-    # covers a real and common shape rather than a hypothetical.
-    _SHORT = "第一章 引言"
+    # 3 code points, below the floor.  Headings like this one are common - eight
+    # of the twenty sampled passages are at or below the requested 10 and two
+    # are 9 - so the escape hatch covers a real shape, not a hypothetical.
+    _SHORT = "第一章"
 
     _GRAPH_TABLES = (
         "concepts",
@@ -2537,7 +2557,7 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
     )
 
     def setUp(self) -> None:
-        self.assertEqual(len(self._SHORT), 6)
+        self.assertLess(len(self._SHORT), self._FLOOR)
         self.assertGreater(len(self._LONG), self._FLOOR)
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
@@ -2580,35 +2600,96 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
         }
 
     def _assert_no_graph_rows(self) -> None:
-        """Atomicity: a rejected span writes nothing to any graph table."""
+        """A payload whose every element was dropped writes nothing at all."""
         self.assertEqual(self._graph_row_counts(), dict.fromkeys(self._GRAPH_TABLES, 0))
 
-    def _assert_stored_span_slices_the_source(self, expected_evidence: str) -> tuple[int, int]:
+    def _stored_mentions(self) -> list[tuple[str, int, int, str]]:
+        """Every stored mention, each verified as a byte-exact source slice.
+
+        Admitting a span must never weaken source fidelity, and neither must
+        dropping its neighbour: the surviving spans are still checked against
+        the immutable passage they name, here rather than in each test.
+        """
         rows = self.store._connection().execute(
             """SELECT m.passage_id, m.start_codepoint, m.end_codepoint, m.evidence, p.content
-                 FROM concept_mentions AS m JOIN passages AS p ON p.passage_id = m.passage_id"""
+                 FROM concept_mentions AS m JOIN passages AS p ON p.passage_id = m.passage_id
+                ORDER BY m.passage_id, m.start_codepoint"""
         ).fetchall()
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        # Accepting a mention must never weaken source fidelity.
-        self.assertEqual(row["evidence"], expected_evidence)
+        for row in rows:
+            self.assertEqual(
+                row["content"][row["start_codepoint"]:row["end_codepoint"]], row["evidence"]
+            )
+        return [
+            (row["passage_id"], row["start_codepoint"], row["end_codepoint"], row["evidence"])
+            for row in rows
+        ]
+
+    def _assert_stored_span_slices_the_source(self, expected_evidence: str) -> tuple[int, int]:
+        mentions = self._stored_mentions()
+        self.assertEqual(len(mentions), 1)
+        _, start, end, evidence = mentions[0]
+        self.assertEqual(evidence, expected_evidence)
+        return start, end
+
+    def _concept_names(self) -> set[str]:
+        return {
+            row["canonical_name"]
+            for row in self.store._connection().execute("SELECT canonical_name FROM concepts")
+        }
+
+    def _item(self, job_id: str) -> dict:
+        items = self.service.get_job_summary(job_id)["items"]
+        self.assertEqual(len(items), 1)
+        return items[0]
+
+    def _assert_succeeded_with_drops(self, job_id: str, dropped: int) -> dict:
+        """One item succeeded, and the drop count is durable and content-free.
+
+        The count cannot be recovered from ``response_json``: that column holds
+        the *grounded* payload, from which a dropped span is by construction
+        absent.  So it has its own column, and this asserts the same three
+        things the self-relation counter asserts - per item, per job, and
+        integer-typed by schema rather than by a validator.
+        """
+        item = self._item(job_id)
+        self.assertEqual(item["status"], "SUCCEEDED")
+        self.assertEqual(item["skipped_short_evidence"], dropped)
         self.assertEqual(
-            row["content"][row["start_codepoint"]:row["end_codepoint"]], row["evidence"]
+            self.service.get_job_summary(job_id)["item_skipped_short_evidence"], dropped
         )
-        return row["start_codepoint"], row["end_codepoint"]
+        self.assertEqual(
+            tuple(
+                self.store._connection().execute(
+                    """SELECT skipped_short_evidence, typeof(skipped_short_evidence)
+                       FROM batch_items WHERE batch_job_id = ?""",
+                    (job_id,),
+                ).fetchone()
+            ),
+            (dropped, "integer"),
+        )
+        return item
 
     @staticmethod
     def _mention(evidence: str, before: str = "", after: str = "") -> dict:
         """One offsets-free (v6/v7-shaped) concept mention."""
         return {"evidence": evidence, "context_before": before, "context_after": after}
 
-    def _ingest_concept(
+    @staticmethod
+    def _concept(name: str, mentions: list[dict]) -> dict:
+        return {
+            "name": name,
+            "aliases": [],
+            "definition": "A protocol unit",
+            "mentions": mentions,
+        }
+
+    def _ingest_concepts(
         self,
         *,
         job_id: str,
         passage_id: str,
         prompt_profile: str | None,
-        mentions: list[dict],
+        concepts: list[dict],
     ) -> dict:
         self.service.create_draft(
             version_id="version",
@@ -2624,21 +2705,24 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
         remote_id = self.service.submit(job_id, provider)
         provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
         provider.results[remote_id] = [
-            ProviderItemResult(
-                passage_id,
-                payload={
-                    "concepts": [
-                        {
-                            "name": "Datagram",
-                            "aliases": [],
-                            "definition": "A protocol unit",
-                            "mentions": mentions,
-                        }
-                    ]
-                },
-            )
+            ProviderItemResult(passage_id, payload={"concepts": concepts})
         ]
         return self.service.poll_and_ingest(job_id, provider)
+
+    def _ingest_concept(
+        self,
+        *,
+        job_id: str,
+        passage_id: str,
+        prompt_profile: str | None,
+        mentions: list[dict],
+    ) -> dict:
+        return self._ingest_concepts(
+            job_id=job_id,
+            passage_id=passage_id,
+            prompt_profile=prompt_profile,
+            concepts=[self._concept("Datagram", mentions)],
+        )
 
     def _ingest_packet(self, payload: dict, *, job_id: str, prompt_profile: str) -> dict:
         self.service.create_draft(
@@ -2665,75 +2749,143 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
             "context_after": after,
         }
 
-    def _item_diagnostics(self, job_id: str) -> dict:
-        items = self.service.get_job_summary(job_id)["items"]
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["status"], "FAILED")
-        return items[0]["failure_diagnostics"]
+    @staticmethod
+    def _graph_concept(local_id: str, name: str, mentions: list[dict]) -> dict:
+        return {
+            "local_id": local_id,
+            "name": name,
+            "aliases": [],
+            "definition": "A protocol",
+            "mentions": mentions,
+        }
 
-    _TOO_SHORT_TEXT = "OpenAI evidence is shorter than the minimum span this prompt profile requires"
+    def _item_diagnostics(self, job_id: str) -> dict:
+        item = self._item(job_id)
+        self.assertEqual(item["status"], "FAILED")
+        return item["failure_diagnostics"]
+
+    # Spans of the long passage, by length.  Every one occurs exactly once, so
+    # the floor is the only gate any of them can fail.
+    _VALID = "a datagram protocol."          # 20 code points
+    _SECOND_VALID = "UDP is a datagram"      # 17 code points
+    _AT_FLOOR = "a data"                     # 6 - admitted
+    _BELOW_FLOOR = " data"                   # 5 - dropped
+    _BARE = "UDP"                            # 3 - the bare term the floor is for
 
     # -- concept mentions ----------------------------------------------
 
-    def test_a_sub_floor_mention_is_rejected_and_writes_no_graph_row(self) -> None:
-        # "UDP" occurs exactly once and is a byte-exact slice of the source, so
-        # every other gate would pass it: the floor is the only thing rejecting
-        # it, and this is the 13.2% the run measured.
-        self.assertEqual(self._LONG.count("UDP"), 1)
+    def test_a_sub_floor_mention_is_dropped_and_the_rest_of_the_item_ingests(self) -> None:
+        # The core correction.  "UDP" is a byte-exact, uniquely occurring slice
+        # of the source, so every other gate passes it and only the floor
+        # objects.  It is dropped; the valid mention beside it is unaffected and
+        # the item succeeds.  Previously this response ingested nothing at all.
+        self.assertEqual(self._LONG.count(self._BARE), 1)
+        self.assertLess(len(self._BARE), self._FLOOR)
         result = self._ingest_concept(
-            job_id="floor-rejects",
+            job_id="floor-drops",
             passage_id="long",
             prompt_profile="zh-glossary-v6",
-            mentions=[self._mention("UDP")],
+            mentions=[self._mention(self._BARE), self._mention(self._VALID)],
         )
 
-        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
-        self._assert_no_graph_rows()
-        diagnostics = self._item_diagnostics("floor-rejects")
-        self.assertEqual(diagnostics["reason"], "EVIDENCE_TOO_SHORT")
-        # The two numbers that make the rate measurable, and that tell a floor
-        # violation apart from the escape hatch without storing any text.
-        self.assertEqual(diagnostics["evidence_codepoints"], len("UDP"))
-        self.assertEqual(diagnostics["passage_codepoints"], len(self._LONG))
-        self.assertTrue(
-            all(isinstance(value, (bool, int)) for key, value in diagnostics.items() if key != "reason")
-        )
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
         self.assertEqual(
-            self.repository.list_items("floor-rejects")[0]["error_text"], self._TOO_SHORT_TEXT
+            self._assert_stored_span_slices_the_source(self._VALID),
+            (self._LONG.index(self._VALID), len(self._LONG)),
+        )
+        self.assertEqual(self._concept_names(), {"Datagram"})
+        item = self._assert_succeeded_with_drops("floor-drops", 1)
+        # The drop is a fact about grounding, so the durable response is the
+        # payload as written - the dropped span is simply not in it - and a
+        # re-ingest of the identical provider output re-derives it byte for
+        # byte, which is what keeps ingest idempotent.
+        stored = json.loads(self.repository.list_items("floor-drops")[0]["response_json"])
+        self.assertEqual(
+            [mention["evidence"] for mention in stored["concepts"][0]["mentions"]], [self._VALID]
+        )
+        self.assertIsNone(item["failure_diagnostics"])
+
+    def test_a_concept_whose_only_mention_is_sub_floor_is_dropped_with_it(self) -> None:
+        # The first cascade.  The contract requires a concept to carry at least
+        # one mention, so a concept that loses all of them cannot be stored
+        # unanchored; it goes too.  Its sibling is untouched - that is the whole
+        # point of dropping rather than failing.
+        result = self._ingest_concepts(
+            job_id="floor-cascade",
+            passage_id="long",
+            prompt_profile="zh-glossary-v6",
+            concepts=[
+                self._concept("Bare", [self._mention(self._BARE)]),
+                self._concept("Datagram", [self._mention(self._VALID)]),
+            ],
         )
 
-    def test_the_floor_boundary_accepts_exactly_ten_and_rejects_nine(self) -> None:
-        at_floor = "a datagram"
-        below_floor = " datagram"
-        self.assertEqual((len(at_floor), len(below_floor)), (self._FLOOR, self._FLOOR - 1))
-        self.assertIn(at_floor, self._LONG)
-        self.assertIn(below_floor, self._LONG)
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        self.assertEqual(self._concept_names(), {"Datagram"})
+        self._assert_stored_span_slices_the_source(self._VALID)
+        self._assert_succeeded_with_drops("floor-cascade", 1)
+        stored = json.loads(self.repository.list_items("floor-cascade")[0]["response_json"])
+        self.assertEqual([concept["name"] for concept in stored["concepts"]], ["Datagram"])
+
+    def test_a_payload_reduced_to_no_concepts_is_still_a_success(self) -> None:
+        # ``{"concepts": []}`` is what the instruction itself tells the model to
+        # return when it finds nothing, so an item that grounds down to it has
+        # produced a valid, if empty, result.  Calling that a failure would put
+        # the item back in the retry population for no reason.
+        result = self._ingest_concept(
+            job_id="floor-empty",
+            passage_id="long",
+            prompt_profile="zh-glossary-v6",
+            mentions=[self._mention(self._BARE)],
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        self._assert_no_graph_rows()
+        self._assert_succeeded_with_drops("floor-empty", 1)
+        self.assertEqual(
+            self.repository.list_items("floor-empty")[0]["response_json"], '{"concepts":[]}'
+        )
+
+    def test_the_floor_boundary_accepts_exactly_six_and_drops_five(self) -> None:
+        self.assertEqual(
+            (len(self._AT_FLOOR), len(self._BELOW_FLOOR)), (self._FLOOR, self._FLOOR - 1)
+        )
+        self.assertEqual(self._LONG.count(self._AT_FLOOR), 1)
+        self.assertEqual(self._LONG.count(self._BELOW_FLOOR), 1)
 
         result = self._ingest_concept(
             job_id="floor-at",
             passage_id="long",
             prompt_profile="zh-glossary-v6",
-            mentions=[self._mention(at_floor)],
+            mentions=[self._mention(self._AT_FLOOR)],
         )
         self.assertEqual(result["ingested"], 1)
-        start, end = self._assert_stored_span_slices_the_source(at_floor)
-        self.assertEqual((start, end), (self._LONG.index(at_floor), self._LONG.index(at_floor) + self._FLOOR))
+        start, end = self._assert_stored_span_slices_the_source(self._AT_FLOOR)
+        self.assertEqual(
+            (start, end),
+            (self._LONG.index(self._AT_FLOOR), self._LONG.index(self._AT_FLOOR) + self._FLOOR),
+        )
+        self._assert_succeeded_with_drops("floor-at", 0)
 
         # One code point shorter, same passage, same profile: the floor is a
-        # floor rather than an approximate preference.
+        # floor rather than an approximate preference.  It is now the boundary
+        # of what is *dropped*, not of what fails.
         result = self._ingest_concept(
             job_id="floor-below",
             passage_id="long",
             prompt_profile="zh-glossary-v6",
-            mentions=[self._mention(below_floor)],
+            mentions=[self._mention(self._BELOW_FLOOR)],
         )
-        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
-        self.assertEqual(self._item_diagnostics("floor-below")["reason"], "EVIDENCE_TOO_SHORT")
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        self._assert_succeeded_with_drops("floor-below", 1)
+        # Nothing new was written: the only concept in that response lost its
+        # only mention, and the first job's row is all that remains.
+        self.assertEqual(len(self._stored_mentions()), 1)
 
     def test_a_short_passage_quoted_whole_clears_the_floor(self) -> None:
         # The escape hatch, and the reason it cannot be skipped: the instruction
         # itself tells the model to quote a sub-floor passage in full, so
-        # rejecting this would reject the exact output the prompt asks for.
+        # dropping this would discard the exact output the prompt asks for.
         self.assertLess(len(self._SHORT), self._FLOOR)
         result = self._ingest_concept(
             job_id="floor-whole-passage",
@@ -2745,11 +2897,12 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
         self.assertEqual(
             self._assert_stored_span_slices_the_source(self._SHORT), (0, len(self._SHORT))
         )
+        self._assert_succeeded_with_drops("floor-whole-passage", 0)
 
     def test_the_escape_hatch_is_the_whole_passage_and_not_merely_a_short_one(self) -> None:
         # A fragment of a short passage is not what the instruction asks for,
-        # and is the ubiquitous-single-term citation the floor exists to stop.
-        fragment = self._SHORT[:3]
+        # and is the ubiquitous bare term the floor exists to stop.
+        fragment = self._SHORT[:2]
         self.assertLess(len(fragment), len(self._SHORT))
         result = self._ingest_concept(
             job_id="floor-short-fragment",
@@ -2757,17 +2910,15 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
             prompt_profile="zh-glossary-v6",
             mentions=[self._mention(fragment)],
         )
-        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
         self._assert_no_graph_rows()
-        diagnostics = self._item_diagnostics("floor-short-fragment")
-        self.assertEqual(diagnostics["reason"], "EVIDENCE_TOO_SHORT")
-        self.assertEqual(diagnostics["evidence_codepoints"], len(fragment))
-        self.assertEqual(diagnostics["passage_codepoints"], len(self._SHORT))
+        self._assert_succeeded_with_drops("floor-short-fragment", 1)
 
     def test_a_legacy_profile_keeps_ingesting_short_evidence(self) -> None:
         # The replay guarantee.  v1 never asked for a minimum, and neither did a
         # job created before ``batch_jobs.prompt_profile`` existed, so the
-        # identical mention that v6 rejects above must still ingest for both.
+        # identical mention that v6 drops above must still be stored for both,
+        # and must be counted as a measured zero rather than as a drop.
         for job_id, prompt_profile in (
             ("floor-legacy-v1", "zh-glossary-v1"),
             ("floor-legacy-null", None),
@@ -2777,69 +2928,81 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
                     job_id=job_id,
                     passage_id="long",
                     prompt_profile=prompt_profile,
-                    mentions=[self._mention("UDP")],
+                    mentions=[self._mention(self._BARE)],
                 )
                 self.assertEqual(result["ingested"], 1)
-                self.assertEqual(self._assert_stored_span_slices_the_source("UDP"), (0, 3))
+                self.assertEqual(self._assert_stored_span_slices_the_source(self._BARE), (0, 3))
+                self._assert_succeeded_with_drops(job_id, 0)
                 with self.store._write() as connection:
                     connection.execute("DELETE FROM concept_mentions")
                     connection.execute("DELETE FROM concept_aliases")
                     connection.execute("DELETE FROM concepts")
 
-    def test_a_sub_floor_citation_is_measured_as_short_rather_than_ambiguous(self) -> None:
+    def test_a_sub_floor_citation_is_dropped_before_it_can_be_called_ambiguous(self) -> None:
         # Ordering, stated as a behaviour.  A one-character citation repeats
-        # almost by definition, so a floor checked after the occurrence scan
-        # would report EVIDENCE_AMBIGUOUS for most of the population it exists
-        # to measure and the rate would stay hidden inside another slug.
+        # almost by definition, so a floor applied after the occurrence scan
+        # would fail these items as EVIDENCE_AMBIGUOUS - the very population the
+        # floor exists to remove quietly would instead destroy its own packet.
+        # Under a profile with no floor the same span is still a hard failure,
+        # because there nothing has judged it too short to be worth locating.
         self.assertGreater(self._LONG.count("a"), 1)
-        for job_id, prompt_profile, reason in (
-            ("floor-repeat-v6", "zh-glossary-v6", "EVIDENCE_TOO_SHORT"),
-            ("floor-repeat-v1", "zh-glossary-v1", "EVIDENCE_AMBIGUOUS"),
-        ):
-            with self.subTest(prompt_profile=prompt_profile):
-                result = self._ingest_concept(
-                    job_id=job_id,
-                    passage_id="long",
-                    prompt_profile=prompt_profile,
-                    mentions=[self._mention("a", before="never in the source ")],
-                )
-                self.assertEqual((result["ingested"], result["failed"]), (0, 1))
-                self.assertEqual(self._item_diagnostics(job_id)["reason"], reason)
+        result = self._ingest_concept(
+            job_id="floor-repeat-v6",
+            passage_id="long",
+            prompt_profile="zh-glossary-v6",
+            mentions=[self._mention("a", before="never in the source ")],
+        )
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        self._assert_no_graph_rows()
+        self._assert_succeeded_with_drops("floor-repeat-v6", 1)
+
+        result = self._ingest_concept(
+            job_id="floor-repeat-v1",
+            passage_id="long",
+            prompt_profile="zh-glossary-v1",
+            mentions=[self._mention("a", before="never in the source ")],
+        )
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self.assertEqual(self._item_diagnostics("floor-repeat-v1")["reason"], "EVIDENCE_AMBIGUOUS")
+
+    def test_an_ungrounded_span_still_fails_the_whole_item(self) -> None:
+        # The floor is the only thing that became lenient.  Evidence that is not
+        # in the immutable source at all is not a small citation, it is not a
+        # citation, and it still costs the item - otherwise "drop what does not
+        # fit" would quietly become "store whatever grounds and ignore the rest".
+        result = self._ingest_concept(
+            job_id="floor-not-lenient",
+            passage_id="long",
+            prompt_profile="zh-glossary-v6",
+            mentions=[self._mention("never in the source at all")],
+        )
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self.assertEqual(self._item_diagnostics("floor-not-lenient")["reason"], "EVIDENCE_ABSENT")
+        self._assert_no_graph_rows()
 
     # -- section graph packets -----------------------------------------
 
-    def test_section_graph_relation_evidence_is_held_to_the_same_floor(self) -> None:
-        # Relations are the point of this case.  Both mentions here are well
-        # over the floor and would persist on their own; only the relation's
-        # evidence span is short, and it still costs the whole packet, because
-        # every span reaches the source through the one shared resolver.
-        subject = "UDP is a datagram"
-        object_ = "datagram protocol."
-        self.assertGreater(min(len(subject), len(object_)), self._FLOOR)
+    def test_a_relation_whose_only_evidence_is_sub_floor_is_dropped_alone(self) -> None:
+        # Relations are what this cost most.  Both mentions here are well over
+        # the floor and both persist; only the relation's single evidence span
+        # is short, so only the relation goes.  It used to take the concepts and
+        # mentions with it - 105 relations and 140 concepts over the full run.
         result = self._ingest_packet(
             {
                 "concepts": [
-                    {
-                        "local_id": "subject",
-                        "name": "UDP",
-                        "aliases": [],
-                        "definition": "A protocol",
-                        "mentions": [self._graph_span("long", subject)],
-                    },
-                    {
-                        "local_id": "object",
-                        "name": "Datagram",
-                        "aliases": [],
-                        "definition": "A unit",
-                        "mentions": [self._graph_span("long", object_)],
-                    },
+                    self._graph_concept(
+                        "subject", "UDP", [self._graph_span("long", self._SECOND_VALID)]
+                    ),
+                    self._graph_concept(
+                        "object", "Datagram", [self._graph_span("long", self._VALID)]
+                    ),
                 ],
                 "relations": [
                     {
                         "subject_local_id": "subject",
                         "predicate": "HAS_PART",
                         "object_local_id": "object",
-                        "evidence": [self._graph_span("long", "UDP")],
+                        "evidence": [self._graph_span("long", self._BARE)],
                     }
                 ],
             },
@@ -2847,44 +3010,161 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
             prompt_profile="zh-section-graph-v3",
         )
 
-        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
-        self._assert_no_graph_rows()
-        diagnostics = self._item_diagnostics("floor-relation")
-        self.assertEqual(diagnostics["reason"], "EVIDENCE_TOO_SHORT")
-        self.assertEqual(diagnostics["evidence_codepoints"], len("UDP"))
-        self.assertEqual(diagnostics["passage_codepoints"], len(self._LONG))
-        # The rejection is located as a relation, not as a mention, so an
-        # operator can tell which half of the packet needs the prompt fix.
-        self.assertEqual(diagnostics["relation_index"], 0)
-        self.assertEqual(diagnostics["evidence_index"], 0)
-        self.assertNotIn("mention_index", diagnostics)
-        self.assertEqual(
-            self.repository.list_items("floor-relation")[0]["error_text"], self._TOO_SHORT_TEXT
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        counts = self._graph_row_counts()
+        self.assertEqual(counts["concepts"], 2)
+        self.assertEqual(counts["concept_mentions"], 2)
+        self.assertEqual(counts["concept_relations"], 0)
+        self.assertEqual(counts["concept_relation_assertions"], 0)
+        self.assertEqual(counts["concept_relation_evidence"], 0)
+        self._assert_succeeded_with_drops("floor-relation", 1)
+        stored = json.loads(self.repository.list_items("floor-relation")[0]["response_json"])
+        self.assertEqual(stored["relations"], [])
+        self.assertEqual(len(stored["concepts"]), 2)
+
+    def test_a_relation_keeps_the_valid_span_beside_a_sub_floor_one(self) -> None:
+        # Per span, not per relation: an assertion needs at least one exact
+        # span, and it has one, so it is asserted on exactly that one.
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "subject", "UDP", [self._graph_span("long", self._SECOND_VALID)]
+                    ),
+                    self._graph_concept(
+                        "object", "Datagram", [self._graph_span("long", self._VALID)]
+                    ),
+                ],
+                "relations": [
+                    {
+                        "subject_local_id": "subject",
+                        "predicate": "HAS_PART",
+                        "object_local_id": "object",
+                        "evidence": [
+                            self._graph_span("long", self._BARE),
+                            self._graph_span("long", self._VALID),
+                        ],
+                    }
+                ],
+            },
+            job_id="floor-relation-mixed",
+            prompt_profile="zh-section-graph-v3",
         )
+
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        self.assertEqual(self._graph_row_counts()["concept_relations"], 1)
+        evidence = self.store._connection().execute(
+            """SELECT e.passage_id, e.start_codepoint, e.end_codepoint, e.evidence, p.content
+                 FROM concept_relation_evidence AS e
+                 JOIN passages AS p ON p.passage_id = e.passage_id"""
+        ).fetchall()
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["evidence"], self._VALID)
+        # Source fidelity is untouched by the drop beside it.
+        self.assertEqual(
+            evidence[0]["content"][
+                evidence[0]["start_codepoint"]:evidence[0]["end_codepoint"]
+            ],
+            self._VALID,
+        )
+        self._assert_succeeded_with_drops("floor-relation-mixed", 1)
+
+    def test_a_dropped_concept_takes_its_relations_but_not_its_packet(self) -> None:
+        # The second cascade.  ``bare`` loses its only mention and is dropped, so
+        # a relation pointing at it has no endpoint left to resolve to and is
+        # dropped as well.  That is emphatically not a hallucinated endpoint:
+        # the model declared the concept and named it correctly, and ingest is
+        # what removed it.  The valid concept and the valid relation beside them
+        # both survive.
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept("bare", "Bare", [self._graph_span("long", self._BARE)]),
+                    self._graph_concept(
+                        "subject", "UDP", [self._graph_span("long", self._SECOND_VALID)]
+                    ),
+                    self._graph_concept(
+                        "object", "Datagram", [self._graph_span("long", self._VALID)]
+                    ),
+                ],
+                "relations": [
+                    {
+                        "subject_local_id": "subject",
+                        "predicate": "HAS_PART",
+                        "object_local_id": "bare",
+                        "evidence": [self._graph_span("long", self._VALID)],
+                    },
+                    {
+                        "subject_local_id": "subject",
+                        "predicate": "PRECEDES",
+                        "object_local_id": "object",
+                        "evidence": [self._graph_span("long", self._VALID)],
+                    },
+                ],
+            },
+            job_id="floor-endpoint",
+            prompt_profile="zh-section-graph-v3",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        self.assertEqual(self._concept_names(), {"UDP", "Datagram"})
+        relations = self.store._connection().execute(
+            "SELECT predicate FROM concept_relations"
+        ).fetchall()
+        self.assertEqual([row["predicate"] for row in relations], ["PRECEDES"])
+        self._assert_succeeded_with_drops("floor-endpoint", 1)
+
+    def test_an_endpoint_the_response_never_defined_is_still_a_hard_failure(self) -> None:
+        # The distinction the cascade above must not blur.  A ``local_id`` that
+        # no concept declared is ungrounded output, not a floor artefact, and it
+        # still costs the packet.
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "subject", "UDP", [self._graph_span("long", self._SECOND_VALID)]
+                    )
+                ],
+                "relations": [
+                    {
+                        "subject_local_id": "subject",
+                        "predicate": "HAS_PART",
+                        "object_local_id": "never-declared",
+                        "evidence": [self._graph_span("long", self._VALID)],
+                    }
+                ],
+            },
+            job_id="floor-ghost-endpoint",
+            prompt_profile="zh-section-graph-v3",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self.assertEqual(
+            self._item_diagnostics("floor-ghost-endpoint")["reason"],
+            "RELATION_ENDPOINT_UNRESOLVED",
+        )
+        self._assert_no_graph_rows()
 
     def test_section_graph_mentions_and_legacy_packets_follow_the_same_rule(self) -> None:
         packet = {
             "concepts": [
-                {
-                    "local_id": "only",
-                    "name": "UDP",
-                    "aliases": [],
-                    "definition": "A protocol",
-                    "mentions": [self._graph_span("long", "UDP")],
-                }
+                self._graph_concept("only", "UDP", [self._graph_span("long", self._BARE)])
             ],
             "relations": [],
         }
 
+        # Under v3 the packet's one mention is dropped, so its one concept goes
+        # with it and the item succeeds having contributed nothing.
         result = self._ingest_packet(
             packet, job_id="floor-graph-mention", prompt_profile="zh-section-graph-v3"
         )
-        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
         self._assert_no_graph_rows()
-        diagnostics = self._item_diagnostics("floor-graph-mention")
-        self.assertEqual(diagnostics["reason"], "EVIDENCE_TOO_SHORT")
-        self.assertEqual(diagnostics["mention_index"], 0)
-        self.assertNotIn("relation_index", diagnostics)
+        self._assert_succeeded_with_drops("floor-graph-mention", 1)
+        self.assertEqual(
+            json.loads(self.repository.list_items("floor-graph-mention")[0]["response_json"]),
+            {"concepts": [], "relations": []},
+        )
 
         # zh-section-graph-v1 never asked for a minimum, so its stored packets
         # still replay unchanged.
@@ -2892,7 +3172,45 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
             packet, job_id="floor-graph-legacy", prompt_profile="zh-section-graph-v1"
         )
         self.assertEqual(result["ingested"], 1)
-        self.assertEqual(self._assert_stored_span_slices_the_source("UDP"), (0, 3))
+        self.assertEqual(self._assert_stored_span_slices_the_source(self._BARE), (0, 3))
+        self._assert_succeeded_with_drops("floor-graph-legacy", 0)
+
+    def test_the_drop_count_is_content_free_by_schema_and_survives_a_replay(self) -> None:
+        # Same guarantee ``skipped_self_relations`` carries, for the same
+        # reason: an administrator reads this number off a succeeded item, which
+        # is exactly the item nobody opens, so it must be safe to display and
+        # must not depend on loading a response.
+        self._ingest_concept(
+            job_id="floor-durable",
+            passage_id="long",
+            prompt_profile="zh-glossary-v6",
+            mentions=[self._mention(self._BARE), self._mention(self._VALID)],
+        )
+        self._assert_succeeded_with_drops("floor-durable", 1)
+
+        connection = self.store._connection()
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("UPDATE batch_items SET skipped_short_evidence = 'UDP'")
+        connection.rollback()
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("UPDATE batch_items SET skipped_short_evidence = -1")
+        connection.rollback()
+
+        # An item whose grounding pass never completed measures nothing, and
+        # NULL says so rather than claiming a zero.  The job aggregate still
+        # reads 0, because a SUM over no measurements is not a measurement.
+        self._ingest_concept(
+            job_id="floor-unmeasured",
+            passage_id="long",
+            prompt_profile="zh-glossary-v6",
+            mentions=[self._mention("never in the source at all")],
+        )
+        failed = self._item("floor-unmeasured")
+        self.assertEqual(failed["status"], "FAILED")
+        self.assertIsNone(failed["skipped_short_evidence"])
+        self.assertEqual(
+            self.service.get_job_summary("floor-unmeasured")["item_skipped_short_evidence"], 0
+        )
 
 
 class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
@@ -2956,7 +3274,7 @@ class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4, 5, 6, 7},
+            {1, 2, 3, 4, 5, 6, 7, 8},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
         item = connection.execute("SELECT * FROM batch_items").fetchone()
@@ -3061,10 +3379,10 @@ class EpubBatchPromptProfileMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4, 5, 6, 7},
+            {1, 2, 3, 4, 5, 6, 7, 8},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
-        self.assertEqual(STORE.SCHEMA_VERSION, 7)
+        self.assertEqual(STORE.SCHEMA_VERSION, 8)
         jobs = {
             row["batch_job_id"]: row
             for row in connection.execute("SELECT * FROM batch_jobs")

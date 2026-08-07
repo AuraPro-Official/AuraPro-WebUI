@@ -301,6 +301,36 @@ second, relation layer before its full-version offline Batch is accepted.
    item's durable result so the count is visible rather than silent. An
    endpoint that names a `local_id` the response never defined remains a hard
    failure: that is genuinely ungrounded output, not a merge artefact.
+7. A second exception to point 5, of the same shape. An evidence span shorter
+   than the floor its prompt profile enforces is dropped from the payload during
+   grounding and counted, and the rest of its item still ingests. Such a span is
+   real source text; it is simply too small to locate anything for a reader, and
+   failing the item over it discards everything valid that arrived beside it —
+   on the full-book section-graph run that cost 13 of 43 packets, 140 concepts,
+   140 mentions and 105 relations, against 184 relations actually ingested. The
+   drop cascades only to what the contract can no longer express: a concept left
+   with no mentions is dropped, a relation left with no evidence spans is
+   dropped, and a relation whose endpoint was one of those dropped concepts is
+   dropped — the last of these is not an unresolved endpoint, because the model
+   declared that concept correctly and ingest is what removed it. A payload
+   reduced to nothing is still a success contributing nothing; an empty result
+   is what the instruction itself asks for when there is nothing to report. The
+   count is reported in the item's durable result, and is the only record the
+   dropped spans existed, since the stored response is the payload as written.
+   Nothing else becomes lenient: evidence absent from the immutable source, an
+   undeclared relation endpoint, and every other rejection in point 5 still fail
+   the whole item.
+
+   The enforced floor is deliberately lower than the minimum the same profile's
+   instruction requests. The request encourages a substantive, distinctive
+   citation; the floor rejects only what is genuinely unusable. Length is a
+   proxy for "distinctive and locatable", and the requested 10 code points
+   overshoots that proxy in Chinese — `神对亚当的嘱咐` (7) and `万口在称独一真神`
+   (8) are complete citations, while the pathology is the bare term (`神`,
+   `耶和华神`). The two numbers are named apart on the profile records, the
+   requested one asserted against the instruction text so a profile cannot
+   silently disagree with its own wording, and the enforced one pinned
+   separately.
 
 At query time, direct concept mentions and bounded relation traversal form the
 graph candidate set. `HAS_PART` expands a resolved parent concept to its child
