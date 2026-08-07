@@ -62,22 +62,44 @@ _PUBLISHED_PROFILE_OFFSET_CONTRACTS = {
     "zh-glossary-v6": True,
 }
 
-# ``min_evidence_codepoints`` is pinned the same way and for the same reason:
+# The two evidence minima are pinned the same way and for the same reason:
 # folding a field that postdates the digests into the hash would force every one
 # of them to be recomputed, which is precisely what they exist to make
-# impossible.  This map matters more than the one above, because ingest acts on
-# these numbers - a sub-floor mention is rejected outright - so a silent change
-# here would either start rejecting output that honoured its own contract, or
-# stop rejecting output that did not.  v1-v5 are 0 because their instructions
-# never named a minimum; v6 is 10 because its does, and the number here has to
-# stay the number that text says.
-_PUBLISHED_PROFILE_EVIDENCE_FLOORS = {
+# impossible.  These maps matter more than the one above, because these numbers
+# govern what reaches the durable graph.
+#
+# They are two maps rather than one because they answer two different questions,
+# and conflating them is what produced an over-strict floor.
+#
+# *Requested* is a transcription of the instruction: what the model is told to
+# do.  The instruction is immutable, so this number is checked against the text
+# itself further down - a profile can never silently disagree with its own
+# wording.  v1-v5 are 0 because their instructions name no minimum; v6 is 10
+# because its text says 10.
+#
+# *Enforced* is what ingest applies to a returned span: below it, the span is
+# dropped from the payload.  It is lower on purpose.  10 code points was chosen
+# as a proxy for "distinctive and locatable" and overshoots badly in Chinese -
+# ``枢对测点的授时`` (7) and ``全网同步统一时基`` (8) are complete citations, and
+# enforcing 10 discarded 13 of 43 packets on the full section-graph run.  6
+# rejects the bare terms the floor was actually aimed at (``潮位观测站`` is 4) and
+# admits the rest.  Raising this to match the requested number is not a fix.
+_PUBLISHED_PROFILE_REQUESTED_EVIDENCE_MINIMA = {
     "zh-glossary-v1": 0,
     "zh-glossary-v2": 0,
     "zh-glossary-v3": 0,
     "zh-glossary-v4": 0,
     "zh-glossary-v5": 0,
     "zh-glossary-v6": 10,
+}
+
+_PUBLISHED_PROFILE_ENFORCED_EVIDENCE_FLOORS = {
+    "zh-glossary-v1": 0,
+    "zh-glossary-v2": 0,
+    "zh-glossary-v3": 0,
+    "zh-glossary-v4": 0,
+    "zh-glossary-v5": 0,
+    "zh-glossary-v6": 6,
 }
 
 
@@ -148,18 +170,34 @@ class PromptProfileTest(unittest.TestCase):
         for profile_id, asks in _PUBLISHED_PROFILE_OFFSET_CONTRACTS.items():
             with self.subTest(profile=profile_id, flag="asks_for_offsets"):
                 self.assertEqual(PROMPTS.get_prompt_profile(profile_id).asks_for_offsets, asks)
-        for profile_id, floor in _PUBLISHED_PROFILE_EVIDENCE_FLOORS.items():
-            with self.subTest(profile=profile_id, flag="min_evidence_codepoints"):
+        for profile_id, requested in _PUBLISHED_PROFILE_REQUESTED_EVIDENCE_MINIMA.items():
+            with self.subTest(profile=profile_id, field="requested"):
                 self.assertEqual(
-                    PROMPTS.get_prompt_profile(profile_id).min_evidence_codepoints, floor
+                    PROMPTS.get_prompt_profile(
+                        profile_id
+                    ).requested_min_evidence_codepoints,
+                    requested,
                 )
-        # Every published profile is pinned on all three axes, so a new one
+        for profile_id, floor in _PUBLISHED_PROFILE_ENFORCED_EVIDENCE_FLOORS.items():
+            with self.subTest(profile=profile_id, field="enforced"):
+                self.assertEqual(
+                    PROMPTS.get_prompt_profile(
+                        profile_id
+                    ).enforced_min_evidence_codepoints,
+                    floor,
+                )
+        # Every published profile is pinned on all four axes, so a new one
         # cannot be added without deciding what it froze.
         self.assertEqual(
             set(_PUBLISHED_PROFILE_DIGESTS), set(_PUBLISHED_PROFILE_OFFSET_CONTRACTS)
         )
         self.assertEqual(
-            set(_PUBLISHED_PROFILE_DIGESTS), set(_PUBLISHED_PROFILE_EVIDENCE_FLOORS)
+            set(_PUBLISHED_PROFILE_DIGESTS),
+            set(_PUBLISHED_PROFILE_REQUESTED_EVIDENCE_MINIMA),
+        )
+        self.assertEqual(
+            set(_PUBLISHED_PROFILE_DIGESTS),
+            set(_PUBLISHED_PROFILE_ENFORCED_EVIDENCE_FLOORS),
         )
         self.assertEqual(
             set(registered) - set(_PUBLISHED_PROFILE_DIGESTS),
@@ -308,17 +346,27 @@ class PromptProfileTest(unittest.TestCase):
         self.assertIn(example_v5, v5)
         self.assertIn(example_v6, v6)
         self.assertNotIn(example_v6, v5)
-        # The clause and the machine-readable floor must state the same number.
-        # Ingest reads only the field, and the model reads only the text, so a
-        # drift between them would silently enforce a contract nobody was given.
+        # The clause and the machine-readable *requested* minimum must state the
+        # same number.  The model reads only the text and the profile field is a
+        # transcription of it, so drift between them would misdescribe the
+        # contract the model was actually given.
         self.assertIn("evidence 至少 10 个 Unicode 字符", v6)
         self.assertIn("本段总长不足 10 个 Unicode 字符时，evidence 取本段全文", v6)
-        self.assertEqual(
-            PROMPTS.get_prompt_profile("zh-glossary-v6").min_evidence_codepoints, 10
+        profile_v6 = PROMPTS.get_prompt_profile("zh-glossary-v6")
+        self.assertEqual(profile_v6.requested_min_evidence_codepoints, 10)
+        # What ingest enforces is pinned separately, and is deliberately lower.
+        # Asking for more than is enforced is the design: the request pushes the
+        # model toward a substantive citation, while the floor only rejects what
+        # no reader could use.  These two numbers being equal is what made one
+        # 7-code-point citation discard its entire packet.
+        self.assertEqual(profile_v6.enforced_min_evidence_codepoints, 6)
+        self.assertLess(
+            profile_v6.enforced_min_evidence_codepoints,
+            profile_v6.requested_min_evidence_codepoints,
         )
-        self.assertEqual(
-            PROMPTS.get_prompt_profile("zh-glossary-v5").min_evidence_codepoints, 0
-        )
+        profile_v5 = PROMPTS.get_prompt_profile("zh-glossary-v5")
+        self.assertEqual(profile_v5.requested_min_evidence_codepoints, 0)
+        self.assertEqual(profile_v5.enforced_min_evidence_codepoints, 0)
 
         reverted = v6.replace(example_v6, example_v5)
         prefix = 0
@@ -438,9 +486,16 @@ class PromptProfileTest(unittest.TestCase):
         self.assertEqual(v7.max_tokens, v6.max_tokens)
         self.assertEqual(v7.temperature, v6.temperature)
         # v7 is v6 minus the offsets and nothing else, so it inherits v6's
-        # minimum evidence span - clause, escape hatch and enforced floor alike.
-        self.assertEqual(v7.min_evidence_codepoints, v6.min_evidence_codepoints)
-        self.assertEqual(v7.min_evidence_codepoints, 10)
+        # minimum evidence span - clause, escape hatch, requested number and
+        # enforced floor alike.
+        self.assertEqual(
+            v7.requested_min_evidence_codepoints, v6.requested_min_evidence_codepoints
+        )
+        self.assertEqual(v7.requested_min_evidence_codepoints, 10)
+        self.assertEqual(
+            v7.enforced_min_evidence_codepoints, v6.enforced_min_evidence_codepoints
+        )
+        self.assertEqual(v7.enforced_min_evidence_codepoints, 6)
         self.assertIn("evidence 至少 10 个 Unicode 字符", v7.system_instruction)
         self.assertIn(
             "本段总长不足 10 个 Unicode 字符时，evidence 取本段全文", v7.system_instruction

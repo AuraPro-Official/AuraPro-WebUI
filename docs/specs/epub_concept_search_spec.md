@@ -100,10 +100,11 @@
   | `concept_relation_assertions` | 关系在某一图书版本上的断言与状态 | `assertion_id`, `relation_id`, `version_id`, `status`, `source` |
   | `concept_relation_evidence` | 关系断言的原文证据 | `relation_evidence_id`, `assertion_id`, `passage_id`, `start_codepoint`, `end_codepoint`, `evidence` |
   | `batch_jobs` | Batch 作业记录 | `batch_job_id`, `version_id`, `provider`, `provider_job_id`, `profile_name`, `status` |
-  | `batch_items` | Batch 单条请求与回收结果 | `batch_item_id`, `batch_job_id`, `passage_id`, `custom_id`, `status`, `request_json`, `response_json`, `failure_diagnostics_json`, `skipped_self_relations` |
-- **特性**：WAL journal mode、线程安全连接管理、带版本号的迁移执行器（`schema_migrations` 表 + `PRAGMA user_version`，当前 `SCHEMA_VERSION = 7`），启动时自动建库与增量迁移
+  | `batch_items` | Batch 单条请求与回收结果 | `batch_item_id`, `batch_job_id`, `passage_id`, `custom_id`, `status`, `request_json`, `response_json`, `failure_diagnostics_json`, `skipped_self_relations`, `skipped_short_evidence` |
+- **特性**：WAL journal mode、线程安全连接管理、带版本号的迁移执行器（`schema_migrations` 表 + `PRAGMA user_version`，当前 `SCHEMA_VERSION = 8`），启动时自动建库与增量迁移
 - `failure_diagnostics_json` 只记录失败条目的**无内容**量化指标（失败类别 slug、码点长度、出现次数、布尔标志），用于调优 Prompt；绝不写入原文、证据串、锚点、模型输出或原始供应商错误。
 - `skipped_self_relations` 记录本条目入库时因两端已被管理员合并为同一概念而跳过的关系条数（SDD 4.2.2 第 6 点）。该列由 schema 约束为整数或 NULL，因此结构上不可能承载概念名或原文；NULL 表示“未度量”（`CONCEPT_MENTIONS` 条目、未成功条目、或迁移前的旧行）。
+- `skipped_short_evidence` 记录本条目 grounding 阶段因低于该 Prompt Profile **实际执行**的证据下限而被丢弃的 span 条数（SDD 4.2.2 第 7 点）；概念 mention 与关系 evidence 共用一个计数器，因为二者是同一缺陷、同一修法。丢弃的 span 按定义不在 `response_json` 中，所以该列是它们存在过的唯一记录。同样由 schema 约束为整数或 NULL；NULL 表示“未度量”（未经 grounding 的条目，或迁移前的旧行）。注意“实际执行”的下限低于 Prompt 指令中**要求**的字数：要求值促使模型给出有区分度的引文，执行值只拒绝真正不可用的片段，二者在 Profile 上分列并各自钉死。
 - **远程/私有部署**：后续可替换为 PostgreSQL + `pgvector`，当前先以 SQLite 为主。
 - 保留 100% 原文，不存储任何篡改或加工后的段落内容。
 
