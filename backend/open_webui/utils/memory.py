@@ -1027,6 +1027,11 @@ Enabled outputs:
 - Chat history summary: {chat_history_enabled}
 - Trigger: {trigger_reason}
 
+Output-language rules:
+- Prefer concise, natural Simplified Chinese for newly written memory content and chat-history summaries, regardless of the conversation language.
+- Preserve proper names, product names, code, URLs, file paths, quoted terms, and exact identifiers in their original form when translating them would reduce accuracy.
+- Do not rewrite an otherwise unchanged existing memory solely to change its language.
+
 Saved-memory rules:
 - Learn only from user statements, never from assistant claims.
 - Save stable preferences, identity details, standing instructions, long-term goals, projects, and relationships.
@@ -1067,7 +1072,7 @@ Conversation:
             'messages': [
                 {
                     'role': 'system',
-                    'content': 'You are a private memory reviewer. Return one valid JSON object and no commentary.',
+                    'content': 'You are a private memory reviewer. Store memories primarily in Simplified Chinese. Return one valid JSON object and no commentary.',
                 },
                 {'role': 'user', 'content': review_prompt},
             ],
