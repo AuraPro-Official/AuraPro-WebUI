@@ -14,9 +14,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger('bilingual_align')
 
 try:
-    # https://github.com/cgohlke/pyicu-build/releases/latest
-    from icu import BreakIterator, Locale
-
+    from icu4py.breakers import WordBreaker
     _ICU_AVAILABLE = True
 except ImportError:
     _ICU_AVAILABLE = False
@@ -228,25 +226,35 @@ class Tokenizer:
         except LookupError:
             return lang_name.casefold()
 
+
     @classmethod
     def _tokenize_icu(cls, text: str, lang: str) -> list[str]:
         lang_key = cls._normalize_lang_key(lang)
         try:
-            locale = Locale(lang_key)
+            breaker = WordBreaker(text, lang_key)
         except Exception:
-            locale = Locale('en')
+            breaker = WordBreaker(text, "en")
+        return [w.strip() for w in breaker if w.strip() and not re.fullmatch(r'[\s]+', w.strip())]
 
-        boundary = BreakIterator.createWordInstance(locale)
-        boundary.setText(text)
+    # @classmethod
+    # def _tokenize_icu(cls, text: str, lang: str) -> list[str]:
+    #     lang_key = cls._normalize_lang_key(lang)
+    #     try:
+    #         locale = Locale(lang_key)
+    #     except Exception:
+    #         locale = Locale('en')
 
-        words = []
-        start = boundary.first()
-        for end in boundary:
-            piece = text[start:end].strip()
-            if piece and not re.fullmatch(r'[\s]+', piece):
-                words.append(piece)
-            start = end
-        return words
+    #     boundary = BreakIterator.createWordInstance(locale)
+    #     boundary.setText(text)
+
+    #     words = []
+    #     start = boundary.first()
+    #     for end in boundary:
+    #         piece = text[start:end].strip()
+    #         if piece and not re.fullmatch(r'[\s]+', piece):
+    #             words.append(piece)
+    #         start = end
+    #     return words
 
     @classmethod
     def _tokenize_fallback(cls, text: str) -> list[str]:
