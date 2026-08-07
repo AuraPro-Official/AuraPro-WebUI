@@ -34,7 +34,7 @@ from .overlay import (
 )
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class IntegrityError(ValueError):
@@ -440,6 +440,30 @@ _MIGRATION_6: tuple[str, ...] = (
 )
 
 
+_MIGRATION_7: tuple[str, ...] = (
+    # A section-graph relation whose two endpoints resolve to one concept is
+    # skipped rather than failing its packet, because it is what an
+    # administrator merge looks like from the far side of an offline Batch, not
+    # a defect in the output.  ``response_json`` cannot carry that count: it is
+    # the grounded model output, and a replay of the same result has to
+    # serialize byte-identically for ingest to stay idempotent.  The count is
+    # therefore a property of the *write*, and lives on the item row.
+    #
+    # It is an integer or nothing, enforced by the schema rather than by a
+    # validator, so this column cannot carry a concept name, an evidence string
+    # or any other source text even from a hand-edited or restored database.
+    # NULL means "not measured": every item written before this migration, and
+    # every CONCEPT_MENTIONS item, which has no relations to skip.  A
+    # SECTION_GRAPH success always stores a number, so a genuine zero is
+    # distinguishable from an absent measurement.
+    """
+    ALTER TABLE batch_items ADD COLUMN skipped_self_relations INTEGER
+        CHECK (skipped_self_relations IS NULL
+               OR (typeof(skipped_self_relations) = 'integer' AND skipped_self_relations >= 0))
+    """,
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
@@ -533,6 +557,7 @@ class SQLiteEpubStore:
                 (4, _MIGRATION_4),
                 (5, _MIGRATION_5),
                 (6, _MIGRATION_6),
+                (7, _MIGRATION_7),
             )
             try:
                 connection.execute("BEGIN")

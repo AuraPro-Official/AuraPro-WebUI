@@ -1237,6 +1237,13 @@ class SQLiteBatchRepository:
         they cannot carry a passage, an evidence string, or model output.  The
         per-job aggregate lets an administrator read "7 ambiguous, 3 absent"
         off the history list without opening a single item.
+
+        ``skipped_self_relations`` is exposed for the same reason and is safe
+        for a stronger one: the column can only hold an integer or NULL, so it
+        needs no read-side validator to be sure it is content-free.  It is
+        aggregated per job as well, because a succeeded item is exactly the one
+        an administrator never opens - a skip that only a stored result knew
+        about would be silent in practice.
         """
         statuses = {
             str(count["status"]): int(count["count"])
@@ -1260,6 +1267,15 @@ class SQLiteBatchRepository:
             diagnostics = _safe_failure_diagnostics(failure["failure_diagnostics_json"])
             reason = str(diagnostics["reason"]) if diagnostics else _UNDIAGNOSED_FAILURE_REASON
             reasons[reason] = reasons.get(reason, 0) + 1
+        # SUM over an integer-or-NULL column: one scalar, no JSON to parse, and
+        # no response ever loaded to produce it.
+        skipped_self_relations = int(
+            connection.execute(
+                """SELECT COALESCE(SUM(skipped_self_relations), 0) FROM batch_items
+                   WHERE batch_job_id = ?""",
+                (row["batch_job_id"],),
+            ).fetchone()[0]
+        )
         summary: dict[str, Any] = {
             "batch_job_id": row["batch_job_id"],
             "version_id": row["version_id"],
@@ -1284,6 +1300,9 @@ class SQLiteBatchRepository:
             "item_count": sum(statuses.values()),
             "item_status_counts": statuses,
             "item_failure_reason_counts": reasons,
+            # Relations this job's succeeded items ingested past because both
+            # endpoints had been merged into one concept (SDD 4.2.2 point 6).
+            "item_skipped_self_relations": skipped_self_relations,
         }
         if include_items:
             summary["items"] = [
@@ -1298,11 +1317,20 @@ class SQLiteBatchRepository:
                     "failure_diagnostics": _safe_failure_diagnostics(
                         item["failure_diagnostics_json"]
                     ),
+                    # None where nothing was measured: a CONCEPT_MENTIONS item,
+                    # an item that has not succeeded, or a row that predates the
+                    # column.
+                    "skipped_self_relations": (
+                        None
+                        if item["skipped_self_relations"] is None
+                        else int(item["skipped_self_relations"])
+                    ),
                     "updated_at": item["updated_at"],
                 }
                 for item in connection.execute(
                     """SELECT batch_item_id, passage_id, custom_id, status, attempt_count,
-                              response_json, error_text, failure_diagnostics_json, updated_at
+                              response_json, error_text, failure_diagnostics_json,
+                              skipped_self_relations, updated_at
                        FROM batch_items WHERE batch_job_id = ? ORDER BY custom_id""",
                     (row["batch_job_id"],),
                 )
@@ -2151,12 +2179,30 @@ class SQLiteBatchRepository:
 
     def _write_section_graph(
         self, connection: Any, *, version_id: str, item: Any, payload: Mapping[str, Any]
-    ) -> None:
+    ) -> int:
         """Commit one already-grounded packet as a single transaction.
 
         Every span here is already an exact slice of its own immutable passage.
         The store's own equality checks still run: they are the last gate that
         keeps a stored citation byte-exact, and they cost one comparison.
+
+        Returns the number of relations skipped because both endpoints resolved
+        to the same concept.  That test cannot live in the read-only grounding
+        pass, however much the rest of the packet's validation does: a
+        ``local_id`` becomes a ``concept_id`` only through
+        ``_resolve_or_create_concept``, which is a write.  It belongs here, one
+        step after resolution and before the relation is offered to the store.
+        Nothing about the read-only pass weakens as a result - it still decides
+        every *rejection* before the first insert, and a skip is not a
+        rejection.  See SDD 4.2.2 point 6: two endpoints resolving to one
+        concept is what an administrator merge looks like from the far side of
+        an offline Batch, and failing the packet would discard valid concepts
+        and mentions over an edge the administrator themselves collapsed.
+        ``merge_concepts`` drops exactly this relation rather than refusing the
+        merge; this keeps ingest consistent with it.  An endpoint naming a
+        ``local_id`` the response never defined is a different thing entirely
+        and is still rejected, by the read-only pass, before anything is
+        written.
         """
         relations = payload["relations"]
         local_concepts: dict[str, str] = {}
@@ -2171,14 +2217,23 @@ class SQLiteBatchRepository:
                 require_passage_ids=True,
             )
             local_concepts[str(suggestion["local_id"])] = concept_id
+        skipped_self_relations = 0
         for relation_index, relation in enumerate(relations):
+            # Both lookups are total: the grounding pass already refused any
+            # endpoint that is not a packet concept, so a KeyError here would
+            # mean that guard had been removed.
+            subject_concept_id = local_concepts[str(relation["subject_local_id"])]
+            object_concept_id = local_concepts[str(relation["object_local_id"])]
+            if subject_concept_id == object_concept_id:
+                skipped_self_relations += 1
+                continue
             try:
                 self._store._add_concept_relation(
                     connection,
                     version_id=version_id,
-                    subject_concept_id=local_concepts[str(relation["subject_local_id"])],
+                    subject_concept_id=subject_concept_id,
                     predicate=str(relation["predicate"]),
-                    object_concept_id=local_concepts[str(relation["object_local_id"])],
+                    object_concept_id=object_concept_id,
                     evidence=relation["evidence"],
                 )
             except ValueError as exc:
@@ -2191,13 +2246,21 @@ class SQLiteBatchRepository:
                         local_concept_count=len(local_concepts),
                     ),
                 ) from exc
+        return skipped_self_relations
 
     def ingest_success(self, batch_job_id: str, custom_id: str, payload: Mapping[str, Any]) -> bool:
         """Atomically ingest one model result and mark the durable item complete.
 
         Repeating byte-equivalent output is a no-op.  Different output for an
         already succeeded item is rejected rather than silently rewriting the
-        graph, preserving reproducibility of an offline Batch run.
+        graph, preserving reproducibility of an offline Batch run.  That is
+        also why ``response_json`` stays exactly the grounded model output: a
+        relation skipped as a merged-away self-relation is still part of what
+        the model returned, so it stays in the stored result and a replay
+        serializes byte-identically.  How many such relations the *write* then
+        skipped is a fact about the write, and is recorded beside the result in
+        ``batch_items.skipped_self_relations``, where ``_summary`` can show it
+        to an administrator without ever exposing a response.
         """
         with self._store._write() as connection:
             job = self._require_job(connection, batch_job_id)
@@ -2234,8 +2297,12 @@ class SQLiteBatchRepository:
                 raise BatchPayloadError("different output received for an already ingested Batch item")
             if item["status"] not in {"PENDING", "SUBMITTED", "RETRY", "FAILED"}:
                 raise BatchPayloadError(f"cannot ingest output for item state {item['status']}")
+            # NULL rather than 0 for a CONCEPT_MENTIONS item: it carries no
+            # relations, so there is nothing to have skipped, and "not
+            # measured" must stay distinguishable from a measured zero.
+            skipped_self_relations: int | None = None
             if job["job_kind"] == "SECTION_GRAPH":
-                self._write_section_graph(
+                skipped_self_relations = self._write_section_graph(
                     connection, version_id=job["version_id"], item=item, payload=payload
                 )
             else:
@@ -2250,9 +2317,10 @@ class SQLiteBatchRepository:
             connection.execute(
                 """UPDATE batch_items
                    SET status = 'SUCCEEDED', response_json = ?, error_text = NULL,
-                       failure_diagnostics_json = NULL, updated_at = CURRENT_TIMESTAMP
+                       failure_diagnostics_json = NULL, skipped_self_relations = ?,
+                       updated_at = CURRENT_TIMESTAMP
                    WHERE batch_item_id = ?""",
-                (serialized, item["batch_item_id"]),
+                (serialized, skipped_self_relations, item["batch_item_id"]),
             )
         return True
 
