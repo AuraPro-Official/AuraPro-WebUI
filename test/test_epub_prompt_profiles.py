@@ -49,9 +49,10 @@ _PUBLISHED_PROFILE_DIGESTS = {
 # ``asks_for_offsets`` postdates the digests above and is pinned beside them
 # rather than folded into the hash: recomputing every historical digest to add
 # one field would destroy the only thing they are for, which is proving that
-# nobody has touched the bytes since they were sampled.  Together the two maps
-# pin the whole strict contract, because the schema a profile sends is a pure
-# function of these two flags (see ``_strict_schema_for``).
+# nobody has touched the bytes since they were sampled.  Together the digest and
+# this map pin the whole strict contract, because the schema a profile sends is
+# a pure function of ``uses_context_anchors`` (inside the digest) and this flag
+# (see ``_strict_schema_for``).
 _PUBLISHED_PROFILE_OFFSET_CONTRACTS = {
     "zh-glossary-v1": True,
     "zh-glossary-v2": True,
@@ -59,6 +60,24 @@ _PUBLISHED_PROFILE_OFFSET_CONTRACTS = {
     "zh-glossary-v4": True,
     "zh-glossary-v5": True,
     "zh-glossary-v6": True,
+}
+
+# ``min_evidence_codepoints`` is pinned the same way and for the same reason:
+# folding a field that postdates the digests into the hash would force every one
+# of them to be recomputed, which is precisely what they exist to make
+# impossible.  This map matters more than the one above, because ingest acts on
+# these numbers - a sub-floor mention is rejected outright - so a silent change
+# here would either start rejecting output that honoured its own contract, or
+# stop rejecting output that did not.  v1-v5 are 0 because their instructions
+# never named a minimum; v6 is 10 because its does, and the number here has to
+# stay the number that text says.
+_PUBLISHED_PROFILE_EVIDENCE_FLOORS = {
+    "zh-glossary-v1": 0,
+    "zh-glossary-v2": 0,
+    "zh-glossary-v3": 0,
+    "zh-glossary-v4": 0,
+    "zh-glossary-v5": 0,
+    "zh-glossary-v6": 10,
 }
 
 
@@ -129,10 +148,18 @@ class PromptProfileTest(unittest.TestCase):
         for profile_id, asks in _PUBLISHED_PROFILE_OFFSET_CONTRACTS.items():
             with self.subTest(profile=profile_id, flag="asks_for_offsets"):
                 self.assertEqual(PROMPTS.get_prompt_profile(profile_id).asks_for_offsets, asks)
-        # Every published profile is pinned on both axes, so a new one cannot be
-        # added without deciding what it froze.
+        for profile_id, floor in _PUBLISHED_PROFILE_EVIDENCE_FLOORS.items():
+            with self.subTest(profile=profile_id, flag="min_evidence_codepoints"):
+                self.assertEqual(
+                    PROMPTS.get_prompt_profile(profile_id).min_evidence_codepoints, floor
+                )
+        # Every published profile is pinned on all three axes, so a new one
+        # cannot be added without deciding what it froze.
         self.assertEqual(
             set(_PUBLISHED_PROFILE_DIGESTS), set(_PUBLISHED_PROFILE_OFFSET_CONTRACTS)
+        )
+        self.assertEqual(
+            set(_PUBLISHED_PROFILE_DIGESTS), set(_PUBLISHED_PROFILE_EVIDENCE_FLOORS)
         )
         self.assertEqual(
             set(registered) - set(_PUBLISHED_PROFILE_DIGESTS),
@@ -281,6 +308,17 @@ class PromptProfileTest(unittest.TestCase):
         self.assertIn(example_v5, v5)
         self.assertIn(example_v6, v6)
         self.assertNotIn(example_v6, v5)
+        # The clause and the machine-readable floor must state the same number.
+        # Ingest reads only the field, and the model reads only the text, so a
+        # drift between them would silently enforce a contract nobody was given.
+        self.assertIn("evidence 至少 10 个 Unicode 字符", v6)
+        self.assertIn("本段总长不足 10 个 Unicode 字符时，evidence 取本段全文", v6)
+        self.assertEqual(
+            PROMPTS.get_prompt_profile("zh-glossary-v6").min_evidence_codepoints, 10
+        )
+        self.assertEqual(
+            PROMPTS.get_prompt_profile("zh-glossary-v5").min_evidence_codepoints, 0
+        )
 
         reverted = v6.replace(example_v6, example_v5)
         prefix = 0
@@ -399,6 +437,14 @@ class PromptProfileTest(unittest.TestCase):
         # move the worst case nearer to a truncated, unparseable response.
         self.assertEqual(v7.max_tokens, v6.max_tokens)
         self.assertEqual(v7.temperature, v6.temperature)
+        # v7 is v6 minus the offsets and nothing else, so it inherits v6's
+        # minimum evidence span - clause, escape hatch and enforced floor alike.
+        self.assertEqual(v7.min_evidence_codepoints, v6.min_evidence_codepoints)
+        self.assertEqual(v7.min_evidence_codepoints, 10)
+        self.assertIn("evidence 至少 10 个 Unicode 字符", v7.system_instruction)
+        self.assertIn(
+            "本段总长不足 10 个 Unicode 字符时，evidence 取本段全文", v7.system_instruction
+        )
         request = PROMPTS.build_concept_completion_request(
             model="remote-model-snapshot",
             profile_id=PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE,
