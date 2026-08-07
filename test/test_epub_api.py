@@ -32,10 +32,19 @@ from open_webui.retrieval.epub.batch import BatchPayloadError, BatchServiceError
 from open_webui.retrieval.epub.prompt_profiles import (  # noqa: E402
     DEFAULT_CONCEPT_PROMPT_PROFILE,
     available_prompt_profiles,
+    get_prompt_profile,
+)
+from open_webui.retrieval.epub.section_graph import (  # noqa: E402
+    available_section_graph_profiles,
+    get_section_graph_profile,
 )
 from open_webui.retrieval.epub.store import SQLiteEpubStore  # noqa: E402
 from open_webui.routers.epub import get_epub_concept_service, router  # noqa: E402
-from open_webui.services.epub_concept import EpubConceptService, EpubServiceError  # noqa: E402
+from open_webui.services.epub_concept import (  # noqa: E402
+    EpubConceptService,
+    EpubServiceError,
+    evidence_floors,
+)
 from open_webui.services.epub_runtime import initialize_epub_concept_service  # noqa: E402
 from open_webui.utils.auth import get_admin_user, get_verified_user  # noqa: E402
 
@@ -498,6 +507,58 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         )
         # The identifier is exposed; no instruction text ever is.
         self.assertNotIn("抽取器", history.text)
+
+    def test_the_service_hands_cloud_ingest_every_registered_evidence_floor(self) -> None:
+        """The seam that lets ingest enforce a floor it is not allowed to look up.
+
+        ``batch.py`` deliberately does not import ``prompt_profiles``: cloud
+        ingest recognises a payload shape from the fields a model returned, and
+        that separation is what keeps an extraction-policy change from reaching
+        the durable store.  So the floor cannot be looked up there; it has to be
+        injected.  This service already imports both registries for ordinary
+        reasons, so it reads the contract once at construction and hands the
+        repository plain numbers.
+        """
+        floors = evidence_floors()
+        # Both namespaces, complete.  A profile registered without an entry here
+        # would silently ingest at floor 0.
+        self.assertEqual(
+            set(floors),
+            set(available_prompt_profiles()) | set(available_section_graph_profiles()),
+        )
+        for profile_id in available_prompt_profiles():
+            with self.subTest(profile=profile_id):
+                self.assertEqual(
+                    floors[profile_id], get_prompt_profile(profile_id).min_evidence_codepoints
+                )
+        for profile_id in available_section_graph_profiles():
+            with self.subTest(profile=profile_id):
+                self.assertEqual(
+                    floors[profile_id],
+                    get_section_graph_profile(profile_id).min_evidence_codepoints,
+                )
+        # The four profiles whose instructions name a minimum, and the legacy
+        # ones whose instructions do not and whose samples must stay replayable.
+        self.assertEqual(
+            {profile_id: floor for profile_id, floor in floors.items() if floor},
+            {
+                "zh-glossary-v6": 10,
+                "zh-glossary-v7": 10,
+                "zh-section-graph-v2": 10,
+                "zh-section-graph-v3": 10,
+            },
+        )
+
+        # The mapping actually reaches the adapter the routes use, rather than
+        # being computed and dropped.
+        repository = self.service._batch._repository
+        self.assertEqual(repository._evidence_floors, floors)
+        self.assertEqual(repository._evidence_floor("zh-glossary-v7"), 10)
+        self.assertEqual(repository._evidence_floor("zh-glossary-v1"), 0)
+        # A job predating ``batch_jobs.prompt_profile`` has NULL there and must
+        # stay ingestable on the contract it was actually given.
+        self.assertEqual(repository._evidence_floor(None), 0)
+        self.assertEqual(repository._evidence_floor("zh-glossary-v99"), 0)
 
     def test_admin_backfill_derives_a_missing_prompt_profile_from_what_was_sent(self) -> None:
         """A job predating the column is recovered from its own request.
