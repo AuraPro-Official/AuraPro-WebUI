@@ -288,6 +288,19 @@ second, relation layer before its full-version offline Batch is accepted.
    without turning it into an unproven universal fact. Assertions are
    `PROVISIONAL` until reviewed; ambiguous or invalid output is a failed Batch
    item with no partial graph mutation.
+6. One exception to point 5, because it is not a defect in the output. A
+   relation whose two endpoints resolve to the *same* concept is skipped and
+   counted, and the rest of its packet still ingests. This arises when an
+   administrator has merged the endpoints since the response was produced — the
+   model named two distinct concepts, and a later, correct administrative act
+   made them one. Failing the whole item would discard valid concepts and
+   mentions because of an edge the administrator themselves collapsed.
+   `merge_concepts` already resolves the identical condition this way, dropping
+   a relation that a merge turns into a self-loop rather than refusing the
+   merge, so this makes ingest consistent with it. The skip is reported in the
+   item's durable result so the count is visible rather than silent. An
+   endpoint that names a `local_id` the response never defined remains a hard
+   failure: that is genuinely ungrounded output, not a merge artefact.
 
 At query time, direct concept mentions and bounded relation traversal form the
 graph candidate set. `HAS_PART` expands a resolved parent concept to its child
