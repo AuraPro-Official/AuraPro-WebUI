@@ -526,34 +526,55 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             set(floors),
             set(available_prompt_profiles()) | set(available_section_graph_profiles()),
         )
+        # The *enforced* number is what crosses this seam, never the requested
+        # one.  Handing ingest the number the instruction asks for is precisely
+        # the conflation that made one short citation discard a whole packet, so
+        # the assertion names the field rather than "the floor".
         for profile_id in available_prompt_profiles():
             with self.subTest(profile=profile_id):
                 self.assertEqual(
-                    floors[profile_id], get_prompt_profile(profile_id).min_evidence_codepoints
+                    floors[profile_id],
+                    get_prompt_profile(profile_id).enforced_min_evidence_codepoints,
                 )
         for profile_id in available_section_graph_profiles():
             with self.subTest(profile=profile_id):
                 self.assertEqual(
                     floors[profile_id],
-                    get_section_graph_profile(profile_id).min_evidence_codepoints,
+                    get_section_graph_profile(
+                        profile_id
+                    ).enforced_min_evidence_codepoints,
                 )
         # The four profiles whose instructions name a minimum, and the legacy
         # ones whose instructions do not and whose samples must stay replayable.
+        # Every one of the four asks the model for 10 and is enforced at 6.
         self.assertEqual(
             {profile_id: floor for profile_id, floor in floors.items() if floor},
             {
-                "zh-glossary-v6": 10,
-                "zh-glossary-v7": 10,
-                "zh-section-graph-v2": 10,
-                "zh-section-graph-v3": 10,
+                "zh-glossary-v6": 6,
+                "zh-glossary-v7": 6,
+                "zh-section-graph-v2": 6,
+                "zh-section-graph-v3": 6,
             },
         )
+        for profile_id in ("zh-glossary-v6", "zh-glossary-v7"):
+            with self.subTest(profile=profile_id, field="requested"):
+                self.assertEqual(
+                    get_prompt_profile(profile_id).requested_min_evidence_codepoints, 10
+                )
+        for profile_id in ("zh-section-graph-v2", "zh-section-graph-v3"):
+            with self.subTest(profile=profile_id, field="requested"):
+                self.assertEqual(
+                    get_section_graph_profile(
+                        profile_id
+                    ).requested_min_evidence_codepoints,
+                    10,
+                )
 
         # The mapping actually reaches the adapter the routes use, rather than
         # being computed and dropped.
         repository = self.service._batch._repository
         self.assertEqual(repository._evidence_floors, floors)
-        self.assertEqual(repository._evidence_floor("zh-glossary-v7"), 10)
+        self.assertEqual(repository._evidence_floor("zh-glossary-v7"), 6)
         self.assertEqual(repository._evidence_floor("zh-glossary-v1"), 0)
         # A job predating ``batch_jobs.prompt_profile`` has NULL there and must
         # stay ingestable on the contract it was actually given.

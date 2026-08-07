@@ -37,20 +37,28 @@ _PUBLISHED_PROFILE_DIGESTS = {
     "zh-section-graph-v2": "1b89eb4e6117450d3a72eaea332d6034fb33f0275ee8ae21f01569d53e96fde9",
 }
 
-# ``min_evidence_codepoints`` postdates the digests above and is pinned beside
-# them rather than folded into ``_profile_digest``, following the precedent the
+# The two evidence minima postdate the digests above and are pinned beside them
+# rather than folded into ``_profile_digest``, following the precedent the
 # concept path set for ``asks_for_offsets``: recomputing a historical digest to
 # admit one new field would destroy the only thing that digest is for, which is
 # proving nobody has touched the bytes since they were sampled.
 #
-# Pinning matters more here than for the flags, because ingest acts on these
-# numbers - a span below its job's floor is rejected outright and costs the
-# whole packet.  v1 is 0 because its instruction never named a minimum, and its
-# stored requests must keep replaying on the contract they were given; v2 is 10
-# because its instruction says 10.
-_PUBLISHED_PROFILE_EVIDENCE_FLOORS = {
+# Two maps, because these are two different facts.  *Requested* is what the
+# instruction asks the model for and is asserted against the instruction text
+# below, so a profile can never disagree with its own wording; v1 is 0 because
+# its instruction names no minimum, v2 is 10 because its text says 10.
+# *Enforced* is what ingest applies to a returned span, and is lower on purpose:
+# enforcing the requested 10 on this very path discarded 13 of 43 packets on the
+# full-book run - 140 concepts, 140 mentions and 105 relations - over citations
+# like ``枢对测点的授时`` (7 code points) that are perfectly locatable.
+_PUBLISHED_PROFILE_REQUESTED_EVIDENCE_MINIMA = {
     "zh-section-graph-v1": 0,
     "zh-section-graph-v2": 10,
+}
+
+_PUBLISHED_PROFILE_ENFORCED_EVIDENCE_FLOORS = {
+    "zh-section-graph-v1": 0,
+    "zh-section-graph-v2": 6,
 }
 
 
@@ -121,15 +129,31 @@ class SectionGraphProfileTest(unittest.TestCase):
             with self.subTest(profile=profile_id):
                 self.assertIn(profile_id, registered)
                 self.assertEqual(_profile_digest(GRAPH.get_section_graph_profile(profile_id)), digest)
-        for profile_id, floor in _PUBLISHED_PROFILE_EVIDENCE_FLOORS.items():
-            with self.subTest(profile=profile_id, flag="min_evidence_codepoints"):
+        for profile_id, requested in _PUBLISHED_PROFILE_REQUESTED_EVIDENCE_MINIMA.items():
+            with self.subTest(profile=profile_id, field="requested"):
                 self.assertEqual(
-                    GRAPH.get_section_graph_profile(profile_id).min_evidence_codepoints, floor
+                    GRAPH.get_section_graph_profile(
+                        profile_id
+                    ).requested_min_evidence_codepoints,
+                    requested,
                 )
-        # Every published profile is pinned on both axes, so a new one cannot be
-        # added without deciding what it froze.
+        for profile_id, floor in _PUBLISHED_PROFILE_ENFORCED_EVIDENCE_FLOORS.items():
+            with self.subTest(profile=profile_id, field="enforced"):
+                self.assertEqual(
+                    GRAPH.get_section_graph_profile(
+                        profile_id
+                    ).enforced_min_evidence_codepoints,
+                    floor,
+                )
+        # Every published profile is pinned on all three axes, so a new one
+        # cannot be added without deciding what it froze.
         self.assertEqual(
-            set(_PUBLISHED_PROFILE_DIGESTS), set(_PUBLISHED_PROFILE_EVIDENCE_FLOORS)
+            set(_PUBLISHED_PROFILE_DIGESTS),
+            set(_PUBLISHED_PROFILE_REQUESTED_EVIDENCE_MINIMA),
+        )
+        self.assertEqual(
+            set(_PUBLISHED_PROFILE_DIGESTS),
+            set(_PUBLISHED_PROFILE_ENFORCED_EVIDENCE_FLOORS),
         )
         # A stored v1 request must still replay byte for byte: the offsets it
         # asks for are now repaired at ingest, but the request itself is not
@@ -240,18 +264,27 @@ class SectionGraphProfileTest(unittest.TestCase):
         self.assertIn("只保留一个最有代表性的出现位置", v2.system_instruction)
         self.assertIn("每条只给出一条最有代表性的 evidence", v2.system_instruction)
         self.assertGreaterEqual(v2.max_tokens, 12 * 324 + 12 * 228)
-        # The minimum evidence clause and the enforced floor must state the same
-        # number.  Ingest reads only the field and the model reads only the
-        # text, so drift between them would enforce a contract nobody was given.
+        # The minimum evidence clause and the *requested* minimum must state the
+        # same number: the model reads only the text and the field transcribes
+        # it, so drift between them would misdescribe the contract given.
         self.assertIn("evidence 至少 10 个 Unicode 字符", v2.system_instruction)
         self.assertIn(
             "该 passage 总长不足 10 个 Unicode 字符时，evidence 取该 passage 全文",
             v2.system_instruction,
         )
-        self.assertEqual(v2.min_evidence_codepoints, 10)
+        self.assertEqual(v2.requested_min_evidence_codepoints, 10)
+        # What ingest enforces is pinned separately and is lower by design: the
+        # request asks for a substantive citation, the floor drops only what is
+        # genuinely unusable, and the margin between them is exactly the
+        # population that enforcing 10 threw away on the full-book run.
+        self.assertEqual(v2.enforced_min_evidence_codepoints, 6)
+        self.assertLess(
+            v2.enforced_min_evidence_codepoints, v2.requested_min_evidence_codepoints
+        )
         # v1 asked for no minimum at all, so it is enforced with none.
         self.assertNotIn("至少 10 个 Unicode 字符", v1.system_instruction)
-        self.assertEqual(v1.min_evidence_codepoints, 0)
+        self.assertEqual(v1.requested_min_evidence_codepoints, 0)
+        self.assertEqual(v1.enforced_min_evidence_codepoints, 0)
 
     def test_v3_is_the_default_and_keeps_v2s_contract_and_decoding_budget(self) -> None:
         v2 = GRAPH.get_section_graph_profile("zh-section-graph-v2")
@@ -268,9 +301,15 @@ class SectionGraphProfileTest(unittest.TestCase):
         # that the anchored, offset-free schema is what gets sent.
         self.assertFalse(v3.asks_for_offsets)
         # v3 carries v2's minimum evidence clause verbatim, escape hatch
-        # included, so it carries v2's enforced floor.
-        self.assertEqual(v3.min_evidence_codepoints, v2.min_evidence_codepoints)
-        self.assertEqual(v3.min_evidence_codepoints, 10)
+        # included, so it requests v2's number and is enforced at v2's floor.
+        self.assertEqual(
+            v3.requested_min_evidence_codepoints, v2.requested_min_evidence_codepoints
+        )
+        self.assertEqual(v3.requested_min_evidence_codepoints, 10)
+        self.assertEqual(
+            v3.enforced_min_evidence_codepoints, v2.enforced_min_evidence_codepoints
+        )
+        self.assertEqual(v3.enforced_min_evidence_codepoints, 6)
         self.assertIn("evidence 至少 10 个 Unicode 字符", v3.system_instruction)
         self.assertIn(
             "该 passage 总长不足 10 个 Unicode 字符时，evidence 取该 passage 全文",
