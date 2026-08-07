@@ -569,8 +569,8 @@ class EpubBatchServiceTest(unittest.TestCase):
 
         first = self.service.poll_and_ingest("job", self.provider)
         second = self.service.poll_and_ingest("job", self.provider)
-        self.assertEqual(first, {"job_id": "job", "state": "SUCCEEDED", "ingested": 2, "failed": 0})
-        self.assertEqual(second, {"job_id": "job", "state": "SUCCEEDED", "ingested": 0, "failed": 0})
+        self.assertEqual(first, {"job_id": "job", "state": "SUCCEEDED", "ingested": 2, "failed": 0, "retained": 0})
+        self.assertEqual(second, {"job_id": "job", "state": "SUCCEEDED", "ingested": 0, "failed": 0, "retained": 0})
         self.assertEqual(
             self.store._connection().execute("SELECT COUNT(*) FROM concepts").fetchone()[0], 1
         )
@@ -1104,9 +1104,25 @@ class EpubBatchServiceTest(unittest.TestCase):
         self.assertEqual(self.service.poll_and_ingest(job_id, provider)["ingested"], 1)
         self.assertEqual([item["status"] for item in self.repository.list_items(job_id)], ["SUCCEEDED", "SUCCEEDED"])
 
+        # A divergent output for an item that already succeeded must never
+        # replace it -- but it must not abort the poll either, or one such item
+        # blocks every item after it in the same pass.  The same refusal fires
+        # when our own contract tightens after an item was accepted (an evidence
+        # floor added later), which is not a provider anomaly at all.  So the
+        # stored success stands, the poll completes, and the retention is
+        # counted rather than raised.
+        before = self.repository.list_items(job_id)
         provider.results[remote_id][0] = ProviderItemResult("p1", payload={"concepts": [{"unexpected": True}]})
-        with self.assertRaisesRegex(BatchPayloadError, "succeeded Batch item cannot be overwritten"):
-            self.service.poll_and_ingest(job_id, provider)
+        outcome = self.service.poll_and_ingest(job_id, provider)
+        self.assertEqual(outcome["retained"], 1)
+        self.assertEqual(outcome["failed"], 0)
+        after = self.repository.list_items(job_id)
+        self.assertEqual([item["status"] for item in after], ["SUCCEEDED", "SUCCEEDED"])
+        # The guarantee itself: the stored result is byte-for-byte what it was.
+        self.assertEqual(
+            [item["response_json"] for item in after],
+            [item["response_json"] for item in before],
+        )
         self.assertEqual([item["status"] for item in self.repository.list_items(job_id)], ["SUCCEEDED", "SUCCEEDED"])
 
     def test_terminal_batch_without_output_marks_only_missing_items_failed_for_retry(self) -> None:
@@ -1116,7 +1132,7 @@ class EpubBatchServiceTest(unittest.TestCase):
 
         result = self.service.poll_and_ingest("job", self.provider)
 
-        self.assertEqual(result, {"job_id": "job", "state": "FAILED", "ingested": 0, "failed": 2})
+        self.assertEqual(result, {"job_id": "job", "state": "FAILED", "ingested": 0, "failed": 2, "retained": 0})
         self.assertEqual(
             [item["status"] for item in self.repository.list_items("job")], ["FAILED", "FAILED"]
         )
@@ -1132,7 +1148,7 @@ class EpubBatchServiceTest(unittest.TestCase):
 
         result = self.service.poll_and_ingest("job", self.provider)
 
-        self.assertEqual(result, {"job_id": "job", "state": "FAILED", "ingested": 1, "failed": 1})
+        self.assertEqual(result, {"job_id": "job", "state": "FAILED", "ingested": 1, "failed": 1, "retained": 0})
         items = self.repository.list_items("job")
         self.assertEqual([item["status"] for item in items], ["SUCCEEDED", "FAILED"])
         retry_id = self.service.retry_failed_items("job")
@@ -1163,7 +1179,7 @@ class EpubBatchServiceTest(unittest.TestCase):
         self.provider.fetch_error = None
         self.provider.results[remote_id] = [ProviderItemResult("p1", payload={"concepts": []})]
         recovered = self.service.poll_and_ingest("job", self.provider)
-        self.assertEqual(recovered, {"job_id": "job", "state": "CANCELLED", "ingested": 1, "failed": 1})
+        self.assertEqual(recovered, {"job_id": "job", "state": "CANCELLED", "ingested": 1, "failed": 1, "retained": 0})
         self.assertFalse(self.service.get_job_summary("job")["results_pending_retrieval"])
 
     def test_invalid_output_is_persisted_as_failed_without_graph_mutation(self) -> None:

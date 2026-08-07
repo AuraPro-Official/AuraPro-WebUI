@@ -44,6 +44,22 @@ class BatchPayloadError(BatchServiceError):
         )
 
 
+class DurableSuccessRetained(BatchPayloadError):
+    """A re-poll re-rejected an item that had already succeeded durably.
+
+    Refusing to demote a stored success is deliberate: a later output can never
+    replace one, and an ingest contract can tighten after an item was accepted
+    -- an evidence floor introduced afterwards, for instance -- so a re-poll can
+    legitimately re-reject work that was valid under the contract it was
+    ingested under.  The stored success stands.
+
+    This is a distinct type purely so ``poll_and_ingest`` can tell it apart from
+    a real payload rejection and carry on with the remaining items.  Aborting
+    the whole poll on it would make an already-succeeded item block every item
+    after it, which is the opposite of what protecting the success is for.
+    """
+
+
 _JOB_KINDS = {"CONCEPT_MENTIONS", "SECTION_GRAPH"}
 _RELATION_PREDICATES = {
     "HAS_PART",
@@ -2343,7 +2359,9 @@ class SQLiteBatchRepository:
         with self._store._write() as connection:
             item = self._item_for_update(connection, batch_job_id, custom_id)
             if item["status"] == "SUCCEEDED":
-                raise BatchPayloadError("a succeeded Batch item cannot be overwritten as failed")
+                raise DurableSuccessRetained(
+                    "a succeeded Batch item cannot be overwritten as failed"
+                )
             if item["status"] == "FAILED" and item["error_text"] == error:
                 # Repeating a failure class is still not a new failure, so the
                 # caller's count is unchanged.  The measurement is refreshed
@@ -2602,7 +2620,7 @@ class BatchJobService:
         if state is None:
             raise BatchServiceError(f"provider returned unknown Batch state: {snapshot.state}")
         self._repository.set_provider_state(batch_job_id, state, snapshot.error)
-        added = failed = 0
+        added = failed = retained = 0
         if state in {"SUCCEEDED", "FAILED", "CANCELLED"}:
             # Read and validate the complete result set before reconciling
             # missing items.  A provider output iterator can fail halfway
@@ -2647,33 +2665,51 @@ class BatchJobService:
                     # The provider rejected the item itself, so nothing local
                     # was measured.  Only the class is durable; the provider's
                     # own error string is never persisted as a diagnostic.
-                    failed += int(
-                        self._repository.record_item_failure(
-                            batch_job_id,
-                            result.custom_id,
-                            result.error,
-                            _PROVIDER_ITEM_ERROR_DIAGNOSTICS,
+                    try:
+                        failed += int(
+                            self._repository.record_item_failure(
+                                batch_job_id,
+                                result.custom_id,
+                                result.error,
+                                _PROVIDER_ITEM_ERROR_DIAGNOSTICS,
+                            )
                         )
-                    )
+                    except DurableSuccessRetained:
+                        retained += 1
                     continue
                 assert result.payload is not None
                 try:
                     added += int(self._repository.ingest_success(batch_job_id, result.custom_id, result.payload))
+                except DurableSuccessRetained:
+                    # ``ingest_success`` itself refuses to replace a stored
+                    # success with a different output; nothing to record.
+                    retained += 1
                 except BatchPayloadError as exc:
                     # ``exc.diagnostics`` is None for rejections raised outside
                     # grounding (a lifecycle violation, for instance); the item
                     # then simply fails without a measurement.
-                    failed += int(
-                        self._repository.record_item_failure(
-                            batch_job_id, result.custom_id, str(exc), exc.diagnostics
+                    try:
+                        failed += int(
+                            self._repository.record_item_failure(
+                                batch_job_id, result.custom_id, str(exc), exc.diagnostics
+                            )
                         )
-                    )
+                    except DurableSuccessRetained:
+                        # The item was accepted under an earlier contract and a
+                        # later one re-rejects it.  The stored success stands and
+                        # the poll continues; aborting here would let one such
+                        # item block every item after it.
+                        retained += 1
             failed += self._repository.reconcile_terminal_missing_results(batch_job_id)
         return {
             "job_id": batch_job_id,
             "state": state,
             "ingested": added,
             "failed": failed,
+            # Items a tightened contract re-rejects but whose stored success is
+            # retained.  Reported so a re-poll that changes nothing is visibly
+            # different from one that had nothing to do.
+            "retained": retained,
         }
 
     def recover(self, provider: BatchProvider) -> list[dict[str, int | str | bool]]:
