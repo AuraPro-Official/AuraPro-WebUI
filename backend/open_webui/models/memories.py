@@ -49,10 +49,7 @@ class MemoriesTable:
     @staticmethod
     def is_chat_history_record(memory: Memory) -> bool:
         meta = memory.meta if isinstance(memory.meta, dict) else {}
-        return (
-            meta.get('created_by') == 'chat_history_review'
-            or memory.path == '_system/chat-history-summary'
-        )
+        return meta.get('created_by') == 'chat_history_review' or memory.path == '_system/chat-history-summary'
 
     @staticmethod
     def append_revision(memory: Memory, now: int) -> None:
@@ -115,9 +112,8 @@ class MemoriesTable:
                     return None
 
                 now = int(time.time())
-                if (
-                    (content is not None or memory_type is not None or update_path)
-                    and not self.is_chat_history_record(memory)
+                if (content is not None or memory_type is not None or update_path) and not self.is_chat_history_record(
+                    memory
                 ):
                     self.append_revision(memory, now)
                 if content is not None:

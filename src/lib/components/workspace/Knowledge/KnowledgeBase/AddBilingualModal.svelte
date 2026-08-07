@@ -1,10 +1,12 @@
 <script lang="ts">
-	import { getContext, onDestroy, onMount } from 'svelte';
+	import { getContext } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import type {
 		BilingualFile,
 		BilingualEpubFile,
 		BilingualImportData,
+		KnowledgeImportProgress,
+		KnowledgeImportProgressHandler,
 		LangCode
 	} from '$lib/apis/retrieval';
 	import { importBilingualGoogleSheet } from '$lib/apis/retrieval';
@@ -14,7 +16,11 @@
 	const i18n = getContext('i18n');
 
 	export let show = false;
-	export let onSubmit: (data: BilingualImportData, type: string) => void = () => {};
+	export let onSubmit: (
+		data: BilingualImportData,
+		type: string,
+		onProgress?: KnowledgeImportProgressHandler
+	) => Promise<void> = async () => {};
 	export let onClose: () => void = () => {};
 	export let collectionName: string | undefined = undefined;
 
@@ -43,6 +49,96 @@
 	let isProcessing = false;
 	let processingProgress = 0;
 	let processingMessage = '';
+	let processingCurrent: number | undefined;
+	let processingTotal: number | undefined;
+	let processingColdStart = false;
+	let processingStartedAt = 0;
+	let processingElapsedSeconds = 0;
+	let processingTimer: ReturnType<typeof setInterval> | undefined;
+
+	const progressMessageKeys: Record<string, string> = {
+		preparing: 'Preparing the import...',
+		preparing_epub: 'Preparing EPUB files...',
+		reading_epub: 'Uploading and validating EPUB files...',
+		extracting_epub: 'Extracting EPUB chapters...',
+		assembling_epub_chapters: 'Assembling bilingual EPUB chapters...',
+		checking_existing: 'Checking for files already in the knowledge base...',
+		splitting: 'Splitting documents into paragraphs and sentences...',
+		alignment_embeddings: 'Loading the embedding model and generating alignment vectors...',
+		aligning_paragraphs: 'Aligning bilingual paragraphs and sentences...',
+		assembling_chunks: 'Assembling aligned knowledge chunks...',
+		loading_word_alignment_model: 'Loading the word alignment model...',
+		building_glossary: 'Building bilingual glossary entries...',
+		preparing_vectors: 'Preparing knowledge base vectors...',
+		splitting_documents: 'Splitting content into searchable chunks...',
+		search_embeddings: 'Generating semantic search vectors...',
+		saving_vectors: 'Writing vectors to the knowledge base...',
+		finalizing: 'Finalizing the knowledge base...',
+		complete: 'Import complete'
+	};
+
+	function formatDuration(totalSeconds: number) {
+		const seconds = Math.max(0, Math.round(totalSeconds));
+		if (seconds < 60) return $i18n.t('{{count}} sec', { count: seconds });
+		const minutes = Math.floor(seconds / 60);
+		const remainingSeconds = seconds % 60;
+		if (minutes < 60) {
+			return remainingSeconds
+				? $i18n.t('{{minutes}} min {{seconds}} sec', {
+						minutes,
+						seconds: remainingSeconds
+					})
+				: $i18n.t('{{count}} min', { count: minutes });
+		}
+		const hours = Math.floor(minutes / 60);
+		return $i18n.t('{{hours}} hr {{minutes}} min', {
+			hours,
+			minutes: minutes % 60
+		});
+	}
+
+	function startProcessing(message: string, progress = 0) {
+		isProcessing = true;
+		processingProgress = progress;
+		processingMessage = message;
+		processingCurrent = undefined;
+		processingTotal = undefined;
+		processingColdStart = false;
+		processingStartedAt = Date.now();
+		processingElapsedSeconds = 0;
+		if (processingTimer) clearInterval(processingTimer);
+		processingTimer = setInterval(() => {
+			processingElapsedSeconds = Math.floor((Date.now() - processingStartedAt) / 1000);
+		}, 1000);
+	}
+
+	function stopProcessing() {
+		isProcessing = false;
+		if (processingTimer) clearInterval(processingTimer);
+		processingTimer = undefined;
+	}
+
+	const handleImportProgress: KnowledgeImportProgressHandler = (
+		progress: KnowledgeImportProgress
+	) => {
+		processingProgress =
+			progress.stage === 'complete' ? 100 : Math.min(99, 10 + Math.round(progress.progress * 0.89));
+		processingMessage = $i18n.t(
+			progressMessageKeys[progress.stage] ?? 'Processing knowledge base...'
+		);
+		processingCurrent = progress.current;
+		processingTotal = progress.total;
+		processingColdStart = Boolean(progress.cold_start);
+	};
+
+	$: estimatedRemainingSeconds =
+		!processingColdStart && processingProgress >= 15 && processingProgress < 100
+			? Math.round((processingElapsedSeconds * (100 - processingProgress)) / processingProgress)
+			: undefined;
+
+	onDestroy(() => {
+		if (processingTimer) clearInterval(processingTimer);
+	});
 
 	let alignWarnings: { baseName: string; counts: Record<LangCode, number> }[] = [];
 	interface BilingualLogEntry {
@@ -143,14 +239,18 @@
 			let allFiles: File[] = [];
 			allFiles = await selectViaInput();
 			if (allFiles.length === 0) {
-				toast.warning('No files found in the selected directory.');
+				toast.warning($i18n.t('No files found in the selected directory.'));
 				return;
 			}
 
 			await parseFilePairs(allFiles, true);
 		} catch (e: any) {
 			if (e?.name !== 'AbortError') {
-				toast.error('Failed to read directory: ' + e?.message);
+				toast.error(
+					$i18n.t('Failed to read directory: {{error}}', {
+						error: e?.message ?? $i18n.t('Unknown error')
+					})
+				);
 			}
 		}
 	}
@@ -182,13 +282,17 @@
 			});
 
 			if (filterFiles.length === 0) {
-				toast.warning('No epub files found in the selected directory.');
+				toast.warning($i18n.t('No EPUB files found in the selected directory.'));
 				return;
 			}
 			await parseFilePairs(filterFiles, true);
 		} catch (e: any) {
 			if (e?.name !== 'AbortError') {
-				toast.error('Failed to select EPUB: ' + e?.message);
+				toast.error(
+					$i18n.t('Failed to select EPUB: {{error}}', {
+						error: e?.message ?? $i18n.t('Unknown error')
+					})
+				);
 			}
 		}
 	}
@@ -196,7 +300,7 @@
 	async function parseFilePairs(files: File[], is_show: boolean = true) {
 		isProcessing = true;
 		processingProgress = 0;
-		processingMessage = $i18n?.t('Scanning files...') ?? '正在扫描文件...';
+		processingMessage = 'Scanning files...';
 
 		// 只处理文本类文件
 		const textFiles = files.filter((f) => /\.(txt|md|html|xml|json|epub)$/i.test(f.name));
@@ -225,9 +329,11 @@
 
 		if (validPairs.length === 0) {
 			toast.error(
-				'No bilingual file pairs found. Make sure files share a base name with language suffixes, e.g. article_zh.txt / article_en.txt'
+				$i18n.t(
+					'No bilingual file pairs found. Make sure files share a base name with language suffixes, e.g. article_zh.txt / article_en.txt'
+				)
 			);
-			isProcessing = false;
+			stopProcessing();
 			return;
 		}
 
@@ -240,7 +346,7 @@
 			await loadParagraphPreview(0);
 		}
 
-		isProcessing = false;
+		stopProcessing();
 		step = 'preview';
 	}
 
@@ -286,9 +392,7 @@
 			return;
 		}
 
-		isProcessing = true;
-		processingProgress = 10;
-		processingMessage = $i18n?.t('Reading Google Sheet & documents...') ?? '正在读取表格与文档...';
+		startProcessing($i18n?.t('Reading Google Sheet & documents...') ?? '正在读取表格与文档...', 10);
 
 		try {
 			const result = await importBilingualGoogleSheet(
@@ -302,7 +406,7 @@
 				toast.error(
 					$i18n?.t('No valid rows found in the sheet.') ?? '表格中没有解析到任何有效数据行。'
 				);
-				isProcessing = false;
+				stopProcessing();
 				return;
 			}
 
@@ -320,19 +424,22 @@
 			await loadParagraphPreview(0);
 
 			processingProgress = 100;
-			isProcessing = false;
+			stopProcessing();
 			step = 'preview';
 		} catch (e: any) {
-			toast.error(($i18n?.t('Import failed') ?? '导入失败') + '：' + (e?.message ?? '未知错误'));
-			isProcessing = false;
+			toast.error(
+				$i18n.t('Import failed: {{error}}', {
+					error: e?.message ?? $i18n.t('Unknown error')
+				})
+			);
+			stopProcessing();
 		}
 	}
 
 	async function handleConfirm() {
 		isProcessing = true;
 		processingProgress = 0;
-		processingMessage = $i18n?.t('Processing paragraphs...') ?? '正在处理段落...';
-		resetBilingualLogs();
+		processingMessage = 'Processing paragraphs...';
 
 		const files: BilingualFile[] = [];
 
@@ -343,7 +450,7 @@
 			const total = googleFiles.length;
 			for (let idx = 0; idx < googleFiles.length; idx++) {
 				const gFile = googleFiles[idx];
-				processingProgress = Math.round(((idx + 0.5) / total) * 50);
+				processingProgress = Math.round(((idx + 0.5) / total) * 10);
 
 				const langs: Record<LangCode, string> = {};
 				for (const lang of detectedLanguages) {
@@ -360,7 +467,7 @@
 					primaryLang,
 					primaryText
 				});
-				processingProgress = Math.round(((idx + 1) / total) * 50);
+				processingProgress = Math.round(((idx + 1) / total) * 10);
 			}
 
 			try {
@@ -371,15 +478,21 @@
 						languages: detectedLanguages,
 						totalFiles: total
 					},
-					'txt' // 复用现有 txt 模式的提交管道
+					// Reuse the existing text import pipeline.
+					'txt',
+					handleImportProgress
 				);
 
-				isProcessing = false;
+				stopProcessing();
 				processingProgress = 100;
 				handleClose();
 			} catch (e: any) {
-				toast.error('导入失败：' + (e?.message ?? '未知错误'));
-				isProcessing = false;
+				toast.error(
+					$i18n.t('Import failed: {{error}}', {
+						error: e?.message ?? $i18n.t('Unknown error')
+					})
+				);
+				stopProcessing();
 			}
 			return;
 		}
@@ -388,7 +501,7 @@
 
 		for (let pairIdx = 0; pairIdx < filePairs.length; pairIdx++) {
 			const pair = filePairs[pairIdx];
-			processingProgress = Math.round(((pairIdx + 0.5) / total) * 50);
+			processingProgress = Math.round(((pairIdx + 0.5) / total) * 10);
 
 			const langs: Record<LangCode, string> = {};
 			for (const [lang, file] of Object.entries(pair.files)) {
@@ -405,7 +518,7 @@
 				primaryLang,
 				primaryText
 			});
-			processingProgress = Math.round(((pairIdx + 1) / total) * 50);
+			processingProgress = Math.round(((pairIdx + 1) / total) * 10);
 		}
 
 		try {
@@ -416,30 +529,35 @@
 					languages: detectedLanguages,
 					totalFiles: total
 				},
-				'txt'
+				'txt',
+				handleImportProgress
 			);
 
-			isProcessing = false;
+			stopProcessing();
 			processingProgress = 100;
 
 			handleClose();
 		} catch (e: any) {
-			toast.error('导入失败：' + (e?.message ?? '未知错误'));
-			isProcessing = false;
+			toast.error(
+				$i18n.t('Import failed: {{error}}', {
+					error: e?.message ?? $i18n.t('Unknown error')
+				})
+			);
+			stopProcessing();
 		}
 	}
 
 	async function handleEpubConfirm() {
 		isProcessing = true;
 		processingProgress = 0;
-		processingMessage = $i18n?.t('Processing paragraphs...') ?? '正在处理段落...';
+		processingMessage = 'Processing paragraphs...';
 
 		const files: BilingualEpubFile[] = [];
 		const total = filePairs.length;
 
 		for (let pairIdx = 0; pairIdx < filePairs.length; pairIdx++) {
 			const pair = filePairs[pairIdx];
-			processingProgress = Math.round(((pairIdx + 0.5) / total) * 50);
+			processingProgress = Math.round(((pairIdx + 0.5) / total) * 10);
 
 			const langs: Record<LangCode, File> = {};
 			for (const [lang, file] of Object.entries(pair.files)) {
@@ -452,7 +570,7 @@
 				langs,
 				primaryLang
 			});
-			processingProgress = Math.round(((pairIdx + 1) / total) * 50);
+			processingProgress = Math.round(((pairIdx + 1) / total) * 10);
 		}
 
 		try {
@@ -463,20 +581,26 @@
 					languages: detectedLanguages,
 					totalFiles: total
 				},
-				'epub'
+				'epub',
+				handleImportProgress
 			);
 
-			isProcessing = false;
+			stopProcessing();
 			processingProgress = 100;
 
 			handleClose();
 		} catch (e: any) {
-			toast.error('导入失败：' + (e?.message ?? '未知错误'));
-			isProcessing = false;
+			toast.error(
+				$i18n.t('Import failed: {{error}}', {
+					error: e?.message ?? $i18n.t('Unknown error')
+				})
+			);
+			stopProcessing();
 		}
 	}
 
 	function handleClose() {
+		stopProcessing();
 		show = false;
 		step = 'select';
 		importMode = 'files';
@@ -492,7 +616,7 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') handleClose();
+		if (e.key === 'Escape' && !isProcessing) handleClose();
 	}
 </script>
 
@@ -503,14 +627,15 @@
 		class="fixed inset-0 z-50 flex items-center justify-center"
 		role="dialog"
 		aria-modal="true"
-		aria-label="Bilingual Import"
+		aria-label={$i18n.t('Bilingual Import')}
 	>
 		<!-- Overlay -->
 		<button
 			class="absolute inset-0 bg-black/40 backdrop-blur-sm"
 			on:click={handleClose}
+			disabled={isProcessing}
 			tabindex="-1"
-			aria-label="Close"
+			aria-label={$i18n.t('Close')}
 		/>
 
 		<!-- Modal -->
@@ -561,7 +686,7 @@
 				<button
 					class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
 					on:click={handleClose}
-					aria-label="Close"
+					aria-label={$i18n.t('Close')}
 				>
 					<svg
 						xmlns="http://www.w3.org/2000/svg"
@@ -739,7 +864,9 @@
 											d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"
 										/>
 									</svg>
-									{importMode === 'files' ? 'Select Directory' : 'Select EPUB File'}
+									{importMode === 'files'
+										? $i18n.t('Select Directory')
+										: $i18n.t('Select EPUB File')}
 								{/if}
 							</button>
 						{/if}
@@ -763,7 +890,9 @@
 									{/each}
 								</div>
 								<div class="mt-3 text-xs text-gray-400 dark:text-gray-500">
-									Supports: .txt .md .html .xml .json
+									{$i18n.t('Supported file types: {{types}}', {
+										types: '.txt .md .html .xml .json'
+									})}
 								</div>
 							</div>
 						{:else if importMode === 'epub'}
@@ -783,14 +912,14 @@
 										/>
 									</svg>
 									<div class="text-xs text-purple-700 dark:text-purple-300">
-										<strong>EPUB Processing:</strong> Your EPUB will be automatically split into chapters
-										by the server.
+										<strong>{$i18n.t('EPUB Processing:')}</strong>
+										{$i18n.t('Your EPUB will be automatically split into chapters by the server.')}
 									</div>
 								</div>
 								<div class="text-xs text-purple-600 dark:text-purple-400 space-y-1">
-									<p>✓ Supports bilingual EPUB files</p>
-									<p>✓ Extracts chapters automatically</p>
-									<p>✓ Aligns parallel texts</p>
+									<p>✓ {$i18n.t('Supports bilingual EPUB files')}</p>
+									<p>✓ {$i18n.t('Extracts chapters automatically')}</p>
+									<p>✓ {$i18n.t('Aligns parallel texts')}</p>
 								</div>
 							</div>
 						{:else if importMode === 'google'}
@@ -873,10 +1002,10 @@
 				{:else if step === 'preview'}
 					<!-- File pairs summary -->
 					<div class="flex items-center gap-3 mb-4 flex-wrap">
-						<div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-							<span class="font-medium text-gray-700 dark:text-gray-200">
-								{importMode === 'google' ? googleFiles.length : filePairs.length}
-							</span>file pairs detected
+						<div class="text-sm text-gray-500 dark:text-gray-400">
+							{$i18n.t('File pairs detected: {{pairCount}}', {
+								pairCount: importMode === 'google' ? googleFiles.length : filePairs.length
+							})}
 						</div>
 						<div class="flex gap-1.5 flex-wrap">
 							{#each detectedLanguages as lang}
@@ -887,14 +1016,16 @@
 										: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'}"
 								>
 									{getLangLabel(lang)}
-									{#if lang === primaryLang}<span class="ml-1 opacity-60">(primary)</span>{/if}
+									{#if lang === primaryLang}<span class="ml-1 opacity-60"
+											>({$i18n.t('primary')})</span
+										>{/if}
 								</span>
 							{/each}
 						</div>
 
 						<!-- Primary lang selector -->
 						<div class="ml-auto flex items-center gap-2 text-sm">
-							<span class="text-gray-500 dark:text-gray-400">Embedding language:</span>
+							<span class="text-gray-500 dark:text-gray-400">{$i18n.t('Embedding language:')}</span>
 							<select
 								bind:value={primaryLang}
 								class="text-sm px-2 py-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 outline-none"
@@ -924,10 +1055,14 @@
 									{#if importMode === 'google'}
 										{(w.counts as any)?.info}
 									{:else}
-										paragraph counts differ —
-										{Object.entries(w.counts)
-											.map(([l, n]) => `${getLangLabel(l)}: ${n}`)
-											.join(', ')}. Mismatched positions will be left empty.
+										{$i18n.t(
+											'Paragraph counts differ: {{counts}}. Mismatched positions will be left empty.',
+											{
+												counts: Object.entries(w.counts)
+													.map(([l, n]) => getLangLabel(l) + ': ' + n)
+													.join(', ')
+											}
+										)}
 									{/if}
 								</span>
 							</div>
@@ -997,7 +1132,9 @@
 													? row.langs[lang].slice(0, 120) + '…'
 													: row.langs[lang]}
 											{:else}
-												<span class="text-gray-300 dark:text-gray-600 italic">— empty —</span>
+												<span class="text-gray-300 dark:text-gray-600 italic"
+													>— {$i18n.t('empty')} —</span
+												>
 											{/if}
 										</div>
 									{/each}
@@ -1005,26 +1142,31 @@
 							{/each}
 							{#if paragraphRows.length > 30}
 								<div class="py-2 text-center text-xs text-gray-400">
-									... and {paragraphRows.length - 30} more paragraphs
+									{$i18n.t('... and {{paragraphCount}} more paragraphs', {
+										paragraphCount: paragraphRows.length - 30
+									})}
 								</div>
 							{/if}
 						</div>
 					</div>
 
 					<div class="mt-3 text-xs text-gray-400 dark:text-gray-500">
-						Showing preview for
-						<strong class="text-gray-500">
-							{(importMode === 'google' ? googleFiles : filePairs)[previewPairIndex]?.baseName}
-						</strong>. Total across all pairs will be computed on import.
+						{$i18n.t(
+							'Showing preview for {{name}}. Totals across all file pairs will be computed during import.',
+							{
+								name: (importMode === 'google' ? googleFiles : filePairs)[previewPairIndex]
+									?.baseName
+							}
+						)}
 					</div>
 
 					<!-- ── Step 3: Confirm ── -->
 				{:else if step === 'confirm'}
 					<div class="space-y-4">
 						<div class="grid grid-cols-2 gap-3">
-							{#each [{ label: 'File Pairs', value: importMode === 'google' ? googleFiles.length : filePairs.length }, { label: 'Languages', value: detectedLanguages
+							{#each [{ label: $i18n.t('File Pairs'), value: importMode === 'google' ? googleFiles.length : filePairs.length }, { label: $i18n.t('Languages'), value: detectedLanguages
 											.map(getLangLabel)
-											.join(' · ') }, { label: 'Primary Language (Embedding)', value: getLangLabel(primaryLang) }, { label: 'Paragraph Separator', value: 'Blank lines (\\n\\n)' }] as item}
+											.join(' · ') }, { label: $i18n.t('Primary Language (Embedding)'), value: getLangLabel(primaryLang) }, { label: $i18n.t('Paragraph Separator'), value: $i18n.t('Blank lines (\\n\\n)') }] as item}
 								<div class="bg-gray-50 dark:bg-gray-800 rounded-xl px-4 py-3">
 									<div class="text-xs text-gray-400 dark:text-gray-500 mb-1">{item.label}</div>
 									<div class="text-sm font-medium text-gray-800 dark:text-gray-100">
@@ -1061,23 +1203,57 @@
 						<div
 							class="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl px-4 py-3 text-sm text-blue-700 dark:text-blue-300"
 						>
-							<strong>{$i18n?.t('How it works:') ?? '工作方式：'}</strong> {$i18n?.t('Each paragraph pair becomes one chunk in the knowledge base.') ?? '每一对段落都会变成知识库中的一个块。'}
-							{$i18n?.t('The {{lang}} text will be embedded for semantic search.', { lang: getLangLabel(primaryLang) }) ?? `将对 ${getLangLabel(primaryLang)} 文本进行语义嵌入以支持检索。`}
-							{$i18n?.t('All language versions are stored as metadata, so retrieval returns the full translation set.') ?? '所有语言版本都会作为元数据保存，因此检索时会返回完整的翻译集合。'}
+							<strong>How it works:</strong> Each paragraph pair becomes one chunk in the knowledge
+							base. The <strong>{getLangLabel(primaryLang)}</strong> text will be embedded for semantic
+							search. All language versions are stored as metadata, so retrieval returns the full translation
+							set.
 						</div>
 
 						{#if isProcessing}
 							<div class="space-y-2">
 								<div class="flex justify-between text-xs text-gray-500">
-									<span>{$i18n?.t('Processing paragraphs...') ?? '正在处理段落...'}</span>
+									<span>Processing paragraphs...</span>
 									<span>{processingProgress}%</span>
 								</div>
 								<div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
 									<div
-										class="bg-blue-500 h-1.5 rounded-full transition-all"
+										class="relative bg-blue-500 h-2 rounded-full transition-[width] duration-300"
 										style="width: {processingProgress}%"
-									/>
+									>
+										<div class="absolute inset-0 bg-white/20 animate-pulse" />
+									</div>
 								</div>
+								<div
+									class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400"
+								>
+									<span
+										>{$i18n.t('Elapsed: {{time}}', {
+											time: formatDuration(processingElapsedSeconds)
+										})}</span
+									>
+									{#if processingColdStart}
+										<span>{$i18n.t('First use usually takes 5–20 minutes')}</span>
+									{:else if estimatedRemainingSeconds !== undefined}
+										<span
+											>{$i18n.t('Estimated remaining: about {{time}}', {
+												time: formatDuration(estimatedRemainingSeconds)
+											})}</span
+										>
+									{/if}
+								</div>
+								<p class="text-xs text-gray-500 dark:text-gray-400">
+									{processingColdStart
+										? $i18n.t(
+												'The required local model is being downloaded or loaded. Keep this window open.'
+											)
+										: processingElapsedSeconds >= 1200
+											? $i18n.t(
+													'This stage is taking longer than usual, but processing is still active.'
+												)
+											: $i18n.t(
+													'Processing time depends on document size and computer performance.'
+												)}
+								</p>
 							</div>
 						{/if}
 					</div>
@@ -1103,7 +1279,7 @@
 					}}
 					disabled={isProcessing}
 				>
-					{step === 'select' ? '取消' : '后退'}
+					{step === 'select' ? $i18n.t('Cancel') : $i18n.t('Back')}
 				</button>
 
 				<div class="flex gap-2">
@@ -1115,7 +1291,7 @@
 							}}
 							disabled={(importMode === 'google' ? googleFiles.length : filePairs.length) === 0}
 						>
-							Review Import →
+							{$i18n.t('Review Import')} →
 						</button>
 					{:else if step === 'confirm'}
 						<button
@@ -1139,7 +1315,7 @@
 									<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
 								</svg>
 							{/if}
-							Confirm & Import
+							{$i18n.t('Confirm & Import')}
 						</button>
 					{/if}
 				</div>

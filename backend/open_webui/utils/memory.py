@@ -12,7 +12,11 @@ from fastapi import HTTPException
 
 from open_webui.models.config import Config
 from open_webui.models.memories import Memories
-from open_webui.utils.misc import add_or_update_system_message, get_content_from_message
+from open_webui.utils.misc import (
+    add_or_update_system_message,
+    convert_output_to_messages,
+    get_content_from_message,
+)
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +42,7 @@ _FORGET_MEMORY_RE = re.compile(
     re.IGNORECASE,
 )
 _DURABLE_MEMORY_RE = re.compile(
-    r"(?:\bmy (?:(?:preferred|primary) )?(?:name|job|role|language|timezone|location|preference|goal|project|pronouns?)\b|"
+    r'(?:\bmy (?:(?:preferred|primary) )?(?:name|job|role|language|timezone|location|preference|goal|project|pronouns?)\b|'
     r'\bi (?:am|work|live|prefer|like|dislike|always|never|need you to|want you to)\b|'
     r'\u6211(?:\u53eb|\u662f|\u5728.{0,12}(?:\u5de5\u4f5c|\u751f\u6d3b|\u5c45\u4f4f)|'
     r'\u4ece\u4e8b|\u559c\u6b22|\u4e0d\u559c\u6b22|\u4e60\u60ef|\u5e0c\u671b\u4f60|'
@@ -82,6 +86,26 @@ def _last_user_content(messages: list[dict]) -> str:
         if isinstance(content, str) and content.strip():
             return content.strip()
     return ''
+
+
+def get_memory_message_content(message: dict) -> str:
+    """Return visible message text from chat-completion or Responses API storage."""
+    content = get_content_from_message(message)
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+
+    output = message.get('output')
+    if not isinstance(output, list):
+        return ''
+
+    contents = []
+    for output_message in convert_output_to_messages(output):
+        if output_message.get('role') != 'assistant':
+            continue
+        output_content = get_content_from_message(output_message)
+        if isinstance(output_content, str) and output_content.strip():
+            contents.append(output_content.strip())
+    return '\n'.join(contents)
 
 
 def memory_review_candidate(
@@ -451,6 +475,7 @@ async def add_memory_context(
     seen_ids = set()
 
     if use_saved_memories:
+
         def pinned_first(memory):
             meta = memory.meta if isinstance(memory.meta, dict) else {}
             return (not bool(meta.get('pinned')), memory.path or '', -(memory.updated_at or 0))
@@ -559,6 +584,7 @@ async def add_memory_context(
     form_data['messages'] = add_or_update_system_message(memory_context, messages, append=True)
     return form_data
 
+
 async def review_memory_after_turn(
     *,
     request,
@@ -577,6 +603,7 @@ async def review_memory_after_turn(
     saved_memory_enabled = bool(features.get('memory'))
     chat_history_enabled = bool(features.get('chat_history_memory'))
     if not saved_memory_enabled and not chat_history_enabled:
+        _set_memory_review_status(user.id, state='skipped', reason='memory_features_disabled')
         return
 
     chat_id = metadata.get('chat_id') or ''
@@ -584,8 +611,8 @@ async def review_memory_after_turn(
         _set_memory_review_status(user.id, state='skipped', reason='temporary_chat')
         return
 
-    assistant_content = assistant_message.get('content', '')
-    if not isinstance(assistant_content, str) or not assistant_content.strip():
+    assistant_content = get_memory_message_content(assistant_message)
+    if not assistant_content:
         _set_memory_review_status(user.id, state='skipped', reason='empty_assistant_response')
         return
 
@@ -795,20 +822,14 @@ async def _review_memory(
     transcript_lines = []
     for message in messages[-14:]:
         role = message.get('role', '')
-        content = message.get('content', '')
-        if not isinstance(content, str):
-            content = get_content_from_message(message)
-        content = content.strip()
+        content = get_memory_message_content(message)
         if role not in {'user', 'assistant'} or not content:
             continue
         if len(content) > 1400:
             content = f'{content[:900]}\n...(truncated)...\n{content[-300:]}'
         transcript_lines.append(f'{role}: {content}')
 
-    assistant_content = assistant_message.get('content', '')
-    if not isinstance(assistant_content, str):
-        assistant_content = get_content_from_message(assistant_message)
-    assistant_final = assistant_content.strip()
+    assistant_final = get_memory_message_content(assistant_message)
     if assistant_final:
         if len(assistant_final) > 1400:
             assistant_final = f'{assistant_final[:900]}\n...(truncated)...\n{assistant_final[-300:]}'
@@ -1006,6 +1027,11 @@ Enabled outputs:
 - Chat history summary: {chat_history_enabled}
 - Trigger: {trigger_reason}
 
+Output-language rules:
+- Prefer concise, natural Simplified Chinese for newly written memory content and chat-history summaries, regardless of the conversation language.
+- Preserve proper names, product names, code, URLs, file paths, quoted terms, and exact identifiers in their original form when translating them would reduce accuracy.
+- Do not rewrite an otherwise unchanged existing memory solely to change its language.
+
 Saved-memory rules:
 - Learn only from user statements, never from assistant claims.
 - Save stable preferences, identity details, standing instructions, long-term goals, projects, and relationships.
@@ -1046,7 +1072,7 @@ Conversation:
             'messages': [
                 {
                     'role': 'system',
-                    'content': 'You are a private memory reviewer. Return one valid JSON object and no commentary.',
+                    'content': 'You are a private memory reviewer. Store memories primarily in Simplified Chinese. Return one valid JSON object and no commentary.',
                 },
                 {'role': 'user', 'content': review_prompt},
             ],

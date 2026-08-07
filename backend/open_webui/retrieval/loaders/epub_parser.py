@@ -2,4 +2,4 @@
 
 from open_webui.retrieval.parsers.epub import EPUBParser
 
-__all__ = ["EPUBParser"]
+__all__ = ['EPUBParser']
