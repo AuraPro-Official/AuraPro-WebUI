@@ -723,7 +723,7 @@
 						for (const messageId of history.messages[message.parentId].childrenIds) {
 							history.messages[messageId].done = true;
 						}
-						await processNextInQueue($chatId);
+						await releaseQueueRun($chatId, null, true);
 					} else {
 						message.done = true;
 					}
@@ -1016,8 +1016,7 @@
 			await loadChat(activeChatId);
 
 			if ($chatId === activeChatId) {
-				processingQueueChats.delete(activeChatId);
-				await processNextInQueue(activeChatId);
+				await releaseQueueRun(activeChatId, null, true);
 			}
 		} finally {
 			pendingChatReconcileInFlight = false;
@@ -1867,16 +1866,45 @@
 		}
 	};
 
-	let processingQueueChats = new Set<string>();
+	type QueueRun = {
+		queueItemId: string;
+		responseMessageIds: Set<string>;
+	};
+
+	let processingQueueChats = new Map<string, QueueRun>();
+
+	const releaseQueueRun = async (
+		targetChatId: string,
+		responseMessageId: string | null = null,
+		force = false
+	) => {
+		const queueRun = processingQueueChats.get(targetChatId);
+
+		if (queueRun && !force) {
+			// Ignore duplicate or late terminal events from an older response.
+			if (!responseMessageId || !queueRun.responseMessageIds.has(responseMessageId)) return;
+
+			queueRun.responseMessageIds.delete(responseMessageId);
+			if (queueRun.responseMessageIds.size > 0) return;
+		}
+
+		processingQueueChats.delete(targetChatId);
+		await processNextInQueue(targetChatId);
+	};
 
 	const processNextInQueue = async (targetChatId: string) => {
 		if (processingQueueChats.has(targetChatId)) return;
+		if (targetChatId !== $chatId || hasPendingAssistantLeaf()) return;
 
 		const queue = $chatRequestQueues[targetChatId];
 		if (!queue || queue.length === 0) return;
 
 		const nextTask = queue[0];
-		processingQueueChats.add(targetChatId);
+		const queueRun: QueueRun = {
+			queueItemId: nextTask.id,
+			responseMessageIds: new Set()
+		};
+		processingQueueChats.set(targetChatId, queueRun);
 		try {
 			chatRequestQueues.update((q) => {
 				const updatedQueue = [...(q[targetChatId] || [])];
@@ -1892,19 +1920,22 @@
 			});
 
 			await submitPrompt(nextTask.prompt, nextTask.files);
+
+			// No response placeholder means submission ended before generation began.
+			if (
+				processingQueueChats.get(targetChatId) === queueRun &&
+				queueRun.responseMessageIds.size === 0
+			) {
+				await releaseQueueRun(targetChatId, null, true);
+			}
 		} catch (error) {
 			console.error('Failed to process queued message:', error);
-			// 提交失败时，队列里没有"生成完成"事件会触发推进，
-			// 所以这里需要手动释放锁并尝试推进下一条，避免队列卡死
-			processingQueueChats.delete(targetChatId);
-			await tick();
-			if ($chatRequestQueues[targetChatId]?.length > 0) {
-				processNextInQueue(targetChatId);
+			if (processingQueueChats.get(targetChatId) === queueRun) {
+				await releaseQueueRun(targetChatId, null, true);
 			}
 			return;
 		}
 	};
-
 	const chatCompletedHandler = async (_chatId, modelId, responseMessageId, messages) => {
 		// Backend handles outlet filters and persistence inline.
 		// Just refresh the sidebar chat list.
@@ -2208,9 +2239,7 @@
 		}
 
 		if (done || error) {
-			// Process next queued request if any
-			processingQueueChats.delete(chatId);
-			await processNextInQueue(chatId);
+			await releaseQueueRun(chatId, message.id);
 		}
 
 		console.log(data);
@@ -2343,10 +2372,11 @@
 			return;
 		}
 
-		// Check if the assistant is still generating the main response
-		// (don't block on background tasks like title gen, follow-ups, tags)
-		const lastMessage = history.currentId ? history.messages[history.currentId] : null;
-		const isGenerating = lastMessage && lastMessage.role === 'assistant' && !lastMessage.done;
+		// Queue behind any active response or earlier queued message to preserve FIFO ordering.
+		const isGenerating =
+			hasPendingAssistantLeaf() ||
+			processingQueueChats.has($chatId) ||
+			($chatRequestQueues[$chatId]?.length ?? 0) > 0;
 
 		if (isGenerating) {
 			if ($settings?.enableMessageQueue ?? true) {
@@ -2360,6 +2390,8 @@
 				messageInput?.setText('');
 				prompt = '';
 				files = [];
+				await tick();
+				await processNextInQueue($chatId);
 				return;
 			} else {
 				// Interrupt: stop current generation and proceed
@@ -2454,6 +2486,12 @@
 				messageIdsList.push({ model_id: modelId, message_id: responseMessageId });
 			}
 		}
+
+		const queueRun = processingQueueChats.get(_chatId);
+		if (queueRun) {
+			queueRun.responseMessageIds = new Set(messageIdsList.map(({ message_id }) => message_id));
+		}
+
 		history = history;
 
 		// New chat — backend generates the chat_id on first request
@@ -2833,8 +2871,7 @@
 		if (res) {
 			if (res.error) {
 				await handleOpenAIError(res.error, responseMessage);
-				processingQueueChats.delete(_chatId);
-				await processNextInQueue(_chatId);
+				await releaseQueueRun(_chatId, responseMessage.id);
 			} else {
 				// Backend returns task_ids (multi-model) or task_id (single model)
 				const newTaskIds = res.task_ids ?? (res.task_id ? [res.task_id] : []);
@@ -2938,8 +2975,7 @@
 		}
 
 		if (processQueue) {
-			processingQueueChats.delete($chatId);
-			await processNextInQueue($chatId);
+			await releaseQueueRun($chatId, null, true);
 		}
 	};
 

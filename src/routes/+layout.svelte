@@ -62,7 +62,8 @@
 		addOpenAIConnection,
 		removeOpenAIConnection,
 		addTerminalConnection,
-		removeTerminalConnection
+		removeTerminalConnection,
+		normalizeAuraProLocalLlamaConnections
 	} from '$lib/utils/connections';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL, WEBUI_HOSTNAME } from '$lib/constants';
@@ -1251,6 +1252,11 @@
 
 					if (sessionUser) {
 						await user.set(sessionUser);
+						if (sessionUser.role === 'admin') {
+							await normalizeAuraProLocalLlamaConnections(localStorage.token).catch((error) => {
+								console.error('Failed to migrate local llama.cpp connection:', error);
+							});
+						}
 						try {
 							await config.set(await getBackendConfig());
 						} catch (error) {
