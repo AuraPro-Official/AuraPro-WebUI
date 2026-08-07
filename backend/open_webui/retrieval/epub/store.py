@@ -34,7 +34,7 @@ from .overlay import (
 )
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class IntegrityError(ValueError):
@@ -464,6 +464,36 @@ _MIGRATION_7: tuple[str, ...] = (
 )
 
 
+_MIGRATION_8: tuple[str, ...] = (
+    # A span shorter than its profile's enforced evidence floor is dropped from
+    # the payload during grounding rather than failing its item, exactly as a
+    # merged-away self-relation is skipped rather than failing its packet
+    # (SDD 4.2.2 points 6 and 7).  One unusable citation must not discard the
+    # valid concepts, mentions and relations around it -- measured on the
+    # full-book section-graph run, that behaviour cost 140 concepts, 140
+    # mentions and 105 relations across 13 of 43 packets.
+    #
+    # The count cannot live in ``response_json``: that column stores the
+    # grounded payload, from which the dropped spans are by definition absent,
+    # and it must serialize byte-identically on replay for ingest to stay
+    # idempotent.  How many spans the grounding pass removed is a fact about
+    # that pass, so it lives on the item row beside ``skipped_self_relations``.
+    #
+    # One counter, not one per span kind: a dropped concept mention and a
+    # dropped relation-evidence span are the same defect with the same fix, and
+    # both are removed by the same resolver.  It is an integer or nothing,
+    # enforced by the schema rather than by a validator, so the column cannot
+    # carry an evidence string even in a hand-edited or restored database.
+    # NULL means "not measured": every item written before this migration, and
+    # every item whose payload was never put through a grounding pass.
+    """
+    ALTER TABLE batch_items ADD COLUMN skipped_short_evidence INTEGER
+        CHECK (skipped_short_evidence IS NULL
+               OR (typeof(skipped_short_evidence) = 'integer' AND skipped_short_evidence >= 0))
+    """,
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
@@ -558,6 +588,7 @@ class SQLiteEpubStore:
                 (5, _MIGRATION_5),
                 (6, _MIGRATION_6),
                 (7, _MIGRATION_7),
+                (8, _MIGRATION_8),
             )
             try:
                 connection.execute("BEGIN")

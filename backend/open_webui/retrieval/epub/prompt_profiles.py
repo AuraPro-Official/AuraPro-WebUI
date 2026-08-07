@@ -36,26 +36,49 @@ class ConceptPromptProfile:
     # the shape per mention, from the field set the model actually returned, so
     # a stored request built from any registered profile still replays.
     asks_for_offsets: bool = True
-    # The minimum evidence length, in Unicode code points, that this profile's
-    # instruction actually asks for.  Same per-profile reasoning as the two
-    # flags above, and for a sharper reason: v1-v5 never asked for a minimum at
-    # all, and their samples are still replayable, so a global constant would
-    # retroactively invalidate output that honoured the contract it was given.
-    # ``0`` means "this instruction states no floor", which is the only honest
-    # default for a profile that does not carry the clause.
+    # Two different numbers, deliberately, and the distinction is the whole
+    # point of naming them separately.
     #
-    # Unlike the two flags above, ingest *does* act on this one, because a floor
-    # that is only ever asked for is silently optional: measured on the
-    # completed full-book v6 run, 345 of 2,619 stored mentions (13.2%) came in
-    # below it, 45 of them 1-3 code points.  ``batch.py`` must not import this
-    # module - cloud ingest recognises a payload shape without importing an
-    # extraction-policy module - so the value is injected into the batch
-    # repository by the service layer rather than looked up there.
+    # ``requested_min_evidence_codepoints`` is what this profile's instruction
+    # *asks* the model for, in Unicode code points.  It is a transcription of
+    # the text and nothing else: the instruction is digest-pinned and immutable,
+    # so this field must always state the number that text says, and a test
+    # asserts exactly that.  Same per-profile reasoning as the two flags above -
+    # v1-v5 never asked for a minimum, so ``0`` is the only honest value for
+    # them.
     #
-    # The escape hatch belongs to the same clause and is enforced with it: the
-    # instruction says that a passage shorter than the floor is quoted whole, so
-    # evidence equal to the entire passage is compliant however short it is.
-    min_evidence_codepoints: int = 0
+    # ``enforced_min_evidence_codepoints`` is what cloud ingest actually applies
+    # to a returned span.  A span below it is dropped from the payload during
+    # grounding; the rest of the item still ingests.  ``batch.py`` must not
+    # import this module - cloud ingest recognises a payload shape without
+    # importing an extraction-policy module - so this is the value the service
+    # layer injects into the batch repository.
+    #
+    # Why they differ.  A floor that is only ever asked for is silently
+    # optional: measured on the completed full-book v6 run, 345 of 2,619 stored
+    # mentions (13.2%) came in below it, 45 of them 1-3 code points.  But the
+    # requested number is also the wrong number to enforce.  The pathology it
+    # was aimed at is the one-to-four-character bare term - ``枢``, ``扰动源``,
+    # ``潮位观测站`` - which is ubiquitous and therefore unlocatable and useless as
+    # a citation.  Length was a proxy for "distinctive and locatable", and in
+    # Chinese 10 code points overshoots that proxy badly: ``枢对测点的授时`` (7)
+    # and ``全网同步统一时基`` (8) are complete, distinctive citations, and
+    # enforcing 10 on the section-graph run discarded them along with 140
+    # concepts, 140 mentions and 105 relations across 13 of 43 packets.
+    #
+    # So the request stays high and the enforcement sits at 6: asking for more
+    # than is enforced encourages a substantive citation while rejecting only
+    # what is genuinely unusable, and the margin between the two numbers is
+    # exactly the population that would otherwise be thrown away.  Raising
+    # enforcement to meet the request is never the fix here; a new profile whose
+    # instruction asks for something different is.
+    #
+    # The escape hatch belongs to the requested clause and is enforced with the
+    # floor: the instruction says that a passage shorter than the minimum is
+    # quoted whole, so evidence equal to the entire passage is compliant however
+    # short it is.
+    requested_min_evidence_codepoints: int = 0
+    enforced_min_evidence_codepoints: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,12 +371,15 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
         # escape hatch those passages would put the model in an impossible bind
         # and invite it to invent text, which strict validation would then reject.
         #
-        # ``min_evidence_codepoints`` states the same 10 as a machine-readable
-        # fact so ingest can enforce the clause instead of hoping for it.  It is
-        # not a new requirement on v6 and does not change a byte of the
-        # instruction: it is the number that instruction has always named.
+        # ``requested_min_evidence_codepoints`` states the same 10 as a
+        # machine-readable fact.  It is not a new requirement on v6 and does not
+        # change a byte of the instruction: it is the number that instruction
+        # has always named.  What ingest applies is
+        # ``enforced_min_evidence_codepoints``, which is lower on purpose; see
+        # the field definitions on ``ConceptPromptProfile``.
         max_tokens=2_048,
-        min_evidence_codepoints=10,
+        requested_min_evidence_codepoints=10,
+        enforced_min_evidence_codepoints=6,
         uses_context_anchors=True,
         system_instruction=(
             "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
@@ -426,8 +452,10 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
         # worst case shrinks from ~1_780 tokens to ~1_660.
         max_tokens=2_048,
         # v7's instruction carries v6's minimum evidence clause verbatim,
-        # including the short-passage escape hatch, so it carries v6's floor.
-        min_evidence_codepoints=10,
+        # including the short-passage escape hatch, so it requests v6's number
+        # and is enforced at v6's floor.
+        requested_min_evidence_codepoints=10,
+        enforced_min_evidence_codepoints=6,
         uses_context_anchors=True,
         asks_for_offsets=False,
         system_instruction=(

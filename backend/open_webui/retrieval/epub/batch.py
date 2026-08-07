@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Any, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Protocol, Sequence
 from uuid import uuid4
 
 
@@ -524,16 +524,14 @@ _GROUNDING_FAILURE_REASONS = frozenset(
         # The literal evidence does not occur in the immutable source at all:
         # the model paraphrased, normalized, or translated instead of copying.
         "EVIDENCE_ABSENT",
-        # The evidence is shorter than the minimum span its job's prompt profile
-        # asked for, and is not the whole passage (which is what that same
-        # instruction asks for on a passage shorter than the floor).  Distinct
-        # from EVIDENCE_AMBIGUOUS, which is where a sub-floor citation usually
-        # ends up when it is caught at all: a one-character quotation that
-        # happens to occur exactly once is just as useless to a reader and just
-        # as polluting to the graph channel, and needs the same prompt fix.
-        # ``evidence_codepoints`` and ``passage_codepoints`` are what make the
-        # rate measurable; the floor itself is not persisted, because it is a
-        # property of the job's profile and readable from it.
+        # Historical only, and deliberately still here.  A sub-floor span used
+        # to fail its whole item; it is now dropped from the payload during
+        # grounding and counted in ``batch_items.skipped_short_evidence``, so no
+        # code path raises this any more (SDD 4.2.2 point 7).  The slug stays in
+        # the vocabulary because it is *durable*: the completed full-book runs
+        # persisted it in ``failure_diagnostics_json``, and removing it would
+        # make ``_safe_failure_diagnostics`` re-read those rows as UNDIAGNOSED -
+        # silently destroying the very measurement that justified this change.
         "EVIDENCE_TOO_SHORT",
         # Section graph only, and a strict subset of the case above: the
         # evidence is absent from the passage it names but is exactly a TOC
@@ -612,6 +610,27 @@ _GROUNDING_DIAGNOSTIC_FIELDS = frozenset(
 _UNDIAGNOSED_FAILURE_REASON = "UNDIAGNOSED"
 _PROVIDER_ITEM_ERROR_DIAGNOSTICS: Mapping[str, Any] = {"reason": "PROVIDER_ITEM_ERROR"}
 _TERMINAL_WITHOUT_RESULT_DIAGNOSTICS: Mapping[str, Any] = {"reason": "TERMINAL_WITHOUT_RESULT"}
+
+
+class _GroundedPayload(NamedTuple):
+    """One grounded result plus what the grounding pass removed from it.
+
+    ``payload`` is what gets written and stored; ``skipped_short_evidence`` is
+    how many spans the enforced evidence floor dropped on the way there.  The
+    count cannot be recovered from ``payload`` afterwards - the dropped spans
+    are exactly what is no longer in it - so it travels out with it and is
+    persisted beside the result, the way ``skipped_self_relations`` already is.
+
+    One counter covers both span kinds.  A dropped concept mention and a dropped
+    relation-evidence span are the same defect with the same remedy - the
+    instruction has to ask for a more distinctive citation - and both are
+    removed by the same resolver, so splitting them would add a column that
+    answers no question an operator actually asks and that is structurally
+    always zero for a CONCEPT_MENTIONS job.
+    """
+
+    payload: dict[str, Any]
+    skipped_short_evidence: int
 
 
 def _grounding_diagnostics(reason: str, **fields: Any) -> dict[str, Any]:
@@ -729,7 +748,7 @@ def _resolve_evidence_span(
     position: Mapping[str, Any],
     toc_titles: frozenset[str] = frozenset(),
     evidence_floor: int = 0,
-) -> tuple[int, int]:
+) -> tuple[int, int] | None:
     """Locate ``evidence`` in one immutable passage and return its exact span.
 
     This is the single span-resolution implementation for every cloud ingest
@@ -750,18 +769,28 @@ def _resolve_evidence_span(
     opposite fixes.  The concept path passes none, because a single-passage
     concept request contains no TOC string to quote.
 
-    ``evidence_floor`` is the minimum evidence length, in code points, that the
-    job's prompt profile asked the model for; ``0`` for a profile that asked for
-    none, which is every profile predating the clause.  It is a parameter rather
-    than a constant on purpose, twice over.  It is a property of the profile:
-    ``zh-glossary-v1`` to ``-v5`` and ``zh-section-graph-v1`` never asked for a
-    minimum and their samples are still replayable, so enforcing one on them
-    would retroactively invalidate output that honoured its own contract.  And
-    it is injected rather than looked up: this module deliberately does not
-    import an extraction-policy module, so the value arrives from the caller
-    that legitimately knows profiles.  See ``SQLiteBatchRepository``.
+    ``evidence_floor`` is the minimum evidence length, in code points, that
+    ingest enforces for this job's prompt profile; ``0`` for a profile that has
+    none, which is every profile predating the clause.  It is deliberately
+    *lower* than the length that profile's instruction asks the model for - see
+    the profile dataclasses, which name the two numbers apart - because the
+    request encourages a substantive citation while this floor rejects only what
+    is genuinely unusable.  It is a parameter rather than a constant on purpose,
+    twice over.  It is a property of the profile: ``zh-glossary-v1`` to ``-v5``
+    and ``zh-section-graph-v1`` never asked for a minimum and their samples are
+    still replayable, so enforcing one on them would retroactively invalidate
+    output that honoured its own contract.  And it is injected rather than
+    looked up: this module deliberately does not import an extraction-policy
+    module, so the value arrives from the caller that legitimately knows
+    profiles.  See ``SQLiteBatchRepository``.
 
-    Raises ``BatchPayloadError`` carrying content-free diagnostics.
+    Returns ``None`` - and only for a sub-floor span - to tell the caller to
+    drop this span from the payload rather than to fail the item.  Every other
+    rejection raises ``BatchPayloadError`` carrying content-free diagnostics,
+    because every other rejection means the model's output is not grounded in
+    the source at all.  A sub-floor span is grounded; it is merely too small to
+    be a useful citation, and one of those must not discard the valid concepts,
+    mentions and relations that arrived beside it.  See SDD 4.2.2 point 7.
     """
     passage_codepoints = len(content)
     evidence_codepoints = len(evidence)
@@ -791,33 +820,34 @@ def _resolve_evidence_span(
         "direct_is_exact": direct_is_exact if offsets_supplied else None,
     }
 
-    # The evidence floor, enforced before the source is scanned at all.
+    # The evidence floor, applied before the source is scanned at all.
     #
     # Ordering is deliberate.  A sub-floor citation is overwhelmingly likely to
     # be ambiguous as well - a single character repeats everywhere - so a floor
-    # checked after the scan would report EVIDENCE_AMBIGUOUS for most of the
-    # very population it exists to measure, and the rate this rejection is
-    # supposed to make legible would stay hidden inside another slug.  Checking
-    # first also costs nothing: both operands are already known.
+    # checked after the scan would classify most of the very population it
+    # exists to remove as an ambiguity failure, and would fail the whole item
+    # for it.  Checking first also costs nothing: both operands are already
+    # known.
     #
-    # The escape hatch.  The instruction that names the floor also says that a
-    # passage shorter than the floor is quoted in full, so evidence equal to the
-    # entire passage is compliant however short it is.  This is not a rare
-    # allowance: of the twenty sampled passages, eight are at or below 10 code
-    # points and two are 9, so a floor without the hatch would reject legitimate
-    # output.  ``evidence == content`` is the whole test, and is exactly
-    # equivalent to the instruction's wording - a passage at or above the floor
-    # cannot equal a sub-floor evidence string.
+    # Dropping rather than raising is the point.  A span this short is genuine
+    # source text; it is simply too small to locate anything for a reader, so it
+    # is not worth storing and is worth nothing else either.  Failing the item
+    # over it discards everything that arrived with it, which is what the
+    # section-graph run measured: 13 of 43 packets lost on this alone, taking
+    # 140 concepts, 140 mentions and 105 relations with them, against 184
+    # relations actually ingested.  The caller drops the span and keeps going;
+    # what cascades from the drop is the caller's rule, not this function's.
+    #
+    # The escape hatch.  The instruction that names a minimum also says that a
+    # passage shorter than it is quoted in full, so evidence equal to the entire
+    # passage is compliant however short it is.  This is not a rare allowance:
+    # of the twenty sampled passages, eight are at or below the requested 10
+    # code points and two are 9, so a floor without the hatch would drop
+    # legitimate output.  ``evidence == content`` is the whole test, and is
+    # exactly equivalent to the instruction's wording - a passage at or above
+    # the floor cannot equal a sub-floor evidence string.
     if evidence_floor > 0 and evidence_codepoints < evidence_floor and evidence != content:
-        raise BatchPayloadError(
-            "OpenAI evidence is shorter than the minimum span this prompt profile requires",
-            diagnostics=_grounding_diagnostics(
-                "EVIDENCE_TOO_SHORT",
-                **shape,
-                **direct,
-                **position,
-            ),
-        )
+        return None
 
     occurrences: list[int] = []
     cursor = content.find(evidence)
@@ -958,11 +988,14 @@ class SQLiteBatchRepository:
     in a successor remote batch without overwriting the original provider job.
 
     ``evidence_floors`` maps a prompt profile identifier to the minimum evidence
-    length, in Unicode code points, that profile's instruction asks the model
-    for.  It is injected rather than imported: this module recognises a payload
-    shape from the fields a model returned and must keep doing so without
-    depending on an extraction-policy module, so the mapping is supplied by the
-    service layer, which legitimately knows profiles.  A flat mapping is enough
+    length, in Unicode code points, that ingest *enforces* for that profile.
+    That is deliberately not the length the profile's instruction asks the model
+    for, which is higher; the profile dataclasses name and justify the two
+    numbers separately, and only the enforced one is any of this module's
+    business.  It is injected rather than imported: this module recognises a
+    payload shape from the fields a model returned and must keep doing so
+    without depending on an extraction-policy module, so the mapping is supplied
+    by the service layer, which legitimately knows profiles.  A flat mapping is enough
     for both job kinds because the two profile namespaces are disjoint
     (``zh-glossary-*`` and ``zh-section-graph-*``), and a job records exactly
     one of them in ``batch_jobs.prompt_profile``.
@@ -1254,12 +1287,13 @@ class SQLiteBatchRepository:
         per-job aggregate lets an administrator read "7 ambiguous, 3 absent"
         off the history list without opening a single item.
 
-        ``skipped_self_relations`` is exposed for the same reason and is safe
-        for a stronger one: the column can only hold an integer or NULL, so it
-        needs no read-side validator to be sure it is content-free.  It is
-        aggregated per job as well, because a succeeded item is exactly the one
-        an administrator never opens - a skip that only a stored result knew
-        about would be silent in practice.
+        ``skipped_self_relations`` and ``skipped_short_evidence`` are exposed
+        for the same reason and are safe for a stronger one: each column can
+        only hold an integer or NULL, so neither needs a read-side validator to
+        be sure it is content-free.  Both are aggregated per job as well,
+        because a succeeded item is exactly the one an administrator never opens
+        - a skip that only a stored result knew about would be silent in
+        practice, and a dropped span is not even in the stored result.
         """
         statuses = {
             str(count["status"]): int(count["count"])
@@ -1283,15 +1317,16 @@ class SQLiteBatchRepository:
             diagnostics = _safe_failure_diagnostics(failure["failure_diagnostics_json"])
             reason = str(diagnostics["reason"]) if diagnostics else _UNDIAGNOSED_FAILURE_REASON
             reasons[reason] = reasons.get(reason, 0) + 1
-        # SUM over an integer-or-NULL column: one scalar, no JSON to parse, and
-        # no response ever loaded to produce it.
-        skipped_self_relations = int(
-            connection.execute(
-                """SELECT COALESCE(SUM(skipped_self_relations), 0) FROM batch_items
-                   WHERE batch_job_id = ?""",
-                (row["batch_job_id"],),
-            ).fetchone()[0]
-        )
+        # SUM over two integer-or-NULL columns: two scalars, no JSON to parse,
+        # and no response ever loaded to produce them.
+        skips = connection.execute(
+            """SELECT COALESCE(SUM(skipped_self_relations), 0),
+                      COALESCE(SUM(skipped_short_evidence), 0)
+               FROM batch_items WHERE batch_job_id = ?""",
+            (row["batch_job_id"],),
+        ).fetchone()
+        skipped_self_relations = int(skips[0])
+        skipped_short_evidence = int(skips[1])
         summary: dict[str, Any] = {
             "batch_job_id": row["batch_job_id"],
             "version_id": row["version_id"],
@@ -1319,6 +1354,10 @@ class SQLiteBatchRepository:
             # Relations this job's succeeded items ingested past because both
             # endpoints had been merged into one concept (SDD 4.2.2 point 6).
             "item_skipped_self_relations": skipped_self_relations,
+            # Spans this job's succeeded items dropped for being below the
+            # enforced evidence floor (SDD 4.2.2 point 7).  Concept mentions and
+            # relation evidence share one counter: same defect, same fix.
+            "item_skipped_short_evidence": skipped_short_evidence,
         }
         if include_items:
             summary["items"] = [
@@ -1341,12 +1380,20 @@ class SQLiteBatchRepository:
                         if item["skipped_self_relations"] is None
                         else int(item["skipped_self_relations"])
                     ),
+                    # None where no grounding pass ran: an item that has not
+                    # succeeded, one whose provider output is not grounded here,
+                    # or a row that predates the column.
+                    "skipped_short_evidence": (
+                        None
+                        if item["skipped_short_evidence"] is None
+                        else int(item["skipped_short_evidence"])
+                    ),
                     "updated_at": item["updated_at"],
                 }
                 for item in connection.execute(
                     """SELECT batch_item_id, passage_id, custom_id, status, attempt_count,
                               response_json, error_text, failure_diagnostics_json,
-                              skipped_self_relations, updated_at
+                              skipped_self_relations, skipped_short_evidence, updated_at
                        FROM batch_items WHERE batch_job_id = ? ORDER BY custom_id""",
                     (row["batch_job_id"],),
                 )
@@ -1674,7 +1721,7 @@ class SQLiteBatchRepository:
     @staticmethod
     def _ground_openai_concept_payload(
         connection: Any, *, item: Any, payload: Mapping[str, Any], evidence_floor: int = 0
-    ) -> Mapping[str, Any]:
+    ) -> _GroundedPayload:
         """Canonically ground a cloud concept payload against immutable text.
 
         OpenAI Structured Outputs constrains the response shape, but a model
@@ -1700,9 +1747,15 @@ class SQLiteBatchRepository:
         and occurred forty-seven times".  Only counts and flags are attached;
         see :func:`_grounding_diagnostics`.
 
-        ``evidence_floor`` is this job's profile minimum, resolved by the caller
-        from ``batch_jobs.prompt_profile``; it is passed straight through to the
-        shared resolver, which owns the rule and its short-passage escape hatch.
+        ``evidence_floor`` is this job's enforced profile minimum, resolved by
+        the caller from ``batch_jobs.prompt_profile``; it is passed straight
+        through to the shared resolver, which owns the rule and its
+        short-passage escape hatch.  A span below it is *dropped* rather than
+        rejected, and the cascade is deliberate: a concept left with no mentions
+        is itself dropped, because the contract requires a concept to carry at
+        least one, and a payload reduced to no concepts at all is still a
+        success - ``{"concepts": []}`` is a valid response and always has been.
+        Returns the surviving payload and how many spans were dropped.
         """
         if set(payload) != {"concepts"} or not isinstance(payload.get("concepts"), list):
             raise BatchPayloadError(
@@ -1721,6 +1774,7 @@ class SQLiteBatchRepository:
         passage_codepoints = len(content)
         concept_count = len(payload["concepts"])
         grounded_concepts: list[dict[str, Any]] = []
+        skipped_short_evidence = 0
         for concept_index, concept in enumerate(payload["concepts"]):
             if not isinstance(concept, Mapping) or set(concept) != {
                 "name", "aliases", "definition", "mentions"
@@ -1826,7 +1880,7 @@ class SQLiteBatchRepository:
                                 **position,
                             ),
                         )
-                start, end = _resolve_evidence_span(
+                resolved = _resolve_evidence_span(
                     content,
                     evidence=evidence,
                     before=before,
@@ -1837,14 +1891,27 @@ class SQLiteBatchRepository:
                     position=position,
                     evidence_floor=evidence_floor,
                 )
+                if resolved is None:
+                    # Sub-floor: too small to cite, but everything else this
+                    # concept and this response carried is untouched.
+                    skipped_short_evidence += 1
+                    continue
+                start, end = resolved
                 normalized = dict(mention)
                 normalized["start_codepoint"] = start
                 normalized["end_codepoint"] = end
                 grounded_mentions.append(normalized)
+            if not grounded_mentions:
+                # Every mention this concept had was sub-floor.  A concept with
+                # no mention is not something the contract can express - it is
+                # an unevidenced term, which is precisely what MENTIONS_MISSING
+                # rejects when a model returns one - so the concept goes with
+                # its citations rather than being stored unanchored.
+                continue
             grounded = dict(concept)
             grounded["mentions"] = grounded_mentions
             grounded_concepts.append(grounded)
-        return {"concepts": grounded_concepts}
+        return _GroundedPayload({"concepts": grounded_concepts}, skipped_short_evidence)
 
     @staticmethod
     def _add_mentions(
@@ -1914,8 +1981,11 @@ class SQLiteBatchRepository:
         position: Mapping[str, Any],
         toc_titles: frozenset[str] = frozenset(),
         evidence_floor: int = 0,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         """Return one packet span as an exact slice of the passage it names.
+
+        Returns ``None`` where the shared resolver dropped the span for being
+        below the enforced evidence floor; the caller decides what that costs.
 
         A concept mention and a relation evidence span are the same shape and
         are grounded identically; only ``position`` differs, so an operator can
@@ -2013,7 +2083,7 @@ class SQLiteBatchRepository:
                         **span_position,
                     ),
                 )
-        start, end = _resolve_evidence_span(
+        resolved = _resolve_evidence_span(
             content,
             evidence=evidence,
             before=before,
@@ -2025,6 +2095,9 @@ class SQLiteBatchRepository:
             toc_titles=toc_titles,
             evidence_floor=evidence_floor,
         )
+        if resolved is None:
+            return None
+        start, end = resolved
         return {
             "passage_id": passage_id,
             "start_codepoint": start,
@@ -2040,7 +2113,7 @@ class SQLiteBatchRepository:
         payload: Mapping[str, Any],
         toc_titles: frozenset[str] = frozenset(),
         evidence_floor: int = 0,
-    ) -> dict[str, Any]:
+    ) -> _GroundedPayload:
         """Validate and ground a whole packet without writing anything.
 
         Every span in the packet - concept mentions and relation evidence
@@ -2057,8 +2130,27 @@ class SQLiteBatchRepository:
 
         ``evidence_floor`` applies to every span in the packet, mention and
         relation evidence alike, because both go through the same resolver.  A
-        single sub-floor span therefore fails the whole packet, which is the
-        atomicity this pass already guarantees for every other rejection.
+        sub-floor span is dropped here rather than failing the packet, and the
+        cascade runs to whatever the contract can no longer express:
+
+        * a concept whose every mention was dropped is dropped, because a
+          concept must carry at least one mention;
+        * a relation whose every evidence span was dropped is dropped, because
+          an assertion must name at least one exact span;
+        * a relation whose subject or object was one of those dropped concepts
+          is dropped, because the endpoint no longer exists to point at.  That
+          last one is emphatically *not* RELATION_ENDPOINT_UNRESOLVED: the model
+          defined the concept and named it correctly, and ingest is what removed
+          it.  An endpoint naming a ``local_id`` the response never defined
+          stays a hard failure, exactly as before, because that is genuinely
+          ungrounded output.
+
+        A packet reduced to nothing is still a success contributing nothing;
+        empty concepts and relations arrays are a valid response.
+
+        Evidence spans are grounded even for a relation already doomed by a
+        dropped endpoint, so a genuinely ungrounded span inside it still fails
+        the item.  Only the floor is lenient here; nothing else becomes so.
 
         This pass is deliberately read-only and complete.  Ingest is atomic per
         item and the enclosing transaction would roll back anyway, but doing
@@ -2081,6 +2173,12 @@ class SQLiteBatchRepository:
         concept_count = len(concepts)
         relation_count = len(relations)
         local_ids: set[str] = set()
+        # Defined by the response but removed by the floor cascade.  Kept apart
+        # from ``local_ids`` so uniqueness is still checked against every ID the
+        # model declared, and so a relation pointing at one of these can be told
+        # from a relation pointing at an ID that was never declared at all.
+        dropped_local_ids: set[str] = set()
+        skipped_short_evidence = 0
         grounded_concepts: list[dict[str, Any]] = []
         for concept_index, suggestion in enumerate(concepts):
             position: dict[str, Any] = {
@@ -2116,8 +2214,9 @@ class SQLiteBatchRepository:
                         **position,
                     ),
                 )
-            grounded_mentions = [
-                self._ground_section_graph_span(
+            grounded_mentions: list[dict[str, Any]] = []
+            for mention_index, mention in enumerate(mentions):
+                grounded_mention = self._ground_section_graph_span(
                     connection,
                     version_id=version_id,
                     span=mention,
@@ -2129,8 +2228,13 @@ class SQLiteBatchRepository:
                     toc_titles=toc_titles,
                     evidence_floor=evidence_floor,
                 )
-                for mention_index, mention in enumerate(mentions)
-            ]
+                if grounded_mention is None:
+                    skipped_short_evidence += 1
+                    continue
+                grounded_mentions.append(grounded_mention)
+            if not grounded_mentions:
+                dropped_local_ids.add(local_id)
+                continue
             grounded_concepts.append({**suggestion, "mentions": grounded_mentions})
 
         grounded_relations: list[dict[str, Any]] = []
@@ -2175,8 +2279,9 @@ class SQLiteBatchRepository:
                         **position,
                     ),
                 )
-            grounded_evidence = [
-                self._ground_section_graph_span(
+            grounded_evidence: list[dict[str, Any]] = []
+            for evidence_index, span in enumerate(evidence):
+                grounded_span = self._ground_section_graph_span(
                     connection,
                     version_id=version_id,
                     span=span,
@@ -2188,10 +2293,22 @@ class SQLiteBatchRepository:
                     toc_titles=toc_titles,
                     evidence_floor=evidence_floor,
                 )
-                for evidence_index, span in enumerate(evidence)
-            ]
+                if grounded_span is None:
+                    skipped_short_evidence += 1
+                    continue
+                grounded_evidence.append(grounded_span)
+            # Grounded first, dropped second: a relation whose endpoint the
+            # floor removed is still checked for ungrounded evidence, so
+            # leniency stays confined to the floor.
+            if subject in dropped_local_ids or object_ in dropped_local_ids:
+                continue
+            if not grounded_evidence:
+                continue
             grounded_relations.append({**relation, "evidence": grounded_evidence})
-        return {"concepts": grounded_concepts, "relations": grounded_relations}
+        return _GroundedPayload(
+            {"concepts": grounded_concepts, "relations": grounded_relations},
+            skipped_short_evidence,
+        )
 
     def _write_section_graph(
         self, connection: Any, *, version_id: str, item: Any, payload: Mapping[str, Any]
@@ -2277,6 +2394,13 @@ class SQLiteBatchRepository:
         skipped is a fact about the write, and is recorded beside the result in
         ``batch_items.skipped_self_relations``, where ``_summary`` can show it
         to an administrator without ever exposing a response.
+
+        A span dropped by the evidence floor is the mirror image: the grounding
+        pass removes it, so it is *not* in the stored result, and re-ingesting
+        the same provider output re-derives the identical grounded payload and
+        therefore the identical serialization.  Its count is recorded the same
+        way, in ``batch_items.skipped_short_evidence``, because it is likewise
+        unrecoverable from what was stored.
         """
         with self._store._write() as connection:
             job = self._require_job(connection, batch_job_id)
@@ -2292,8 +2416,11 @@ class SQLiteBatchRepository:
             # reason the mention shape does: a stored request replays under the
             # contract it was submitted with.
             evidence_floor = self._evidence_floor(job["prompt_profile"])
+            # NULL rather than 0 where no grounding pass ran at all, so "not
+            # measured" stays distinguishable from a measured zero.
+            skipped_short_evidence: int | None = None
             if job["job_kind"] == "SECTION_GRAPH":
-                payload = self._ground_section_graph_payload(
+                payload, skipped_short_evidence = self._ground_section_graph_payload(
                     connection,
                     version_id=job["version_id"],
                     payload=payload,
@@ -2303,7 +2430,7 @@ class SQLiteBatchRepository:
                     evidence_floor=evidence_floor,
                 )
             elif job["provider"] == "openai-batch":
-                payload = self._ground_openai_concept_payload(
+                payload, skipped_short_evidence = self._ground_openai_concept_payload(
                     connection, item=item, payload=payload, evidence_floor=evidence_floor
                 )
             serialized = _canonical_json(payload)
@@ -2334,9 +2461,14 @@ class SQLiteBatchRepository:
                 """UPDATE batch_items
                    SET status = 'SUCCEEDED', response_json = ?, error_text = NULL,
                        failure_diagnostics_json = NULL, skipped_self_relations = ?,
-                       updated_at = CURRENT_TIMESTAMP
+                       skipped_short_evidence = ?, updated_at = CURRENT_TIMESTAMP
                    WHERE batch_item_id = ?""",
-                (serialized, skipped_self_relations, item["batch_item_id"]),
+                (
+                    serialized,
+                    skipped_self_relations,
+                    skipped_short_evidence,
+                    item["batch_item_id"],
+                ),
             )
         return True
 

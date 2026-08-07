@@ -71,14 +71,21 @@ class EpubResourceNotFound(EpubServiceError):
 
 
 def evidence_floors() -> dict[str, int]:
-    """Map every registered prompt profile to the evidence floor it asks for.
+    """Map every registered prompt profile to the evidence floor ingest enforces.
 
-    This is the seam that lets cloud ingest enforce a per-profile minimum
-    evidence length without importing an extraction-policy module.  ``batch.py``
+    This is the seam that lets cloud ingest apply a per-profile minimum evidence
+    length without importing an extraction-policy module.  ``batch.py``
     recognises a payload shape from the fields a model returned and must keep
     doing so with no knowledge of profiles; this service layer already imports
     both registries for entirely ordinary reasons, so it is the natural place to
     read the contract and hand the batch repository the resulting numbers.
+
+    Deliberately the *enforced* number, not the requested one.  A profile's
+    instruction asks for a longer span than ingest insists on, because the
+    request encourages a substantive citation while the floor only rejects what
+    is genuinely unusable; the two are named apart on the profile dataclasses,
+    which document why.  Handing the requested number to ingest is the bug this
+    function's name would otherwise invite.
 
     One flat mapping covers both job kinds because the two profile namespaces
     are disjoint - ``zh-glossary-*`` and ``zh-section-graph-*`` - and a job
@@ -87,12 +94,14 @@ def evidence_floors() -> dict[str, int]:
     superseded sample replayable on the contract it was actually given.
     """
     floors = {
-        profile_id: get_prompt_profile(profile_id).min_evidence_codepoints
+        profile_id: get_prompt_profile(profile_id).enforced_min_evidence_codepoints
         for profile_id in available_prompt_profiles()
     }
     floors.update(
         {
-            profile_id: get_section_graph_profile(profile_id).min_evidence_codepoints
+            profile_id: get_section_graph_profile(
+                profile_id
+            ).enforced_min_evidence_codepoints
             for profile_id in available_section_graph_profiles()
         }
     )

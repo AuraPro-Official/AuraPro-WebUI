@@ -143,6 +143,16 @@ export type EpubBatchItemSummary = {
 	 * row written before the column existed.
 	 */
 	skipped_self_relations: number | null;
+	/**
+	 * Evidence spans this item dropped for being below the floor its prompt
+	 * profile enforces — concept mentions and relation evidence share one
+	 * counter, since they are the same defect with the same fix. A count only,
+	 * for the same schema reason as above. The dropped spans are absent from the
+	 * stored response, so this is the only record that they existed. `null` means
+	 * nothing was measured: an item whose payload never went through a grounding
+	 * pass, or a row written before the column existed.
+	 */
+	skipped_short_evidence: number | null;
 	updated_at: string | null;
 };
 
@@ -179,6 +189,11 @@ export type EpubBatchSummary = {
 	 * aggregated here rather than only inside each item.
 	 */
 	item_skipped_self_relations: number;
+	/**
+	 * Sub-floor evidence spans dropped across this job's succeeded items,
+	 * aggregated here for the same reason as the count above.
+	 */
+	item_skipped_short_evidence: number;
 	items?: EpubBatchItemSummary[];
 };
 
