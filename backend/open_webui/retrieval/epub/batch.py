@@ -508,6 +508,17 @@ _GROUNDING_FAILURE_REASONS = frozenset(
         # The literal evidence does not occur in the immutable source at all:
         # the model paraphrased, normalized, or translated instead of copying.
         "EVIDENCE_ABSENT",
+        # The evidence is shorter than the minimum span its job's prompt profile
+        # asked for, and is not the whole passage (which is what that same
+        # instruction asks for on a passage shorter than the floor).  Distinct
+        # from EVIDENCE_AMBIGUOUS, which is where a sub-floor citation usually
+        # ends up when it is caught at all: a one-character quotation that
+        # happens to occur exactly once is just as useless to a reader and just
+        # as polluting to the graph channel, and needs the same prompt fix.
+        # ``evidence_codepoints`` and ``passage_codepoints`` are what make the
+        # rate measurable; the floor itself is not persisted, because it is a
+        # property of the job's profile and readable from it.
+        "EVIDENCE_TOO_SHORT",
         # Section graph only, and a strict subset of the case above: the
         # evidence is absent from the passage it names but is exactly a TOC
         # title this packet showed the model.  Conflating the two cost a whole
@@ -701,6 +712,7 @@ def _resolve_evidence_span(
     end: int | None,
     position: Mapping[str, Any],
     toc_titles: frozenset[str] = frozenset(),
+    evidence_floor: int = 0,
 ) -> tuple[int, int]:
     """Locate ``evidence`` in one immutable passage and return its exact span.
 
@@ -721,6 +733,17 @@ def _resolve_evidence_span(
     field we sent it" and "invented fluent prose" are the same symptom with
     opposite fixes.  The concept path passes none, because a single-passage
     concept request contains no TOC string to quote.
+
+    ``evidence_floor`` is the minimum evidence length, in code points, that the
+    job's prompt profile asked the model for; ``0`` for a profile that asked for
+    none, which is every profile predating the clause.  It is a parameter rather
+    than a constant on purpose, twice over.  It is a property of the profile:
+    ``zh-glossary-v1`` to ``-v5`` and ``zh-section-graph-v1`` never asked for a
+    minimum and their samples are still replayable, so enforcing one on them
+    would retroactively invalidate output that honoured its own contract.  And
+    it is injected rather than looked up: this module deliberately does not
+    import an extraction-policy module, so the value arrives from the caller
+    that legitimately knows profiles.  See ``SQLiteBatchRepository``.
 
     Raises ``BatchPayloadError`` carrying content-free diagnostics.
     """
@@ -751,6 +774,34 @@ def _resolve_evidence_span(
         "direct_offsets_in_range": direct_offsets_in_range if offsets_supplied else None,
         "direct_is_exact": direct_is_exact if offsets_supplied else None,
     }
+
+    # The evidence floor, enforced before the source is scanned at all.
+    #
+    # Ordering is deliberate.  A sub-floor citation is overwhelmingly likely to
+    # be ambiguous as well - a single character repeats everywhere - so a floor
+    # checked after the scan would report EVIDENCE_AMBIGUOUS for most of the
+    # very population it exists to measure, and the rate this rejection is
+    # supposed to make legible would stay hidden inside another slug.  Checking
+    # first also costs nothing: both operands are already known.
+    #
+    # The escape hatch.  The instruction that names the floor also says that a
+    # passage shorter than the floor is quoted in full, so evidence equal to the
+    # entire passage is compliant however short it is.  This is not a rare
+    # allowance: of the twenty sampled passages, eight are at or below 10 code
+    # points and two are 9, so a floor without the hatch would reject legitimate
+    # output.  ``evidence == content`` is the whole test, and is exactly
+    # equivalent to the instruction's wording - a passage at or above the floor
+    # cannot equal a sub-floor evidence string.
+    if evidence_floor > 0 and evidence_codepoints < evidence_floor and evidence != content:
+        raise BatchPayloadError(
+            "OpenAI evidence is shorter than the minimum span this prompt profile requires",
+            diagnostics=_grounding_diagnostics(
+                "EVIDENCE_TOO_SHORT",
+                **shape,
+                **direct,
+                **position,
+            ),
+        )
 
     occurrences: list[int] = []
     cursor = content.find(evidence)
@@ -889,13 +940,45 @@ class SQLiteBatchRepository:
     The canonical store already migrates the source and Batch base tables.  This
     adapter adds a tiny, namespaced lineage table so failed items can be retried
     in a successor remote batch without overwriting the original provider job.
+
+    ``evidence_floors`` maps a prompt profile identifier to the minimum evidence
+    length, in Unicode code points, that profile's instruction asks the model
+    for.  It is injected rather than imported: this module recognises a payload
+    shape from the fields a model returned and must keep doing so without
+    depending on an extraction-policy module, so the mapping is supplied by the
+    service layer, which legitimately knows profiles.  A flat mapping is enough
+    for both job kinds because the two profile namespaces are disjoint
+    (``zh-glossary-*`` and ``zh-section-graph-*``), and a job records exactly
+    one of them in ``batch_jobs.prompt_profile``.
+
+    Omitting it, or naming a profile it does not list, yields a floor of ``0``
+    and therefore the pre-existing behaviour.  That default is the replay
+    guarantee, not an oversight: a job predating ``batch_jobs.prompt_profile``
+    has NULL there and must stay ingestable on the contract it was actually
+    given, and so must a profile that never asked for a minimum.
     """
 
-    def __init__(self, store: Any):
+    def __init__(self, store: Any, *, evidence_floors: Mapping[str, int] | None = None):
         if not hasattr(store, "_connection") or not hasattr(store, "_write"):
             raise TypeError("SQLiteBatchRepository requires the canonical SQLite EPUB store")
         self._store = store
+        self._evidence_floors: dict[str, int] = {
+            str(profile_id): max(0, int(floor))
+            for profile_id, floor in dict(evidence_floors or {}).items()
+        }
         self._migrate_service_tables()
+
+    def _evidence_floor(self, prompt_profile: Any) -> int:
+        """Resolve one job's evidence floor from its recorded prompt profile.
+
+        Deliberately total: an unrecorded profile (NULL, from a job created
+        before migration 6) and an unlisted one both resolve to ``0``, so a
+        stored request can never become un-ingestable because this adapter was
+        constructed without a mapping.
+        """
+        if not isinstance(prompt_profile, str):
+            return 0
+        return self._evidence_floors.get(prompt_profile, 0)
 
     def _migrate_service_tables(self) -> None:
         # This is independent from source-schema versioning.  It is idempotent
@@ -1546,7 +1629,7 @@ class SQLiteBatchRepository:
 
     @staticmethod
     def _ground_openai_concept_payload(
-        connection: Any, *, item: Any, payload: Mapping[str, Any]
+        connection: Any, *, item: Any, payload: Mapping[str, Any], evidence_floor: int = 0
     ) -> Mapping[str, Any]:
         """Canonically ground a cloud concept payload against immutable text.
 
@@ -1572,6 +1655,10 @@ class SQLiteBatchRepository:
         tell "the model paraphrased" from "the evidence was two code points long
         and occurred forty-seven times".  Only counts and flags are attached;
         see :func:`_grounding_diagnostics`.
+
+        ``evidence_floor`` is this job's profile minimum, resolved by the caller
+        from ``batch_jobs.prompt_profile``; it is passed straight through to the
+        shared resolver, which owns the rule and its short-passage escape hatch.
         """
         if set(payload) != {"concepts"} or not isinstance(payload.get("concepts"), list):
             raise BatchPayloadError(
@@ -1704,6 +1791,7 @@ class SQLiteBatchRepository:
                     start=start,
                     end=end,
                     position=position,
+                    evidence_floor=evidence_floor,
                 )
                 normalized = dict(mention)
                 normalized["start_codepoint"] = start
@@ -1781,12 +1869,15 @@ class SQLiteBatchRepository:
         span: Any,
         position: Mapping[str, Any],
         toc_titles: frozenset[str] = frozenset(),
+        evidence_floor: int = 0,
     ) -> dict[str, Any]:
         """Return one packet span as an exact slice of the passage it names.
 
         A concept mention and a relation evidence span are the same shape and
         are grounded identically; only ``position`` differs, so an operator can
-        still tell which of the two failed.  The returned span is canonicalized
+        still tell which of the two failed.  That is also why the evidence floor
+        needs no separate implementation for relations: both reach the source
+        through this one function and then through the one shared resolver.  The returned span is canonicalized
         to the four fields the store writes: the anchors are a device for
         choosing among repeated literals, and once the occurrence is chosen the
         derived offset is the fact.  Storing the resolved span rather than the
@@ -1888,6 +1979,7 @@ class SQLiteBatchRepository:
             end=end,
             position=span_position,
             toc_titles=toc_titles,
+            evidence_floor=evidence_floor,
         )
         return {
             "passage_id": passage_id,
@@ -1903,6 +1995,7 @@ class SQLiteBatchRepository:
         version_id: str,
         payload: Mapping[str, Any],
         toc_titles: frozenset[str] = frozenset(),
+        evidence_floor: int = 0,
     ) -> dict[str, Any]:
         """Validate and ground a whole packet without writing anything.
 
@@ -1917,6 +2010,11 @@ class SQLiteBatchRepository:
         They classify an unlocatable span - a section title quoted as evidence
         is a different defect from invented prose - and are used for nothing
         else; no title is stored, compared for idempotency, or written.
+
+        ``evidence_floor`` applies to every span in the packet, mention and
+        relation evidence alike, because both go through the same resolver.  A
+        single sub-floor span therefore fails the whole packet, which is the
+        atomicity this pass already guarantees for every other rejection.
 
         This pass is deliberately read-only and complete.  Ingest is atomic per
         item and the enclosing transaction would roll back anyway, but doing
@@ -1985,6 +2083,7 @@ class SQLiteBatchRepository:
                         "mention_count": len(mentions),
                     },
                     toc_titles=toc_titles,
+                    evidence_floor=evidence_floor,
                 )
                 for mention_index, mention in enumerate(mentions)
             ]
@@ -2043,6 +2142,7 @@ class SQLiteBatchRepository:
                         "evidence_count": len(evidence),
                     },
                     toc_titles=toc_titles,
+                    evidence_floor=evidence_floor,
                 )
                 for evidence_index, span in enumerate(evidence)
             ]
@@ -2107,6 +2207,12 @@ class SQLiteBatchRepository:
             # it.  A section graph packet is grounded whatever the provider,
             # because the resolver - not the provider - is what keeps a stored
             # span byte-exact.
+            #
+            # The floor comes from the job's own recorded prompt profile rather
+            # than from whichever profile is currently the default, for the same
+            # reason the mention shape does: a stored request replays under the
+            # contract it was submitted with.
+            evidence_floor = self._evidence_floor(job["prompt_profile"])
             if job["job_kind"] == "SECTION_GRAPH":
                 payload = self._ground_section_graph_payload(
                     connection,
@@ -2115,9 +2221,12 @@ class SQLiteBatchRepository:
                     # Read back from the request that was actually sent, so a
                     # rejection can name the field the model copied from.
                     toc_titles=_packet_toc_titles(item["request_json"]),
+                    evidence_floor=evidence_floor,
                 )
             elif job["provider"] == "openai-batch":
-                payload = self._ground_openai_concept_payload(connection, item=item, payload=payload)
+                payload = self._ground_openai_concept_payload(
+                    connection, item=item, payload=payload, evidence_floor=evidence_floor
+                )
             serialized = _canonical_json(payload)
             if item["status"] == "SUCCEEDED":
                 if item["response_json"] == serialized:
