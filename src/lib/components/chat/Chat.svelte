@@ -75,6 +75,7 @@
 		displayFileHandler
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
+	import { isChatEventForCurrentConversation, waitForSocketSession } from '$lib/utils/chat-stream';
 	import { applyDesktopShortcutAction } from '$lib/utils/extension-modes';
 	import { getOutputText } from './Messages/structuredOutput';
 
@@ -243,6 +244,9 @@
 	};
 
 	let taskIds = null;
+	let pendingChatReconcileTimer: number | null = null;
+	let pendingChatReconcileInFlight = false;
+	const PENDING_CHAT_RECONCILE_INTERVAL_MS = 4000;
 
 	// Chat Input
 	let prompt = '';
@@ -683,14 +687,24 @@
 	const chatEventHandler = async (event, cb) => {
 		console.log(event);
 
-		if (event.chat_id === $chatId) {
+		if (
+			isChatEventForCurrentConversation(event.chat_id, $chatId, event.message_id, history.messages)
+		) {
 			await tick();
+			const type = event?.data?.type ?? null;
+			const data = event?.data?.data ?? null;
+
+			// chat:active is chat-scoped and may arrive before a local message placeholder exists.
+			if (type === 'chat:active') {
+				if (!data?.active) {
+					taskIds = null;
+					await reconcilePendingChat(true);
+				}
+				return;
+			}
 			let message = history.messages[event.message_id];
 
 			if (message) {
-				const type = event?.data?.type ?? null;
-				const data = event?.data?.data ?? null;
-
 				if (type === 'status') {
 					if (message?.statusHistory) {
 						message.statusHistory.push(data);
@@ -699,15 +713,8 @@
 					}
 				} else if (type === 'context_compaction') {
 					handleContextCompactionStatus(data);
-				} else if (type === 'chat:active') {
-					if (!data?.active) {
-						taskIds = null;
-						if (chatIdProp && !$temporaryChatEnabled && hasPendingAssistantLeaf()) {
-							await loadChat();
-						}
-					}
 				} else if (type === 'chat:completion') {
-					chatCompletionEventHandler(data, message, event.chat_id);
+					await chatCompletionEventHandler(data, message, event.chat_id);
 				} else if (type === 'chat:tasks:cancel') {
 					dismissContextCompactionToast();
 					if (event.message_id === history.currentId) {
@@ -716,7 +723,7 @@
 						for (const messageId of history.messages[message.parentId].childrenIds) {
 							history.messages[messageId].done = true;
 						}
-						await processNextInQueue($chatId);
+						await releaseQueueRun($chatId, null, true);
 					} else {
 						message.done = true;
 						// A cancelled sibling must still release the queue once
@@ -778,7 +785,7 @@
 							}
 						}
 					}
-					history = history;
+					history = { ...history };
 					return; // Patches history.messages directly; skip the trailing write-back.
 				} else if (type === 'chat:message:favorite') {
 					// Update message favorite status
@@ -860,7 +867,17 @@
 					console.log('Unknown message type', data);
 				}
 
-				history.messages[event.message_id] = message;
+				history.messages[event.message_id] = { ...message };
+				// Give Svelte fresh references for each streamed delta without cloning
+				// the complete message map or chat history.
+				history = { ...history };
+			} else if (
+				type === 'chat:completion' ||
+				type === 'chat:message:error' ||
+				type === 'chat:tasks:cancel'
+			) {
+				// A terminal event can race the placeholder or arrive after a reconnect.
+				await reconcilePendingChat(true);
 			}
 		} else {
 			// Non-active chat completion: queue stays in the global store.
@@ -983,34 +1000,71 @@
 				message?.role === 'assistant' && !message.done && (message.childrenIds?.length ?? 0) === 0
 		);
 
+	const reconcilePendingChat = async (knownInactive = false) => {
+		if (
+			pendingChatReconcileInFlight ||
+			loading ||
+			!$chatId ||
+			$temporaryChatEnabled ||
+			!hasPendingAssistantLeaf()
+		) {
+			return;
+		}
+
+		const activeChatId = $chatId;
+		pendingChatReconcileInFlight = true;
+
+		try {
+			if (!knownInactive) {
+				const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, activeChatId)
+					.then((res) => res?.task_ids ?? [])
+					.catch(() => null);
+
+				if (pendingTaskIds === null || pendingTaskIds.length > 0) {
+					return;
+				}
+			}
+
+			if ($chatId !== activeChatId || !hasPendingAssistantLeaf()) {
+				return;
+			}
+
+			await loadChat(activeChatId);
+
+			if ($chatId === activeChatId) {
+				await releaseQueueRun(activeChatId, null, true);
+			}
+		} finally {
+			pendingChatReconcileInFlight = false;
+		}
+	};
+
+	const handleVisibilityChange = () => {
+		if (document.visibilityState === 'visible') {
+			void reconcilePendingChat();
+		}
+	};
+
+	const handleWindowFocus = () => {
+		void reconcilePendingChat();
+	};
+
 	const handleSocketConnect = async () => {
-		if (!chatIdProp || $temporaryChatEnabled) {
-			return;
-		}
-
-		if (!hasPendingAssistantLeaf()) {
-			return;
-		}
-
-		const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, $chatId)
-			.then((res) => res?.task_ids ?? [])
-			.catch(() => null);
-
-		if (pendingTaskIds?.length === 0) {
-			await loadChat();
-
-			// 重连后确认任务已结束（无论成功失败），释放可能残留的锁并推进队列
-			processingQueueChats.delete($chatId);
-			await processNextInQueue($chatId);
-		}
+		await reconcilePendingChat();
 	};
 
 	onMount(() => {
 		loading = true;
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
+		window.addEventListener('focus', handleWindowFocus);
+		document.addEventListener('visibilitychange', handleVisibilityChange);
 		$socket?.on('events', chatEventHandler);
 		$socket?.on('connect', handleSocketConnect);
+		pendingChatReconcileTimer = window.setInterval(
+			() => void reconcilePendingChat(),
+			PENDING_CHAT_RECONCILE_INTERVAL_MS
+		);
 
 		$audioQueue?.destroy();
 
@@ -1129,6 +1183,12 @@
 				showControlsSubscribe();
 				selectedFolderSubscribe();
 				window.removeEventListener('message', onMessageHandler);
+				window.removeEventListener('focus', handleWindowFocus);
+				document.removeEventListener('visibilitychange', handleVisibilityChange);
+				if (pendingChatReconcileTimer !== null) {
+					window.clearInterval(pendingChatReconcileTimer);
+					pendingChatReconcileTimer = null;
+				}
 				$socket?.off('events', chatEventHandler);
 				$socket?.off('connect', handleSocketConnect);
 				dismissContextCompactionToast();
@@ -1664,8 +1724,8 @@
 		setTimeout(() => chatInput?.focus(), 0);
 	};
 
-	const loadChat = async () => {
-		chatId.set(chatIdProp);
+	const loadChat = async (targetChatId = chatIdProp) => {
+		chatId.set(targetChatId);
 
 		if ($temporaryChatEnabled) {
 			temporaryChatEnabled.set(false);
@@ -1822,16 +1882,45 @@
 		}
 	};
 
-	let processingQueueChats = new Set<string>();
+	type QueueRun = {
+		queueItemId: string;
+		responseMessageIds: Set<string>;
+	};
+
+	let processingQueueChats = new Map<string, QueueRun>();
+
+	const releaseQueueRun = async (
+		targetChatId: string,
+		responseMessageId: string | null = null,
+		force = false
+	) => {
+		const queueRun = processingQueueChats.get(targetChatId);
+
+		if (queueRun && !force) {
+			// Ignore duplicate or late terminal events from an older response.
+			if (!responseMessageId || !queueRun.responseMessageIds.has(responseMessageId)) return;
+
+			queueRun.responseMessageIds.delete(responseMessageId);
+			if (queueRun.responseMessageIds.size > 0) return;
+		}
+
+		processingQueueChats.delete(targetChatId);
+		await processNextInQueue(targetChatId);
+	};
 
 	const processNextInQueue = async (targetChatId: string) => {
 		if (processingQueueChats.has(targetChatId)) return;
+		if (targetChatId !== $chatId || hasPendingAssistantLeaf()) return;
 
 		const queue = $chatRequestQueues[targetChatId];
 		if (!queue || queue.length === 0) return;
 
 		const nextTask = queue[0];
-		processingQueueChats.add(targetChatId);
+		const queueRun: QueueRun = {
+			queueItemId: nextTask.id,
+			responseMessageIds: new Set()
+		};
+		processingQueueChats.set(targetChatId, queueRun);
 		try {
 			chatRequestQueues.update((q) => {
 				const updatedQueue = [...(q[targetChatId] || [])];
@@ -1847,19 +1936,22 @@
 			});
 
 			await submitPrompt(nextTask.prompt, nextTask.files);
+
+			// No response placeholder means submission ended before generation began.
+			if (
+				processingQueueChats.get(targetChatId) === queueRun &&
+				queueRun.responseMessageIds.size === 0
+			) {
+				await releaseQueueRun(targetChatId, null, true);
+			}
 		} catch (error) {
 			console.error('Failed to process queued message:', error);
-			// 提交失败时，队列里没有"生成完成"事件会触发推进，
-			// 所以这里需要手动释放锁并尝试推进下一条，避免队列卡死
-			processingQueueChats.delete(targetChatId);
-			await tick();
-			if ($chatRequestQueues[targetChatId]?.length > 0) {
-				processNextInQueue(targetChatId);
+			if (processingQueueChats.get(targetChatId) === queueRun) {
+				await releaseQueueRun(targetChatId, null, true);
 			}
 			return;
 		}
 	};
-
 	const chatCompletedHandler = async (_chatId, modelId, responseMessageId, messages) => {
 		// Backend handles outlet filters and persistence inline.
 		// Just refresh the sidebar chat list.
@@ -2316,10 +2408,11 @@
 			return;
 		}
 
-		// Check if the assistant is still generating the main response
-		// (don't block on background tasks like title gen, follow-ups, tags)
-		const lastMessage = history.currentId ? history.messages[history.currentId] : null;
-		const isGenerating = lastMessage && lastMessage.role === 'assistant' && !lastMessage.done;
+		// Queue behind any active response or earlier queued message to preserve FIFO ordering.
+		const isGenerating =
+			hasPendingAssistantLeaf() ||
+			processingQueueChats.has($chatId) ||
+			($chatRequestQueues[$chatId]?.length ?? 0) > 0;
 
 		if (isGenerating) {
 			if ($settings?.enableMessageQueue ?? true) {
@@ -2333,6 +2426,8 @@
 				messageInput?.setText('');
 				prompt = '';
 				files = [];
+				await tick();
+				await processNextInQueue($chatId);
 				return;
 			} else {
 				// Interrupt: stop current generation and proceed
@@ -2427,6 +2522,12 @@
 				messageIdsList.push({ model_id: modelId, message_id: responseMessageId });
 			}
 		}
+
+		const queueRun = processingQueueChats.get(_chatId);
+		if (queueRun) {
+			queueRun.responseMessageIds = new Set(messageIdsList.map(({ message_id }) => message_id));
+		}
+
 		history = history;
 
 		// New chat — backend generates the chat_id on first request
@@ -2711,6 +2812,11 @@
 		// Only send terminal_id if the model has terminal capability enabled
 		const terminalEnabled = model.info?.meta?.capabilities?.terminal ?? true;
 
+		const socketSessionId = await waitForSocketSession($socket);
+		if (!socketSessionId) {
+			console.warn('Socket session is unavailable; chat completion may use non-streaming fallback');
+		}
+
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
 			{
@@ -2746,7 +2852,7 @@
 				},
 				model_item: $models.find((m) => m.id === model.id),
 
-				session_id: $socket?.id,
+				session_id: socketSessionId ?? undefined,
 				chat_id: _chatId || undefined,
 				folder_id: $selectedFolder?.id ?? undefined,
 
@@ -2801,8 +2907,7 @@
 		if (res) {
 			if (res.error) {
 				await handleOpenAIError(res.error, responseMessage);
-				processingQueueChats.delete(_chatId);
-				await processNextInQueue(_chatId);
+				await releaseQueueRun(_chatId, responseMessage.id);
 			} else {
 				// Backend returns task_ids (multi-model) or task_id (single model)
 				const newTaskIds = res.task_ids ?? (res.task_id ? [res.task_id] : []);
@@ -2906,8 +3011,7 @@
 		}
 
 		if (processQueue) {
-			processingQueueChats.delete($chatId);
-			await processNextInQueue($chatId);
+			await releaseQueueRun($chatId, null, true);
 		}
 	};
 

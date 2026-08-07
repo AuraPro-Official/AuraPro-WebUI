@@ -5,7 +5,10 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
+
+import langcodes
 
 GlossaryOrigin = Literal['user', 'direct', 'combined']
 
@@ -95,8 +98,10 @@ def clean_language_name(value: str) -> str:
     return ' '.join(str(value or '').strip().split())
 
 
+@lru_cache(maxsize=256)
 def language_key(value: str) -> str:
-    normalized = unicodedata.normalize('NFKC', clean_language_name(value)).casefold()
+    cleaned = clean_language_name(value)
+    normalized = unicodedata.normalize('NFKC', cleaned).casefold()
     compact = re.sub(r'\s+', '', normalized)
     alias = _LANGUAGE_ALIASES.get(compact)
     if alias:
@@ -105,6 +110,14 @@ def language_key(value: str) -> str:
     code = compact.replace('_', '-')
     if re.fullmatch(r'[a-z]{2,3}(?:-[a-z0-9]{2,8})*', code):
         return code
+
+    try:
+        language = langcodes.find(cleaned).language
+        if language:
+            return language.casefold()
+    except LookupError:
+        pass
+
     return compact
 
 

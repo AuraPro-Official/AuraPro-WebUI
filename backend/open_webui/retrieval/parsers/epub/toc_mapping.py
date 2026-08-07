@@ -4,7 +4,9 @@ from .model import TocEntry
 from .xhtml import ExtractedUnit
 
 
-def toc_path_for_unit(source_path: str, unit: ExtractedUnit, anchors: dict[str, int], entries: tuple[TocEntry, ...]) -> tuple[str, ...]:
+def toc_path_for_unit(
+    source_path: str, unit: ExtractedUnit, anchors: dict[str, int], entries: tuple[TocEntry, ...]
+) -> tuple[str, ...]:
     matches: list[tuple[int, int, TocEntry]] = []
     for index, entry in enumerate(entries):
         if entry.href != source_path:

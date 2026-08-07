@@ -156,11 +156,13 @@
 
 			const key = `${idx}`;
 			const existingConfig = configs[key] ?? configs[url] ?? {};
-			if (existingConfig?.connection_type === 'local') return;
+			if (existingConfig?.connection_type === 'local' && existingConfig?.provider === 'llama.cpp')
+				return;
 
 			configs[key] = {
 				...existingConfig,
-				connection_type: 'local'
+				connection_type: 'local',
+				provider: 'llama.cpp'
 			};
 			changed = true;
 		});
@@ -599,7 +601,7 @@
 						<div class="text-sm font-medium">{$i18n.t('MTP acceleration')}</div>
 						<div class="mt-1 max-w-xl text-xs leading-5 text-gray-500">
 							{$i18n.t(
-								'MTP improves AI inference speed by about 20%, but uses about 2 GB more RAM or VRAM. Leave it off on memory-constrained systems.'
+								'Improves response speed by 40%-150%, but uses roughly 1-2 GB more RAM or VRAM. On insufficient hardware, the gain may be small or performance may even decrease. Users with tight resources should leave it off.'
 							)}
 						</div>
 					</div>
@@ -613,7 +615,7 @@
 						<div class="text-sm font-medium">{$i18n.t('Multimodal input')}</div>
 						<div class="mt-1 max-w-xl text-xs leading-5 text-gray-500">
 							{$i18n.t(
-								'Multimodal input supports images and audio and uses about 1 GB more RAM or VRAM. Turn it off if you do not need it on a memory-constrained system.'
+								'Supports image and video input and uses roughly 0.5-1 GB more RAM or VRAM when enabled. Leave it off on resource-constrained systems if you do not need it; enable it when needed. Some models also support audio input when multimodal is enabled.'
 							)}
 						</div>
 					</div>

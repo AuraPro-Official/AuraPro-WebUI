@@ -28,6 +28,7 @@
 		getFileById,
 		renameFileById
 	} from '$lib/apis/files';
+	import type { FileProcessProgress, FileProcessProgressHandler } from '$lib/apis/files';
 	import {
 		addFileToKnowledgeById,
 		getKnowledgeById,
@@ -47,7 +48,7 @@
 		testExternalKnowledgeRetrieval
 	} from '$lib/apis/knowledge';
 	import { processWeb, processBilingual, processEpubFile } from '$lib/apis/retrieval';
-	import type { BilingualImportData } from '$lib/apis/retrieval';
+	import type { BilingualImportData, KnowledgeImportProgressHandler } from '$lib/apis/retrieval';
 
 	import { blobToFile, isYoutubeUrl, copyToClipboard } from '$lib/utils';
 	import { computeFileHash } from '$lib/utils/hash';
@@ -134,7 +135,7 @@
 	let direction = null;
 
 	let currentPage = 1;
-	let fileItems = null;
+	let fileItems: any[] | null = null;
 	let fileItemsTotal = null;
 
 	// Directory state
@@ -223,16 +224,19 @@
 			try {
 				const pendingFiles = await getPendingKnowledgeFiles(localStorage.token, knowledgeId);
 				if (pendingFiles && pendingFiles.length > 0) {
-					const existingIds = new Set(fileItems.map((f) => f.id));
+					const existingIds = new Set((fileItems ?? []).map((f) => f.id));
 					const newPending = pendingFiles
 						.filter((f) => !existingIds.has(f.id))
 						.map((f) => ({
 							...f,
 							name: f.meta?.name ?? f.filename,
-							status: 'uploading'
+							status: 'uploading',
+							progressStage: f.data?.progress_stage ?? 'preparing',
+							progress: f.data?.progress ?? 0,
+							progressStartedAt: f.data?.progress_started_at
 						}));
 					if (newPending.length > 0) {
-						fileItems = [...newPending, ...fileItems];
+						fileItems = [...newPending, ...(fileItems ?? [])];
 
 						// Start polling for completion (if not already polling)
 						if (!pendingPollTimer) {
@@ -243,6 +247,22 @@
 										clearInterval(pendingPollTimer);
 										pendingPollTimer = null;
 										init();
+									} else {
+										const pendingById = new Map<string, any>(
+											still.map((file: any) => [file.id, file])
+										);
+										fileItems = (fileItems ?? []).map((item) => {
+											const pending = pendingById.get(item.id);
+											return pending
+												? {
+														...item,
+														progressStage: pending.data?.progress_stage ?? item.progressStage,
+														progress: pending.data?.progress ?? item.progress,
+														progressStartedAt:
+															pending.data?.progress_started_at ?? item.progressStartedAt
+													}
+												: item;
+										});
 									}
 								} catch {}
 							}, 5000);
@@ -323,6 +343,9 @@
 			name: url,
 			size: null,
 			status: 'uploading',
+			progressStage: 'preparing',
+			progress: 0,
+			progressStartedAt: Math.floor(Date.now() / 1000),
 			error: '',
 			itemId: uuidv4()
 		}));
@@ -359,7 +382,7 @@
 
 					if (uploadedFile) {
 						console.log(uploadedFile);
-						fileItems = fileItems.map((item) => {
+						fileItems = (fileItems ?? []).map((item) => {
 							if (item.itemId === fileItem.itemId) {
 								item.id = uploadedFile.id;
 							}
@@ -369,7 +392,7 @@
 						if (uploadedFile.error) {
 							console.warn('File upload warning:', uploadedFile.error);
 							toast.warning(uploadedFile.error);
-							fileItems = fileItems.filter((file) => file.id !== uploadedFile.id);
+							fileItems = (fileItems ?? []).filter((file) => file.id !== uploadedFile.id);
 						} else {
 							toast.success($i18n.t('File added successfully.'));
 							init();
@@ -379,18 +402,21 @@
 					}
 				} else {
 					// remove the item from fileItems
-					fileItems = fileItems.filter((item) => item.itemId !== fileItem.itemId);
+					fileItems = (fileItems ?? []).filter((item) => item.itemId !== fileItem.itemId);
 					toast.error($i18n.t('Failed to process URL: {{url}}', { url: fileItem.url }));
 				}
 			} catch (e) {
 				// remove the item from fileItems
-				fileItems = fileItems.filter((item) => item.itemId !== fileItem.itemId);
+				fileItems = (fileItems ?? []).filter((item) => item.itemId !== fileItem.itemId);
 				toast.error(`${e}`);
 			}
 		}
 	};
 
-	const uploadBilingualFiles = async (data: BilingualImportData) => {
+	const uploadBilingualFiles = async (
+		data: BilingualImportData,
+		onProgress?: KnowledgeImportProgressHandler
+	) => {
 		const { files, primaryLang, languages } = data;
 
 		toast.info(
@@ -405,7 +431,8 @@
 				knowledge.id,
 				files,
 				languages,
-				primaryLang
+				primaryLang,
+				onProgress
 			);
 
 			toast.success(
@@ -414,25 +441,58 @@
 				})
 			);
 		} catch (e: any) {
-			toast.error('导入失败：' + (e?.message ?? '未知错误'));
 			console.error('processBilingual failed:', e);
+			throw e;
 		}
 	};
 
-	const uploadBilingualEpubFiles = async (data: BilingualImportData) => {
+	const uploadBilingualEpubFiles = async (
+		data: BilingualImportData,
+		onProgress?: KnowledgeImportProgressHandler
+	) => {
 		const { files, primaryLang, languages } = data;
 		try {
-			for (const file of files) {
-				const result = await processEpubFile(localStorage.token, knowledge.id, file);
+			for (let index = 0; index < files.length; index++) {
+				const file = files[index];
+				const result = await processEpubFile(
+					localStorage.token,
+					knowledge.id,
+					file,
+					onProgress
+						? (progress) =>
+								onProgress({
+									...progress,
+									progress: Math.round(((index + progress.progress / 100) / files.length) * 100)
+								})
+						: undefined
+				);
 				toast.success(
 					$i18n.t('Bilingual import complete: {{count}} chunks imported', {
-						count: result.chapter_count
+						count: Array.isArray(result) ? result.length : (result?.chapter_count ?? 0)
 					})
 				);
 			}
 		} catch (e: any) {
-			console.error('🚨 Bilingual EPUB upload failed:', e);
+			console.error('Bilingual EPUB upload failed:', e);
+			throw e;
 		}
+	};
+
+	const updateFileItemProgress = (itemId: string, progress: FileProcessProgress) => {
+		fileItems = (fileItems ?? []).map((item) =>
+			item.itemId === itemId
+				? {
+						...item,
+						status: 'uploading',
+						progressStage: progress.stage ?? item.progressStage ?? 'preparing',
+						progress: progress.progress ?? item.progress ?? 0,
+						progressStartedAt: progress.startedAt ?? item.progressStartedAt,
+						progressCurrent: progress.current,
+						progressTotal: progress.total,
+						progressColdStart: progress.coldStart
+					}
+				: item
+		);
 	};
 
 	const uploadFileHandler = async (file, is_process = true) => {
@@ -485,14 +545,23 @@
 					: {})
 			};
 
-			const uploadedFile = await uploadFile(localStorage.token, file, metadata).catch((e) => {
+			const onProgress: FileProcessProgressHandler = (progress) =>
+				updateFileItemProgress(fileItem.itemId, progress);
+			const uploadedFile = await uploadFile(
+				localStorage.token,
+				file,
+				metadata,
+				undefined,
+				true,
+				onProgress
+			).catch((e) => {
 				toast.error(`${e}`);
 				return null;
 			});
 
 			if (uploadedFile) {
 				console.log(uploadedFile);
-				fileItems = fileItems.map((item) => {
+				fileItems = (fileItems ?? []).map((item) => {
 					if (item.itemId === fileItem.itemId) {
 						item.id = uploadedFile.id;
 					}
@@ -502,7 +571,7 @@
 				if (uploadedFile.error) {
 					console.warn('File upload warning:', uploadedFile.error);
 					toast.warning(uploadedFile.error);
-					fileItems = fileItems.filter((file) => file.id !== uploadedFile.id);
+					fileItems = (fileItems ?? []).filter((file) => file.id !== uploadedFile.id);
 				} else {
 					toast.success($i18n.t('File added successfully.'));
 					init();
@@ -809,7 +878,7 @@
 			init();
 		} else {
 			toast.error($i18n.t('Failed to add file.'));
-			fileItems = fileItems.filter((file) => file.id !== fileId);
+			fileItems = (fileItems ?? []).filter((file) => file.id !== fileId);
 		}
 	};
 
@@ -1235,11 +1304,11 @@
 
 <BilingualModal
 	bind:show={showBilingualContentModal}
-	onSubmit={async (data, type) => {
+	onSubmit={async (data, type, onProgress) => {
 		if (type === 'txt') {
-			await uploadBilingualFiles(data);
+			await uploadBilingualFiles(data, onProgress);
 		} else {
-			await uploadBilingualEpubFiles(data);
+			await uploadBilingualEpubFiles(data, onProgress);
 		}
 	}}
 	onClose={() => {

@@ -45,6 +45,8 @@ class TestGlossaryRouting(unittest.TestCase):
         self.assertEqual(language_key('Spanish'), 'es')
         self.assertEqual(language_key('葡语'), 'pt')
         self.assertEqual(language_key('pt-BR'), 'pt-br')
+        self.assertEqual(language_key('法语'), 'fr')
+        self.assertEqual(language_key('格鲁吉亚语'), 'ka')
 
     def test_combines_two_dictionaries_through_chinese(self) -> None:
         result = resolve_smart_glossary(
