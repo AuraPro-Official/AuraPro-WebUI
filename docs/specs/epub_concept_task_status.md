@@ -108,6 +108,38 @@ this file and `epub_concept_sdd.md` before making changes.
   `"$HOME/.cache/aurapro/epub-test-venv/bin/python" -m unittest discover -s test -p 'test_epub_*.py'`.
   The same venv carries ruff for the `--select F` error-path guard. Do not rely on Homebrew or
   pyenv CPython: the first fails `xml.parsers.expat`, the second lacks loadable SQLite extensions.
+- **Query harness:** `scripts/epub_query.py` prints what `EpubSearchService.search` returns for one
+  query across all three channels — graph, vector, fused — with resolved concepts, `graph_total`,
+  relation-depth provenance and cross-channel overlap. It is a thin driver over production code and
+  contains no ranking or matching logic of its own; if it disagrees with the web app, the harness is
+  wrong. Flags: `--db` (or `EPUB_CONCEPT_DB_PATH`) to aim at a backup snapshot instead of the live
+  store, `--graph-limit` / `--graph-offset` / `--vector-limit` for paging, `--full` for whole
+  passages, no query argument for a REPL.
+  - **Graph only, on the test venv:**
+    `PYTHONPATH=backend "$HOME/.cache/aurapro/epub-test-venv/bin/python" scripts/epub_query.py "洪水灭世" --no-models`.
+    `--no-models` is required there — the T-150 venv deliberately carries no torch, so Channel B and
+    fused cannot run and would otherwise report a degraded channel.
+  - **All three channels** need AuraPro Desktop's interpreter, the only one on this machine carrying
+    torch, sentence-transformers and the BGE models this store was indexed with:
+    `PYTHONPATH=backend "$HOME/Library/Application Support/aurapro/python/bin/python3" scripts/epub_query.py "洪水灭世"`.
+  - **The same store through the real web app**, verified working:
+    ```
+    DATA_DIR="$(mktemp -d)" OFFLINE_MODE=true \
+    EPUB_CONCEPT_DB_PATH=/private/tmp/aurapro-epub-e2e/epub_concept_v1.db \
+    RAG_EMBEDDING_ENGINE= RAG_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5 \
+    RAG_RERANKING_ENGINE= RAG_RERANKING_MODEL=BAAI/bge-reranker-base \
+    WEBUI_SECRET_KEY=dev PYTHONPATH=backend \
+      "$HOME/Library/Application Support/aurapro/python/bin/python3" -m uvicorn open_webui.main:app --port 8080
+    ```
+    A **fresh `DATA_DIR` is required**: the RAG settings are `PersistentConfig`, so they are read from
+    the environment only on first boot and an existing `webui.db` silently wins over the env.
+    `OFFLINE_MODE=true` is **mandatory** — without it the Hugging Face auto-update probe degrades the
+    vector channel even though the models are already cached locally. The embedding model must match
+    `epub_derived_vectors.embedding_profile` (`BAAI/bge-small-zh-v1.5`, 1,442 units) or the query
+    embeds into a different space and silently misses the `vec0` table.
+  - **Measurements must be pinned.** `graph_total` moves whenever a Batch ingest is in flight, and a
+    plain `cp` of the store drops the WAL and silently reads a stale checkpoint. Snapshot with
+    `VACUUM INTO` and record which snapshot a number came from.
 - **Current implementation state:** The frontend keeps reads on authenticated `/epub` routes and renders complete passages plus explicit exact excerpts. The administrator route is separate, presents imports, Batch controls/history, sample approval, concept review, and derived-index operations, and sends no provider credentials. Backend authorization remains authoritative: full OpenAI Batch creation is durably blocked until a fully ingested, same-version, same-kind, same-model-profile cloud sample has an administrator approval record. Import automatically writes retry-safe, Chinese-first derived retrieval windows without changing canonical passages. Local startup attaches a persistent independent SQLite service, and the tested sqlite-vec backend is available for production adapter wiring; the remote PostgreSQL implementation remains.
 - **Retrieval quality validated end-to-end on sample data (2026-08-06).** The real pipeline was run
   against the live store (85 concepts / 183 mentions / 28 relations / 1,442 indexed units) using the
