@@ -57,3 +57,47 @@ export const isChatEventForCurrentConversation = (
 		Object.hasOwn(messages ?? {}, eventMessageId)
 	);
 };
+
+export const isInactiveEventForQueueRun = (
+	responseMessageIds: ReadonlySet<string>,
+	eventMessageId: unknown
+) =>
+	typeof eventMessageId === 'string' &&
+	eventMessageId.length > 0 &&
+	responseMessageIds.has(eventMessageId);
+export const hasPendingCurrentAssistantResponses = (history: {
+	currentId?: string | null;
+	messages?: Record<
+		string,
+		| {
+				role?: string;
+				parentId?: string | null;
+				childrenIds?: string[];
+				done?: boolean;
+		  }
+		| undefined
+	>;
+}) => {
+	const messages = history?.messages ?? {};
+	const currentId = history?.currentId;
+	const currentMessage = currentId ? messages[currentId] : null;
+	if (!currentMessage) return false;
+
+	const responseParent =
+		currentMessage.role === 'assistant' && currentMessage.parentId
+			? messages[currentMessage.parentId]
+			: currentMessage.role === 'user'
+				? currentMessage
+				: null;
+	const responseIds =
+		responseParent?.role === 'user'
+			? (responseParent.childrenIds ?? [])
+			: currentMessage.role === 'assistant' && currentId
+				? [currentId]
+				: [];
+
+	return responseIds.some((messageId) => {
+		const message = messages[messageId];
+		return message?.role === 'assistant' && message.done !== true;
+	});
+};

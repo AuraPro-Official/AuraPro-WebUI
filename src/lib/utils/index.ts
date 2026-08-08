@@ -230,58 +230,47 @@ export const convertMessagesToHistory = (messages) => {
 // A lost assistant placeholder may exist under its map key with only
 // completion fields (content/done/error), missing id/role/parentId.
 // Reconstruct graph fields so already-corrupted chats recover on open.
-export const sanitizeHistory = (history) => {
+export const sanitizeHistory = (history: any) => {
 	if (!history?.messages || typeof history.messages !== 'object') return;
 
-	// Purge entries that aren't usable objects
-	for (const [id, message] of Object.entries(history.messages)) {
+	const messages: Record<string, any> = history.messages;
+
+	for (const [id, message] of Object.entries(messages)) {
 		if (!message || typeof message !== 'object') {
-			delete history.messages[id];
+			delete messages[id];
 		}
 	}
 
-	// Ensure every surviving node has its canonical id and a childrenIds array
-	for (const [id, message] of Object.entries(history.messages)) {
-		if (message.id !== id) message.id = id;
-		if (!Array.isArray(message.childrenIds)) message.childrenIds = [];
+	const originalChildOrder: Record<string, string[]> = {};
+	for (const [id, message] of Object.entries(messages)) {
+		message.id = id;
+		message.childrenIds = Array.isArray(message.childrenIds)
+			? [...new Set(message.childrenIds.filter((childId) => typeof childId === 'string'))]
+			: [];
+		originalChildOrder[id] = [...message.childrenIds];
 	}
 
-	// Build reverse lookup: parent, indexed by child id
-	const parentByChildId = {};
-	for (const [id, message] of Object.entries(history.messages)) {
-		for (const childId of message.childrenIds) {
-			parentByChildId[childId] = id;
-		}
-	}
-
-	// Recover currentId before role reconstruction can make a malformed node
-	// look valid.
-	const currentMessage = history.messages?.[history.currentId];
-	if (!currentMessage?.id || !currentMessage?.role) {
-		let latestLeafId = null;
-		let latestTimestamp = -1;
-
-		for (const [id, message] of Object.entries(history.messages)) {
-			if (message.childrenIds.length === 0 && (message.timestamp ?? 0) > latestTimestamp) {
-				latestLeafId = id;
-				latestTimestamp = message.timestamp ?? 0;
+	const parentByChildId: Record<string, string> = {};
+	for (const [id, childIds] of Object.entries(originalChildOrder)) {
+		for (const childId of childIds) {
+			if (childId !== id && messages[childId] && parentByChildId[childId] === undefined) {
+				parentByChildId[childId] = id;
 			}
 		}
-
-		history.currentId = latestLeafId ?? Object.keys(history.messages)[0] ?? null;
 	}
 
-	// Reconstruct missing parentId and role
-	for (const [id, message] of Object.entries(history.messages)) {
-		// Well-formed: has role and explicit parentId (null is valid for root)
-		if (message.role && message.parentId !== undefined) continue;
+	for (const [id, message] of Object.entries(messages)) {
+		const parentId = message.parentId;
+		const hasValidParent =
+			parentId === null ||
+			(typeof parentId === 'string' && parentId !== id && Boolean(messages[parentId]));
 
-		if (message.parentId === undefined) {
+		if (!hasValidParent) {
 			message.parentId = parentByChildId[id] ?? null;
 		}
 
 		if (!message.role) {
-			const parent = message.parentId ? history.messages[message.parentId] : null;
+			const parent = message.parentId ? messages[message.parentId] : null;
 			message.role =
 				parent?.role === 'user'
 					? 'assistant'
@@ -293,9 +282,54 @@ export const sanitizeHistory = (history) => {
 		}
 	}
 
-	// Prune childrenIds referencing deleted/missing nodes
-	for (const message of Object.values(history.messages)) {
-		message.childrenIds = message.childrenIds.filter((childId) => history.messages[childId]);
+	// Break malformed parent cycles so message traversal always reaches a root.
+	for (const id of Object.keys(messages)) {
+		const seen = new Set([id]);
+		let message = messages[id];
+		while (message?.parentId !== null) {
+			const parentId = message.parentId;
+			const parent = messages[parentId];
+			if (!parent || seen.has(parentId)) {
+				message.parentId = null;
+				break;
+			}
+			seen.add(parentId);
+			message = parent;
+		}
+	}
+
+	// Rebuild child links from canonical parentId values while preserving the
+	// original sibling order wherever possible.
+	for (const message of Object.values(messages)) {
+		message.childrenIds = [];
+	}
+	for (const [parentId, childIds] of Object.entries(originalChildOrder)) {
+		for (const childId of childIds) {
+			if (messages[childId]?.parentId === parentId) {
+				messages[parentId].childrenIds.push(childId);
+			}
+		}
+	}
+	for (const [id, message] of Object.entries(messages)) {
+		const parent = message.parentId ? messages[message.parentId] : null;
+		if (parent && !parent.childrenIds.includes(id)) {
+			parent.childrenIds.push(id);
+		}
+	}
+
+	const currentMessage = messages[history.currentId];
+	if (!currentMessage?.id || !currentMessage?.role) {
+		let latestLeafId = null;
+		let latestTimestamp = -1;
+
+		for (const [id, message] of Object.entries(messages)) {
+			if (message.childrenIds.length === 0 && (message.timestamp ?? 0) > latestTimestamp) {
+				latestLeafId = id;
+				latestTimestamp = message.timestamp ?? 0;
+			}
+		}
+
+		history.currentId = latestLeafId ?? Object.keys(messages)[0] ?? null;
 	}
 };
 
