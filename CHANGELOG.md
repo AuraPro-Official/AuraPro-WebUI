@@ -5,13 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.9.9] - 2026-08-04
-
-### Fixed
-
-- 修复发送消息后当前聊天内容暂时消失、刷新后才恢复显示的问题。
-- 修复新对话首次发送消息可能持续等待、刷新后才能正常使用的问题。
-
 ## [3.6.5] - 2026-06-19
 
 ### Added
