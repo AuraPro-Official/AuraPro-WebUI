@@ -140,6 +140,7 @@ class EpubApiRepository(Protocol):
     def list_concepts(self, **kwargs: Any) -> list[dict[str, Any]]: ...
     def count_concepts(self, **kwargs: Any) -> int: ...
     def merge_concepts(self, **kwargs: Any) -> dict[str, Any]: ...
+    def split_concept(self, **kwargs: Any) -> dict[str, Any]: ...
     def list_concept_relation_assertions(self, **kwargs: Any) -> list[dict[str, Any]]: ...
     def count_concept_relation_assertions(self, **kwargs: Any) -> int: ...
     def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
@@ -815,6 +816,36 @@ class EpubConceptService:
                 source_concept_id=source_concept_id,
                 canonical_name=canonical_name,
                 merged_by=merged_by,
+            )
+        except UnknownConceptError as error:
+            raise EpubResourceNotFound(str(error)) from error
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def split_concept(
+        self,
+        *,
+        source_concept_id: str,
+        canonical_name: str,
+        aliases: Sequence[str],
+        mentions: Sequence[Mapping[str, Any]],
+        split_by: str,
+    ) -> dict[str, Any]:
+        """Carve part of one concept out into a new one an administrator names.
+
+        A merge is one-way and has twice been wrong.  Nothing else in the API
+        can correct one, and restoring a backup stops being possible once a
+        later job postdates it.  This is not an undo -- the store cannot derive
+        a faithful reverse from a merge audit row -- so the administrator states
+        the whole decision and is recorded in the split's own audit row.
+        """
+        try:
+            return self._store.split_concept(
+                source_concept_id=source_concept_id,
+                canonical_name=canonical_name,
+                aliases=aliases,
+                mentions=mentions,
+                split_by=split_by,
             )
         except UnknownConceptError as error:
             raise EpubResourceNotFound(str(error)) from error
