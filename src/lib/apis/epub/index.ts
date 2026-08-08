@@ -301,6 +301,47 @@ export type ConceptMergeResult = {
 	dropped_self_relations: number;
 };
 
+/**
+ * One mention, named the way the API names a mention everywhere else: by its
+ * passage and code-point span. Omit both offsets for an unanchored mention.
+ */
+export type ConceptMentionRef = {
+	passage_id: string;
+	start_codepoint?: number | null;
+	end_codepoint?: number | null;
+};
+
+/**
+ * Carve part of `source_concept_id` out into a new concept. A merge is
+ * one-way, and this is the only administrator action that corrects one — as an
+ * explicit new decision, not a rewind: the caller states which aliases and
+ * which mentions become the new concept. `canonical_name` must be one of the
+ * moving aliases or a spelling no concept already owns.
+ */
+export type ConceptSplitInput = {
+	source_concept_id: string;
+	canonical_name: string;
+	aliases: string[];
+	mentions: ConceptMentionRef[];
+};
+
+export type ConceptSplitResult = {
+	concept_split_id: string;
+	source_concept_id: string;
+	source_canonical_name: string;
+	new_concept_id: string;
+	canonical_name: string;
+	status: EpubConcept['status'];
+	split_by: string;
+	split_at: string;
+	moved_aliases: number;
+	moved_mentions: number;
+	/** Relations left on the source; a split never repoints one automatically. */
+	relations_on_source: number;
+	/** Of those, the ones whose evidence names a split-off spelling — review by hand. */
+	relations_naming_split_aliases: number;
+};
+
 export type RelationAssertion = {
 	assertion_id: string;
 	relation_id: string;
@@ -512,6 +553,13 @@ export const getEpubConcepts = (
 
 export const mergeEpubConcepts = (token: string, input: ConceptMergeInput) =>
 	request<ConceptMergeResult>(token, '/admin/concepts/merge', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(input)
+	});
+
+export const splitEpubConcept = (token: string, input: ConceptSplitInput) =>
+	request<ConceptSplitResult>(token, '/admin/concepts/split', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(input)
