@@ -34,7 +34,7 @@ from .overlay import (
 )
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class IntegrityError(ValueError):
@@ -468,7 +468,7 @@ _MIGRATION_8: tuple[str, ...] = (
     # A span shorter than its profile's enforced evidence floor is dropped from
     # the payload during grounding rather than failing its item, exactly as a
     # merged-away self-relation is skipped rather than failing its packet
-    # (SDD 4.2.2 points 6 and 7).  One unusable citation must not discard the
+    # (SDD 4.2.2 points 6b and 6a).  One unusable citation must not discard the
     # valid concepts, mentions and relations around it -- measured on the
     # full-book section-graph run, that behaviour cost 140 concepts, 140
     # mentions and 105 relations across 13 of 43 packets.
@@ -542,6 +542,40 @@ _MIGRATION_9: tuple[str, ...] = (
     """,
     "CREATE INDEX idx_concept_splits_source ON concept_splits(source_concept_id, split_at)",
     "CREATE INDEX idx_concept_splits_new ON concept_splits(new_concept_id)",
+)
+
+
+_MIGRATION_10: tuple[str, ...] = (
+    # A concept whose name and aliases match more than one existing concept used
+    # to fail its whole item.  It is now skipped and counted, and the rest of the
+    # item ingests (SDD 4.2.2 point 6c).  Measured on the full-book runs, the
+    # failing behaviour held 33 items, of which 32 collided on pairs an
+    # administrator had already adjudicated as *distinct* -- 13 on
+    # ``全域潮汐枢纽``/``潮汐源`` alone -- so no merge could resolve them and the
+    # items were being discarded permanently, taking every valid concept and
+    # mention beside the collision with them.
+    #
+    # Counted here rather than in ``response_json`` for the same reason as the
+    # two columns above, but note the asymmetry with ``skipped_short_evidence``:
+    # a sub-floor span is removed by the read-only grounding pass and is
+    # therefore absent from the stored payload, whereas an ambiguous concept is
+    # only discovered at *write* time -- ``_resolve_or_create_concept`` is a
+    # write -- so the skipped concept is still present verbatim in the stored
+    # response, exactly as a merged-away self-relation is.  The column records
+    # what the write did, which the response cannot express either way.
+    #
+    # This counts *concepts*, not the relations that cascade off them.  That
+    # matches ``skipped_short_evidence``, which counts the spans the floor
+    # removed and not the relations left without evidence: the counter names the
+    # cause, and a cascade is derivable from the payload while the cause is not.
+    # NULL means "not measured": every item written before this migration, and
+    # every item that never reached concept resolution.
+    """
+    ALTER TABLE batch_items ADD COLUMN skipped_ambiguous_concepts INTEGER
+        CHECK (skipped_ambiguous_concepts IS NULL
+               OR (typeof(skipped_ambiguous_concepts) = 'integer'
+                   AND skipped_ambiguous_concepts >= 0))
+    """,
 )
 
 
@@ -641,6 +675,7 @@ class SQLiteEpubStore:
                 (7, _MIGRATION_7),
                 (8, _MIGRATION_8),
                 (9, _MIGRATION_9),
+                (10, _MIGRATION_10),
             )
             try:
                 connection.execute("BEGIN")
