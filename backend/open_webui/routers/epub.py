@@ -92,6 +92,34 @@ class ConceptMergeForm(BaseModel):
     canonical_name: str | None = Field(default=None, min_length=1, max_length=500)
 
 
+class ConceptMentionRef(BaseModel):
+    """One mention, named the way the rest of this API names a mention.
+
+    ``concept_mentions`` is unique per (concept, passage, span) and
+    ``add_concept_mention`` addresses a mention by passage and offsets, so a
+    split does too.  Omit both offsets to name an unanchored mention.
+    """
+
+    passage_id: str = Field(min_length=1, max_length=128)
+    start_codepoint: int | None = Field(default=None, ge=0)
+    end_codepoint: int | None = Field(default=None, ge=1)
+
+
+class ConceptSplitForm(BaseModel):
+    """Carve ``aliases`` and ``mentions`` out of ``source_concept_id``.
+
+    A merge is one-way and an administrator merge is a fallible judgement; this
+    is the correction path, and it is an explicit new decision rather than a
+    rewind of a recorded merge.  ``canonical_name`` must be one of the moving
+    aliases or a spelling no concept owns.
+    """
+
+    source_concept_id: str = Field(min_length=1, max_length=128)
+    canonical_name: str = Field(min_length=1, max_length=500)
+    aliases: list[str] = Field(default_factory=list, max_length=100)
+    mentions: list[ConceptMentionRef] = Field(default_factory=list, max_length=1_000)
+
+
 class RelationAssertionReviewForm(BaseModel):
     status: str = Field(pattern="^(APPROVED|REJECTED|PROVISIONAL)$")
 
@@ -487,6 +515,25 @@ async def merge_concepts(
             source_concept_id=form_data.source_concept_id,
             canonical_name=form_data.canonical_name,
             merged_by=str(getattr(user, "id", "")).strip(),
+        )
+    except EpubResourceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (EpubServiceError, IntegrityError) as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+@router.post("/admin/concepts/split")
+async def split_concept(
+    form_data: ConceptSplitForm, service: ServiceDep, user=Depends(get_admin_user)
+) -> dict[str, Any]:
+    """Undo an over-eager merge by naming, explicitly, what becomes its own concept."""
+    try:
+        return service.split_concept(
+            source_concept_id=form_data.source_concept_id,
+            canonical_name=form_data.canonical_name,
+            aliases=form_data.aliases,
+            mentions=[mention.model_dump() for mention in form_data.mentions],
+            split_by=str(getattr(user, "id", "")).strip(),
         )
     except EpubResourceNotFound as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error

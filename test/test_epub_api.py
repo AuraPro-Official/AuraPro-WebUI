@@ -209,6 +209,11 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
                 "/api/v1/epub/admin/concepts/merge",
                 {"target_concept_id": "one", "source_concept_id": "two"},
             ),
+            (
+                "post",
+                "/api/v1/epub/admin/concepts/split",
+                {"source_concept_id": "one", "canonical_name": "HTTP"},
+            ),
             ("get", "/api/v1/epub/admin/relation-assertions", None),
             ("put", "/api/v1/epub/admin/relation-assertions/missing", {"status": "APPROVED"}),
             ("post", "/api/v1/epub/admin/retrieval-units/missing/index", None),
@@ -365,6 +370,85 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             response = self.client.post("/api/v1/epub/admin/concepts/merge", json=payload)
             self.assertEqual(response.status_code, 404, payload)
             self.assertIn("unknown concept_id: missing", response.json()["detail"])
+
+        self.assertEqual(self.client.get("/api/v1/epub/admin/concepts").json()["total"], 2)
+
+    def test_admin_can_split_a_merged_concept_back_out_through_its_own_route(self) -> None:
+        """A merge is one-way, so the corrective route has to exist beside it.
+
+        Two merges have already had to be undone after review, and restoring a
+        backup stops being possible once a later job postdates it.  The split is
+        an explicit new decision: the administrator names the aliases and the
+        mentions, and is recorded on the audit row.
+        """
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        by_name = {
+            item["canonical_name"]: item
+            for item in self.client.get("/api/v1/epub/admin/concepts").json()["items"]
+        }
+        merged = self.client.post(
+            "/api/v1/epub/admin/concepts/merge",
+            json={
+                "target_concept_id": by_name["TCP"]["concept_id"],
+                "source_concept_id": by_name["传输控制协议"]["concept_id"],
+                "canonical_name": "传输控制协议",
+            },
+        )
+        self.assertEqual(merged.status_code, 200)
+        surviving = merged.json()["target_concept_id"]
+
+        split = self.client.post(
+            "/api/v1/epub/admin/concepts/split",
+            json={
+                "source_concept_id": surviving,
+                "canonical_name": "TCP",
+                "aliases": ["TCP", "Transmission Control Protocol"],
+                "mentions": [
+                    {"passage_id": "passage-1", "start_codepoint": 0, "end_codepoint": 3}
+                ],
+            },
+        )
+        self.assertEqual(split.status_code, 200)
+        self.assertEqual(split.json()["canonical_name"], "TCP")
+        self.assertEqual(split.json()["split_by"], "administrator")
+        self.assertEqual(split.json()["moved_aliases"], 2)
+        self.assertEqual(split.json()["moved_mentions"], 1)
+        self.assertNotIn("原文必须完整返回", split.text)
+
+        after = {
+            item["canonical_name"]: item
+            for item in self.client.get("/api/v1/epub/admin/concepts").json()["items"]
+        }
+        self.assertEqual(set(after), {"TCP", "传输控制协议"})
+        self.assertEqual(after["TCP"]["aliases"], ["TCP", "Transmission Control Protocol"])
+        self.assertEqual(after["TCP"]["mention_count"], 1)
+        self.assertEqual(after["传输控制协议"]["aliases"], ["传输控制协议"])
+        self.assertEqual(after["传输控制协议"]["mention_count"], 1)
+
+    def test_split_refuses_an_unknown_source_or_a_foreign_alias_with_an_actionable_status(self) -> None:
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        by_name = {
+            item["canonical_name"]: item
+            for item in self.client.get("/api/v1/epub/admin/concepts").json()["items"]
+        }
+
+        missing = self.client.post(
+            "/api/v1/epub/admin/concepts/split",
+            json={"source_concept_id": "missing", "canonical_name": "HTTP"},
+        )
+        self.assertEqual(missing.status_code, 404)
+        self.assertIn("unknown concept_id: missing", missing.json()["detail"])
+
+        foreign = self.client.post(
+            "/api/v1/epub/admin/concepts/split",
+            json={
+                "source_concept_id": by_name["TCP"]["concept_id"],
+                "canonical_name": "HTTP",
+                "aliases": ["传输控制协议"],
+            },
+        )
+        self.assertEqual(foreign.status_code, 400)
+        self.assertIn("does not own this alias", foreign.json()["detail"])
 
         self.assertEqual(self.client.get("/api/v1/epub/admin/concepts").json()["total"], 2)
 

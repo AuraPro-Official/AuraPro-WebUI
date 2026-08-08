@@ -929,6 +929,351 @@ class SQLiteEpubConceptMergeTest(unittest.TestCase):
             self.store.count_concepts(status="UNKNOWN")
 
 
+class SQLiteEpubConceptSplitTest(unittest.TestCase):
+    """The correction path for a merge an administrator got wrong.
+
+    ``merge_concepts`` is one-way, and two merges have already had to be undone
+    after review.  Restoring a backup and replaying stops working the moment a
+    later job postdates the backup, which is why this exists.  The fixture is
+    the second of those two mistakes, committed for real: the teaching
+    ``双轨校准法`` folded into ``《观测规程》2.4-2.11``, the scripture locator that
+    merely names it.  Every test starts from that merged state.
+
+    A split is explicitly a *new* decision, not a rewind: ``concept_merges``
+    never recorded which aliases or mentions moved, so the administrator names
+    them.
+    """
+
+    PASSAGE_ONE = "双轨校准法见于《观测规程》2.4-2.11。"
+    PASSAGE_TWO = "又论双轨校准法。"
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.store = SQLiteEpubStore(os.path.join(self.tempdir.name, "epub.db"))
+        self.addCleanup(self.store.close)
+        book_id = self.store.create_book("单轨校准法", book_id="book-a")
+        self.store.create_book_version(
+            book_id, epub_bytes=b"split test epub", version_id="version-a"
+        )
+        self.store.add_passages(
+            "version-a",
+            [
+                {
+                    "passage_id": "p1",
+                    "source_href": "chapter-13.xhtml",
+                    "spine_index": 0,
+                    "ordinal": 0,
+                    "content_kind": "paragraph",
+                    "content": self.PASSAGE_ONE,
+                },
+                {
+                    "passage_id": "p2",
+                    "source_href": "chapter-13.xhtml",
+                    "spine_index": 0,
+                    "ordinal": 1,
+                    "content_kind": "paragraph",
+                    "content": self.PASSAGE_TWO,
+                },
+            ],
+        )
+        self.citation = self.store.upsert_concept(
+            "《观测规程》2.4-2.11", aliases=["规程2.4-2.11"], concept_id="citation"
+        )
+        self.parable = self.store.upsert_concept(
+            "双轨校准法", aliases=["双轨对照"], concept_id="parable"
+        )
+        self.store.add_concept_mention(self.citation, "p1", start_codepoint=7, end_codepoint=21)
+        self.store.add_concept_mention(self.parable, "p1", start_codepoint=0, end_codepoint=5)
+        self.store.add_concept_mention(self.parable, "p2", start_codepoint=2, end_codepoint=7)
+        # Snapshot before the mistake, so a round trip has something to be
+        # measured against rather than merely "looking right".
+        self.before_merge = self._state(self.parable)
+        self.store.merge_concepts(
+            target_concept_id=self.citation,
+            source_concept_id=self.parable,
+            merged_by="administrator",
+        )
+
+    def _connection(self):
+        return self.store._connection()
+
+    def _count(self, sql: str, *parameters: object) -> int:
+        return int(self._connection().execute(sql, parameters).fetchone()[0])
+
+    def _aliases(self, concept_id: str) -> set[str]:
+        return {
+            str(row["alias"])
+            for row in self._connection().execute(
+                "SELECT alias FROM concept_aliases WHERE concept_id = ?", (concept_id,)
+            )
+        }
+
+    def _mentions(self, concept_id: str) -> set[tuple[object, ...]]:
+        return {
+            tuple(row)
+            for row in self._connection().execute(
+                """SELECT passage_id, start_codepoint, end_codepoint, evidence, source
+                     FROM concept_mentions WHERE concept_id = ?""",
+                (concept_id,),
+            )
+        }
+
+    def _state(self, concept_id: str) -> dict[str, object]:
+        """Everything about a concept that a merge moved and a split must restore."""
+        row = self._connection().execute(
+            "SELECT canonical_name, normalized_name, definition, status FROM concepts WHERE concept_id = ?",
+            (concept_id,),
+        ).fetchone()
+        return {
+            "concept": dict(row),
+            "aliases": self._aliases(concept_id),
+            "mentions": self._mentions(concept_id),
+        }
+
+    def _split(self, **overrides: object) -> dict[str, object]:
+        arguments: dict[str, object] = {
+            "source_concept_id": self.citation,
+            "canonical_name": "双轨校准法",
+            "aliases": ["双轨校准法", "双轨对照"],
+            "mentions": [
+                {"passage_id": "p1", "start_codepoint": 0, "end_codepoint": 5},
+                {"passage_id": "p2", "start_codepoint": 2, "end_codepoint": 7},
+            ],
+            "split_by": "administrator",
+        }
+        arguments.update(overrides)
+        return self.store.split_concept(**arguments)  # type: ignore[arg-type]
+
+    def _passage(self, passage_id: str) -> str:
+        return str(
+            self._connection()
+            .execute("SELECT content FROM passages WHERE passage_id = ?", (passage_id,))
+            .fetchone()["content"]
+        )
+
+    def _assert_every_mention_reslices(self, concept_id: str) -> None:
+        rows = self._connection().execute(
+            """SELECT passage_id, start_codepoint, end_codepoint, evidence
+                 FROM concept_mentions WHERE concept_id = ?""",
+            (concept_id,),
+        ).fetchall()
+        self.assertTrue(rows, "the concept holds no mention to re-slice")
+        for row in rows:
+            if row["start_codepoint"] is None:
+                continue
+            self.assertEqual(
+                row["evidence"],
+                self._passage(str(row["passage_id"]))[
+                    int(row["start_codepoint"]) : int(row["end_codepoint"])
+                ],
+                "a moved mention no longer re-slices byte-exact from its passage",
+            )
+
+    def test_split_moves_the_named_aliases_and_mentions_and_leaves_both_concepts_valid(self) -> None:
+        result = self._split()
+        new_id = str(result["new_concept_id"])
+
+        self.assertEqual(result["moved_aliases"], 2)
+        self.assertEqual(result["moved_mentions"], 2)
+        self.assertEqual(result["canonical_name"], "双轨校准法")
+        self.assertEqual(result["source_canonical_name"], "《观测规程》2.4-2.11")
+        self.assertEqual(self._aliases(new_id), {"双轨校准法", "双轨对照"})
+        # The source keeps the rest, including its own canonical spelling: a
+        # concept whose name were an alias of another concept is exactly the
+        # ambiguity ``upsert_concept`` refuses to create.
+        self.assertEqual(self._aliases(self.citation), {"《观测规程》2.4-2.11", "规程2.4-2.11"})
+        self.assertEqual(
+            self._mentions(new_id),
+            {("p1", 0, 5, "双轨校准法", "MODEL"), ("p2", 2, 7, "双轨校准法", "MODEL")},
+        )
+        self.assertEqual(
+            self._mentions(self.citation), {("p1", 7, 21, "《观测规程》2.4-2.11", "MODEL")}
+        )
+        self._assert_every_mention_reslices(new_id)
+        self._assert_every_mention_reslices(self.citation)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM concepts"), 2)
+        self.assertEqual(self._connection().execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_the_new_canonical_name_may_be_a_moving_alias_but_never_a_taken_spelling(self) -> None:
+        third = self.store.upsert_concept(
+            "单轨校准法", aliases=["单轨法"], concept_id="third"
+        )
+
+        with self.assertRaisesRegex(IntegrityError, "already belongs to an existing concept"):
+            self._split(canonical_name="单轨校准法")
+        with self.assertRaisesRegex(IntegrityError, "already an alias of an existing concept"):
+            self._split(canonical_name="单轨法")
+        # The source's own name is owned by the source, so it is taken too.
+        with self.assertRaisesRegex(IntegrityError, "already belongs to an existing concept"):
+            self._split(canonical_name="《观测规程》2.4-2.11")
+        # An alias of the source that is *not* moving is still a taken spelling.
+        with self.assertRaisesRegex(IntegrityError, "already an alias of an existing concept"):
+            self._split(canonical_name="规程2.4-2.11", aliases=["双轨校准法"])
+        self.assertEqual(self._count("SELECT COUNT(*) FROM concept_splits"), 0)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM concepts"), 2)
+
+        # A spelling nobody owns is fine, and so is one of the moving aliases.
+        free = self._split(canonical_name="双轨对照校准法")
+        self.assertEqual(
+            self._aliases(str(free["new_concept_id"])),
+            {"双轨校准法", "双轨对照", "双轨对照校准法"},
+        )
+        self.assertEqual(free["moved_aliases"], 3)
+        self.assertEqual(self._aliases(third), {"单轨校准法", "单轨法"})
+
+    def test_split_refuses_to_move_every_mention_because_that_is_a_rename(self) -> None:
+        every = [
+            {"passage_id": "p1", "start_codepoint": 0, "end_codepoint": 5},
+            {"passage_id": "p1", "start_codepoint": 7, "end_codepoint": 21},
+            {"passage_id": "p2", "start_codepoint": 2, "end_codepoint": 7},
+        ]
+
+        with self.assertRaisesRegex(IntegrityError, "cannot move every mention"):
+            self._split(mentions=every)
+
+        self.assertEqual(self._count("SELECT COUNT(*) FROM concepts"), 1)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM concept_splits"), 0)
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM concept_mentions WHERE concept_id = ?", self.citation),
+            3,
+        )
+
+    def test_split_refuses_an_unknown_source_a_foreign_alias_or_a_foreign_mention(self) -> None:
+        other = self.store.upsert_concept("校准法", concept_id="parable-genre")
+        self.store.add_concept_mention(other, "p1", start_codepoint=3, end_codepoint=5)
+
+        with self.assertRaisesRegex(UnknownConceptError, "unknown concept_id: missing"):
+            self._split(source_concept_id="missing")
+        with self.assertRaisesRegex(IntegrityError, "does not own this alias"):
+            self._split(aliases=["双轨校准法", "校准法"])
+        with self.assertRaisesRegex(IntegrityError, "does not own this alias"):
+            self._split(aliases=["双轨校准法", "从未出现的别名"])
+        with self.assertRaisesRegex(IntegrityError, "belongs to a different concept"):
+            self._split(
+                mentions=[{"passage_id": "p1", "start_codepoint": 3, "end_codepoint": 5}]
+            )
+        with self.assertRaisesRegex(IntegrityError, "does not exist"):
+            self._split(
+                mentions=[{"passage_id": "p2", "start_codepoint": 0, "end_codepoint": 1}]
+            )
+        with self.assertRaisesRegex(IntegrityError, "own canonical spelling"):
+            self._split(canonical_name="观测规程第二章", aliases=["《观测规程》2.4-2.11"])
+        with self.assertRaisesRegex(IntegrityError, "operator identity"):
+            self._split(split_by="   ")
+
+        self.assertEqual(self._count("SELECT COUNT(*) FROM concept_splits"), 0)
+        self.assertEqual(self._count("SELECT COUNT(*) FROM concepts"), 2)
+        self.assertEqual(
+            self._count("SELECT COUNT(*) FROM concept_mentions WHERE concept_id = ?", self.citation),
+            3,
+        )
+        self.assertEqual(self._aliases(other), {"校准法"})
+
+    def test_relations_stay_on_the_source_and_the_report_names_the_ones_to_review(self) -> None:
+        """A relation's correct endpoint after a split is nobody's derivation.
+
+        Moving one automatically would assert something no administrator
+        decided, which is the very class of error a split exists to correct.
+        """
+        other = self.store.upsert_concept("校准法", concept_id="parable-genre")
+        self.store.add_concept_mention(other, "p1", start_codepoint=3, end_codepoint=5)
+
+        def evidence(start: int, end: int) -> list[dict[str, object]]:
+            return [
+                {
+                    "passage_id": "p1",
+                    "start_codepoint": start,
+                    "end_codepoint": end,
+                    "evidence": self.PASSAGE_ONE[start:end],
+                }
+            ]
+
+        about_the_parable = self.store.add_concept_relation(
+            "version-a", self.citation, "ELABORATES", other, evidence=evidence(0, 5)
+        )
+        about_the_citation = self.store.add_concept_relation(
+            "version-a", other, "PRECEDES", self.citation, evidence=evidence(7, 21)
+        )
+
+        result = self._split()
+
+        self.assertEqual(result["relations_on_source"], 2)
+        # Only the one grounded on text that literally names a split-off
+        # spelling is shortlisted; nothing is moved either way.
+        self.assertEqual(result["relations_naming_split_aliases"], 1)
+        endpoints = {
+            str(row["relation_id"]): (str(row["subject_concept_id"]), str(row["object_concept_id"]))
+            for row in self._connection().execute(
+                "SELECT relation_id, subject_concept_id, object_concept_id FROM concept_relations"
+            )
+        }
+        self.assertEqual(
+            endpoints,
+            {
+                about_the_parable: (self.citation, other),
+                about_the_citation: (other, self.citation),
+            },
+            "a split must never repoint a relation",
+        )
+        self.assertEqual(
+            self._count(
+                "SELECT COUNT(*) FROM concept_relations WHERE subject_concept_id = ? OR object_concept_id = ?",
+                str(result["new_concept_id"]),
+                str(result["new_concept_id"]),
+            ),
+            0,
+        )
+        self.assertEqual(self._connection().execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_split_writes_an_identifier_only_audit_row(self) -> None:
+        result = self._split(split_by="administrator")
+
+        row = self._connection().execute("SELECT * FROM concept_splits").fetchone()
+        self.assertEqual(row["concept_split_id"], result["concept_split_id"])
+        self.assertEqual(row["source_concept_id"], self.citation)
+        self.assertEqual(row["new_concept_id"], result["new_concept_id"])
+        self.assertEqual(row["new_canonical_name"], "双轨校准法")
+        self.assertEqual(row["split_by"], "administrator")
+        self.assertTrue(row["split_at"])
+        self.assertEqual(result["split_at"], row["split_at"])
+        # A canonical name is a concept label.  No passage text, evidence span,
+        # prompt or model output may reach this audit record.
+        recorded = " ".join(str(value) for value in tuple(row))
+        self.assertNotIn(self.PASSAGE_ONE, recorded)
+        self.assertNotIn("见于", recorded)
+        # The merge audit is untouched: a split is a new decision beside it, not
+        # a retraction of what an administrator did earlier.
+        self.assertEqual(self._count("SELECT COUNT(*) FROM concept_merges"), 1)
+        self.assertEqual(self._connection().execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_merging_then_splitting_restores_the_concept_that_was_folded_away(self) -> None:
+        """The capability's real purpose, measured against the pre-merge state.
+
+        The identifiers are new, and deliberately so -- this is an
+        administrator's fresh decision, not a rewind of the merge.  Everything
+        the merge actually moved comes back byte for byte.
+        """
+        result = self._split()
+        restored = self._state(str(result["new_concept_id"]))
+
+        self.assertEqual(restored["aliases"], self.before_merge["aliases"])
+        self.assertEqual(restored["mentions"], self.before_merge["mentions"])
+        self.assertEqual(
+            restored["concept"],
+            self.before_merge["concept"],
+            "the recreated concept must match the one the merge folded away",
+        )
+        self.assertNotEqual(result["new_concept_id"], self.parable)
+        self._assert_every_mention_reslices(str(result["new_concept_id"]))
+        # And the concept it was wrongly merged into is back to what it was.
+        self.assertEqual(self._aliases(self.citation), {"《观测规程》2.4-2.11", "规程2.4-2.11"})
+        self.assertEqual(
+            self._mentions(self.citation), {("p1", 7, 21, "《观测规程》2.4-2.11", "MODEL")}
+        )
+        self.assertEqual(self._connection().execute("PRAGMA foreign_key_check").fetchall(), [])
+
+
 class PortableAnalysisOverlayTest(unittest.TestCase):
     """T-170a: an analysis must travel without a single character of the book.
 
