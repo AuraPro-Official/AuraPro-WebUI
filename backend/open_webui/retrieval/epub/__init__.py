@@ -67,6 +67,13 @@ from .search import (
     SearchResponse,
     VectorCandidateBackend,
 )
+from .segmentation import (
+    JiebaQuerySegmenter,
+    QuerySegmenter,
+    SegmenterUnavailable,
+    TokenBoundaries,
+    load_query_segmenter,
+)
 from .retrieval_units import (
     CHINESE_SENTENCE_ENDINGS,
     ENGLISH_SENTENCE_ENDINGS,
@@ -113,6 +120,7 @@ __all__ = [
     "InMemoryDerivedVectorBackend",
     "IntegrityError",
     "IndexingResult",
+    "JiebaQuerySegmenter",
     "JsonTransport",
     "LocalConceptResolverAdapter",
     "LlamaCppConceptResolver",
@@ -125,6 +133,7 @@ __all__ = [
     "ModelAvailability",
     "OVERLAP_CODEPOINTS",
     "PrivateModelEndpoint",
+    "QuerySegmenter",
     "RerankerService",
     "RetrievalWindow",
     "UrllibJsonTransport",
@@ -133,6 +142,7 @@ __all__ = [
     "SearchExcerpt",
     "SearchHit",
     "SearchResponse",
+    "SegmenterUnavailable",
     "SQLiteEpubStore",
     "SQLiteVecHealth",
     "SQLiteVecDerivedVectorBackend",
@@ -141,6 +151,8 @@ __all__ = [
     "VectorIndexError",
     "VectorCandidateBackend",
     "TARGET_CODEPOINTS",
+    "TokenBoundaries",
+    "load_query_segmenter",
     "load_sqlite_vec",
     "plan_retrieval_windows",
 ]

@@ -73,6 +73,7 @@ read_pin() {
 # Fallbacks mirror the pyproject.toml pins as of this writing.
 SQLITE_VEC_PIN="$(read_pin sqlite-vec 0.1.9)"
 MULTIPART_PIN="$(read_pin python-multipart 0.0.32)"
+JIEBA_PIN="$(read_pin jieba 0.42.1)"
 # ruff is declared as a range (`ruff>=0.15.5`) in [dependency-groups] dev rather
 # than an `==` pin, so read_pin cannot find it; mirror the declared floor.
 RUFF_PIN="ruff>=0.15.5"
@@ -85,9 +86,12 @@ RUFF_PIN="ruff>=0.15.5"
 #   python-multipart -> backend/open_webui/routers/epub.py declares UploadFile
 #                       form params; FastAPI raises at import time without it
 #   sqlite-vec       -> the loadable SQLite extension under test
+#   jieba            -> Tier-1 matching requires query word boundaries; without
+#                       it the search tests would only ever exercise the
+#                       degraded fallback and the real rule would go untested
 #   ruff             -> the F821 guard below; names used only in `except`
 #                       clauses are invisible to a passing test suite
-REQUIREMENTS=(typer uvicorn fastapi httpx "${MULTIPART_PIN}" "${SQLITE_VEC_PIN}" "${RUFF_PIN}")
+REQUIREMENTS=(typer uvicorn fastapi httpx "${MULTIPART_PIN}" "${SQLITE_VEC_PIN}" "${JIEBA_PIN}" "${RUFF_PIN}")
 
 # Pyflakes-only. The repo-wide ruff style rules (single quotes, line length) do
 # not yet apply to the EPUB modules and would bury the finding that matters.
@@ -260,12 +264,12 @@ venv_is_complete() {
 	[ -x "${VENV_PYTHON}" ] || return 1
 	[ -x "${VENV_DIR}/bin/ruff" ] || return 1
 	validate_python "${VENV_PYTHON}" quiet || return 1
-	AURAPRO_REQUIRED_PINS="${SQLITE_VEC_PIN} ${MULTIPART_PIN}" \
+	AURAPRO_REQUIRED_PINS="${SQLITE_VEC_PIN} ${MULTIPART_PIN} ${JIEBA_PIN}" \
 		"${VENV_PYTHON}" - <<'PY' >/dev/null 2>&1 || return 1
 import os
 from importlib import metadata
 
-for module in ("typer", "uvicorn", "fastapi", "httpx", "multipart", "sqlite_vec"):
+for module in ("typer", "uvicorn", "fastapi", "httpx", "multipart", "sqlite_vec", "jieba"):
     __import__(module)
 
 for requirement in os.environ["AURAPRO_REQUIRED_PINS"].split():
