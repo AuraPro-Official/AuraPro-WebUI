@@ -3274,7 +3274,7 @@ class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4, 5, 6, 7, 8},
+            {1, 2, 3, 4, 5, 6, 7, 8, 9},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
         item = connection.execute("SELECT * FROM batch_items").fetchone()
@@ -3379,10 +3379,10 @@ class EpubBatchPromptProfileMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4, 5, 6, 7, 8},
+            {1, 2, 3, 4, 5, 6, 7, 8, 9},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
-        self.assertEqual(STORE.SCHEMA_VERSION, 8)
+        self.assertEqual(STORE.SCHEMA_VERSION, 9)
         jobs = {
             row["batch_job_id"]: row
             for row in connection.execute("SELECT * FROM batch_jobs")

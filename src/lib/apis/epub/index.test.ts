@@ -19,7 +19,8 @@ import {
 	reviewEpubRelationAssertion,
 	reviewEpubSampleBatch,
 	recoverEpubBatches,
-	searchEpub
+	searchEpub,
+	splitEpubConcept
 } from './index';
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -213,6 +214,50 @@ describe('EPUB concept API client', () => {
 			body: JSON.stringify({
 				target_concept_id: 'concept-1',
 				source_concept_id: 'concept-2'
+			})
+		});
+	});
+
+	it('splits a wrongly merged concept back out through its own administrator endpoint', async () => {
+		const fetchMock = vi.fn().mockResolvedValueOnce(
+			jsonResponse({
+				concept_split_id: 'split-1',
+				source_concept_id: 'concept-1',
+				source_canonical_name: '《观测规程》2.4-2.11',
+				new_concept_id: 'concept-3',
+				canonical_name: '双轨校准法',
+				status: 'PROVISIONAL',
+				split_by: 'administrator',
+				split_at: '2026-02-01T00:00:00Z',
+				moved_aliases: 1,
+				moved_mentions: 1,
+				relations_on_source: 2,
+				relations_naming_split_aliases: 1
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const split = await splitEpubConcept('admin-token', {
+			source_concept_id: 'concept-1',
+			canonical_name: '双轨校准法',
+			aliases: ['双轨校准法'],
+			mentions: [{ passage_id: 'p1', start_codepoint: 0, end_codepoint: 5 }]
+		});
+
+		expect(split.new_concept_id).toBe('concept-3');
+		expect(split.moved_mentions).toBe(1);
+		// Relations are never repointed for the administrator; the count is the
+		// shortlist they have to review by hand.
+		expect(split.relations_naming_split_aliases).toBe(1);
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/epub/admin/concepts/split');
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({
+			method: 'POST',
+			headers: expect.objectContaining({ authorization: 'Bearer admin-token' }),
+			body: JSON.stringify({
+				source_concept_id: 'concept-1',
+				canonical_name: '双轨校准法',
+				aliases: ['双轨校准法'],
+				mentions: [{ passage_id: 'p1', start_codepoint: 0, end_codepoint: 5 }]
 			})
 		});
 	});

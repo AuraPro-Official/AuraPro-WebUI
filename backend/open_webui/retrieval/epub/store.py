@@ -34,7 +34,7 @@ from .overlay import (
 )
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class IntegrityError(ValueError):
@@ -494,6 +494,57 @@ _MIGRATION_8: tuple[str, ...] = (
 )
 
 
+_MIGRATION_9: tuple[str, ...] = (
+    # ``merge_concepts`` is one-way, and an administrator merge is a fallible
+    # judgement: two have already had to be undone after review.  The only
+    # recovery was restoring a backup and replaying, which stops working the
+    # moment a later job postdates the backup.  ``split_concept`` is the
+    # correction path, and like a merge it deletes nothing from the graph that
+    # would let the graph answer "who decided this, and when" afterwards -- the
+    # new concept looks exactly like any other concept once it exists.
+    #
+    # This is a separate table rather than a typed row in ``concept_merges``
+    # because the two records are not the same shape read in opposite
+    # directions.  A merge audit names one surviving concept and one identifier
+    # whose row is *gone*; a split audit names two concepts that both exist.
+    # ``concept_merges.target_concept_id`` is a real foreign key that means "the
+    # survivor", and ``merge_concepts`` repoints it when that survivor is itself
+    # folded onward -- a rule that is correct for merge lineage and simply false
+    # for a split, whose source is not lineage but the concept an administrator
+    # chose to divide.  Discriminating the two inside one table would make every
+    # column's meaning depend on the discriminator and would put split rows in
+    # the path of that UPDATE.
+    #
+    # Neither identifier is a foreign key, for the reason the audit exists at
+    # all.  A ``RESTRICT`` reference to ``concepts`` would let an audit row veto
+    # the very operations it records: a split concept could never afterwards be
+    # merged, and a merge could never absorb a concept that had been split off.
+    # ``concept_merges.source_concept_id`` already establishes that an audit row
+    # may name an identifier the schema does not police; here both do, so the
+    # record survives whatever the administrator decides next.
+    #
+    # It holds identifiers, the new concept's own label, the acting
+    # administrator and the time.  A canonical name is a concept label, never
+    # source passage text, evidence, a prompt or model output, and nothing else
+    # from the split is copied.  Which aliases and mentions moved is not
+    # recorded: reconstructing them is exactly the derivation this feature
+    # refuses to fake, and the counts an operator needs are returned by the call.
+    """
+    CREATE TABLE concept_splits (
+        concept_split_id TEXT PRIMARY KEY,
+        source_concept_id TEXT NOT NULL,
+        new_concept_id TEXT NOT NULL,
+        new_canonical_name TEXT NOT NULL,
+        split_by TEXT NOT NULL,
+        split_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (source_concept_id <> new_concept_id)
+    )
+    """,
+    "CREATE INDEX idx_concept_splits_source ON concept_splits(source_concept_id, split_at)",
+    "CREATE INDEX idx_concept_splits_new ON concept_splits(new_concept_id)",
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
@@ -589,6 +640,7 @@ class SQLiteEpubStore:
                 (6, _MIGRATION_6),
                 (7, _MIGRATION_7),
                 (8, _MIGRATION_8),
+                (9, _MIGRATION_9),
             )
             try:
                 connection.execute("BEGIN")
@@ -1804,6 +1856,313 @@ class SQLiteEpubStore:
             "dropped_self_relations": dropped_self_relations,
             "repointed_merge_audits": repointed_merge_audits,
         }
+
+    def split_concept(
+        self,
+        *,
+        source_concept_id: str,
+        canonical_name: str,
+        aliases: Sequence[str] = (),
+        mentions: Sequence[Mapping[str, Any]] = (),
+        split_by: str,
+    ) -> dict[str, Any]:
+        """Carve part of one concept out into a new one, or change nothing.
+
+        :meth:`merge_concepts` is one-way, and an administrator merge is a
+        fallible judgement -- a context-specific designation folded into a
+        generic one, a teaching folded into the document locator that names
+        it.  Restoring a backup and replaying stops being possible as soon as a
+        later job postdates the backup, so this is the correction path.
+
+        It is deliberately **not** an undo.  ``concept_merges`` records the
+        source's canonical name but not which aliases or mentions moved, so no
+        faithful reverse is derivable from an audit row, and pretending
+        otherwise would silently invent an administrator's decision.  The
+        caller therefore states the whole decision explicitly: which concept
+        survives, what the new one is called, which aliases go with it, and
+        which mentions go with it.  Everything below happens inside a single
+        ``_write()`` transaction because a half-split graph is worse than an
+        unsplit one.
+
+        A mention is named by ``{"passage_id", "start_codepoint",
+        "end_codepoint"}`` -- the natural key of ``concept_mentions`` and the
+        only vocabulary the rest of this API uses for a mention.
+        ``add_concept_mention`` takes a passage and offsets, ``merge_concepts``
+        deduplicates on exactly that triple, and the portable overlay travels
+        mentions as locations rather than as surrogate keys; ``mention_id`` is
+        an internal uuid that no read path in this store, service or API ever
+        returns, so an administrator could not supply one.  Offsets are omitted
+        together to name an unanchored mention, matching
+        ``add_concept_mention``.
+
+        ``canonical_name`` must either be one of the moving aliases or be a
+        spelling no concept owns as a name or alias.  These are
+        ``upsert_concept``'s own collision rules, reused so that a split cannot
+        manufacture the very ambiguity a merge exists to resolve.  The source's
+        own canonical spelling can never move: it would leave the surviving
+        concept named by an alias belonging to a different concept.
+
+        Moving *every* mention is refused.  That is a rename, and
+        ``upsert_concept`` already renames a concept without inventing a second
+        one.
+
+        Mentions keep their exact passage, offsets, evidence and source; only
+        ``concept_id`` changes, and each moved row is re-read and re-sliced from
+        its passage afterwards, so a split that disturbed a citation by even one
+        code point rolls back rather than committing.
+
+        **Relations are deliberately not repointed.**  Which endpoint a
+        relation belongs on after a split is a semantic judgement about what the
+        relation asserts, and this store has no basis to make it: the row
+        records two concept identifiers and a predicate, not which sense of the
+        subject was meant.  Moving one automatically would assert something no
+        administrator decided, and silently moving the wrong one is precisely
+        the class of error this method exists to correct.  Every relation
+        therefore stays on the source, and the result reports how many of them
+        are grounded on evidence that literally names one of the split-off
+        spellings, so an administrator can review that shortlist by hand.
+        """
+        if not source_concept_id:
+            raise IntegrityError("a concept split needs a source concept")
+        splitter = split_by.strip()
+        if not splitter or len(splitter) > 200:
+            raise IntegrityError(
+                "concept split operator identity must be a non-empty value of at most 200 characters"
+            )
+        new_canonical = canonical_name.strip()
+        normalized_new = _normalize(canonical_name)
+        requested_aliases: dict[str, str] = {}
+        for alias in aliases:
+            requested_aliases[_normalize(alias)] = alias
+        requested_mentions = self._mention_keys(mentions)
+
+        with self._write() as connection:
+            source = connection.execute(
+                "SELECT * FROM concepts WHERE concept_id = ?", (source_concept_id,)
+            ).fetchone()
+            if source is None:
+                raise UnknownConceptError(f"unknown concept_id: {source_concept_id}")
+            source_canonical_name = str(source["canonical_name"])
+            source_normalized_name = str(source["normalized_name"])
+
+            if source_normalized_name in requested_aliases:
+                raise IntegrityError(
+                    "a split cannot move the source concept's own canonical spelling"
+                )
+            moving_alias_ids: list[str] = []
+            moving_alias_spellings: list[str] = []
+            for normalized_alias, alias in requested_aliases.items():
+                owner = connection.execute(
+                    "SELECT alias_id, concept_id, alias FROM concept_aliases WHERE normalized_alias = ?",
+                    (normalized_alias,),
+                ).fetchone()
+                if owner is None or owner["concept_id"] != source_concept_id:
+                    raise IntegrityError(
+                        f"the source concept does not own this alias: {alias}"
+                    )
+                moving_alias_ids.append(str(owner["alias_id"]))
+                moving_alias_spellings.append(str(owner["alias"]))
+
+            # ``upsert_concept``'s collision rules, restated for a name that has
+            # to be free *after* the requested aliases have moved.
+            name_owner = connection.execute(
+                "SELECT concept_id FROM concepts WHERE normalized_name = ?", (normalized_new,)
+            ).fetchone()
+            if name_owner is not None:
+                raise IntegrityError(
+                    "the new canonical name already belongs to an existing concept"
+                )
+            alias_owner = connection.execute(
+                "SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?",
+                (normalized_new,),
+            ).fetchone()
+            if alias_owner is not None and normalized_new not in requested_aliases:
+                raise IntegrityError(
+                    "the new canonical name is already an alias of an existing concept"
+                )
+
+            moving_mentions: list[dict[str, Any]] = []
+            for passage_id, start, end in requested_mentions:
+                candidates = connection.execute(
+                    """SELECT mention_id, concept_id, passage_id, start_codepoint,
+                              end_codepoint, evidence, source
+                         FROM concept_mentions
+                        WHERE passage_id = ?
+                          AND start_codepoint IS ?
+                          AND end_codepoint IS ?""",
+                    (passage_id, start, end),
+                ).fetchall()
+                owned = [row for row in candidates if row["concept_id"] == source_concept_id]
+                if not owned:
+                    if candidates:
+                        raise IntegrityError(
+                            "a mention named for the split belongs to a different concept"
+                        )
+                    raise IntegrityError("a mention named for the split does not exist")
+                moving_mentions.append(dict(owned[0]))
+
+            total_mentions = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM concept_mentions WHERE concept_id = ?",
+                    (source_concept_id,),
+                ).fetchone()[0]
+            )
+            if total_mentions and len(moving_mentions) == total_mentions:
+                raise IntegrityError(
+                    "a split cannot move every mention of the source concept; "
+                    "renaming a concept is upsert_concept's job"
+                )
+
+            new_concept_id = str(uuid4())
+            connection.execute(
+                """INSERT INTO concepts(concept_id, canonical_name, normalized_name, definition, status)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (new_concept_id, new_canonical, normalized_new, "", str(source["status"])),
+            )
+            moved_aliases = 0
+            for alias_id in moving_alias_ids:
+                moved_aliases += connection.execute(
+                    "UPDATE concept_aliases SET concept_id = ? WHERE alias_id = ?",
+                    (new_concept_id, alias_id),
+                ).rowcount
+            # A canonical spelling that was not among the moving aliases owns no
+            # row yet; ``upsert_concept`` always stores one, so a split must too.
+            moved_aliases += self._ensure_alias(
+                connection,
+                concept_id=new_concept_id,
+                alias=new_canonical,
+                normalized_alias=normalized_new,
+            )
+
+            moved_mentions = 0
+            for mention in moving_mentions:
+                moved_mentions += connection.execute(
+                    "UPDATE concept_mentions SET concept_id = ? WHERE mention_id = ?",
+                    (new_concept_id, mention["mention_id"]),
+                ).rowcount
+            self._verify_moved_mentions(
+                connection, concept_id=new_concept_id, before=moving_mentions
+            )
+
+            split_names = {*moving_alias_spellings, new_canonical}
+            relation_ids: set[str] = set()
+            naming_relation_ids: set[str] = set()
+            for row in connection.execute(
+                """SELECT r.relation_id, e.evidence
+                     FROM concept_relations AS r
+                     LEFT JOIN concept_relation_assertions AS a ON a.relation_id = r.relation_id
+                     LEFT JOIN concept_relation_evidence AS e ON e.assertion_id = a.assertion_id
+                    WHERE r.subject_concept_id = ? OR r.object_concept_id = ?""",
+                (source_concept_id, source_concept_id),
+            ):
+                relation_id = str(row["relation_id"])
+                relation_ids.add(relation_id)
+                evidence = row["evidence"]
+                if evidence is not None and any(name in str(evidence) for name in split_names):
+                    naming_relation_ids.add(relation_id)
+
+            connection.execute(
+                "UPDATE concepts SET updated_at = CURRENT_TIMESTAMP WHERE concept_id = ?",
+                (source_concept_id,),
+            )
+            split_id = str(uuid4())
+            connection.execute(
+                """INSERT INTO concept_splits(
+                       concept_split_id, source_concept_id, new_concept_id,
+                       new_canonical_name, split_by
+                   ) VALUES (?, ?, ?, ?, ?)""",
+                (split_id, source_concept_id, new_concept_id, new_canonical, splitter),
+            )
+            recorded = connection.execute(
+                "SELECT split_at FROM concept_splits WHERE concept_split_id = ?", (split_id,)
+            ).fetchone()
+        assert recorded is not None
+        return {
+            "concept_split_id": split_id,
+            "source_concept_id": source_concept_id,
+            "source_canonical_name": source_canonical_name,
+            "new_concept_id": new_concept_id,
+            "canonical_name": new_canonical,
+            "status": str(source["status"]),
+            "split_by": splitter,
+            "split_at": recorded["split_at"],
+            "moved_aliases": moved_aliases,
+            "moved_mentions": moved_mentions,
+            # Deliberately left where they were; see this method's docstring.
+            "relations_on_source": len(relation_ids),
+            "relations_naming_split_aliases": len(naming_relation_ids),
+        }
+
+    @staticmethod
+    def _mention_keys(
+        mentions: Sequence[Mapping[str, Any]]
+    ) -> list[tuple[str, int | None, int | None]]:
+        """Read the caller's mention list as ``concept_mentions``' natural key.
+
+        Offsets are supplied together or not at all, exactly as in
+        :meth:`add_concept_mention`; omitting both names an unanchored mention.
+        """
+        keys: list[tuple[str, int | None, int | None]] = []
+        for spec in mentions:
+            passage_id = str(spec.get("passage_id") or "").strip()
+            if not passage_id:
+                raise IntegrityError("a mention named for a split must name a passage")
+            start = spec.get("start_codepoint")
+            end = spec.get("end_codepoint")
+            if (start is None) != (end is None):
+                raise IntegrityError("mention offsets must be supplied together")
+            key = (
+                passage_id,
+                None if start is None else int(start),
+                None if end is None else int(end),
+            )
+            if key in keys:
+                raise IntegrityError("the same mention was named twice for one split")
+            keys.append(key)
+        return keys
+
+    @staticmethod
+    def _verify_moved_mentions(
+        connection: sqlite3.Connection,
+        *,
+        concept_id: str,
+        before: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Re-read every moved mention and re-slice it from its own passage.
+
+        A split must be a pure change of ``concept_id``.  This reads each row
+        back after the write and compares its passage, offsets, evidence and
+        source against the values it had before, then re-derives the evidence
+        from the immutable passage the same way :meth:`_add_concept_mention`
+        does.  Any disagreement raises, which rolls the whole split back.
+        """
+        for original in before:
+            row = connection.execute(
+                """SELECT m.concept_id, m.passage_id, m.start_codepoint, m.end_codepoint,
+                          m.evidence, m.source, p.content
+                     FROM concept_mentions AS m
+                     JOIN passages AS p ON p.passage_id = m.passage_id
+                    WHERE m.mention_id = ?""",
+                (original["mention_id"],),
+            ).fetchone()
+            if row is None or row["concept_id"] != concept_id:
+                raise IntegrityError("a mention named for the split did not move")
+            if tuple(
+                row[column]
+                for column in ("passage_id", "start_codepoint", "end_codepoint", "evidence", "source")
+            ) != tuple(
+                original[column]
+                for column in ("passage_id", "start_codepoint", "end_codepoint", "evidence", "source")
+            ):
+                raise IntegrityError("a split may change nothing about a mention but its concept")
+            start, end = row["start_codepoint"], row["end_codepoint"]
+            if start is None:
+                continue
+            content = str(row["content"])
+            if start < 0 or end is None or end <= start or end > len(content):
+                raise IntegrityError("a moved mention must identify a non-empty source substring")
+            if row["evidence"] != content[start:end]:
+                raise IntegrityError("a moved mention's evidence must equal the source substring")
 
     @staticmethod
     def _ensure_alias(
