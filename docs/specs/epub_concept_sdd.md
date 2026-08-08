@@ -360,6 +360,30 @@ relationship affects retrieval provenance and ranking, never citation text.
   results. Deduplication is scoped within one passage, so the set of passages the
   channel reaches is unchanged. Channel B returns vector candidates from derived
   retrieval units.
+- Channel A is **ranked and then paginated**. Ranking is one stable total order
+  over the whole result set, expressed as an `ORDER BY` over the same predicate
+  the count uses, so pagination still walks every span exactly once and still
+  ends at `graph_total`; a per-page rerank is not permitted, because it would
+  make page 2 meaningless. Three deterministic signals apply strictly in order:
+  (1) how expensive it was to reach the span's concepts, where a Tier-1 match
+  costs nothing and one `HAS_PART` hop costs `1 + log2(children of that parent)`,
+  so a span reached only by expanding through a high-degree hub always sorts
+  below a directly matched one; (2) how many queried concepts the one span is
+  attributed to; (3) span length, so a bare two-character name sorts below a
+  substantive citation and an unanchored mention sorts last. Book order is the
+  final tie-break. The ranking signals a span is ordered by are derived
+  retrieval signals; they never alter what a span cites.
+- A high-degree concept is down-weighted, never capped. Expansion coverage,
+  `graph_total`, and the set of reachable spans are exactly what they would be
+  without ranking: bounding the fan-out would delete source a reader could
+  otherwise page to, and would do so invisibly, since only a smaller count would
+  show for it. Ranking uses no model at all — Channel A must keep working with
+  no local model configured, and the local Cross-Encoder stays in the fused
+  channel, which is allowed to fail closed.
+- The fused channel reads the top of the ranked Channel A from offset 0, bounded
+  by its own limit, never the page the UI is displaying. `graph_limit` sizes a
+  display page; it must not act as a recall ceiling on ranked fusion, and paging
+  the graph panel must not change the fused answer.
 - Candidate windows are locally cross-encoder reranked, then diversified with
   MMR before their parent passages are rendered.
 
