@@ -1026,6 +1026,28 @@ class SQLiteEpubStore:
             .fetchall()
         ]
 
+    def concept_term_fingerprint(self) -> tuple[Any, ...]:
+        """A cheap value that changes whenever the Tier-1 vocabulary changes.
+
+        Search holds its compiled matcher across requests, so it asks this
+        question on every one of them; the answer must therefore cost close to
+        nothing and must never miss a change.  Three aggregates over two small
+        tables satisfy both: the row counts move when a concept or an alias is
+        added or removed, and ``MAX(updated_at)`` moves when an existing
+        concept is renamed, merged, split or re-approved in place — every one
+        of those paths already touches ``concepts.updated_at``.
+        """
+        row = (
+            self._connection()
+            .execute(
+                """SELECT (SELECT COUNT(*) FROM concepts) AS concept_count,
+                          (SELECT COUNT(*) FROM concept_aliases) AS alias_count,
+                          (SELECT MAX(updated_at) FROM concepts) AS updated_at"""
+            )
+            .fetchone()
+        )
+        return (row["concept_count"], row["alias_count"], row["updated_at"])
+
     def add_concept_relation(
         self,
         version_id: str,

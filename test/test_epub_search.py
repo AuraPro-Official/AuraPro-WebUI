@@ -29,6 +29,7 @@ def _load(name: str):
 
 INFERENCE = _load("inference")
 VECTOR_INDEX = _load("vector_index")
+SEGMENTATION = _load("segmentation")
 SEARCH = _load("search")
 
 ConceptTerm = SEARCH.ConceptTerm
@@ -36,6 +37,21 @@ ConceptTermMatcher = SEARCH.ConceptTermMatcher
 EpubSearchService = SEARCH.EpubSearchService
 ModelAvailability = INFERENCE.ModelAvailability
 DerivedVectorRecord = VECTOR_INDEX.DerivedVectorRecord
+TokenBoundaries = SEGMENTATION.TokenBoundaries
+load_query_segmenter = SEGMENTATION.load_query_segmenter
+
+SEGMENTER, SEGMENTER_REASON = load_query_segmenter()
+
+
+def _boundaries(text: str):
+    """Real segmentation for ``text``, so the tests pin the shipped tokenizer.
+
+    A stub would let the boundary rule pass while the tokenizer this actually
+    ships with disagreed about where `枢对锚站的校验的规律` breaks, which is the
+    only thing that decides whether the fix works.
+    """
+    assert SEGMENTER is not None
+    return SEGMENTER.boundaries(text)
 
 
 def _hash(value: str) -> str:
@@ -88,6 +104,9 @@ class FakeSource:
         # Every ``list_concept_occurrences`` call, so a test can assert what
         # relevance the service declared as well as what came back.
         self.occurrence_calls: list[dict[str, object]] = []
+        # How often the vocabulary was actually re-read, so a test can tell a
+        # reused matcher from a rebuilt one without timing anything.
+        self.term_reads = 0
 
     @staticmethod
     def _passage(passage_id: str, chapter: str, content: str) -> dict[str, object]:
@@ -111,7 +130,12 @@ class FakeSource:
         }
 
     def list_concept_terms(self):
+        self.term_reads += 1
         return self.terms
+
+    def concept_term_fingerprint(self):
+        """Stand in for the store's aggregate: any change to the vocabulary moves it."""
+        return (len(self.terms), tuple(sorted(term["term"] for term in self.terms)))
 
     def _occurrence_spans(self, concept_ids, concept_costs=None):
         """Mirror the store contract: one row per distinct surviving source span.
@@ -207,9 +231,14 @@ class HubFakeSource(FakeSource):
     to the query — that hub is why `枢纽的权重` reaches 778 spans.  And `锚站`
     has a single child, so expanding through it says something.
 
-    A `汛期观测` query resolves the hub (through its `枢` alias) and the flood
-    concept directly.  In book order the preface span comes first; that is the
-    reported symptom, and it was never arbitrary — it was the front of the book.
+    The queries here name the hub by its canonical `全域潮汐枢纽` rather than
+    leaning on its one-character `枢` alias.  That alias is still in the
+    fixture and still anchors the preface span, but whether it *resolves* from
+    a given query is now a question about that query's word boundaries — and
+    these tests are about ranking, which must not be hostage to how a tokenizer
+    happens to break one phrase.  In book order the preface span still comes
+    first; that is the reported symptom, and it was never arbitrary — it was
+    the front of the book.
     """
 
     PREFACE = "前言：本册所收录的是枢的运行记录选编，供人查阅。"
@@ -381,16 +410,154 @@ def _record(source: FakeSource, unit_id: str, vector: tuple[float, ...]) -> obje
 
 
 class EpubSearchTest(unittest.TestCase):
-    def test_tier_one_trie_uses_latin_boundaries_and_direct_cjk_matching(self) -> None:
+    @unittest.skipIf(SEGMENTER is None, f"local query segmenter unavailable: {SEGMENTER_REASON}")
+    def test_tier_one_trie_uses_latin_boundaries_and_token_aligned_cjk_matching(self) -> None:
+        """A CJK term must sit on the query's own word boundaries, not anywhere.
+
+        The Latin rule is unchanged.  What changes is that a CJK term no longer
+        matches merely because its characters appear: `律` is a real concept
+        name and it is *inside* `规律`, which is not a mention of it.  A term
+        may still span several tokens — `枢对锚站的校验` covers four — because
+        the query is segmented to supply boundaries, never to supply patterns.
+        """
         matcher = ConceptTermMatcher(
             [
                 ConceptTerm("tcp", "TCP", "TCP"),
                 ConceptTerm("search", "检索", "检索"),
             ]
         )
-        self.assertEqual([term.concept_id for term in matcher.match("用 TCP 做检索")], ["tcp", "search"])
-        self.assertEqual(matcher.match("TCPIP"), ())
-        self.assertEqual([term.concept_id for term in matcher.match("中文检索词")], ["search"])
+        latin = "用 TCP 做检索"
+        self.assertEqual(
+            [term.concept_id for term in matcher.match(latin, boundaries=_boundaries(latin))],
+            ["tcp", "search"],
+        )
+        self.assertEqual(matcher.match("TCPIP", boundaries=_boundaries("TCPIP")), ())
+        # `检索` inside `中文检索词` still matches: the segmenter breaks that
+        # query into `中文`/`检索`/`词`, so the match is token-aligned.  The
+        # assertion is unchanged from the direct-matching rule; its reason is not.
+        inside = "中文检索词"
+        self.assertEqual(
+            [term.concept_id for term in matcher.match(inside, boundaries=_boundaries(inside))],
+            ["search"],
+        )
+
+        job = "枢对锚站的校验的规律"
+        trial = ConceptTermMatcher(
+            [
+                ConceptTerm("meaning", "规律", "律"),
+                ConceptTerm("covenant", "枢与站点约定", "锚"),
+                ConceptTerm("the hub", "全域潮汐枢纽", "枢"),
+                ConceptTerm("job", "枢对锚站的校验", "枢对锚站的校验"),
+            ]
+        )
+        self.assertEqual(
+            [term.concept_id for term in trial.match(job, boundaries=_boundaries(job))],
+            ["job"],
+        )
+        # Without a segmenter the older substring rule applies and `律` is
+        # admitted again from inside `规律` — the exact defect, restored.  The
+        # fallback is not the old behaviour in full: `锚` and `枢` stay out,
+        # because longest-match suppression needs no boundaries to see that
+        # both sit inside `枢对锚站的校验`.  Pinning this keeps the degraded
+        # path from rotting unnoticed, and marks how much of the fix survives
+        # a missing tokenizer.
+        self.assertEqual(
+            sorted(term.concept_id for term in trial.match(job)),
+            ["job", "meaning"],
+        )
+
+    @unittest.skipIf(SEGMENTER is None, f"local query segmenter unavailable: {SEGMENTER_REASON}")
+    def test_a_shorter_term_inside_a_longer_matched_term_is_suppressed(self) -> None:
+        """Containment decides, and only strict containment.
+
+        `锚` is boundary-valid nowhere in `枢对锚站的校验的规律`, but even where
+        a short alias is boundary-valid it must lose to a longer term that
+        covers it — otherwise the long phrase and its own fragments would both
+        resolve.  Two terms that matched the *identical* characters are not in
+        a containment relation and both survive, which is the rule the store
+        already applies to overlapping source spans.
+        """
+        matcher = ConceptTermMatcher(
+            [
+                ConceptTerm("flood", "汛情", "汛情"),
+                ConceptTerm("flood_world", "汛期观测", "汛期观测"),
+                ConceptTerm("flood_alias", "主汛情", "汛期观测"),
+            ]
+        )
+        query = "汛期观测的经过"
+        resolved = sorted(term.concept_id for term in matcher.match(query, boundaries=_boundaries(query)))
+        self.assertEqual(resolved, ["flood_alias", "flood_world"])
+
+        spans = matcher.match_spans(query, boundaries=_boundaries(query))
+        self.assertEqual({(span.start, span.end) for span in spans}, {(0, 4)})
+
+    @unittest.skipIf(SEGMENTER is None, f"local query segmenter unavailable: {SEGMENTER_REASON}")
+    def test_a_concept_keeps_its_longest_span_not_its_first(self) -> None:
+        """Deduplication by concept keeps the longest span, a change from the first.
+
+        The matcher used to discard position before anything could compare two
+        hits, so a concept matched early by a short alias kept that hit even
+        when its full name matched later.  A later stage ranks by how much of
+        the query a concept accounted for, and that answer must not depend on
+        scan order.
+        """
+        matcher = ConceptTermMatcher(
+            [
+                ConceptTerm("the hub", "全域潮汐枢纽", "枢"),
+                ConceptTerm("the hub", "全域潮汐枢纽", "全域潮汐枢纽"),
+            ]
+        )
+        query = "枢纽的运行与全域潮汐枢纽"
+        spans = matcher.match_spans(query, boundaries=_boundaries(query))
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(query[spans[0].start : spans[0].end], "全域潮汐枢纽")
+
+    def test_the_cached_matcher_is_reused_but_never_serves_a_changed_vocabulary(self) -> None:
+        """Caching is keyed on the store, so an alias edit is visible on the next query.
+
+        Both the matcher and the segmenter are now held on the service instead
+        of being rebuilt per request, because the segmenter's dictionary costs
+        far more than a query does.  That is only safe if the cache cannot go
+        stale, so the key is a store fingerprint that moves on every write that
+        could change the vocabulary.  This asserts the fingerprint and the
+        resulting behaviour rather than any wall-clock time.
+        """
+        source = FakeSource()
+        service = EpubSearchService(source=source)
+
+        before = source.concept_term_fingerprint()
+        self.assertEqual(service.search("TCP").resolved_concepts, ("TCP",))
+        self.assertEqual(source.term_reads, 1)
+        self.assertEqual(service.search("TCP").resolved_concepts, ("TCP",))
+        self.assertEqual(source.term_reads, 1)
+
+        source.terms.append(
+            {"concept_id": "tcp", "canonical_name": "TCP", "term": "传输控制协议"}
+        )
+        self.assertNotEqual(source.concept_term_fingerprint(), before)
+        self.assertEqual(service.search("传输控制协议").resolved_concepts, ("TCP",))
+        self.assertEqual(source.term_reads, 2)
+
+    def test_a_missing_segmenter_is_reported_degraded_and_never_silently_broadens(self) -> None:
+        """Falling back to unsegmented matching is a precision loss, so it is declared.
+
+        The segmenter is a local, deterministic dictionary tokenizer, so
+        running without it is a recall/precision trade rather than a forbidden
+        cloud fallback — but it must not happen invisibly, and it must be
+        reported on every response that ran without one, not only the first.
+        """
+        source = FakeSource()
+        service = EpubSearchService(source=source, segmenter=None)
+        service._segmenter_loaded = True  # simulate a failed load
+        service._segmenter = None
+        service._segmenter_reason = "jieba is not importable"
+
+        for _ in range(2):
+            response = service.search("TCP")
+            reported = [item for item in response.degraded if item.component == "query-segmenter"]
+            self.assertEqual(len(reported), 1)
+            self.assertEqual(reported[0].reason, "jieba is not importable")
+            self.assertFalse(reported[0].available)
 
     def test_graph_channel_is_exhaustive_over_distinct_spans_and_never_returns_only_excerpt(self) -> None:
         # Exhaustive, but over distinct source spans rather than mention rows:
@@ -464,7 +631,7 @@ class EpubSearchTest(unittest.TestCase):
         a recomputed expectation — is what this asserts.
         """
         source = HubFakeSource()
-        query = "枢在汛期观测，通知值守员建锚站"
+        query = "全域潮汐枢纽，汛期观测，值守员造锚站"
         total = EpubSearchService(source=source).search(query).graph_total
         self.assertEqual(total, 5)
 
@@ -498,7 +665,7 @@ class EpubSearchTest(unittest.TestCase):
         """
         source = HubFakeSource()
         response = EpubSearchService(source=source).search(
-            "枢在汛期观测，通知值守员建锚站", graph_limit=10
+            "全域潮汐枢纽，汛期观测，值守员造锚站", graph_limit=10
         )
 
         self.assertEqual(response.graph_total, 5)
@@ -527,7 +694,7 @@ class EpubSearchTest(unittest.TestCase):
         first result must be the span carrying both queried concepts.
         """
         source = HubFakeSource()
-        response = EpubSearchService(source=source).search("枢用汛期观测", graph_limit=3)
+        response = EpubSearchService(source=source).search("全域潮汐枢纽，汛期观测", graph_limit=3)
 
         first = response.graph_results[0]
         self.assertEqual(first.passage_id, "flood")
@@ -557,13 +724,13 @@ class EpubSearchTest(unittest.TestCase):
         source = HubFakeSource()
         service = EpubSearchService(source=source)
 
-        service.search("枢在汛期观测，通知值守员建锚站", graph_limit=1, graph_fusion_limit=4)
+        service.search("全域潮汐枢纽，汛期观测，值守员造锚站", graph_limit=1, graph_fusion_limit=4)
         panel_call, fusion_call = source.occurrence_calls
         self.assertEqual((panel_call["offset"], panel_call["limit"]), (0, 1))
         self.assertEqual((fusion_call["offset"], fusion_call["limit"]), (0, 4))
 
         source.occurrence_calls.clear()
-        service.search("枢在汛期观测，通知值守员建锚站", graph_offset=3, graph_limit=2, graph_fusion_limit=4)
+        service.search("全域潮汐枢纽，汛期观测，值守员造锚站", graph_offset=3, graph_limit=2, graph_fusion_limit=4)
         panel_call, fusion_call = source.occurrence_calls
         self.assertEqual((panel_call["offset"], panel_call["limit"]), (3, 2))
         self.assertEqual((fusion_call["offset"], fusion_call["limit"]), (0, 4))
@@ -571,7 +738,7 @@ class EpubSearchTest(unittest.TestCase):
         # A page that already contains the ranked top of the channel is reused
         # rather than read twice.
         source.occurrence_calls.clear()
-        service.search("枢在汛期观测，通知值守员建锚站", graph_limit=10, graph_fusion_limit=4)
+        service.search("全域潮汐枢纽，汛期观测，值守员造锚站", graph_limit=10, graph_fusion_limit=4)
         self.assertEqual(len(source.occurrence_calls), 1)
 
     def test_vector_candidates_are_cross_encoder_reranked_then_mmr_diversified(self) -> None:
