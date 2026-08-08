@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { isChatEventForCurrentConversation, waitForSocketSession } from './chat-stream';
+import {
+	hasPendingCurrentAssistantResponses,
+	isChatEventForCurrentConversation,
+	isInactiveEventForQueueRun,
+	waitForSocketSession
+} from './chat-stream';
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -83,6 +88,56 @@ describe('isChatEventForCurrentConversation', () => {
 		expect(
 			isChatEventForCurrentConversation('chat-other', '', 'message-other', {
 				'message-local': {}
+			})
+		).toBe(false);
+	});
+});
+
+describe('queue run guards', () => {
+	const responseIds = new Set(['response-current']);
+
+	it('accepts the inactive event that belongs to the current queue run', () => {
+		expect(isInactiveEventForQueueRun(responseIds, 'response-current')).toBe(true);
+	});
+
+	it('rejects delayed inactive events from an older queue run', () => {
+		expect(isInactiveEventForQueueRun(responseIds, 'response-previous')).toBe(false);
+		expect(isInactiveEventForQueueRun(responseIds, null)).toBe(false);
+	});
+});
+
+describe('hasPendingCurrentAssistantResponses', () => {
+	it('waits for every assistant response under the current user message', () => {
+		expect(
+			hasPendingCurrentAssistantResponses({
+				currentId: 'assistant-2',
+				messages: {
+					user: {
+						role: 'user',
+						parentId: null,
+						childrenIds: ['assistant-1', 'assistant-2']
+					},
+					'assistant-1': { role: 'assistant', parentId: 'user', done: true },
+					'assistant-2': { role: 'assistant', parentId: 'user', done: false }
+				}
+			})
+		).toBe(true);
+	});
+
+	it('ignores unfinished placeholders on an unrelated old branch', () => {
+		expect(
+			hasPendingCurrentAssistantResponses({
+				currentId: 'current-assistant',
+				messages: {
+					'old-user': { role: 'user', parentId: null, childrenIds: ['old-assistant'] },
+					'old-assistant': { role: 'assistant', parentId: 'old-user', done: false },
+					'current-user': {
+						role: 'user',
+						parentId: null,
+						childrenIds: ['current-assistant']
+					},
+					'current-assistant': { role: 'assistant', parentId: 'current-user', done: true }
+				}
 			})
 		).toBe(false);
 	});

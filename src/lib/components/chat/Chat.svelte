@@ -75,7 +75,12 @@
 		displayFileHandler
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
-	import { isChatEventForCurrentConversation, waitForSocketSession } from '$lib/utils/chat-stream';
+	import {
+		hasPendingCurrentAssistantResponses,
+		isChatEventForCurrentConversation,
+		isInactiveEventForQueueRun,
+		waitForSocketSession
+	} from '$lib/utils/chat-stream';
 	import { applyDesktopShortcutAction } from '$lib/utils/extension-modes';
 	import { getOutputText } from './Messages/structuredOutput';
 
@@ -244,6 +249,7 @@
 	};
 
 	let taskIds = null;
+	let pendingSubmissionChats = new Set<string>();
 	let pendingChatReconcileTimer: number | null = null;
 	let pendingChatReconcileInFlight = false;
 	const PENDING_CHAT_RECONCILE_INTERVAL_MS = 4000;
@@ -697,8 +703,23 @@
 			// chat:active is chat-scoped and may arrive before a local message placeholder exists.
 			if (type === 'chat:active') {
 				if (!data?.active) {
+					const queueRun = processingQueueChats.get(event.chat_id);
+
+					// A delayed inactive event from the previous request must not release
+					// the queue run that has already started after it.
+					if (
+						queueRun &&
+						!isInactiveEventForQueueRun(queueRun.responseMessageIds, event.message_id)
+					) {
+						return;
+					}
+
 					taskIds = null;
-					await reconcilePendingChat(true);
+					if (hasPendingAssistantLeaf()) {
+						await loadChat(event.chat_id);
+					}
+
+					await releaseQueueRun(event.chat_id, event.message_id);
 				}
 				return;
 			}
@@ -723,15 +744,10 @@
 						for (const messageId of history.messages[message.parentId].childrenIds) {
 							history.messages[messageId].done = true;
 						}
-						await releaseQueueRun($chatId, null, true);
+						window.setTimeout(() => void reconcilePendingChat(), 250);
 					} else {
 						message.done = true;
-						// A cancelled sibling must still release the queue once
-						// the rest of the batch has finished.
-						if (allSiblingResponsesDone(message)) {
-							processingQueueChats.delete($chatId);
-							await processNextInQueue($chatId);
-						}
+						window.setTimeout(() => void reconcilePendingChat(), 250);
 					}
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					message.content += data.content;
@@ -754,16 +770,8 @@
 					}, 100);
 				} else if (type === 'chat:message:error') {
 					message.error = data.error;
-					// A failed task must still release the queue: mark this
-					// sibling done and, once the whole batch is done/errored,
-					// advance to the next queued request.
-					if (message && !message.done) {
-						message.done = true;
-						if (allSiblingResponsesDone(message)) {
-							processingQueueChats.delete($chatId);
-							await processNextInQueue($chatId);
-						}
-					}
+					message.done = true;
+					window.setTimeout(() => void reconcilePendingChat(), 250);
 				} else if (type === 'chat:message:follow_ups') {
 					message.followUps = data.follow_ups;
 
@@ -877,7 +885,7 @@
 				type === 'chat:tasks:cancel'
 			) {
 				// A terminal event can race the placeholder or arrive after a reconnect.
-				await reconcilePendingChat(true);
+				await reconcilePendingChat();
 			}
 		} else {
 			// Non-active chat completion: queue stays in the global store.
@@ -994,45 +1002,52 @@
 		} catch {}
 	};
 
-	const hasPendingAssistantLeaf = () =>
-		Object.values(history.messages).some(
-			(message) =>
-				message?.role === 'assistant' && !message.done && (message.childrenIds?.length ?? 0) === 0
-		);
+	const hasPendingAssistantLeaf = () => hasPendingCurrentAssistantResponses(history);
 
-	const reconcilePendingChat = async (knownInactive = false) => {
+	const reconcilePendingChat = async () => {
+		const activeChatId = $chatId;
+		const expectedQueueRun = processingQueueChats.get(activeChatId);
+		const hasQueuedWork =
+			Boolean(expectedQueueRun) || ($chatRequestQueues[activeChatId]?.length ?? 0) > 0;
+
 		if (
 			pendingChatReconcileInFlight ||
 			loading ||
-			!$chatId ||
+			!activeChatId ||
 			$temporaryChatEnabled ||
-			!hasPendingAssistantLeaf()
+			pendingSubmissionChats.has(activeChatId) ||
+			(!hasPendingAssistantLeaf() && !hasQueuedWork)
 		) {
 			return;
 		}
 
-		const activeChatId = $chatId;
 		pendingChatReconcileInFlight = true;
 
 		try {
-			if (!knownInactive) {
-				const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, activeChatId)
-					.then((res) => res?.task_ids ?? [])
-					.catch(() => null);
+			const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, activeChatId)
+				.then((res) => res?.task_ids ?? [])
+				.catch(() => null);
 
-				if (pendingTaskIds === null || pendingTaskIds.length > 0) {
-					return;
-				}
-			}
-
-			if ($chatId !== activeChatId || !hasPendingAssistantLeaf()) {
+			if (pendingTaskIds === null || pendingTaskIds.length > 0) {
 				return;
 			}
 
-			await loadChat(activeChatId);
+			if ($chatId !== activeChatId) {
+				return;
+			}
+
+			if (hasPendingAssistantLeaf()) {
+				await loadChat(activeChatId);
+			}
 
 			if ($chatId === activeChatId) {
-				await releaseQueueRun(activeChatId, null, true);
+				if (expectedQueueRun) {
+					if (processingQueueChats.get(activeChatId) !== expectedQueueRun) return;
+
+					await releaseQueueRun(activeChatId, null, true);
+				} else {
+					await processNextInQueue(activeChatId);
+				}
 			}
 		} finally {
 			pendingChatReconcileInFlight = false;
@@ -1809,19 +1824,20 @@
 				const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, $chatId)
 					.then((res) => res?.task_ids ?? [])
 					.catch(() => []);
-				if (taskIds !== activeTaskIds) {
-					return;
-				}
 				const currentMessage = history.currentId ? history.messages[history.currentId] : null;
 				const responseComplete = currentMessage?.role === 'assistant' && currentMessage?.done;
 
-				if (pendingTaskIds.length > 0 && !responseComplete) {
-					taskIds = pendingTaskIds;
-				} else {
-					taskIds = null;
-					// No active tasks and message incomplete → generation was interrupted
-					if (currentMessage?.role === 'assistant' && !currentMessage.done) {
-						currentMessage.done = true;
+				// Socket events may update taskIds while this request is in flight. Keep
+				// the newer value, but never abort the chat load and leave the UI spinning.
+				if (taskIds === activeTaskIds) {
+					if (pendingTaskIds.length > 0 && !responseComplete) {
+						taskIds = pendingTaskIds;
+					} else {
+						taskIds = null;
+						// No active tasks and message incomplete → generation was interrupted
+						if (currentMessage?.role === 'assistant' && !currentMessage.done) {
+							currentMessage.done = true;
+						}
 					}
 				}
 
@@ -1889,6 +1905,22 @@
 
 	let processingQueueChats = new Map<string, QueueRun>();
 
+	const removeQueuedRequest = (targetChatId: string, queueItemId: string) => {
+		chatRequestQueues.update((queues) => {
+			const queue = queues[targetChatId] ?? [];
+			const updatedQueue = queue.filter((item) => item.id !== queueItemId);
+			if (updatedQueue.length === queue.length) return queues;
+
+			const updatedQueues = { ...queues };
+			if (updatedQueue.length === 0) {
+				delete updatedQueues[targetChatId];
+			} else {
+				updatedQueues[targetChatId] = updatedQueue;
+			}
+			return updatedQueues;
+		});
+	};
+
 	const releaseQueueRun = async (
 		targetChatId: string,
 		responseMessageId: string | null = null,
@@ -1896,12 +1928,14 @@
 	) => {
 		const queueRun = processingQueueChats.get(targetChatId);
 
-		if (queueRun && !force) {
-			// Ignore duplicate or late terminal events from an older response.
-			if (!responseMessageId || !queueRun.responseMessageIds.has(responseMessageId)) return;
+		if (!queueRun) {
+			await processNextInQueue(targetChatId);
+			return;
+		}
 
-			queueRun.responseMessageIds.delete(responseMessageId);
-			if (queueRun.responseMessageIds.size > 0) return;
+		if (!force) {
+			// The response ID makes chat-level inactive events generation-safe.
+			if (!responseMessageId || !queueRun.responseMessageIds.has(responseMessageId)) return;
 		}
 
 		processingQueueChats.delete(targetChatId);
@@ -1909,11 +1943,20 @@
 	};
 
 	const processNextInQueue = async (targetChatId: string) => {
-		if (processingQueueChats.has(targetChatId)) return;
+		if (processingQueueChats.has(targetChatId) || pendingSubmissionChats.has(targetChatId)) return;
 		if (targetChatId !== $chatId || hasPendingAssistantLeaf()) return;
 
 		const queue = $chatRequestQueues[targetChatId];
 		if (!queue || queue.length === 0) return;
+
+		const selectedModelIds = selectedModels.filter(Boolean);
+		const modelsAvailable =
+			selectedModelIds.length > 0 &&
+			selectedModelIds.every((modelId) => $models.some((model) => model.id === modelId));
+		if (!modelsAvailable) {
+			toast.error($i18n.t('Model not selected'));
+			return;
+		}
 
 		const nextTask = queue[0];
 		const queueRun: QueueRun = {
@@ -1921,35 +1964,30 @@
 			responseMessageIds: new Set()
 		};
 		processingQueueChats.set(targetChatId, queueRun);
+
 		try {
-			chatRequestQueues.update((q) => {
-				const updatedQueue = [...(q[targetChatId] || [])];
-				updatedQueue.shift();
-
-				const newQ = { ...q };
-				if (updatedQueue.length === 0) {
-					delete newQ[targetChatId];
-				} else {
-					newQ[targetChatId] = updatedQueue;
-				}
-				return newQ;
-			});
-
 			await submitPrompt(nextTask.prompt, nextTask.files);
 
-			// No response placeholder means submission ended before generation began.
+			// Keep an unclaimed item in the visible queue instead of silently
+			// dropping it when submission ends before a response placeholder exists.
 			if (
 				processingQueueChats.get(targetChatId) === queueRun &&
-				queueRun.responseMessageIds.size === 0
+				($chatRequestQueues[targetChatId] ?? []).some((item) => item.id === queueRun.queueItemId)
 			) {
-				await releaseQueueRun(targetChatId, null, true);
+				processingQueueChats.delete(targetChatId);
+				toast.error($i18n.t('Uh-oh! There was an issue with the response.'));
 			}
 		} catch (error) {
 			console.error('Failed to process queued message:', error);
-			if (processingQueueChats.get(targetChatId) === queueRun) {
-				await releaseQueueRun(targetChatId, null, true);
+			if (
+				processingQueueChats.get(targetChatId) === queueRun &&
+				($chatRequestQueues[targetChatId] ?? []).some((item) => item.id === queueRun.queueItemId)
+			) {
+				// The request never reached the claim point. Keep it queued so the
+				// user can retry, edit, or delete it.
+				processingQueueChats.delete(targetChatId);
+				toast.error($i18n.t('Uh-oh! There was an issue with the response.'));
 			}
-			return;
 		}
 	};
 	const chatCompletedHandler = async (_chatId, modelId, responseMessageId, messages) => {
@@ -2152,17 +2190,6 @@
 		}
 	};
 
-	const allSiblingResponsesDone = (message) => {
-		const parent = message?.parentId ? history.messages[message.parentId] : null;
-		if (!parent || !Array.isArray(parent.childrenIds) || parent.childrenIds.length === 0) {
-			// No known siblings — treat the single response as the whole batch.
-			return !!message?.done;
-		}
-		return parent.childrenIds.every(
-			(childId) => history.messages[childId] && history.messages[childId].done
-		);
-	};
-
 	const chatCompletionEventHandler = async (data, message, chatId) => {
 		const { id, done, choices, content, output, sources, selected_model_id, error, usage } = data;
 
@@ -2265,19 +2292,6 @@
 			);
 		}
 
-		if (done || error) {
-			// In fan-out chats multiple sibling responses belong to the same
-			// user message. Only advance the queue once the whole batch has
-			// finished (all siblings done), otherwise the next queued request
-			// starts while earlier tasks are still running — which caused
-			// "swallowed" tasks and truncated output.
-			if (allSiblingResponsesDone(message)) {
-				// Process next queued request if any
-				processingQueueChats.delete(chatId);
-				await processNextInQueue(chatId);
-			}
-		}
-
 		console.log(data);
 		await tick();
 
@@ -2312,6 +2326,7 @@
 			!isAudioFile(item));
 
 	const submitPrompt = async (inputContent, inputFiles) => {
+		sanitizeHistory(history);
 		const _files = structuredClone(inputFiles);
 
 		chatFiles.push(..._files.filter((item) => isContextFile(item)));
@@ -2817,92 +2832,103 @@
 			console.warn('Socket session is unavailable; chat completion may use non-streaming fallback');
 		}
 
-		const res = await generateOpenAIChatCompletion(
-			localStorage.token,
-			{
-				stream: stream,
-				model: model.id,
-				...(messages.length > 0 ? { messages } : {}),
-				params: {
-					...$settings?.params,
-					...params,
-					stop: getStopTokens()
-				},
+		if (_chatId) pendingSubmissionChats.add(_chatId);
+		let res;
+		try {
+			res = await generateOpenAIChatCompletion(
+				localStorage.token,
+				{
+					stream: stream,
+					model: model.id,
+					...(messages.length > 0 ? { messages } : {}),
+					params: {
+						...$settings?.params,
+						...params,
+						stop: getStopTokens()
+					},
 
-				files: (files?.length ?? 0) > 0 ? files : undefined,
+					files: (files?.length ?? 0) > 0 ? files : undefined,
 
-				filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
-				tool_ids: toolIds.length > 0 ? toolIds : undefined,
-				skill_ids: skillIds.length > 0 ? skillIds : undefined,
-				terminal_id: terminalEnabled ? (activeTerminalId ?? undefined) : undefined,
-				tool_servers: [
-					...($toolServers ?? []).filter(
-						(server, idx) => toolServerIds.includes(idx) || toolServerIds.includes(server?.id)
-					),
-					// Direct terminal servers — always included when enabled (not routed through selectedToolIds)
-					...($terminalServers ?? []).filter((t) => !t.id)
-				],
-				features: getFeatures(),
-				variables: {
-					...getPromptVariables(
-						$user?.name,
-						$settings?.userLocation ? userLocation : undefined,
-						$user?.email
-					)
-				},
-				model_item: $models.find((m) => m.id === model.id),
+					filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
+					tool_ids: toolIds.length > 0 ? toolIds : undefined,
+					skill_ids: skillIds.length > 0 ? skillIds : undefined,
+					terminal_id: terminalEnabled ? (activeTerminalId ?? undefined) : undefined,
+					tool_servers: [
+						...($toolServers ?? []).filter(
+							(server, idx) => toolServerIds.includes(idx) || toolServerIds.includes(server?.id)
+						),
+						// Direct terminal servers — always included when enabled (not routed through selectedToolIds)
+						...($terminalServers ?? []).filter((t) => !t.id)
+					],
+					features: getFeatures(),
+					variables: {
+						...getPromptVariables(
+							$user?.name,
+							$settings?.userLocation ? userLocation : undefined,
+							$user?.email
+						)
+					},
+					model_item: $models.find((m) => m.id === model.id),
 
-				session_id: socketSessionId ?? undefined,
-				chat_id: _chatId || undefined,
-				folder_id: $selectedFolder?.id ?? undefined,
+					session_id: socketSessionId ?? undefined,
+					chat_id: _chatId || undefined,
+					folder_id: $selectedFolder?.id ?? undefined,
 
-				id: responseMessageId,
-				...(messageIdsList ? { message_ids: messageIdsList } : {}),
-				parent_id: userMessage?.parentId ?? null,
-				user_message: userMessage,
-				...(regenerationPrompt ? { regeneration_prompt: regenerationPrompt } : {}),
-				...(continueResponse ? { assistant_message_id: responseMessageId } : {}),
+					id: responseMessageId,
+					...(messageIdsList ? { message_ids: messageIdsList } : {}),
+					parent_id: userMessage?.parentId ?? null,
+					user_message: userMessage,
+					...(regenerationPrompt ? { regeneration_prompt: regenerationPrompt } : {}),
+					...(continueResponse ? { assistant_message_id: responseMessageId } : {}),
 
-				background_tasks: {
-					...(!$temporaryChatEnabled && !_chatId && (userMessage?.parentId ?? null) === null
+					background_tasks: {
+						...(!$temporaryChatEnabled && !_chatId && (userMessage?.parentId ?? null) === null
+							? {
+									title_generation: $settings?.title?.auto ?? true,
+									tags_generation: $settings?.autoTags ?? true
+								}
+							: {}),
+						follow_up_generation: $settings?.autoFollowUps ?? true
+					},
+
+					...(stream && (model.info?.meta?.capabilities?.usage ?? false)
 						? {
-								title_generation: $settings?.title?.auto ?? true,
-								tags_generation: $settings?.autoTags ?? true
+								stream_options: {
+									include_usage: true
+								}
 							}
-						: {}),
-					follow_up_generation: $settings?.autoFollowUps ?? true
+						: {})
 				},
+				`${WEBUI_BASE_URL}/api`
+			).catch(async (error) => {
+				console.log(error);
 
-				...(stream && (model.info?.meta?.capabilities?.usage ?? false)
-					? {
-							stream_options: {
-								include_usage: true
-							}
-						}
-					: {})
-			},
-			`${WEBUI_BASE_URL}/api`
-		).catch(async (error) => {
-			console.log(error);
+				let errorMessage = localizeErrorMessage(error);
 
-			let errorMessage = localizeErrorMessage(error);
+				if (!errorMessage || typeof errorMessage === 'object') {
+					errorMessage = $i18n.t(`Uh-oh! There was an issue with the response.`);
+				}
 
-			if (!errorMessage || typeof errorMessage === 'object') {
-				errorMessage = $i18n.t(`Uh-oh! There was an issue with the response.`);
-			}
+				toast.error(`${errorMessage}`);
+				responseMessage.error = {
+					content: errorMessage
+				};
 
-			toast.error(`${errorMessage}`);
-			responseMessage.error = {
-				content: errorMessage
-			};
+				responseMessage.done = true;
 
-			responseMessage.done = true;
+				history.messages[responseMessageId] = responseMessage;
+				history.currentId = responseMessageId;
 
-			history.messages[responseMessageId] = responseMessage;
-			history.currentId = responseMessageId;
+				return null;
+			});
+		} finally {
+			if (_chatId) pendingSubmissionChats.delete(_chatId);
+		}
 
-			return null;
-		});
+		const activeQueueRun = processingQueueChats.get(_chatId);
+		if (activeQueueRun?.responseMessageIds.has(responseMessage.id)) {
+			removeQueuedRequest(_chatId, activeQueueRun.queueItemId);
+		}
 
 		if (res) {
 			if (res.error) {
@@ -2938,6 +2964,8 @@
 					}
 				}
 			}
+		} else {
+			await releaseQueueRun(_chatId, responseMessage.id);
 		}
 
 		await tick();
@@ -3011,7 +3039,9 @@
 		}
 
 		if (processQueue) {
-			await releaseQueueRun($chatId, null, true);
+			// Wait until the backend has actually deregistered the canceled task.
+			// This avoids overlapping it with the next queued request.
+			window.setTimeout(() => void reconcilePendingChat(), 250);
 		}
 	};
 
@@ -3563,16 +3593,15 @@
 										{chatTasks}
 										onQueueSendNow={async (id) => {
 											const queue = $chatRequestQueues[$chatId] ?? [];
-											const item = queue.find((m) => m.id === id);
+											const item = queue.find((message) => message.id === id);
 											if (item) {
-												// Remove from queue
-												chatRequestQueues.update((q) => ({
-													...q,
-													[$chatId]: queue.filter((m) => m.id !== id)
+												// Promote the item, then wait for the canceled backend task to
+												// deregister before the normal FIFO runner starts it.
+												chatRequestQueues.update((queues) => ({
+													...queues,
+													[$chatId]: [item, ...queue.filter((message) => message.id !== id)]
 												}));
-												await stopResponse(false);
-												await tick();
-												await submitPrompt(item.prompt, item.files);
+												await stopResponse();
 											}
 										}}
 										onQueueEdit={(id) => {

@@ -35,7 +35,7 @@
 	export let selectedModels;
 	export let atSelectedModel;
 
-	let messages = [];
+	let messages: any[] = [];
 
 	export let setInputText: Function = () => {};
 
@@ -66,18 +66,18 @@
 	});
 
 	const loadMoreMessages = async () => {
-		// scroll slightly down to disable continuous loading
+		// Scroll slightly down to disable continuous loading.
 		const element = document.getElementById('messages-container');
-		element.scrollTop = element.scrollTop + 100;
+		if (element) element.scrollTop += 100;
 
 		messagesLoading = true;
-		messagesCount += 8;
-
-		buildMessages();
-
-		await tick();
-
-		messagesLoading = false;
+		try {
+			messagesCount += 8;
+			buildMessages();
+			await tick();
+		} finally {
+			messagesLoading = false;
+		}
 	};
 
 	let pendingRebuildCancel: (() => void) | null = null;
@@ -510,7 +510,7 @@
 			{#key chatId}
 				<section class="w-full" aria-labelledby="chat-conversation">
 					<h2 class="sr-only" id="chat-conversation">{$i18n.t('Chat Conversation')}</h2>
-					{#if messages.at(0)?.parentId !== null}
+					{#if messages.at(0)?.parentId && (history as any).messages?.[messages.at(0)?.parentId]}
 						<Loader
 							on:visible={(e) => {
 								console.log('visible');
