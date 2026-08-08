@@ -527,7 +527,7 @@ _GROUNDING_FAILURE_REASONS = frozenset(
         # Historical only, and deliberately still here.  A sub-floor span used
         # to fail its whole item; it is now dropped from the payload during
         # grounding and counted in ``batch_items.skipped_short_evidence``, so no
-        # code path raises this any more (SDD 4.2.2 point 7).  The slug stays in
+        # code path raises this any more (SDD 4.2.2 point 6b).  The slug stays in
         # the vocabulary because it is *durable*: the completed full-book runs
         # persisted it in ``failure_diagnostics_json``, and removing it would
         # make ``_safe_failure_diagnostics`` re-read those rows as UNDIAGNOSED -
@@ -631,6 +631,27 @@ class _GroundedPayload(NamedTuple):
 
     payload: dict[str, Any]
     skipped_short_evidence: int
+
+
+class _SectionGraphWrite(NamedTuple):
+    """What one section-graph packet's write skipped, per cause.
+
+    Both counts are SDD 4.2.2 point 6 skips - 6a and 6c - and both are facts
+    about the write rather than about the payload: concept resolution is a
+    write, so neither is knowable during the read-only grounding pass and
+    neither is recoverable from the stored response afterwards.
+
+    They are separate columns rather than one total because they answer
+    different questions.  ``skipped_self_relations`` says an administrator merged
+    two endpoints after the model answered, and is expected to fall to zero as
+    the graph settles.  ``skipped_ambiguous_concepts`` says the graph holds two
+    concepts a passage names together, which is a standing property of an
+    adjudicated graph and does not settle - the same collisions recur on every
+    future book.  A single counter would let one mask the other.
+    """
+
+    skipped_self_relations: int
+    skipped_ambiguous_concepts: int
 
 
 def _grounding_diagnostics(reason: str, **fields: Any) -> dict[str, Any]:
@@ -790,7 +811,7 @@ def _resolve_evidence_span(
     because every other rejection means the model's output is not grounded in
     the source at all.  A sub-floor span is grounded; it is merely too small to
     be a useful citation, and one of those must not discard the valid concepts,
-    mentions and relations that arrived beside it.  See SDD 4.2.2 point 7.
+    mentions and relations that arrived beside it.  See SDD 4.2.2 point 6b.
     """
     passage_codepoints = len(content)
     evidence_codepoints = len(evidence)
@@ -1287,13 +1308,14 @@ class SQLiteBatchRepository:
         per-job aggregate lets an administrator read "7 ambiguous, 3 absent"
         off the history list without opening a single item.
 
-        ``skipped_self_relations`` and ``skipped_short_evidence`` are exposed
-        for the same reason and are safe for a stronger one: each column can
-        only hold an integer or NULL, so neither needs a read-side validator to
-        be sure it is content-free.  Both are aggregated per job as well,
-        because a succeeded item is exactly the one an administrator never opens
-        - a skip that only a stored result knew about would be silent in
-        practice, and a dropped span is not even in the stored result.
+        ``skipped_self_relations``, ``skipped_short_evidence`` and
+        ``skipped_ambiguous_concepts`` are exposed for the same reason and are
+        safe for a stronger one: each column can only hold an integer or NULL,
+        so none of them needs a read-side validator to be sure it is
+        content-free.  All three are aggregated per job as well, because a
+        succeeded item is exactly the one an administrator never opens - a skip
+        that only a stored result knew about would be silent in practice, and a
+        dropped span is not even in the stored result.
         """
         statuses = {
             str(count["status"]): int(count["count"])
@@ -1317,16 +1339,18 @@ class SQLiteBatchRepository:
             diagnostics = _safe_failure_diagnostics(failure["failure_diagnostics_json"])
             reason = str(diagnostics["reason"]) if diagnostics else _UNDIAGNOSED_FAILURE_REASON
             reasons[reason] = reasons.get(reason, 0) + 1
-        # SUM over two integer-or-NULL columns: two scalars, no JSON to parse,
-        # and no response ever loaded to produce them.
+        # SUM over three integer-or-NULL columns: three scalars, no JSON to
+        # parse, and no response ever loaded to produce them.
         skips = connection.execute(
             """SELECT COALESCE(SUM(skipped_self_relations), 0),
-                      COALESCE(SUM(skipped_short_evidence), 0)
+                      COALESCE(SUM(skipped_short_evidence), 0),
+                      COALESCE(SUM(skipped_ambiguous_concepts), 0)
                FROM batch_items WHERE batch_job_id = ?""",
             (row["batch_job_id"],),
         ).fetchone()
         skipped_self_relations = int(skips[0])
         skipped_short_evidence = int(skips[1])
+        skipped_ambiguous_concepts = int(skips[2])
         summary: dict[str, Any] = {
             "batch_job_id": row["batch_job_id"],
             "version_id": row["version_id"],
@@ -1352,12 +1376,18 @@ class SQLiteBatchRepository:
             "item_status_counts": statuses,
             "item_failure_reason_counts": reasons,
             # Relations this job's succeeded items ingested past because both
-            # endpoints had been merged into one concept (SDD 4.2.2 point 6).
+            # endpoints had been merged into one concept (SDD 4.2.2 point 6a).
             "item_skipped_self_relations": skipped_self_relations,
             # Spans this job's succeeded items dropped for being below the
-            # enforced evidence floor (SDD 4.2.2 point 7).  Concept mentions and
+            # enforced evidence floor (SDD 4.2.2 point 6b).  Concept mentions and
             # relation evidence share one counter: same defect, same fix.
             "item_skipped_short_evidence": skipped_short_evidence,
+            # Concepts this job's succeeded items skipped because their
+            # spellings matched several existing concepts (SDD 4.2.2 point 6c).
+            # Counts the concepts, not the relations that cascaded off them, for
+            # the same reason as the counter above: the cause is what is
+            # unrecoverable, and a cascade is derivable from the stored payload.
+            "item_skipped_ambiguous_concepts": skipped_ambiguous_concepts,
         }
         if include_items:
             summary["items"] = [
@@ -1388,12 +1418,21 @@ class SQLiteBatchRepository:
                         if item["skipped_short_evidence"] is None
                         else int(item["skipped_short_evidence"])
                     ),
+                    # None only where the column predates the row: unlike the
+                    # two above, every succeeded item resolves concepts, so a
+                    # measured zero here is always a real zero.
+                    "skipped_ambiguous_concepts": (
+                        None
+                        if item["skipped_ambiguous_concepts"] is None
+                        else int(item["skipped_ambiguous_concepts"])
+                    ),
                     "updated_at": item["updated_at"],
                 }
                 for item in connection.execute(
                     """SELECT batch_item_id, passage_id, custom_id, status, attempt_count,
                               response_json, error_text, failure_diagnostics_json,
-                              skipped_self_relations, skipped_short_evidence, updated_at
+                              skipped_self_relations, skipped_short_evidence,
+                              skipped_ambiguous_concepts, updated_at
                        FROM batch_items WHERE batch_job_id = ? ORDER BY custom_id""",
                     (row["batch_job_id"],),
                 )
@@ -1666,7 +1705,28 @@ class SQLiteBatchRepository:
         return row
 
     @staticmethod
-    def _resolve_or_create_concept(connection: Any, suggestion: Mapping[str, Any]) -> str:
+    def _resolve_or_create_concept(connection: Any, suggestion: Mapping[str, Any]) -> str | None:
+        """Resolve one suggested concept, or report that it is unresolvable.
+
+        Returns ``None`` — rather than raising — when the suggestion's spellings
+        match more than one existing concept.  Linking it would assert that
+        those concepts are the same, which SDD 4.2 forbids a model from doing,
+        so the caller skips the concept and counts it (SDD 4.2.2 point 6c).
+
+        This was a hard failure until the full-book runs measured what that
+        cost.  It held 33 items, and 32 of them collided on pairs an
+        administrator had already adjudicated as *distinct*, which no merge can
+        resolve without reversing the adjudication — and a model will keep
+        proposing them, because the source text genuinely uses both spellings in
+        one passage.  So the item was not being held for review; it was being
+        discarded, along with every valid concept and mention that arrived
+        beside the collision.
+
+        Returning ``None`` rather than raising keeps the decision at the call
+        site.  A resolver that skipped silently would look identical to one that
+        resolved, and the count is the only durable record that the concept was
+        ever proposed.
+        """
         name = suggestion.get("name")
         aliases = suggestion.get("aliases", [])
         if not isinstance(name, str) or not isinstance(aliases, list) or not all(
@@ -1685,9 +1745,7 @@ class SQLiteBatchRepository:
         ).fetchall()
         matched_ids = {row["concept_id"] for row in matches}
         if len(matched_ids) > 1:
-            raise BatchPayloadError(
-                "model output exactly matches aliases belonging to multiple concepts; admin review is required"
-            )
+            return None
         if matched_ids:
             # Seed/admin concepts win.  A model may attach mentions through an
             # exact normalized name/alias match, but it cannot rewrite metadata
@@ -2312,35 +2370,51 @@ class SQLiteBatchRepository:
 
     def _write_section_graph(
         self, connection: Any, *, version_id: str, item: Any, payload: Mapping[str, Any]
-    ) -> int:
+    ) -> _SectionGraphWrite:
         """Commit one already-grounded packet as a single transaction.
 
         Every span here is already an exact slice of its own immutable passage.
         The store's own equality checks still run: they are the last gate that
         keeps a stored citation byte-exact, and they cost one comparison.
 
-        Returns the number of relations skipped because both endpoints resolved
-        to the same concept.  That test cannot live in the read-only grounding
-        pass, however much the rest of the packet's validation does: a
-        ``local_id`` becomes a ``concept_id`` only through
-        ``_resolve_or_create_concept``, which is a write.  It belongs here, one
-        step after resolution and before the relation is offered to the store.
-        Nothing about the read-only pass weakens as a result - it still decides
-        every *rejection* before the first insert, and a skip is not a
-        rejection.  See SDD 4.2.2 point 6: two endpoints resolving to one
-        concept is what an administrator merge looks like from the far side of
-        an offline Batch, and failing the packet would discard valid concepts
-        and mentions over an edge the administrator themselves collapsed.
-        ``merge_concepts`` drops exactly this relation rather than refusing the
-        merge; this keeps ingest consistent with it.  An endpoint naming a
-        ``local_id`` the response never defined is a different thing entirely
-        and is still rejected, by the read-only pass, before anything is
-        written.
+        Returns the two counts this write produces, both of them cases of SDD
+        4.2.2 point 6 — grounded output that a decision on our side made
+        unusable — and both of them measurable only here.  Neither test can live
+        in the read-only grounding pass, however much the rest of the packet's
+        validation does: a ``local_id`` becomes a ``concept_id`` only through
+        ``_resolve_or_create_concept``, which is a write.  They belong one step
+        after resolution and before anything is offered to the store.  Nothing
+        about the read-only pass weakens as a result - it still decides every
+        *rejection* before the first insert, and a skip is not a rejection.
+
+        * Relations whose two endpoints resolved to the same concept (point 6a).
+          That is what an administrator merge looks like from the far side of an
+          offline Batch, and failing the packet would discard valid concepts and
+          mentions over an edge the administrator themselves collapsed.
+          ``merge_concepts`` drops exactly this relation rather than refusing the
+          merge; this keeps ingest consistent with it.
+        * Concepts whose spellings matched several existing concepts (point 6c),
+          which ingest cannot link without asserting a merge nobody decided.
+
+        A relation that named a skipped concept is dropped with it, and is not
+        counted separately: the cascade is derivable from the stored payload,
+        the cause is not.  This mirrors the evidence floor, which counts the
+        spans it removed and not the relations they left empty.  An endpoint
+        naming a ``local_id`` the response never defined remains a different
+        thing entirely, and is still rejected by the read-only pass before
+        anything is written.
         """
         relations = payload["relations"]
         local_concepts: dict[str, str] = {}
+        skipped_local_ids: set[str] = set()
         for suggestion in payload["concepts"]:
+            local_id = str(suggestion["local_id"])
             concept_id = self._resolve_or_create_concept(connection, suggestion)
+            if concept_id is None:
+                # No concept to hang them on, so the mentions go too.  They stay
+                # in the stored response, which is what the model returned.
+                skipped_local_ids.add(local_id)
+                continue
             self._add_mentions(
                 connection,
                 concept_id,
@@ -2349,14 +2423,18 @@ class SQLiteBatchRepository:
                 version_id=version_id,
                 require_passage_ids=True,
             )
-            local_concepts[str(suggestion["local_id"])] = concept_id
+            local_concepts[local_id] = concept_id
         skipped_self_relations = 0
         for relation_index, relation in enumerate(relations):
-            # Both lookups are total: the grounding pass already refused any
-            # endpoint that is not a packet concept, so a KeyError here would
-            # mean that guard had been removed.
-            subject_concept_id = local_concepts[str(relation["subject_local_id"])]
-            object_concept_id = local_concepts[str(relation["object_local_id"])]
+            subject_local_id = str(relation["subject_local_id"])
+            object_local_id = str(relation["object_local_id"])
+            if subject_local_id in skipped_local_ids or object_local_id in skipped_local_ids:
+                continue
+            # Both lookups are total once the skips are excluded: the grounding
+            # pass already refused any endpoint that is not a packet concept, so
+            # a KeyError here would mean that guard had been removed.
+            subject_concept_id = local_concepts[subject_local_id]
+            object_concept_id = local_concepts[object_local_id]
             if subject_concept_id == object_concept_id:
                 skipped_self_relations += 1
                 continue
@@ -2379,7 +2457,7 @@ class SQLiteBatchRepository:
                         local_concept_count=len(local_concepts),
                     ),
                 ) from exc
-        return skipped_self_relations
+        return _SectionGraphWrite(skipped_self_relations, len(skipped_local_ids))
 
     def ingest_success(self, batch_job_id: str, custom_id: str, payload: Mapping[str, Any]) -> bool:
         """Atomically ingest one model result and mark the durable item complete.
@@ -2401,6 +2479,11 @@ class SQLiteBatchRepository:
         therefore the identical serialization.  Its count is recorded the same
         way, in ``batch_items.skipped_short_evidence``, because it is likewise
         unrecoverable from what was stored.
+
+        An ambiguous concept behaves like the self-relation rather than like the
+        floor, and for the same reason: resolution is a write, so the grounding
+        pass never sees it and the concept is still in the stored response
+        verbatim.  Its count goes to ``batch_items.skipped_ambiguous_concepts``.
         """
         with self._store._write() as connection:
             job = self._require_job(connection, batch_job_id)
@@ -2444,8 +2527,12 @@ class SQLiteBatchRepository:
             # relations, so there is nothing to have skipped, and "not
             # measured" must stay distinguishable from a measured zero.
             skipped_self_relations: int | None = None
+            # Measured on both job kinds, unlike the counter above: every
+            # success resolves concepts, so a zero here is always a real zero
+            # and NULL means only "written before this column existed".
+            skipped_ambiguous_concepts = 0
             if job["job_kind"] == "SECTION_GRAPH":
-                skipped_self_relations = self._write_section_graph(
+                skipped_self_relations, skipped_ambiguous_concepts = self._write_section_graph(
                     connection, version_id=job["version_id"], item=item, payload=payload
                 )
             else:
@@ -2456,17 +2543,25 @@ class SQLiteBatchRepository:
                     if not isinstance(suggestion, Mapping):
                         raise BatchPayloadError("concepts must contain objects")
                     concept_id = self._resolve_or_create_concept(connection, suggestion)
+                    if concept_id is None:
+                        # SDD 4.2.2 point 6c.  The mentions are skipped with it:
+                        # there is no concept to anchor them to, and inventing
+                        # one would perform the merge the guard exists to refuse.
+                        skipped_ambiguous_concepts += 1
+                        continue
                     self._add_mentions(connection, concept_id, item["passage_id"], suggestion.get("mentions"))
             connection.execute(
                 """UPDATE batch_items
                    SET status = 'SUCCEEDED', response_json = ?, error_text = NULL,
                        failure_diagnostics_json = NULL, skipped_self_relations = ?,
-                       skipped_short_evidence = ?, updated_at = CURRENT_TIMESTAMP
+                       skipped_short_evidence = ?, skipped_ambiguous_concepts = ?,
+                       updated_at = CURRENT_TIMESTAMP
                    WHERE batch_item_id = ?""",
                 (
                     serialized,
                     skipped_self_relations,
                     skipped_short_evidence,
+                    skipped_ambiguous_concepts,
                     item["batch_item_id"],
                 ),
             )

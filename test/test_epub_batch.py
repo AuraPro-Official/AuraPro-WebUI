@@ -580,19 +580,43 @@ class EpubBatchServiceTest(unittest.TestCase):
         item = self.repository.list_items("job")[0]
         self.assertEqual(item["status"], "SUCCEEDED")
 
-    def test_admin_merge_unblocks_a_suggestion_that_matched_two_concepts(self) -> None:
-        """The end-to-end remedy for the only failure an operator cannot retry.
+    def test_a_suggestion_matching_two_concepts_is_skipped_and_its_item_ingests(self) -> None:
+        """What changed here, and why, since this test used to assert the opposite.
 
-        ``_resolve_or_create_concept`` refuses to guess when one suggestion
-        exactly matches two concepts, and that guard stays exactly as it is.
-        What was missing was an administrator action that resolves the
-        candidate, after which the very same durable result ingests cleanly.
+        ``_resolve_or_create_concept`` still refuses to guess when one
+        suggestion exactly matches two concepts - that guard is untouched, and
+        it must be, because linking would assert a merge no administrator
+        decided and SDD 4.2 forbids a model performing a semantic merge.  What
+        changed is what the refusal *costs*: it used to fail the whole Batch
+        item, and now the concept alone is skipped and counted while the rest of
+        the item ingests (SDD 4.2.2 point 6c).
+
+        The old behaviour was justified as holding the item for administrator
+        review, and this test used to assert the review remedy end to end: an
+        administrator merges the two concepts, the same durable result is
+        re-polled, and it ingests.  The full-book runs measured that the remedy
+        almost never applies.  Of 33 held items, 32 collided on pairs an
+        administrator had already adjudicated as *distinct* - 13 on
+        ``全域潮汐枢纽``/``潮汐源`` alone - which no merge can resolve without
+        reversing the adjudication, and the model will keep proposing them
+        because the source genuinely uses both spellings.  Exactly one was a
+        real merge candidate.  So the items were not being held; they were being
+        discarded, along with every valid concept and mention beside the
+        collision.
+
+        The trade is stated plainly rather than hidden: the skipped concept's
+        mentions link to nothing, and a later merge does not retroactively
+        recover them, because the item is durably ``SUCCEEDED`` and re-ingest is
+        idempotent.  Both halves are asserted below.
         """
         surviving = self.store.upsert_concept("UDP", concept_id="udp")
         duplicate = self.store.upsert_concept("datagram", concept_id="datagram")
         self._draft("merge-job")
         remote_id = self.service.submit("merge-job", self.provider)
         self.provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        # The ambiguous suggestion travels beside a perfectly ordinary one, so
+        # "the rest of the item ingests" is a real assertion rather than a
+        # statement about an item with nothing else in it.
         self.provider.results[remote_id] = [
             ProviderItemResult("p1", payload={"concepts": []}),
             ProviderItemResult(
@@ -606,52 +630,75 @@ class EpubBatchServiceTest(unittest.TestCase):
                             "mentions": [
                                 {"start_codepoint": 0, "end_codepoint": 3, "evidence": "UDP"}
                             ],
-                        }
+                        },
+                        {
+                            "name": "Datagram framing",
+                            "aliases": [],
+                            "definition": "How a datagram is delimited",
+                            "mentions": [
+                                {"start_codepoint": 16, "end_codepoint": 21, "evidence": "based"}
+                            ],
+                        },
                     ]
                 },
             ),
         ]
 
-        blocked = self.service.poll_and_ingest("merge-job", self.provider)
-        held = next(
+        result = self.service.poll_and_ingest("merge-job", self.provider)
+        item = next(
             item for item in self.repository.list_items("merge-job") if item["custom_id"] == "p2"
         )
-        self.assertEqual(blocked["failed"], 1)
-        self.assertEqual(held["status"], "FAILED")
-        self.assertIn("multiple concepts", held["error_text"])
+        self.assertEqual((result["ingested"], result["failed"]), (2, 0))
+        self.assertEqual(item["status"], "SUCCEEDED")
+        self.assertIsNone(item["error_text"])
+        self.assertEqual(item["skipped_ambiguous_concepts"], 1)
+
+        # The concept that arrived beside the collision is written in full, and
+        # the ambiguous one attached its mention to neither candidate.  Nothing
+        # was invented to hang it on: that would be the merge the guard exists
+        # to refuse.
+        mentions = self.store._connection().execute(
+            "SELECT concept_id, passage_id, start_codepoint, end_codepoint, evidence FROM concept_mentions"
+        ).fetchall()
+        self.assertEqual(len(mentions), 1)
+        self.assertEqual(tuple(mentions[0])[1:], ("p2", 16, 21, "based"))
+        self.assertNotIn(tuple(mentions[0])[0], {surviving, duplicate})
+
+        # Visible without opening a response, per item and in the job aggregate
+        # an administrator reads first.
+        summary = self.service.get_job_summary("merge-job")
+        self.assertEqual(summary["item_skipped_ambiguous_concepts"], 1)
         self.assertEqual(
-            self.store._connection().execute("SELECT COUNT(*) FROM concept_mentions").fetchone()[0],
-            0,
+            {row["custom_id"]: row["skipped_ambiguous_concepts"] for row in summary["items"]},
+            {"p1": 0, "p2": 1},
         )
 
+        # The skipped concept stays in the durable response verbatim.  Unlike a
+        # sub-floor span, it is discovered at *write* time, so the read-only
+        # grounding pass never removed it from the payload - the column records
+        # what the write did, not what the payload contains.
+        stored = json.loads(item["response_json"])
+        self.assertEqual([concept["name"] for concept in stored["concepts"]], ["UDP", "Datagram framing"])
+        self.assertEqual(stored["concepts"][0]["aliases"], ["datagram"])
+
+        # The trade, asserted rather than described.  An administrator merge
+        # would have resolved the collision had it happened first, but the item
+        # is durably SUCCEEDED and re-ingest is idempotent, so the merge does
+        # not retroactively recover the skipped mention.
         merged = self.store.merge_concepts(
             target_concept_id=surviving,
             source_concept_id=duplicate,
             merged_by="administrator",
         )
         self.assertEqual(merged["source_canonical_name"], "datagram")
+        replay = self.service.poll_and_ingest("merge-job", self.provider)
+        self.assertEqual((replay["ingested"], replay["failed"]), (0, 0))
         self.assertEqual(
-            {
-                row[0]
-                for row in self.store._connection().execute(
-                    "SELECT alias FROM concept_aliases WHERE concept_id = ?", (surviving,)
-                )
-            },
-            {"UDP", "datagram"},
+            self.store._connection().execute("SELECT COUNT(*) FROM concept_mentions").fetchone()[0],
+            1,
         )
-
-        resolved = self.service.poll_and_ingest("merge-job", self.provider)
-        self.assertEqual(resolved["ingested"], 1)
         self.assertEqual(
-            [item["status"] for item in self.repository.list_items("merge-job")],
-            ["SUCCEEDED", "SUCCEEDED"],
-        )
-        mention = self.store._connection().execute(
-            "SELECT concept_id, passage_id, start_codepoint, end_codepoint, evidence FROM concept_mentions"
-        ).fetchall()
-        self.assertEqual([tuple(row) for row in mention], [(surviving, "p2", 0, 3, "UDP")])
-        self.assertEqual(
-            self.store._connection().execute("SELECT COUNT(*) FROM concepts").fetchone()[0], 1
+            self.service.get_job_summary("merge-job")["item_skipped_ambiguous_concepts"], 1
         )
 
     def test_openai_cloud_ingest_repairs_only_uniquely_locatable_evidence(self) -> None:
@@ -1241,11 +1288,14 @@ class EpubBatchServiceTest(unittest.TestCase):
         }
 
     @staticmethod
-    def _graph_concept(local_id: str, name: str, mentions: list[dict]) -> dict:
+    def _graph_concept(
+        local_id: str, name: str, mentions: list[dict], *, aliases: list[str] | None = None
+    ) -> dict:
+        """One packet concept.  ``aliases`` is what makes a suggestion collide."""
         return {
             "local_id": local_id,
             "name": name,
-            "aliases": [],
+            "aliases": list(aliases or []),
             "definition": "A protocol",
             "mentions": mentions,
         }
@@ -1713,7 +1763,7 @@ class EpubBatchServiceTest(unittest.TestCase):
         )
 
     # ------------------------------------------------------------------
-    # Endpoints an administrator has already merged (SDD 4.2.2 point 6)
+    # Endpoints an administrator has already merged (SDD 4.2.2 point 6a)
     #
     # Sample 965c2c11 sat at 15/16 on exactly this: the model asserted
     # 双轨校准法 --HAS_PART--> 观测规程2.4-2.11 and an administrator had since
@@ -1876,8 +1926,9 @@ class EpubBatchServiceTest(unittest.TestCase):
 
     def test_a_merged_endpoint_does_not_rescue_an_ungrounded_one(self) -> None:
         # The boundary that must not move.  A ``local_id`` no concept defined is
-        # ungrounded output, not a merge artefact, and point 5 still governs it:
-        # the whole packet fails and nothing it touched changed.
+        # ungrounded output, not a merge artefact, and the hard-failure half of
+        # point 6 still governs it: the whole packet fails and nothing it
+        # touched changed.
         self._merged_endpoints()
         before = self._graph_row_counts()
         result = self._ingest_packet(
@@ -1951,6 +2002,232 @@ class EpubBatchServiceTest(unittest.TestCase):
         self.assertEqual(
             self.service.get_job_summary("plain-job")["item_skipped_self_relations"], 0
         )
+
+        # ``skipped_ambiguous_concepts`` is the one counter that is measured on
+        # both job kinds, because every success resolves concepts.  So a
+        # CONCEPT_MENTIONS item records a real zero here where it records NULL
+        # above, and NULL in this column means only "written before the column
+        # existed".
+        self.assertEqual(
+            [
+                item["skipped_ambiguous_concepts"]
+                for item in self.repository.list_items("plain-job")
+            ],
+            [0, 0],
+        )
+        self.assertEqual(
+            self.repository.list_items("section-graph-zero")[0]["skipped_ambiguous_concepts"], 0
+        )
+
+    # ------------------------------------------------------------------
+    # A concept whose spellings match several existing ones (SDD 4.2.2 point 6c)
+    #
+    # The same shape as the merged-endpoint skip above, arriving one step
+    # earlier.  ``_resolve_or_create_concept`` cannot link a suggestion whose
+    # name and aliases match two concepts without asserting they are the same,
+    # which SDD 4.2 forbids a model from doing - so it returns ``None`` and the
+    # write skips the concept, its mentions, and any relation that named it.
+    #
+    # This used to fail the whole packet.  The full-book runs measured the cost:
+    # 33 held items, 32 of them colliding on pairs an administrator had already
+    # adjudicated as *distinct*, which no merge resolves.  The difference from
+    # 6a is that the collision does not settle - the same pairs recur on every
+    # future book, because the source genuinely uses both spellings - which is
+    # why this counter is a separate column rather than folded into the other.
+    # ------------------------------------------------------------------
+
+    def _ambiguous_pair(self) -> tuple[str, str]:
+        """Two concepts an administrator adjudicated as distinct, left distinct.
+
+        Deliberately *not* built through ``merge_concepts``: that is the 6a
+        fixture, and the whole point here is that these two stay separate, so a
+        suggestion naming both matches two concept ids rather than one.
+        """
+        return (
+            self.store.upsert_concept("UDP", concept_id="udp"),
+            self.store.upsert_concept("datagram", concept_id="datagram"),
+        )
+
+    def test_an_ambiguous_concept_is_skipped_and_takes_only_its_own_relation(self) -> None:
+        first, second = self._ambiguous_pair()
+        unique_p1 = "connects TCP endpoints"
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept("parent", "TCP", [self._v2_span("p1", unique_p1)]),
+                    # Matches both existing concepts, so it resolves to neither.
+                    self._graph_concept(
+                        "ambiguous",
+                        "UDP",
+                        [self._v2_span("p2", "UDP is datagram based")],
+                        aliases=["datagram"],
+                    ),
+                    self._graph_concept("other", "Framing", [self._v2_span("p2", "based")]),
+                ],
+                "relations": [
+                    # Names the skipped concept, so it is dropped with it.
+                    self._graph_relation("parent", "ambiguous", [self._v2_span("p1", unique_p1)]),
+                    # Names nothing skipped, so it survives untouched.
+                    self._graph_relation(
+                        "parent", "other", [self._v2_span("p1", unique_p1)], predicate="PRECEDES"
+                    ),
+                ],
+            },
+            job_id="section-graph-ambiguous",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        item = self.repository.list_items("section-graph-ambiguous")[0]
+        self.assertEqual(item["status"], "SUCCEEDED")
+        self.assertEqual(item["skipped_ambiguous_concepts"], 1)
+        # The cascade is *not* counted as a self-relation: the endpoint did not
+        # resolve to the same concept, it did not resolve at all.  Conflating
+        # the two would make an administrator read a merge artefact where there
+        # is a standing collision.
+        self.assertEqual(item["skipped_self_relations"], 0)
+
+        # The valid relation survives, byte-exact, and the dropped one left no
+        # partial row behind in any of the three relation tables.
+        relations = self.store._connection().execute(
+            "SELECT subject_concept_id, predicate, object_concept_id FROM concept_relations"
+        ).fetchall()
+        self.assertEqual(len(relations), 1)
+        self.assertEqual(relations[0]["predicate"], "PRECEDES")
+        counts = self._graph_row_counts()
+        self.assertEqual(counts["concept_relation_assertions"], 1)
+        self.assertEqual(counts["concept_relation_evidence"], 1)
+        self.assertEqual(
+            self._stored_spans("concept_relation_evidence"),
+            [("p1", *self._expected_span(self._P1, unique_p1))],
+        )
+
+        # The skipped concept's mention went nowhere - not to either candidate,
+        # and not to a concept invented to hold it.
+        self.assertEqual(
+            self._stored_spans("concept_mentions"),
+            [
+                ("p1", *self._expected_span(self._P1, unique_p1)),
+                ("p2", *self._expected_span(self._P2, "based")),
+            ],
+        )
+        self.assertEqual(
+            self.store._connection()
+            .execute(
+                "SELECT COUNT(*) FROM concept_mentions WHERE concept_id IN (?, ?)", (first, second)
+            )
+            .fetchone()[0],
+            0,
+        )
+
+        # Visible per item and in the job aggregate.
+        summary = self.service.get_job_summary("section-graph-ambiguous")
+        self.assertEqual(summary["item_skipped_ambiguous_concepts"], 1)
+        self.assertEqual(summary["items"][0]["skipped_ambiguous_concepts"], 1)
+
+    def test_a_skipped_ambiguous_concept_stays_in_the_response_and_replays_identically(self) -> None:
+        """The idempotency invariant the whole design rests on.
+
+        Unlike a sub-floor span, which the read-only grounding pass removes
+        before anything is stored, an ambiguous concept is discovered at *write*
+        time and is therefore still in the stored response verbatim - exactly as
+        a merged-away self-relation is.  The count records what the write did;
+        the response records what the model returned.
+
+        That separation is what keeps ``response_json`` byte-identical on
+        replay, which is what makes re-ingest a no-op.  If the write ever
+        rewrote the payload to reflect its own skips, a re-poll would serialize
+        something different and every durable result would stop being a
+        reproducibility record.
+        """
+        self._ambiguous_pair()
+        self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "parent", "TCP", [self._v2_span("p1", "connects TCP endpoints")]
+                    ),
+                    self._graph_concept(
+                        "ambiguous",
+                        "UDP",
+                        [self._v2_span("p2", "UDP is datagram based")],
+                        aliases=["datagram"],
+                    ),
+                ],
+                "relations": [
+                    self._graph_relation(
+                        "parent", "ambiguous", [self._v2_span("p1", "connects TCP endpoints")]
+                    )
+                ],
+            },
+            job_id="section-graph-ambiguous-replay",
+        )
+
+        item = self.repository.list_items("section-graph-ambiguous-replay")[0]
+        stored = json.loads(item["response_json"])
+        # Present verbatim: name, aliases, the mention that was never written,
+        # and the relation that was dropped.
+        ambiguous = next(c for c in stored["concepts"] if c["local_id"] == "ambiguous")
+        self.assertEqual(ambiguous["name"], "UDP")
+        self.assertEqual(ambiguous["aliases"], ["datagram"])
+        self.assertEqual(len(ambiguous["mentions"]), 1)
+        self.assertEqual(len(stored["relations"]), 1)
+
+        before = self._graph_row_counts()
+        replay = self.service.poll_and_ingest("section-graph-ambiguous-replay", self.provider)
+
+        self.assertEqual((replay["ingested"], replay["failed"]), (0, 0))
+        # Byte-identical, not merely equivalent: the assertion is on the stored
+        # string, because that is what the idempotency guarantee is about.
+        self.assertEqual(
+            self.repository.list_items("section-graph-ambiguous-replay")[0]["response_json"],
+            item["response_json"],
+        )
+        self.assertEqual(self._graph_row_counts(), before)
+        self.assertEqual(
+            self.repository.list_items("section-graph-ambiguous-replay")[0][
+                "skipped_ambiguous_concepts"
+            ],
+            1,
+        )
+
+    def test_an_ambiguous_concept_does_not_make_an_undeclared_endpoint_lenient(self) -> None:
+        # The boundary that must not move, restated for 6c.  A ``local_id`` the
+        # response never declared is ungrounded output, and the presence of a
+        # skipped concept in the same packet must not smuggle it through the
+        # skip path: the whole packet fails and nothing it touched changed.
+        self._ambiguous_pair()
+        before = self._graph_row_counts()
+        result = self._ingest_packet(
+            {
+                "concepts": [
+                    self._graph_concept(
+                        "parent", "TCP", [self._v2_span("p1", "connects TCP endpoints")]
+                    ),
+                    self._graph_concept(
+                        "ambiguous",
+                        "UDP",
+                        [self._v2_span("p2", "UDP is datagram based")],
+                        aliases=["datagram"],
+                    ),
+                ],
+                "relations": [
+                    self._graph_relation(
+                        "parent", "ghost", [self._v2_span("p1", "connects TCP endpoints")]
+                    )
+                ],
+            },
+            job_id="section-graph-ambiguous-ghost",
+        )
+
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        self.assertEqual(self._graph_row_counts(), before)
+        diagnostics = self._item_diagnostics("section-graph-ambiguous-ghost")
+        self.assertEqual(diagnostics["reason"], "RELATION_ENDPOINT_UNRESOLVED")
+        # Rejected by the read-only pass, before any write ran, so neither
+        # counter was ever measured for this item.
+        item = self.repository.list_items("section-graph-ambiguous-ghost")[0]
+        self.assertIsNone(item["skipped_ambiguous_concepts"])
+        self.assertIsNone(item["skipped_self_relations"])
 
     def test_duplicate_packet_local_id_is_its_own_failure_class(self) -> None:
         result = self._ingest_packet(
@@ -2506,7 +2783,7 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
     measured on the full section-graph run, 13 of 43 packets died on this alone,
     taking 140 concepts, 140 mentions and 105 relations - more than a third of
     the potential relation graph - with them.  This is the same shape as the
-    merged-away self-relation of SDD 4.2.2 point 6, and is resolved the same
+    merged-away self-relation of SDD 4.2.2 point 6a, and is resolved the same
     way: skip the element, count it durably, keep the packet.
 
     Second, the number.  The instruction asks for 10 and ingest enforces 6, and
@@ -3274,7 +3551,7 @@ class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4, 5, 6, 7, 8, 9},
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
         item = connection.execute("SELECT * FROM batch_items").fetchone()
@@ -3379,10 +3656,10 @@ class EpubBatchPromptProfileMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
-            {1, 2, 3, 4, 5, 6, 7, 8, 9},
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
         )
         self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
-        self.assertEqual(STORE.SCHEMA_VERSION, 9)
+        self.assertEqual(STORE.SCHEMA_VERSION, 10)
         jobs = {
             row["batch_job_id"]: row
             for row in connection.execute("SELECT * FROM batch_jobs")
@@ -3422,6 +3699,130 @@ class EpubBatchPromptProfileMigrationTest(unittest.TestCase):
             {job["batch_job_id"] for job in repository.list_jobs_without_prompt_profile()},
             {"legacy-sample", "legacy-full"},
         )
+
+
+class EpubBatchAmbiguousConceptMigrationTest(unittest.TestCase):
+    """``batch_items.skipped_ambiguous_concepts`` arrives through the runner.
+
+    The store this ships against already holds the completed full-book runs,
+    whose items were written before the column existed.  Those rows must read
+    back as NULL and not as a measured zero: a zero would claim the write
+    checked for a collision and found none, which is exactly the opposite of
+    the truth - the writes that produced those rows *failed* their items on
+    collisions, which is the behaviour this column exists to record replacing.
+    """
+
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.path = os.path.join(self.tempdir.name, "schema-9.db")
+        self._create_previous_schema_version()
+
+    def _create_previous_schema_version(self) -> None:
+        """Build a database exactly as the schema stood at version 9."""
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA foreign_keys = ON")
+        # Mirror the runner, which owns the bookkeeping table itself and
+        # therefore skips the first statement of migration 1.
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations "
+            "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+        migrations = (
+            (1, STORE._MIGRATION_1),
+            (2, STORE._MIGRATION_2),
+            (3, STORE._MIGRATION_3),
+            (4, STORE._MIGRATION_4),
+            (5, STORE._MIGRATION_5),
+            (6, STORE._MIGRATION_6),
+            (7, STORE._MIGRATION_7),
+            (8, STORE._MIGRATION_8),
+            (9, STORE._MIGRATION_9),
+        )
+        for version, statements in migrations:
+            for statement in statements[1:] if version == 1 else statements:
+                connection.execute(statement)
+            connection.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
+        connection.execute("PRAGMA user_version = 9")
+        connection.execute("INSERT INTO books(book_id, title) VALUES ('book', 'Legacy book')")
+        connection.execute(
+            "INSERT INTO book_versions(version_id, book_id, epub_sha256, status) "
+            "VALUES ('version', 'book', 'legacy-hash', 'READY')"
+        )
+        connection.execute(
+            """INSERT INTO passages(
+                   passage_id, version_id, source_href, spine_index, ordinal,
+                   content_kind, content, content_sha256
+               ) VALUES ('p1', 'version', 'chapter.xhtml', 0, 0, 'paragraph', 'TCP endpoints.', 'hash')"""
+        )
+        connection.execute(
+            """INSERT INTO batch_jobs(batch_job_id, version_id, provider, profile_name, status)
+               VALUES ('legacy-job', 'version', 'openai-batch', 'zh-section-graph-v3', 'SUCCEEDED')"""
+        )
+        # One succeeded item that did measure the two older counters, so the
+        # test can tell "this column is new" apart from "this row measured
+        # nothing at all".
+        connection.execute(
+            """INSERT INTO batch_items(
+                   batch_item_id, batch_job_id, passage_id, custom_id, status, request_json,
+                   response_json, skipped_self_relations, skipped_short_evidence
+               ) VALUES ('legacy-item', 'legacy-job', 'p1', 'p1', 'SUCCEEDED', '{}',
+                         '{"concepts": [], "relations": []}', 1, 2)"""
+        )
+        connection.commit()
+        connection.close()
+
+    def test_previous_schema_version_gains_the_column_without_losing_data(self) -> None:
+        self.assertNotIn(
+            "skipped_ambiguous_concepts",
+            {row[1] for row in sqlite3.connect(self.path).execute("PRAGMA table_info(batch_items)")},
+        )
+
+        store = SQLiteEpubStore(self.path)
+        self.addCleanup(store.close)
+        connection = store._connection()
+
+        self.assertEqual(
+            {row[0] for row in connection.execute("SELECT version FROM schema_migrations")},
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+        )
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], STORE.SCHEMA_VERSION)
+        self.assertEqual(STORE.SCHEMA_VERSION, 10)
+
+        item = connection.execute("SELECT * FROM batch_items").fetchone()
+        # Not measured, not zero.  The counters the row *did* record are
+        # untouched, which is what makes the NULL meaningful.
+        self.assertIsNone(item["skipped_ambiguous_concepts"])
+        self.assertEqual(item["skipped_self_relations"], 1)
+        self.assertEqual(item["skipped_short_evidence"], 2)
+        self.assertEqual(item["status"], "SUCCEEDED")
+        self.assertEqual(item["response_json"], '{"concepts": [], "relations": []}')
+
+        # A NULL reads through the summary as NULL per item, while the job
+        # aggregate coalesces it to 0 - the aggregate is a sum, and an
+        # unmeasured row contributes nothing to one.
+        summary = SQLiteBatchRepository(store).get_job_summary("legacy-job")
+        self.assertIsNone(summary["items"][0]["skipped_ambiguous_concepts"])
+        self.assertEqual(summary["item_skipped_ambiguous_concepts"], 0)
+
+        # Content-free by schema rather than by a validator, like the two
+        # columns beside it.
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("UPDATE batch_items SET skipped_ambiguous_concepts = '潮汐源'")
+        connection.rollback()
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute("UPDATE batch_items SET skipped_ambiguous_concepts = -1")
+        connection.rollback()
+
+    def test_migration_is_idempotent_across_reopens(self) -> None:
+        first = SQLiteEpubStore(self.path)
+        first.close()
+        second = SQLiteEpubStore(self.path)
+        self.addCleanup(second.close)
+        columns = [
+            row[1] for row in second._connection().execute("PRAGMA table_info(batch_items)")
+        ]
+        self.assertEqual(columns.count("skipped_ambiguous_concepts"), 1)
 
 
 if __name__ == "__main__":
