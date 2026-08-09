@@ -353,6 +353,92 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         self.assertEqual(rows["从未提及的概念"]["mention_count"], 0)
         self.assertEqual(rows["父"]["term_source"], "MODEL")
 
+    def _toc_child_fixture(self) -> dict[str, str]:
+        """The acceptance book's shape: a section that lists its own subsections.
+
+        ``人一生所必经的六个关口`` is one heading passage with one concept on
+        it and no relation of any predicate, while the sections that answer the
+        question are its TOC children.  The fixture reproduces exactly that,
+        plus the two things the binding rule has to reject:
+
+        * ``贯穿全书的概念`` is mentioned inside a child section *and* in an
+          unrelated chapter, so it is not bound to any single node and must not
+          be admitted from either.
+        * ``被否决的概念`` lives entirely inside a child section but is
+          ``REJECTED``, and a rejected concept is not retrievable by any route.
+        """
+        self.store.add_toc_nodes(
+            "version-a",
+            [
+                {"toc_node_id": "gates", "title": "人一生所必经的六个关口",
+                 "href": "c1.xhtml", "spine_index": 0, "ordinal": 0},
+                {"toc_node_id": "gate-one", "parent_toc_node_id": "gates", "title": "第一关　人的出生",
+                 "href": "c1.xhtml", "spine_index": 0, "ordinal": 1},
+                {"toc_node_id": "gate-two", "parent_toc_node_id": "gates", "title": "第二关　人的成长",
+                 "href": "c1.xhtml", "spine_index": 0, "ordinal": 2},
+                {"toc_node_id": "elsewhere", "title": "另一章", "href": "c2.xhtml",
+                 "spine_index": 1, "ordinal": 3},
+            ],
+        )
+        self.store.add_passages(
+            "version-a",
+            [
+                self._passage(passage_id="p-gates", toc_node_id="gates", ordinal=0),
+                self._passage(passage_id="p-one", toc_node_id="gate-one", ordinal=1),
+                self._passage(passage_id="p-two", toc_node_id="gate-two", ordinal=2),
+                self._passage(passage_id="p-else", toc_node_id="elsewhere", spine_index=1, ordinal=3),
+            ],
+        )
+        concepts = {
+            "gates": self.store.upsert_concept("六个关口"),
+            "birth": self.store.upsert_concept("人的出生"),
+            "growth": self.store.upsert_concept("人的成长"),
+            "everywhere": self.store.upsert_concept("贯穿全书的概念"),
+            "rejected": self.store.upsert_concept("被否决的概念", status="REJECTED"),
+        }
+        self.store.add_concept_mention(concepts["gates"], "p-gates", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(concepts["birth"], "p-one", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(concepts["growth"], "p-two", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(concepts["rejected"], "p-one", start_codepoint=3, end_codepoint=5)
+        self.store.add_concept_mention(concepts["everywhere"], "p-one", start_codepoint=6, end_codepoint=7)
+        self.store.add_concept_mention(concepts["everywhere"], "p-else", start_codepoint=0, end_codepoint=2)
+        return concepts
+
+    def test_toc_child_concepts_admit_only_concepts_bound_inside_the_children(self) -> None:
+        """The book's own hierarchy, read as structure and stored as nothing.
+
+        A concept binds to a TOC node only when *every* one of its mentions
+        lands under that node.  A majority rule would let a concept the book
+        discusses throughout attach itself to whichever section happens to hold
+        the most of it, and that concept would then drag its own neighbourhood
+        into every query that reached its parent — the exact failure the
+        relation walk already has to be defended against.
+        """
+        concepts = self._toc_child_fixture()
+
+        rows = self.store.list_toc_child_concepts([concepts["gates"]])
+
+        self.assertEqual(
+            [row["concept_id"] for row in rows], sorted({concepts["birth"], concepts["growth"]})
+        )
+        self.assertTrue(all(row["seed_concept_id"] == concepts["gates"] for row in rows))
+        self.assertTrue(all(row["seed_toc_node_id"] == "gates" for row in rows))
+
+    def test_toc_child_concepts_do_not_reach_siblings_or_unbound_seeds(self) -> None:
+        """Children only, and only from a seed the book itself localises.
+
+        ``人的出生`` is bound to a leaf node, so it has no children and returns
+        nothing — it must *not* pick up its sibling ``人的成长``, which is the
+        difference between a decomposition and an unbounded associative bag.
+        ``贯穿全书的概念`` is mentioned in two nodes, so it binds to neither and
+        cannot start a walk at all, however many children those nodes have.
+        """
+        concepts = self._toc_child_fixture()
+
+        self.assertEqual(self.store.list_toc_child_concepts([concepts["birth"]]), [])
+        self.assertEqual(self.store.list_toc_child_concepts([concepts["everywhere"]]), [])
+        self.assertEqual(self.store.list_toc_child_concepts([]), [])
+
     def _graph_span_fixture(self) -> list[str]:
         """Mentions that duplicate, nest and partially overlap in two passages.
 
