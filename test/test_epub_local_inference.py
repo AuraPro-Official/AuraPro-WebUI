@@ -253,7 +253,7 @@ class LocalOnlyInferenceTest(unittest.TestCase):
             ),
             profile='qwen-local.gguf',
         )
-        self.assertIsNone(abstained.resolve('怎样给自行车换链条', ['已有概念']))
+        self.assertIsNone(abstained.resolve('这本书跟潮汐完全无关的一个问题', ['已有概念']))
 
         chatty = LlamaCppConceptResolver(
             endpoint=PrivateModelEndpoint('http://127.0.0.1:18881'),
