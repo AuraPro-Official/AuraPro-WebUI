@@ -30,14 +30,90 @@ class SearchError(ValueError):
 # load-bearing: ``relation:`` is a semantic claim a model made and an
 # administrator can revise, ``structure:`` is the book's own table of contents,
 # which no model authored.  A reader who sees the second must not be able to
-# mistake it for the first.
+# mistake it for the first.  After the prefix comes the predicate that actually
+# won the concept, because "reached by a containment edge" and "reached by a
+# sequential one" are different claims about the same span, and a reader is
+# owed the one they got.
 _RELATION_HAS_PART = 'relation:HAS_PART'
 _STRUCTURE_TOC_CHILD = 'structure:TOC_CHILD'
+
+
+@dataclass(frozen=True, slots=True)
+class _PredicateClass:
+    """One group of predicates, with the traversal their meaning licenses.
+
+    The classes are not a tuning surface with three knobs each; each field
+    states a consequence of what the predicates in that class *mean*, and the
+    numbers were measured rather than chosen (see
+    :meth:`EpubSearchService._expand_relation_concepts`).
+
+    * ``direction`` — whether an edge may be walked from its object back to its
+      subject.  Containment reads one way: a part does not bring its whole and
+      everything else the whole contains.  A chain reads both ways, and has to,
+      or a sibling in the middle of one can reach only forwards.
+    * ``max_depth`` — how many hops out of a *seed* this class may travel.  It
+      is a hard stop, not a starting point for deeper logic: an associative hop
+      is never itself expanded from, because two hops of association is not a
+      neighbourhood, it is the rest of the book.
+    * ``base_cost`` — what one hop of this kind is worth before fan-out is
+      priced in.  It orders spans; it never removes any.
+    """
+
+    predicates: tuple[str, ...]
+    direction: str
+    max_depth: int
+    base_cost: float
+
+
+# Containment.  The one predicate whose direction is not in question and the
+# one class that may travel two hops: a whole names its parts, and a part of a
+# part is still a part.  ``base_cost`` 1.0 and the ``log2(fanout)`` term below
+# are the existing formula, unchanged, so nothing about how a ``HAS_PART``
+# subtree ranks moves because other predicates now exist beside it.
+_CONTAINMENT = _PredicateClass(predicates=('HAS_PART',), direction='outgoing', max_depth=2, base_cost=1.0)
+
+# Quasi-containment.  ``ELABORATES`` is the predicate whose stored direction
+# does not survive inspection: on the acceptance graph its edges lean about
+# 2:1 towards subject-as-topic, which is the *opposite* of what the predicate's
+# own name asserts, two pairs are stated reciprocally, and where the same pair
+# also carries a ``HAS_PART`` edge it agrees 7 times and disagrees 3.  A
+# direction that has to be guessed is not a direction, so both ends are walked
+# and the hop is priced above containment for the uncertainty.  One hop only:
+# an elaboration of an elaboration is a topic change.
+_QUASI_CONTAINMENT = _PredicateClass(predicates=('ELABORATES',), direction='both', max_depth=1, base_cost=2.0)
+
+# Association and sequence.  These say that two concepts stand in some relation
+# to each other, not that one is inside the other, so they are the weakest
+# evidence a span can be reached by and are priced accordingly.  Bidirectional
+# is the whole point: a cause is reachable from its effect, and a link in the
+# middle of a sequence can reach the link before it as well as the one after.
+_ASSOCIATIVE = _PredicateClass(
+    predicates=('PRECEDES', 'PREREQUISITE', 'CAUSES', 'CONTRASTS'),
+    direction='both',
+    max_depth=1,
+    base_cost=3.0,
+)
+
+# Walked in this order, and the order is load-bearing rather than cosmetic:
+# containment goes first so that its two-hop frontier is built only out of
+# concepts *containment* reached, and a concept another class had already
+# recorded can never shorten or lengthen a containment walk.
+_PREDICATE_CLASSES = (_CONTAINMENT, _QUASI_CONTAINMENT, _ASSOCIATIVE)
 
 # When one span is attributed to several expansion-derived concepts at the same
 # hop count, this order decides which edge explains it.  The semantic graph
 # wins wherever it exists; TOC structure is the fallback, never a competitor.
-_LABEL_PRIORITY = (_RELATION_HAS_PART, _STRUCTURE_TOC_CHILD)
+# Within the semantic graph the order is the classes' own, strongest claim
+# first, so a span a containment edge explains is never described by a weaker
+# association that happens to reach it at the same depth.
+_LABEL_PRIORITY = (
+    *(f'relation:{predicate}' for predicate_class in _PREDICATE_CLASSES for predicate in predicate_class.predicates),
+    _STRUCTURE_TOC_CHILD,
+)
+
+# Rank of each label in ``_LABEL_PRIORITY``, so a tie inside one walk can be
+# broken by the same order a tie across walks is.
+_LABEL_RANK = MappingProxyType({label: index for index, label in enumerate(_LABEL_PRIORITY)})
 
 _EMPTY_LABELS: Mapping[str, str] = MappingProxyType({})
 
@@ -136,10 +212,12 @@ class _RelationExpansion:
     a reader is shown.
 
     ``labels`` records *by what kind of edge* a concept was reached, for the
-    concepts that were not matched directly.  A semantic ``HAS_PART`` edge a
-    model proposed and an administrator can revise, and a structural TOC edge
-    the parser read out of the book, are both one hop, but they are not the
-    same claim, and a reader is shown which one they got.
+    concepts that were not matched directly, naming the predicate that won it
+    rather than only the family it belongs to.  A semantic edge a model
+    proposed and an administrator can revise, and a structural TOC edge the
+    parser read out of the book, are both one hop but are not the same claim;
+    neither are a containment edge and a contrastive one.  A reader is shown
+    which of them they got.
     """
 
     concept_ids: tuple[str, ...]
@@ -198,8 +276,16 @@ class EpubSearchRepository(Protocol):
 
     def matched_concept_names(self, passage_id: str, concept_ids: Sequence[str]) -> list[str]: ...
 
+    # ``direction`` says which end of an edge the queried concepts sit on.  A
+    # repository is not asked to decide which end is the *neighbour* — search
+    # knows what it asked about and does that itself — so the rows are the
+    # stored subject/predicate/object either way.
     def list_concept_relation_neighbors(
-        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ('HAS_PART',)
+        self,
+        concept_ids: Sequence[str],
+        *,
+        predicates: Sequence[str] = ('HAS_PART',),
+        direction: str = 'outgoing',
     ) -> list[Mapping[str, Any]]: ...
 
     # Structural, deterministic decomposition read from the book's own table of
@@ -547,24 +633,53 @@ class EpubSearchService:
     def _expand_relation_concepts(
         self, concept_ids: Sequence[str], seed_ids: Sequence[str] | None = None, *, max_depth: int = 2
     ) -> _RelationExpansion:
-        """Follow a bounded containment graph without turning relations into citations.
+        """Follow a bounded relation graph without turning relations into citations.
 
-        Coverage is unchanged by ranking: every concept reachable within
-        ``max_depth`` is still queried, and ``graph_total`` still counts every
+        Coverage is unchanged by ranking: every concept reachable inside the
+        bounds below is still queried, and ``graph_total`` still counts every
         span they occur in.  A high-degree concept is *down-weighted*, never
         dropped — capping the fan-out would delete source a reader could
         otherwise page to, and it would do so invisibly, since the count would
         simply come back smaller with no way to tell why.
 
-        The weight is the price of the walk: one hop costs ``1 + log2(k)``
-        where ``k`` is how many children that parent fanned out to.  A parent
-        with one child costs a plain hop; ``全域潮汐枢纽``, with 20 grounded
-        ``HAS_PART`` children in the acceptance book, costs 5.32 — so its
-        children's spans sort below spans reached by two hops through narrow
-        parents, which is exactly the relative confidence those two paths
-        deserve.  Because a hub can make a one-hop path dearer than a two-hop
-        one, cost takes the cheapest path found while ``depths`` keeps the hop
-        count, which is what provenance reports.
+        The weight is the price of the walk: one hop costs
+        ``base + log2(k)`` where ``k`` is how many neighbours that parent
+        fanned out to through that one predicate.  A parent with one child
+        costs a plain hop; ``全域潮汐枢纽``, with 20 grounded ``HAS_PART``
+        children in the acceptance book, costs 5.32 — so its children's spans
+        sort below spans reached by two hops through narrow parents, which is
+        exactly the relative confidence those two paths deserve.  Because a hub
+        can make a one-hop path dearer than a two-hop one, cost takes the
+        cheapest path found while ``depths`` keeps the hop count, which is what
+        provenance reports.
+
+        **The six predicates are not one graph.**  This used to walk
+        ``HAS_PART`` alone, which left roughly half the stored edges unreachable
+        at query time; the fix is not to add the other five to the same walk.
+        Measured on the acceptance graph, one seed goes from 8 concepts / 184
+        spans (``HAS_PART``, two hops) to 51 / 968 if every predicate is walked
+        downwards to the same depth, and 61 / 1,119 bidirectionally.  That is
+        not recall, it is the rest of the book.  Walked as
+        :data:`_PREDICATE_CLASSES` describes instead — containment two hops,
+        everything else one — the same seeds gain single-digit numbers of
+        concepts, because a class that may not be expanded *from* cannot
+        compound.
+
+        Each class is walked separately and from the seeds only, and that
+        separation is what makes the depth-1 stop a stop.  A concept reached by
+        an association is recorded, is counted, and contributes its spans; it
+        is never a frontier for anything, not for its own class and not for
+        containment.  So the classes cannot be composed into a longer path by
+        alternating between them, which is the failure mode a single
+        multi-predicate walk has and the reason this is three walks.
+
+        Nothing here is a second ordering.  Every class writes into the one
+        ``costs`` map the store already ranks by, so a span reached by a
+        contrastive edge and a span reached through a hub are compared by the
+        same number, and ``depths`` keeps meaning hop count.  Where two classes
+        reach the same concept, the shallower hop wins, then the cheaper, then
+        :data:`_LABEL_PRIORITY` — so the *winning* predicate is what provenance
+        names.
 
         ``seed_ids`` is which of the matched concepts may *start* a walk, and
         defaults to all of them.  It changes only the frontier: ``depths`` and
@@ -572,40 +687,114 @@ class EpubSearchService:
         ``concept_ids`` still contains every one of them, so a concept that
         cannot seed expansion is in no way less resolved than before and
         ``resolved_concepts`` is untouched.
+
+        ``max_depth`` bounds the deepest class rather than every class; a
+        caller that lowers it lowers all of them, and none is ever raised by it.
         """
         depths = {concept_id: 0 for concept_id in concept_ids}
         costs: dict[str, float] = {concept_id: 0.0 for concept_id in concept_ids}
         labels: dict[str, str] = {}
-        frontier = list(concept_ids if seed_ids is None else seed_ids)
-        for depth in range(1, max_depth + 1):
+        # The best expansion-derived claim on each concept, as
+        # ``(depth, cost, label rank)`` — compared as a tuple, so a shallower
+        # hop beats a cheaper one and the label order breaks the remaining tie.
+        claims: dict[str, tuple[int, float, int]] = {}
+        seeds = tuple(concept_ids if seed_ids is None else seed_ids)
+        for predicate_class in _PREDICATE_CLASSES:
+            self._walk_predicate_class(
+                predicate_class,
+                seeds,
+                depths=depths,
+                costs=costs,
+                labels=labels,
+                claims=claims,
+                max_depth=max_depth,
+            )
+        return _RelationExpansion(concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels)
+
+    def _walk_predicate_class(
+        self,
+        predicate_class: _PredicateClass,
+        seeds: Sequence[str],
+        *,
+        depths: dict[str, int],
+        costs: dict[str, float],
+        labels: dict[str, str],
+        claims: dict[str, tuple[int, float, int]],
+        max_depth: int,
+    ) -> None:
+        """Walk one class of predicate out of ``seeds``, recording what it reached.
+
+        ``visited`` is local to this call on purpose.  It is what keeps each
+        class's frontier its own: a concept another class already recorded is
+        still a legitimate discovery for this one, and — the direction that
+        matters — a concept *this* class reached is never handed to another
+        class as somewhere to walk on from.
+        """
+        depth_limit = min(predicate_class.max_depth, max_depth)
+        frontier = list(dict.fromkeys(seeds))
+        visited = set(frontier)
+        for depth in range(1, depth_limit + 1):
             if not frontier:
-                break
-            edges = self._source.list_concept_relation_neighbors(frontier, predicates=('HAS_PART',))
-            children: dict[str, set[str]] = {}
+                return
+            edges = self._source.list_concept_relation_neighbors(
+                frontier,
+                predicates=predicate_class.predicates,
+                direction=predicate_class.direction,
+            )
+            # ``(parent, predicate) -> neighbours``.  Fan-out is priced per
+            # predicate rather than per class, so a concept standing in two
+            # different associative relations is not charged as though it had
+            # fanned out twice through one of them.
+            hops: dict[tuple[str, str], set[str]] = {}
+            on_frontier = set(frontier)
             for edge in edges:
-                subject, target = edge.get('subject_concept_id'), edge.get('object_concept_id')
-                if isinstance(subject, str) and isinstance(target, str) and subject and target:
-                    children.setdefault(subject, set()).add(target)
-            step_costs: dict[str, float] = {}
-            for edge in edges:
-                subject, target = edge.get('subject_concept_id'), edge.get('object_concept_id')
-                if not isinstance(target, str) or not target:
+                subject = edge.get('subject_concept_id')
+                target = edge.get('object_concept_id')
+                # A repository that does not report the predicate has still
+                # been asked for one class of them, so where that class names a
+                # single predicate the answer is not in doubt.  Where it names
+                # four, it is, and the edge is dropped rather than labelled with
+                # a guess a reader would then be shown.
+                predicate = _optional_string(edge.get('predicate')) or (
+                    predicate_class.predicates[0] if len(predicate_class.predicates) == 1 else None
+                )
+                if not all(isinstance(value, str) and value for value in (subject, predicate, target)):
                     continue
-                fanout = len(children.get(subject, ())) if isinstance(subject, str) else 0
-                parent_cost = costs.get(subject, 0.0) if isinstance(subject, str) else 0.0
-                candidate = parent_cost + 1.0 + math.log2(max(fanout, 1))
-                if candidate < step_costs.get(target, math.inf):
-                    step_costs[target] = candidate
+                assert isinstance(subject, str) and isinstance(predicate, str) and isinstance(target, str)
+                if subject in on_frontier:
+                    hops.setdefault((subject, predicate), set()).add(target)
+                # A repository asked for one direction may still return the
+                # edge; which end is the neighbour is decided here, by what
+                # this walk asked about, and never by the row.
+                if predicate_class.direction in ('incoming', 'both') and target in on_frontier:
+                    hops.setdefault((target, predicate), set()).add(subject)
+            step: dict[str, tuple[float, str]] = {}
+            for (parent, predicate), neighbours in hops.items():
+                cost = costs.get(parent, 0.0) + predicate_class.base_cost + math.log2(len(neighbours))
+                label = f'relation:{predicate}'
+                for neighbour in neighbours:
+                    incumbent = step.get(neighbour)
+                    if incumbent is None or (cost, _label_rank(label)) < (incumbent[0], _label_rank(incumbent[1])):
+                        step[neighbour] = (cost, label)
             next_frontier: list[str] = []
-            for target, cost in step_costs.items():
-                if target not in depths:
+            for target, (cost, label) in step.items():
+                # A directly matched concept is not expansion-derived, whatever
+                # edge also happens to point at it: its depth stays 0, it keeps
+                # no label, and its cost is already the floor.
+                if depths.get(target) == 0:
+                    continue
+                claim = (depth, cost, _label_rank(label))
+                incumbent_claim = claims.get(target)
+                if incumbent_claim is None or claim < incumbent_claim:
+                    claims[target] = claim
                     depths[target] = depth
-                    labels[target] = _RELATION_HAS_PART
-                    next_frontier.append(target)
+                    labels[target] = label
                 if cost < costs.get(target, math.inf):
                     costs[target] = cost
+                if target not in visited:
+                    visited.add(target)
+                    next_frontier.append(target)
             frontier = next_frontier
-        return _RelationExpansion(concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels)
 
     def _expand_toc_child_concepts(
         self,
@@ -1306,6 +1495,16 @@ def _optional_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _label_rank(label: str) -> int:
+    """Where a provenance label sits in ``_LABEL_PRIORITY``.
+
+    An unknown label sorts last rather than raising: a repository is allowed to
+    hold a predicate this build has no policy for, and the honest answer is
+    "weakest known claim", not a failed search.
+    """
+    return _LABEL_RANK.get(label, len(_LABEL_PRIORITY))
+
+
 def _best_label(expansion: _RelationExpansion, concept_ids: Sequence[str], depth: int) -> str:
     """Which kind of edge explains a span reached at ``depth``.
 
@@ -1313,8 +1512,9 @@ def _best_label(expansion: _RelationExpansion, concept_ids: Sequence[str], depth
     span carrying both a one-hop concept and a two-hop one is described by the
     one-hop edge.  Among those, ``_LABEL_PRIORITY`` decides, and it is an
     explicit order rather than whatever ``sorted`` would do to the strings:
-    a semantic relation the model asserted outranks a structural TOC edge, and
-    that must stay true if either label is ever renamed.
+    containment outranks the weaker semantic predicates, every semantic
+    relation the model asserted outranks a structural TOC edge, and both must
+    stay true if any label is ever renamed.
     """
     candidates = {
         expansion.labels[concept_id]

@@ -185,6 +185,11 @@ class FakeSource:
         # Every ``list_concept_occurrences`` call, so a test can assert what
         # relevance the service declared as well as what came back.
         self.occurrence_calls: list[dict[str, object]] = []
+        # Every ``list_concept_relation_neighbors`` call, so a test can assert
+        # which predicates were walked, in which direction, and out of what —
+        # the last of which is how "depth 1 is a hard stop" is checked without
+        # inferring it from the concepts that came back.
+        self.relation_calls: list[dict[str, object]] = []
         # How often the vocabulary was actually re-read, so a test can tell a
         # reused matcher from a rebuilt one without timing anything.
         self.term_reads = 0
@@ -294,12 +299,24 @@ class FakeSource:
     def matched_concept_names(self, passage_id, concept_ids):
         return ['TCP'] if passage_id in {'p1', 'p2'} and 'tcp' in concept_ids else []
 
-    def list_concept_relation_neighbors(self, concept_ids, *, predicates=('HAS_PART',)):
-        return [
-            relation
-            for relation in self.relations
-            if relation['subject_concept_id'] in concept_ids and relation['predicate'] in predicates
-        ]
+    def list_concept_relation_neighbors(self, concept_ids, *, predicates=('HAS_PART',), direction='outgoing'):
+        """Mirror the store contract, including which end of an edge was asked about.
+
+        The row shape is the same for every direction — subject, predicate,
+        object as stored — because deciding which end is the *neighbour* is the
+        caller's job and not the repository's.  ``both`` returns the edge once
+        even when both of its ends were queried, since it is one edge.
+        """
+        self.relation_calls.append(
+            {'concept_ids': tuple(concept_ids), 'predicates': tuple(predicates), 'direction': direction}
+        )
+        matches = {
+            'outgoing': lambda relation: relation['subject_concept_id'] in concept_ids,
+            'incoming': lambda relation: relation['object_concept_id'] in concept_ids,
+            'both': lambda relation: relation['subject_concept_id'] in concept_ids
+            or relation['object_concept_id'] in concept_ids,
+        }[direction]
+        return [relation for relation in self.relations if matches(relation) and relation['predicate'] in predicates]
 
 
 class HubFakeSource(FakeSource):
