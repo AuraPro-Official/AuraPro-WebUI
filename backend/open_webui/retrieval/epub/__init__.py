@@ -1,9 +1,26 @@
 """Versioned EPUB data-domain interfaces and implementations."""
 
+from .overlay import (
+    OVERLAY_FORMAT_VERSION,
+    ConceptOverlay,
+    OverlayConcept,
+    OverlayError,
+    OverlayMention,
+    OverlayRelation,
+    OverlaySpan,
+    PassageFingerprint,
+    build_overlay,
+    normalize_concept_key,
+    overlay_sha256,
+    parse_overlay,
+    parse_overlay_json,
+    passage_fingerprint,
+)
 from .store import (
     DuplicateEpubError,
     EpubStore,
     IntegrityError,
+    OverlayRejected,
     SQLiteEpubStore,
     VersionCreation,
 )
@@ -60,7 +77,22 @@ from .retrieval_units import (
 )
 
 __all__ = [
+    "ConceptOverlay",
     "DuplicateEpubError",
+    "OVERLAY_FORMAT_VERSION",
+    "OverlayConcept",
+    "OverlayError",
+    "OverlayMention",
+    "OverlayRejected",
+    "OverlayRelation",
+    "OverlaySpan",
+    "PassageFingerprint",
+    "build_overlay",
+    "normalize_concept_key",
+    "overlay_sha256",
+    "parse_overlay",
+    "parse_overlay_json",
+    "passage_fingerprint",
     "AuraProEmbeddingAdapter",
     "AuraProRerankDocument",
     "AuraProRerankerAdapter",

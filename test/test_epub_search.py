@@ -41,6 +41,15 @@ def _hash(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
 
+def _contains(start, end, other_start, other_end) -> bool:
+    """Whether ``[start, end)`` covers ``[other_start, other_end)``; equal counts."""
+    if start is None or end is None:
+        return other_start is None or other_end is None
+    if other_start is None or other_end is None:
+        return False
+    return other_start >= start and other_end <= end
+
+
 class FakeSource:
     def __init__(self) -> None:
         self.passages = {
@@ -93,12 +102,54 @@ class FakeSource:
     def list_concept_terms(self):
         return self.terms
 
+    def _occurrence_spans(self, concept_ids):
+        """Mirror the store contract: one row per distinct surviving source span.
+
+        The graph channel enumerates distinct source spans, not mention rows,
+        so exact duplicates collapse and a span wholly inside another span of
+        the same passage is dropped in favour of its container.  The surviving
+        row carries every concept that anchored on it.  Count and page are both
+        derived from this one list, exactly as the SQL store derives them from
+        one shared predicate.
+        """
+        rows = [row for row in self.occurrences if row["concept_id"] in concept_ids]
+        spans = []
+        for passage_id, start, end in dict.fromkeys(
+            (row["passage_id"], row["start_codepoint"], row["end_codepoint"]) for row in rows
+        ):
+            contained_by_another = any(
+                other["passage_id"] == passage_id
+                and other["start_codepoint"] is not None
+                and start is not None
+                and other["start_codepoint"] <= start
+                and other["end_codepoint"] >= end
+                and (other["start_codepoint"] < start or other["end_codepoint"] > end)
+                for other in rows
+            )
+            if contained_by_another:
+                continue
+            attributed = [
+                row
+                for row in rows
+                if row["passage_id"] == passage_id
+                and _contains(start, end, row["start_codepoint"], row["end_codepoint"])
+            ]
+            spans.append(
+                {
+                    **self.passages[passage_id],
+                    "start_codepoint": start,
+                    "end_codepoint": end,
+                    "concept_ids": tuple(sorted({row["concept_id"] for row in attributed})),
+                    "canonical_names": tuple(sorted({row["canonical_name"] for row in attributed})),
+                }
+            )
+        return spans
+
     def count_concept_occurrences(self, concept_ids):
-        return sum(row["concept_id"] in concept_ids for row in self.occurrences)
+        return len(self._occurrence_spans(concept_ids))
 
     def list_concept_occurrences(self, concept_ids, *, offset, limit):
-        rows = [row for row in self.occurrences if row["concept_id"] in concept_ids]
-        return rows[offset : offset + limit]
+        return self._occurrence_spans(concept_ids)[offset : offset + limit]
 
     def get_search_passage(self, passage_id):
         return self.passages.get(passage_id)
@@ -228,7 +279,9 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(matcher.match("TCPIP"), ())
         self.assertEqual([term.concept_id for term in matcher.match("中文检索词")], ["search"])
 
-    def test_graph_channel_is_exhaustive_paginated_and_never_returns_only_excerpt(self) -> None:
+    def test_graph_channel_is_exhaustive_over_distinct_spans_and_never_returns_only_excerpt(self) -> None:
+        # Exhaustive, but over distinct source spans rather than mention rows:
+        # ``graph_total`` counts the spans this query can page through.
         source = FakeSource()
         response = EpubSearchService(source=source).search("TCP", graph_offset=1, graph_limit=1)
 
@@ -264,6 +317,29 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual([hit.passage_id for hit in response.graph_results], ["p1", "p3"])
         self.assertEqual(response.graph_results[0].provenance, ("graph",))
         self.assertEqual(response.graph_results[1].provenance, ("graph", "relation:HAS_PART:1"))
+
+    def test_one_source_span_shared_by_two_concepts_is_one_hit_naming_both(self) -> None:
+        """The graph channel returns a piece of source once, not once per concept.
+
+        ``TCP`` and ``父主题`` are both anchored on p1[0:3].  That is one
+        distinct source span, so it is one hit carrying both names — and it is
+        counted once.  Relation-derived spans keep their own provenance.
+        """
+        source = FakeSource()
+        response = EpubSearchService(source=source).search("TCP 父主题", graph_limit=10)
+
+        self.assertEqual(response.resolved_concepts, ("TCP", "父主题"))
+        self.assertEqual(response.graph_total, 4)
+        self.assertEqual(len(response.graph_results), 4)
+        self.assertEqual(
+            [hit.passage_id for hit in response.graph_results], ["p1", "p2", "p2", "p3"]
+        )
+        shared = response.graph_results[0]
+        self.assertEqual(shared.matched_concepts, ("TCP", "父主题"))
+        self.assertEqual(shared.excerpt.content, "TCP")
+        self.assertEqual(shared.provenance, ("graph",))
+        self.assertEqual(response.graph_results[3].matched_concepts, ("子主题",))
+        self.assertEqual(response.graph_results[3].provenance, ("graph", "relation:HAS_PART:1"))
 
     def test_vector_candidates_are_cross_encoder_reranked_then_mmr_diversified(self) -> None:
         source = FakeSource()
