@@ -588,7 +588,12 @@ class SQLiteBatchRepository:
             if unknown:
                 raise BatchServiceError("every Batch item must belong to the job's ready book version")
             if provider == "openai-batch" and not is_sample:
-                self._require_approved_sample(connection, version_id=version_id, job_kind=job_kind)
+                self._require_approved_sample(
+                    connection,
+                    version_id=version_id,
+                    job_kind=job_kind,
+                    profile_name=profile_name,
+                )
             connection.execute(
                 """INSERT INTO batch_jobs(batch_job_id, version_id, provider, profile_name, job_kind, is_sample)
                    VALUES (?, ?, ?, ?, ?, ?)""",
@@ -604,13 +609,16 @@ class SQLiteBatchRepository:
         return job_id
 
     @staticmethod
-    def _require_approved_sample(connection: Any, *, version_id: str, job_kind: str) -> None:
+    def _require_approved_sample(
+        connection: Any, *, version_id: str, job_kind: str, profile_name: str
+    ) -> None:
         """Keep the cloud quality gate inside the durable creation transaction.
 
         An OpenAI Batch can reach the provider's successful terminal state
         while an individual item fails schema validation or ingestion.  A full
         job is therefore permitted only after an administrator approves a
-        sample whose every item was durably ingested.
+        sample with the same pinned model profile whose every item was durably
+        ingested.
         """
         approved = connection.execute(
             """SELECT review.sample_batch_job_id
@@ -620,6 +628,7 @@ class SQLiteBatchRepository:
                   AND review.job_kind = ?
                   AND review.status = 'APPROVED'
                   AND job.provider = 'openai-batch'
+                  AND job.profile_name = ?
                   AND job.is_sample = 1
                   AND job.status = 'SUCCEEDED'
                   AND EXISTS (
@@ -633,12 +642,13 @@ class SQLiteBatchRepository:
                   )
                 ORDER BY review.reviewed_at DESC, review.sample_batch_job_id DESC
                 LIMIT 1""",
-            (version_id, job_kind),
+            (version_id, job_kind, profile_name),
         ).fetchone()
         if approved is None:
             raise BatchServiceError(
                 "creating a full OpenAI EPUB Batch requires an administrator-approved sample "
-                "for the same version and job kind; the sample must be SUCCEEDED with every item ingested"
+                "for the same version and job kind, with the same model profile; "
+                "the sample must be SUCCEEDED with every item ingested"
             )
 
     def get_job(self, batch_job_id: str) -> dict[str, Any]:

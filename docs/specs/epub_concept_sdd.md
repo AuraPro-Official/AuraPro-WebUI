@@ -222,14 +222,14 @@ is reviewed may a full-version Batch be created.
 The server enforces this cloud quality gate durably, rather than relying on the
 administrator UI: a full `openai-batch` job may be created only when an
 administrator has approved an OpenAI **sample** for the same immutable
-`version_id` and `job_kind` (`CONCEPT_MENTIONS` or `SECTION_GRAPH`). A sample is
-eligible for review only after its durable job state is `SUCCEEDED`, it contains
-at least one item, and every item has reached `SUCCEEDED` after strict atomic
-ingest. The approval audit record contains only version ID, job kind, sample
-job ID, reviewer identity, decision, and review time—never source text, prompt,
-model output, provider response, or credentials. An approval for one job kind
-cannot unlock the other. Only an administrator may list or approve/reject these
-sample reviews.
+`version_id`, `job_kind` (`CONCEPT_MENTIONS` or `SECTION_GRAPH`), and exact
+model `profile_name`/snapshot. A sample is eligible for review only after its
+durable job state is `SUCCEEDED`, it contains at least one item, and every item
+has reached `SUCCEEDED` after strict atomic ingest. The approval audit record
+contains only version ID, job kind, sample job ID, reviewer identity, decision,
+and review time—never source text, prompt, model output, provider response, or
+credentials. An approval for one job kind or model profile cannot unlock
+another. Only an administrator may list or approve/reject these sample reviews.
 
 ### 4.2.2 Concept-relation graph (required first-release capability)
 
