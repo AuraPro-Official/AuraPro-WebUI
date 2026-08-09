@@ -310,6 +310,215 @@ class HubFakeSource(FakeSource):
         )
 
 
+class GenericTermFakeSource(FakeSource):
+    """One concept reachable by two very different surface forms.
+
+    ``独一无二的神`` is what the book is about: 175 mentions and 20 grounded
+    ``HAS_PART`` children.  It is reachable by its full canonical name and by
+    the one-character alias ``神`` a model proposed.  The whole resolution guard
+    is the claim that those two matches are not the same event — naming it in
+    full is a request for it, while a stray 神 inside some other question is
+    not — so the fixture exists to make a single concept answer both ways.
+
+    ``洪水灭世`` is the ordinary case: a four-character name on a two-mention
+    concept with one child, which has always expanded and must keep expanding.
+
+    The specificity columns are supplied exactly as the SQLite store supplies
+    them.  :class:`FakeSource` deliberately supplies none of them, which is how
+    the tests keep proving that a repository answering the older three-column
+    shape still expands exactly as it did.
+    """
+
+    HUB = "神所作的事无人能测透，人只能从中认识神。"
+    HUB_CHILD = "神的公义性情是人无法测透的。"
+    FLOOD = "神要用洪水灭世，嘱咐挪亚造方舟。"
+    ARK = "方舟造成之后，各样活物都进去了。"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.passages = {
+            "hub": self._passage("hub", "第一章", self.HUB),
+            "righteousness": self._passage("righteousness", "第九章", self.HUB_CHILD),
+            "flood": self._passage("flood", "第四章", self.FLOOD),
+            "ark": self._passage("ark", "第四章", self.ARK),
+        }
+        self.terms = [
+            {"concept_id": "hub", "canonical_name": "独一无二的神", "term": "独一无二的神",
+             "term_source": "MODEL", "mention_count": 175, "has_part_fanout": 20},
+            {"concept_id": "hub", "canonical_name": "独一无二的神", "term": "神",
+             "term_source": "MODEL", "mention_count": 175, "has_part_fanout": 20},
+            {"concept_id": "flood", "canonical_name": "洪水灭世", "term": "洪水灭世",
+             "term_source": "MODEL", "mention_count": 2, "has_part_fanout": 1},
+        ]
+        self.occurrences = [
+            {**self.passages["hub"], "concept_id": "hub", "canonical_name": "独一无二的神",
+             "start_codepoint": 0, "end_codepoint": 6},
+            {**self.passages["righteousness"], "concept_id": "righteousness",
+             "canonical_name": "神的公义性情", "start_codepoint": 0, "end_codepoint": 6},
+            {**self.passages["flood"], "concept_id": "flood", "canonical_name": "洪水灭世",
+             "start_codepoint": 0, "end_codepoint": 8},
+            {**self.passages["ark"], "concept_id": "ark_animals", "canonical_name": "各样活物",
+             "start_codepoint": 0, "end_codepoint": 6},
+        ]
+        self.relations = [
+            {"subject_concept_id": "hub", "predicate": "HAS_PART",
+             "object_concept_id": "righteousness"},
+            {"subject_concept_id": "flood", "predicate": "HAS_PART",
+             "object_concept_id": "ark_animals"},
+        ]
+        self.units = {}
+
+    def matched_concept_names(self, passage_id, concept_ids):
+        return sorted(
+            {
+                row["canonical_name"]
+                for row in self.occurrences
+                if row["passage_id"] == passage_id and row["concept_id"] in concept_ids
+            }
+        )
+
+
+class TocFakeSource(FakeSource):
+    """The acceptance book's TOC shape, reduced to the four rules that bind it.
+
+    ``人一生所必经的六个关口`` is a real node in the parsed ``toc_nodes`` with
+    the six 关口 as its children, while the concept ``六个关口`` is a
+    one-mention island with no relation of any predicate.  Before TOC
+    expansion, the query that names it returned exactly one span — the heading
+    — and the sections that answer it were unreachable.
+
+    Everything else in this fixture exists to be *refused*:
+
+    * ``方舟`` was decomposed by the model, so its TOC children must stay out of
+      the way entirely — ``方舟的木料`` sits in its child node and must never
+      appear.
+    * ``贯穿的话`` is mentioned inside a 关口 section *and* somewhere else, so it
+      is bound to neither and is admitted from neither.
+    * ``众人的结局`` binds to a node whose children hold more concepts than the
+      budget allows, so its expansion is skipped whole rather than cut short.
+
+    The specificity columns are supplied here exactly as the SQLite store
+    supplies them.  :class:`FakeSource` deliberately supplies none of them and
+    has no ``list_toc_child_concepts``, which is how the tests keep proving that
+    a repository answering the older shape still behaves as it did.
+    """
+
+    FILLERS = 65
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.passages = {
+            "gates": self._passage("gates", "人一生所必经的六个关口", "人一生所必经的六个关口"),
+            "birth": self._passage("birth", "第一关　人的出生", "一个人生在何处，生在什么家庭。"),
+            "growth": self._passage("growth", "第二关　人的成长", "一个人的成长背景决定很多事。"),
+            "ark": self._passage("ark", "方舟", "方舟造成之后，神吩咐挪亚。"),
+            "timber": self._passage("timber", "方舟的木料", "歌斐木是造方舟所用的木料。"),
+            "animals": self._passage("animals", "各样活物", "各样活物都进了方舟里面。"),
+            "elsewhere": self._passage("elsewhere", "另一章", "贯穿的话也出现在别处。"),
+            "crowd": self._passage("crowd", "众人的结局", "众人的结局各不相同。"),
+            "crowd_body": self._passage("crowd_body", "结局细目", "细目一二三四五六七八九十。"),
+        }
+        # concept -> the one TOC node every one of its mentions falls under.
+        # ``everywhere`` is absent because it is mentioned under two nodes,
+        # which is exactly what makes it unbound.
+        self.bindings = {
+            "gates": "n-gates",
+            "birth": "n-gate-one",
+            "growth": "n-gate-two",
+            "ark": "n-ark",
+            "timber": "n-timber",
+            "animals": "n-elsewhere",
+            "crowd": "n-crowd",
+            **{f"filler-{index}": "n-crowd-detail" for index in range(self.FILLERS)},
+        }
+        self.toc_children = {
+            "n-gates": ("n-gate-one", "n-gate-two"),
+            "n-ark": ("n-timber",),
+            "n-crowd": ("n-crowd-detail",),
+        }
+        self.terms = [
+            self._term("gates", "六个关口", "六个关口", mentions=1, fanout=0),
+            self._term("birth", "人的出生", "人的出生", mentions=1, fanout=0),
+            self._term("growth", "人的成长", "人的成长", mentions=1, fanout=0),
+            # Decomposed by the model: TOC structure must defer to that.
+            self._term("ark", "方舟", "方舟", mentions=2, fanout=1),
+            self._term("crowd", "众人的结局", "众人的结局", mentions=1, fanout=0),
+        ]
+        self.occurrences = [
+            self._occurrence("gates", "六个关口", "gates", 6, 10),
+            self._occurrence("birth", "人的出生", "birth", 0, 6),
+            self._occurrence("growth", "人的成长", "growth", 0, 6),
+            self._occurrence("ark", "方舟", "ark", 0, 2),
+            self._occurrence("timber", "方舟的木料", "timber", 0, 3),
+            self._occurrence("animals", "各样活物", "animals", 0, 4),
+            self._occurrence("everywhere", "贯穿的话", "birth", 7, 9),
+            self._occurrence("everywhere", "贯穿的话", "elsewhere", 0, 4),
+            self._occurrence("crowd", "众人的结局", "crowd", 0, 5),
+        ] + [
+            self._occurrence(f"filler-{index}", f"细目{index}", "crowd_body", index, index + 1)
+            for index in range(self.FILLERS)
+        ]
+        self.relations = [
+            {"subject_concept_id": "ark", "predicate": "HAS_PART", "object_concept_id": "animals"},
+        ]
+        self.units = {}
+
+    @staticmethod
+    def _term(concept_id: str, canonical: str, term: str, *, mentions: int, fanout: int) -> dict:
+        return {
+            "concept_id": concept_id,
+            "canonical_name": canonical,
+            "term": term,
+            "term_source": "MODEL",
+            "mention_count": mentions,
+            "has_part_fanout": fanout,
+        }
+
+    def _occurrence(
+        self, concept_id: str, canonical: str, passage_id: str, start: int, end: int
+    ) -> dict:
+        return {
+            **self.passages[passage_id],
+            "concept_id": concept_id,
+            "canonical_name": canonical,
+            "start_codepoint": start,
+            "end_codepoint": end,
+        }
+
+    def matched_concept_names(self, passage_id, concept_ids):
+        return sorted(
+            {
+                row["canonical_name"]
+                for row in self.occurrences
+                if row["passage_id"] == passage_id and row["concept_id"] in concept_ids
+            }
+        )
+
+    def list_toc_child_concepts(self, concept_ids):
+        """The store's join, written out: bind the seed, then bind each child.
+
+        Both directions use the same ``bindings`` table, which is the point of
+        the rule — a concept the book spreads across two nodes is neither a
+        seed nor a child, no matter which end of the join it is on.
+        """
+        rows = []
+        for concept_id in concept_ids:
+            node = self.bindings.get(concept_id)
+            if node is None:
+                continue
+            children = self.toc_children.get(node, ())
+            for other, other_node in sorted(self.bindings.items()):
+                if other != concept_id and other_node in children:
+                    rows.append(
+                        {
+                            "seed_concept_id": concept_id,
+                            "seed_toc_node_id": node,
+                            "concept_id": other,
+                        }
+                    )
+        return rows
+
+
 class FakeEmbeddings:
     profile = "private-embed-v1"
 
@@ -620,6 +829,189 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(shared.provenance, ("graph",))
         self.assertEqual(response.graph_results[3].matched_concepts, ("子主题",))
         self.assertEqual(response.graph_results[3].provenance, ("graph", "relation:HAS_PART:1"))
+
+    def test_toc_children_answer_a_concept_the_model_never_decomposed(self) -> None:
+        """The book's own hierarchy reaches sections no relation points at.
+
+        ``六个关口`` is a one-mention island: before this, the query that names
+        it returned the heading span and nothing else, because there is no
+        ``HAS_PART`` edge anywhere in the graph to walk out of it.  Its TOC node
+        has the sections that answer the question, and that hierarchy is
+        structural provenance the parser read out of the EPUB — no model
+        proposed it and none may revise it.
+
+        Three things are asserted together because they are one claim.  The
+        child sections are reached; they are labelled ``structure:TOC_CHILD``
+        and *not* ``relation:``, so a reader can tell a structural edge from a
+        semantic one at a glance; and ``resolved_concepts`` still names only
+        the concept the query actually contained, because a TOC child is
+        expansion-derived and was never a Tier-1 match.
+
+        ``贯穿的话`` is mentioned inside 第一关 but also elsewhere in the book,
+        so it binds to no node and is admitted from neither — that is what keeps
+        this channel from becoming a second hub.
+        """
+        source = TocFakeSource()
+        response = EpubSearchService(source=source).search("六个关口", graph_limit=10)
+
+        self.assertEqual(response.resolved_concepts, ("六个关口",))
+        self.assertEqual(response.graph_total, 3)
+        self.assertEqual(
+            [hit.passage_id for hit in response.graph_results], ["gates", "birth", "growth"]
+        )
+        self.assertEqual(response.graph_results[0].provenance, ("graph",))
+        self.assertEqual(
+            response.graph_results[1].provenance, ("graph", "structure:TOC_CHILD:1")
+        )
+        self.assertEqual(
+            response.graph_results[2].provenance, ("graph", "structure:TOC_CHILD:1")
+        )
+        self.assertNotIn("贯穿的话", {name for hit in response.graph_results for name in hit.matched_concepts})
+
+    def test_a_model_decomposed_concept_never_falls_back_to_toc_structure(self) -> None:
+        """Where the semantic graph exists it is authoritative; TOC is the fallback.
+
+        ``方舟`` has a grounded ``HAS_PART`` child, so the model answered the
+        "what are its parts?" question and this channel must not answer it
+        again.  Its TOC child node holds ``方舟的木料``, which is a perfectly
+        real concept and still must not appear: a structural edge competing
+        with a semantic one would make the two orderings disagree about what a
+        decomposition even is.
+        """
+        source = TocFakeSource()
+        response = EpubSearchService(source=source).search("方舟", graph_limit=10)
+
+        names = {name for hit in response.graph_results for name in hit.matched_concepts}
+        self.assertIn("各样活物", names)
+        self.assertNotIn("方舟的木料", names)
+        self.assertEqual(
+            [hit.provenance for hit in response.graph_results],
+            [("graph",), ("graph", "relation:HAS_PART:1")],
+        )
+
+    def test_seeding_follows_the_matched_term_and_not_the_concept(self) -> None:
+        """One concept, two surface forms, two different answers.
+
+        This is the whole rule, and both halves have to be pinned together or
+        it reads as an arbitrary threshold on a hub.
+
+        Naming ``独一无二的神`` in full **expands**.  It has 175 mentions and 20
+        children, and that is not a reason to refuse: how often a book discusses
+        something is a fact about the book, not about what the reader asked
+        for.  Someone who spells out the hub's name is asking for its subtree
+        and should get it.  An earlier version of this guard capped by mention
+        count and refused here, which also cut ``神的权柄`` — a specific topic
+        that a book about God simply mentions often — from 174 spans to 42.
+
+        A query where only the one-character alias ``神`` can match **does
+        not** expand.  The concept still resolves and still contributes its own
+        span; what it may not do is drag 20 children in behind an incidental
+        character the reader never meant as a topic.  That is the case that
+        produced a citation of ``神对亚当的嘱咐`` on a query about something
+        else.
+        """
+        service = EpubSearchService(source=GenericTermFakeSource())
+
+        named = service.search("独一无二的神", graph_limit=10)
+        self.assertEqual(named.resolved_concepts, ("独一无二的神",))
+        self.assertEqual(named.graph_total, 2)
+        self.assertEqual(
+            [hit.provenance for hit in named.graph_results],
+            [("graph",), ("graph", "relation:HAS_PART:1")],
+        )
+        self.assertIn(
+            "神的公义性情",
+            {name for hit in named.graph_results for name in hit.matched_concepts},
+        )
+
+        brushed = service.search("神", graph_limit=10)
+        # Same concept, same `resolved_concepts`: refusing to seed expansion is
+        # not refusing to resolve, and the concept's own span is still returned.
+        self.assertEqual(brushed.resolved_concepts, ("独一无二的神",))
+        self.assertEqual(brushed.graph_total, 1)
+        self.assertEqual(
+            {hit.provenance for hit in brushed.graph_results}, {("graph",)}
+        )
+        self.assertNotIn(
+            "神的公义性情",
+            {name for hit in brushed.graph_results for name in hit.matched_concepts},
+        )
+
+        # And the ordinary case is untouched throughout.
+        specific = service.search("洪水灭世", graph_limit=10)
+        self.assertEqual(specific.graph_total, 2)
+        self.assertEqual(
+            specific.graph_results[1].provenance, ("graph", "relation:HAS_PART:1")
+        )
+
+    def test_an_oversized_toc_node_is_skipped_whole_and_reported(self) -> None:
+        """A budget that truncated would leave ``graph_total`` unexplainable.
+
+        ``众人的结局`` binds to a node whose children hold more concepts than
+        the channel will accept.  Returning the first 64 of them would come back
+        as a smaller number with nothing anywhere saying which source had been
+        dropped, and paging to the end would simply stop early.  So the seed's
+        expansion is skipped entirely — the query behaves exactly as it did
+        before this channel existed — and the skip is reported as a degraded
+        component so the number has an explanation attached to it.
+        """
+        source = TocFakeSource()
+        response = EpubSearchService(source=source).search("众人的结局", graph_limit=100)
+
+        self.assertEqual(response.graph_total, 1)
+        self.assertEqual(response.graph_results[0].provenance, ("graph",))
+        skipped = [entry for entry in response.degraded if entry.component == "toc-child-expansion"]
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("65", str(skipped[0].reason))
+        self.assertIn("skipped whole", str(skipped[0].reason))
+
+    def test_a_toc_expanded_page_walk_still_ends_at_graph_total(self) -> None:
+        """Channel A's contract is unchanged by where the concept ids came from.
+
+        TOC expansion only lengthens the tuple handed to the occurrence
+        queries; it never touches passages, spans, or the predicate the count
+        and the pages share.  That is an argument, and this is the check that
+        the argument holds: walk the TOC-expanded set one span at a time and it
+        must visit each distinct source span exactly once and stop at
+        ``graph_total``.
+        """
+        source = TocFakeSource()
+        service = EpubSearchService(source=source)
+        total = service.search("六个关口", graph_limit=1).graph_total
+
+        walked = []
+        for offset in range(total):
+            page = service.search("六个关口", graph_offset=offset, graph_limit=1)
+            walked.extend(
+                (hit.passage_id, hit.excerpt.start_codepoint, hit.excerpt.end_codepoint)
+                for hit in page.graph_results
+            )
+
+        self.assertEqual(len(walked), total)
+        self.assertEqual(len(set(walked)), total)
+        self.assertEqual(
+            service.search("六个关口", graph_offset=total, graph_limit=1).graph_results, ()
+        )
+
+    def test_a_repository_without_specificity_columns_expands_exactly_as_before(self) -> None:
+        """The new guards read what is offered and invent nothing.
+
+        :class:`FakeSource` answers the three-column vocabulary and has no
+        ``list_toc_child_concepts`` at all, which is the shape a read model that
+        has not caught up would present.  It must keep today's behaviour rather
+        than raise or silently stop expanding: ``父主题`` still seeds, still
+        reaches its ``HAS_PART`` child, and the alias-source rule — which
+        nothing has declared — refuses nothing.
+        """
+        source = FakeSource()
+        service = EpubSearchService(source=source)
+
+        self.assertEqual(service._expansion_seed_ids(
+            service._concept_matcher().match_spans("父主题", boundaries=_boundaries("父主题"))
+        ), ("parent",))
+        response = service.search("父主题", graph_limit=10)
+        self.assertEqual(response.graph_total, 2)
+        self.assertEqual(response.graph_results[1].provenance, ("graph", "relation:HAS_PART:1"))
 
     def test_graph_pages_stay_exhaustive_once_the_channel_is_ranked(self) -> None:
         """Ranking reorders the result set; it must not change what is in it.
