@@ -367,7 +367,7 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         question are its TOC children.  The fixture reproduces exactly that,
         plus the two things the binding rule has to reject:
 
-        * ``贯穿全书的概念`` is mentioned inside a child section *and* in an
+        * ``贯穿全册的概念`` is mentioned inside a child section *and* in an
           unrelated chapter, so it is not bound to any single node and must not
           be admitted from either.
         * ``被否决的概念`` lives entirely inside a child section but is
@@ -415,7 +415,7 @@ class SQLiteEpubStoreTest(unittest.TestCase):
             'gates': self.store.upsert_concept('六道闸门'),
             'birth': self.store.upsert_concept('流量校准'),
             'growth': self.store.upsert_concept('基线复核'),
-            'everywhere': self.store.upsert_concept('贯穿全书的概念'),
+            'everywhere': self.store.upsert_concept('贯穿全册的概念'),
             'rejected': self.store.upsert_concept('被否决的概念', status='REJECTED'),
         }
         self.store.add_concept_mention(concepts['gates'], 'p-gates', start_codepoint=0, end_codepoint=2)
@@ -450,7 +450,7 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         ``流量校准`` is bound to a leaf node, so it has no children and returns
         nothing — it must *not* pick up its sibling ``基线复核``, which is the
         difference between a decomposition and an unbounded associative bag.
-        ``贯穿全书的概念`` is mentioned in two nodes, so it binds to neither and
+        ``贯穿全册的概念`` is mentioned in two nodes, so it binds to neither and
         cannot start a walk at all, however many children those nodes have.
         """
         concepts = self._toc_child_fixture()
@@ -1163,7 +1163,7 @@ class SQLiteEpubConceptSplitTest(unittest.TestCase):
     ``merge_concepts`` is one-way, and two merges have already had to be undone
     after review.  Restoring a backup and replaying stops working the moment a
     later job postdates the backup, which is why this exists.  The fixture is
-    the second of those two mistakes, committed for real: the teaching
+    the second of those two mistakes, committed for real: the procedure
     ``双轨校准法`` folded into ``《观测规程》2.4-2.11``, the document locator that
     merely names it.  Every test starts from that merged state.
 
@@ -1203,7 +1203,9 @@ class SQLiteEpubConceptSplitTest(unittest.TestCase):
                 },
             ],
         )
-        self.citation = self.store.upsert_concept('《观测规程》2.4-2.11', aliases=['规程2.4-2.11'], concept_id='citation')
+        self.citation = self.store.upsert_concept(
+            '《观测规程》2.4-2.11', aliases=['规程2.4-2.11'], concept_id='citation'
+        )
         self.procedure = self.store.upsert_concept('双轨校准法', aliases=['双轨对照'], concept_id='procedure')
         self.store.add_concept_mention(self.citation, 'p1', start_codepoint=7, end_codepoint=21)
         self.store.add_concept_mention(self.procedure, 'p1', start_codepoint=0, end_codepoint=5)

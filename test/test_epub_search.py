@@ -43,6 +43,57 @@ load_query_segmenter = SEGMENTATION.load_query_segmenter
 SEGMENTER, SEGMENTER_REASON = load_query_segmenter()
 
 
+# ---------------------------------------------------------------------------
+# Why the Chinese fixtures below look the way they do
+# ---------------------------------------------------------------------------
+#
+# The EPUB acceptance corpus is a copyrighted book, so none of its text,
+# headings or concept names appear in this repository.  Every Chinese fixture
+# here is invented: a fictional tidal-observation network built around a
+# scheduler (``全域潮汐枢纽``), its measurement stations, and a calibration
+# procedure.  It refers to no real book, person, organisation or place.
+#
+# The substitution is structural, not decorative.  Each fixture reproduces one
+# property of the real corpus that a test depends on, and changing a name
+# without preserving that property silently stops the test from testing
+# anything:
+#
+#   * ``全域潮汐枢纽`` + the one-code-point alias ``枢`` — a hub with 20
+#     grounded ``HAS_PART`` children reachable by a single character.  This is
+#     the case the resolution-stage expansion guard exists for: naming the hub
+#     in full expands to its subtree, brushing it with the alias does not.
+#   * ``枢纽的基准线`` — a grounded child of that hub carrying the *longest*
+#     span in the fixture, so relation cost has to beat both book order and
+#     span length rather than agreeing with them.
+#   * ``汛期观测`` / ``汛情`` / ``主汛情`` — a two-code-point name strictly
+#     inside a four-code-point one (longest-match suppression), plus two terms
+#     matching identical characters, which are *not* in a containment relation
+#     and must both survive.
+#   * ``锚站`` → ``浮标阵列`` — a model-decomposed concept with exactly one
+#     child, so one hop costs a plain hop against ``1 + log2(20)`` out of the
+#     hub.  ``锚站的缆索`` sits in its TOC child and must never surface.
+#   * ``枢对锚站的校验`` — a seven-code-point phrase that spans several jieba
+#     tokens and that no segmenter emits as one token, which is why only the
+#     query is segmented and never the terms.
+#   * ``律`` inside ``规律`` — a one-code-point concept name landing inside a
+#     common two-code-point word: rejected with a segmenter, admitted without
+#     one.  Both halves are pinned, so the degraded path cannot rot unnoticed.
+#   * ``锚`` inside ``枢对锚站的校验`` — a one-code-point alias suppressed by
+#     containment whether or not boundaries are available.
+#   * ``观测网所必经的六道闸门`` — a TOC parent with six leaf children, whose
+#     concept ``六道闸门`` is a one-mention island with no relation of any
+#     predicate, so only TOC structure can reach the sections that answer it.
+#   * ``巡检记录`` — mentioned under two TOC nodes, therefore bound to neither
+#     and admitted from neither; the rule that stops the TOC channel becoming
+#     a second hub.
+#   * ``全网的结算`` plus 65 fillers — an over-budget TOC node whose expansion
+#     is skipped whole and reported degraded, never truncated.
+#
+# Counts that appear in prose below (``174 spans``, ``778``, ``851``, ``20``
+# children) are real measurements against the real store.  The names they are
+# attached to are not.
+
+
 def _boundaries(text: str):
     """Real segmentation for ``text``, so the tests pin the shipped tokenizer.
 
@@ -252,9 +303,10 @@ class FakeSource:
 
 
 class HubFakeSource(FakeSource):
-    """The acceptance book's shape, reduced to what ranking has to get right.
+    """The acceptance corpus's shape, reduced to what ranking has to get right.
 
-    Three things about that book matter here.  It opens with front matter, so
+    Names are invented (see the substitution note at the top of this module);
+    the shape is the real one.  Three things about that corpus matter here.  It opens with front matter, so
     the earliest span in the book is a bare `枢` in a preface sentence about
     nothing.  `全域潮汐枢纽` legitimately has 20 grounded `HAS_PART` children,
     so expanding through it drags in spans that have no particular connection
@@ -475,7 +527,7 @@ class GenericTermFakeSource(FakeSource):
 
 
 class TocFakeSource(FakeSource):
-    """The acceptance book's TOC shape, reduced to the four rules that bind it.
+    """The acceptance corpus's TOC shape, reduced to the four rules that bind it.
 
     ``观测网所必经的六道闸门`` is a real node in the parsed ``toc_nodes`` with
     the six 关口 as its children, while the concept ``六道闸门`` is a
@@ -541,13 +593,13 @@ class TocFakeSource(FakeSource):
             self._term('crowd', '全网的结算', '全网的结算', mentions=1, fanout=0),
         ]
         self.occurrences = [
-            self._occurrence('gates', '六道闸门', 'gates', 6, 10),
-            self._occurrence('birth', '流量校准', 'birth', 0, 6),
-            self._occurrence('growth', '基线复核', 'growth', 0, 6),
+            self._occurrence('gates', '六道闸门', 'gates', 7, 11),
+            self._occurrence('birth', '流量校准', 'birth', 0, 4),
+            self._occurrence('growth', '基线复核', 'growth', 0, 4),
             self._occurrence('ark', '锚站', 'ark', 0, 2),
             self._occurrence('timber', '锚站的缆索', 'timber', 0, 3),
             self._occurrence('animals', '浮标阵列', 'animals', 0, 4),
-            self._occurrence('everywhere', '巡检记录', 'birth', 7, 9),
+            self._occurrence('everywhere', '巡检记录', 'birth', 8, 12),
             self._occurrence('everywhere', '巡检记录', 'elsewhere', 0, 4),
             self._occurrence('crowd', '全网的结算', 'crowd', 0, 5),
         ] + [
@@ -747,8 +799,8 @@ class EpubSearchTest(unittest.TestCase):
         job = '枢对锚站的校验的规律'
         trial = ConceptTermMatcher(
             [
-                ConceptTerm('meaning', '规律', '律'),
-                ConceptTerm('covenant', '枢与站点约定', '锚'),
+                ConceptTerm('regularity', '规律', '律'),
+                ConceptTerm('agreement', '枢与站点约定', '锚'),
                 ConceptTerm('the hub', '全域潮汐枢纽', '枢'),
                 ConceptTerm('job', '枢对锚站的校验', '枢对锚站的校验'),
             ]
@@ -766,7 +818,7 @@ class EpubSearchTest(unittest.TestCase):
         # a missing tokenizer.
         self.assertEqual(
             sorted(term.concept_id for term in trial.match(job)),
-            ['job', 'meaning'],
+            ['job', 'regularity'],
         )
 
     @unittest.skipIf(SEGMENTER is None, f'local query segmenter unavailable: {SEGMENTER_REASON}')
@@ -985,7 +1037,7 @@ class EpubSearchTest(unittest.TestCase):
         for.  Someone who spells out the hub's name is asking for its subtree
         and should get it.  An earlier version of this guard capped by mention
         count and refused here, which also cut ``枢纽的权重`` — a specific topic
-        that a acceptance corpus simply mentions often — from 174 spans to 42.
+        that the acceptance book simply mentions often — from 174 spans to 42.
 
         A query where only the one-character alias ``枢`` can match **does
         not** expand.  The concept still resolves and still contributes its own
@@ -1168,7 +1220,7 @@ class EpubSearchTest(unittest.TestCase):
 
         first = response.graph_results[0]
         self.assertEqual(first.passage_id, 'flood')
-        self.assertEqual(first.matched_concepts, ('汛期观测', '全域潮汐枢纽'))
+        self.assertEqual(first.matched_concepts, ('全域潮汐枢纽', '汛期观测'))
         self.assertEqual(first.excerpt.content, '枢在汛期观测，通知值守员建锚站')
         self.assertEqual(first.content, HubFakeSource.FLOOD)
         # Ranking demoted the preface span; it did not remove it.  It is still
