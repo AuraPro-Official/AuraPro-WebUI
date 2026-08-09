@@ -15,6 +15,7 @@
 	import { toast } from 'svelte-sonner';
 	import { deleteChatMessageById, getChatList, updateChatById } from '$lib/apis/chats';
 	import { copyToClipboard, extractCurlyBraceWords } from '$lib/utils';
+	import { scheduleFrameWithFallback } from '$lib/utils/render-scheduler';
 
 	import Message from './Messages/Message.svelte';
 	import Loader from '../common/Loader.svelte';
@@ -34,7 +35,7 @@
 	export let selectedModels;
 	export let atSelectedModel;
 
-	let messages = [];
+	let messages: any[] = [];
 
 	export let setInputText: Function = () => {};
 
@@ -61,25 +62,25 @@
 	let messagesLoading = false;
 
 	onDestroy(() => {
-		cancelAnimationFrame(pendingRebuild);
+		pendingRebuildCancel?.();
 	});
 
 	const loadMoreMessages = async () => {
-		// scroll slightly down to disable continuous loading
+		// Scroll slightly down to disable continuous loading.
 		const element = document.getElementById('messages-container');
-		element.scrollTop = element.scrollTop + 100;
+		if (element) element.scrollTop += 100;
 
 		messagesLoading = true;
-		messagesCount += 8;
-
-		buildMessages();
-
-		await tick();
-
-		messagesLoading = false;
+		try {
+			messagesCount += 8;
+			buildMessages();
+			await tick();
+		} finally {
+			messagesLoading = false;
+		}
 	};
 
-	let pendingRebuild = null;
+	let pendingRebuildCancel: (() => void) | null = null;
 	let lastCurrentId = null;
 
 	const buildMessages = () => {
@@ -115,14 +116,15 @@
 
 		if (currentIdChanged) {
 			// Structural change: new chat, navigation, new message — rebuild immediately
-			cancelAnimationFrame(pendingRebuild);
-			pendingRebuild = null;
+			pendingRebuildCancel?.();
+			pendingRebuildCancel = null;
 			buildMessages();
 		} else if (_messages) {
-			// Content update (streaming) — throttle to once per frame
-			if (!pendingRebuild) {
-				pendingRebuild = requestAnimationFrame(() => {
-					pendingRebuild = null;
+			// Use the next frame when available, with a fallback for Electron
+			// webviews that occasionally pause animation-frame callbacks.
+			if (!pendingRebuildCancel) {
+				pendingRebuildCancel = scheduleFrameWithFallback(() => {
+					pendingRebuildCancel = null;
 					buildMessages();
 				});
 			}
@@ -508,7 +510,7 @@
 			{#key chatId}
 				<section class="w-full" aria-labelledby="chat-conversation">
 					<h2 class="sr-only" id="chat-conversation">{$i18n.t('Chat Conversation')}</h2>
-					{#if messages.at(0)?.parentId !== null}
+					{#if messages.at(0)?.parentId && (history as any).messages?.[messages.at(0)?.parentId]}
 						<Loader
 							on:visible={(e) => {
 								console.log('visible');

@@ -75,6 +75,12 @@
 		displayFileHandler
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
+	import {
+		hasPendingCurrentAssistantResponses,
+		isChatEventForCurrentConversation,
+		isInactiveEventForQueueRun,
+		waitForSocketSession
+	} from '$lib/utils/chat-stream';
 	import { applyDesktopShortcutAction } from '$lib/utils/extension-modes';
 	import { getOutputText } from './Messages/structuredOutput';
 
@@ -243,6 +249,10 @@
 	};
 
 	let taskIds = null;
+	let pendingSubmissionChats = new Set<string>();
+	let pendingChatReconcileTimer: number | null = null;
+	let pendingChatReconcileInFlight = false;
+	const PENDING_CHAT_RECONCILE_INTERVAL_MS = 4000;
 
 	// Chat Input
 	let prompt = '';
@@ -683,14 +693,39 @@
 	const chatEventHandler = async (event, cb) => {
 		console.log(event);
 
-		if (event.chat_id === $chatId) {
+		if (
+			isChatEventForCurrentConversation(event.chat_id, $chatId, event.message_id, history.messages)
+		) {
 			await tick();
+			const type = event?.data?.type ?? null;
+			const data = event?.data?.data ?? null;
+
+			// chat:active is chat-scoped and may arrive before a local message placeholder exists.
+			if (type === 'chat:active') {
+				if (!data?.active) {
+					const queueRun = processingQueueChats.get(event.chat_id);
+
+					// A delayed inactive event from the previous request must not release
+					// the queue run that has already started after it.
+					if (
+						queueRun &&
+						!isInactiveEventForQueueRun(queueRun.responseMessageIds, event.message_id)
+					) {
+						return;
+					}
+
+					taskIds = null;
+					if (hasPendingAssistantLeaf()) {
+						await loadChat(event.chat_id);
+					}
+
+					await releaseQueueRun(event.chat_id, event.message_id);
+				}
+				return;
+			}
 			let message = history.messages[event.message_id];
 
 			if (message) {
-				const type = event?.data?.type ?? null;
-				const data = event?.data?.data ?? null;
-
 				if (type === 'status') {
 					if (message?.statusHistory) {
 						message.statusHistory.push(data);
@@ -699,15 +734,8 @@
 					}
 				} else if (type === 'context_compaction') {
 					handleContextCompactionStatus(data);
-				} else if (type === 'chat:active') {
-					if (!data?.active) {
-						taskIds = null;
-						if (chatIdProp && !$temporaryChatEnabled && hasPendingAssistantLeaf()) {
-							await loadChat();
-						}
-					}
 				} else if (type === 'chat:completion') {
-					chatCompletionEventHandler(data, message, event.chat_id);
+					await chatCompletionEventHandler(data, message, event.chat_id);
 				} else if (type === 'chat:tasks:cancel') {
 					dismissContextCompactionToast();
 					if (event.message_id === history.currentId) {
@@ -716,9 +744,10 @@
 						for (const messageId of history.messages[message.parentId].childrenIds) {
 							history.messages[messageId].done = true;
 						}
-						await processNextInQueue($chatId);
+						window.setTimeout(() => void reconcilePendingChat(), 250);
 					} else {
 						message.done = true;
+						window.setTimeout(() => void reconcilePendingChat(), 250);
 					}
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					message.content += data.content;
@@ -741,6 +770,8 @@
 					}, 100);
 				} else if (type === 'chat:message:error') {
 					message.error = data.error;
+					message.done = true;
+					window.setTimeout(() => void reconcilePendingChat(), 250);
 				} else if (type === 'chat:message:follow_ups') {
 					message.followUps = data.follow_ups;
 
@@ -762,7 +793,7 @@
 							}
 						}
 					}
-					history = history;
+					history = { ...history };
 					return; // Patches history.messages directly; skip the trailing write-back.
 				} else if (type === 'chat:message:favorite') {
 					// Update message favorite status
@@ -802,7 +833,7 @@
 					}
 				} else if (type === 'notification') {
 					const toastType = data?.type ?? 'info';
-					const toastContent = data?.content ?? '';
+					const toastContent = data?.key ? $i18n.t(data.key) : (data?.content ?? '');
 
 					if (toastType === 'success') {
 						toast.success(toastContent);
@@ -844,7 +875,17 @@
 					console.log('Unknown message type', data);
 				}
 
-				history.messages[event.message_id] = message;
+				history.messages[event.message_id] = { ...message };
+				// Give Svelte fresh references for each streamed delta without cloning
+				// the complete message map or chat history.
+				history = { ...history };
+			} else if (
+				type === 'chat:completion' ||
+				type === 'chat:message:error' ||
+				type === 'chat:tasks:cancel'
+			) {
+				// A terminal event can race the placeholder or arrive after a reconnect.
+				await reconcilePendingChat();
 			}
 		} else {
 			// Non-active chat completion: queue stays in the global store.
@@ -961,40 +1002,84 @@
 		} catch {}
 	};
 
-	const hasPendingAssistantLeaf = () =>
-		Object.values(history.messages).some(
-			(message) =>
-				message?.role === 'assistant' && !message.done && (message.childrenIds?.length ?? 0) === 0
-		);
+	const hasPendingAssistantLeaf = () => hasPendingCurrentAssistantResponses(history);
+
+	const reconcilePendingChat = async () => {
+		const activeChatId = $chatId;
+		const expectedQueueRun = processingQueueChats.get(activeChatId);
+		const hasQueuedWork =
+			Boolean(expectedQueueRun) || ($chatRequestQueues[activeChatId]?.length ?? 0) > 0;
+
+		if (
+			pendingChatReconcileInFlight ||
+			loading ||
+			!activeChatId ||
+			$temporaryChatEnabled ||
+			pendingSubmissionChats.has(activeChatId) ||
+			(!hasPendingAssistantLeaf() && !hasQueuedWork)
+		) {
+			return;
+		}
+
+		pendingChatReconcileInFlight = true;
+
+		try {
+			const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, activeChatId)
+				.then((res) => res?.task_ids ?? [])
+				.catch(() => null);
+
+			if (pendingTaskIds === null || pendingTaskIds.length > 0) {
+				return;
+			}
+
+			if ($chatId !== activeChatId) {
+				return;
+			}
+
+			if (hasPendingAssistantLeaf()) {
+				await loadChat(activeChatId);
+			}
+
+			if ($chatId === activeChatId) {
+				if (expectedQueueRun) {
+					if (processingQueueChats.get(activeChatId) !== expectedQueueRun) return;
+
+					await releaseQueueRun(activeChatId, null, true);
+				} else {
+					await processNextInQueue(activeChatId);
+				}
+			}
+		} finally {
+			pendingChatReconcileInFlight = false;
+		}
+	};
+
+	const handleVisibilityChange = () => {
+		if (document.visibilityState === 'visible') {
+			void reconcilePendingChat();
+		}
+	};
+
+	const handleWindowFocus = () => {
+		void reconcilePendingChat();
+	};
 
 	const handleSocketConnect = async () => {
-		if (!chatIdProp || $temporaryChatEnabled) {
-			return;
-		}
-
-		if (!hasPendingAssistantLeaf()) {
-			return;
-		}
-
-		const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, $chatId)
-			.then((res) => res?.task_ids ?? [])
-			.catch(() => null);
-
-		if (pendingTaskIds?.length === 0) {
-			await loadChat();
-
-			// 重连后确认任务已结束（无论成功失败），释放可能残留的锁并推进队列
-			processingQueueChats.delete($chatId);
-			await processNextInQueue($chatId);
-		}
+		await reconcilePendingChat();
 	};
 
 	onMount(() => {
 		loading = true;
 		console.log('mounted');
 		window.addEventListener('message', onMessageHandler);
+		window.addEventListener('focus', handleWindowFocus);
+		document.addEventListener('visibilitychange', handleVisibilityChange);
 		$socket?.on('events', chatEventHandler);
 		$socket?.on('connect', handleSocketConnect);
+		pendingChatReconcileTimer = window.setInterval(
+			() => void reconcilePendingChat(),
+			PENDING_CHAT_RECONCILE_INTERVAL_MS
+		);
 
 		$audioQueue?.destroy();
 
@@ -1113,6 +1198,12 @@
 				showControlsSubscribe();
 				selectedFolderSubscribe();
 				window.removeEventListener('message', onMessageHandler);
+				window.removeEventListener('focus', handleWindowFocus);
+				document.removeEventListener('visibilitychange', handleVisibilityChange);
+				if (pendingChatReconcileTimer !== null) {
+					window.clearInterval(pendingChatReconcileTimer);
+					pendingChatReconcileTimer = null;
+				}
 				$socket?.off('events', chatEventHandler);
 				$socket?.off('connect', handleSocketConnect);
 				dismissContextCompactionToast();
@@ -1648,8 +1739,8 @@
 		setTimeout(() => chatInput?.focus(), 0);
 	};
 
-	const loadChat = async () => {
-		chatId.set(chatIdProp);
+	const loadChat = async (targetChatId = chatIdProp) => {
+		chatId.set(targetChatId);
 
 		if ($temporaryChatEnabled) {
 			temporaryChatEnabled.set(false);
@@ -1733,19 +1824,20 @@
 				const pendingTaskIds = await getTaskIdsByChatId(localStorage.token, $chatId)
 					.then((res) => res?.task_ids ?? [])
 					.catch(() => []);
-				if (taskIds !== activeTaskIds) {
-					return;
-				}
 				const currentMessage = history.currentId ? history.messages[history.currentId] : null;
 				const responseComplete = currentMessage?.role === 'assistant' && currentMessage?.done;
 
-				if (pendingTaskIds.length > 0 && !responseComplete) {
-					taskIds = pendingTaskIds;
-				} else {
-					taskIds = null;
-					// No active tasks and message incomplete → generation was interrupted
-					if (currentMessage?.role === 'assistant' && !currentMessage.done) {
-						currentMessage.done = true;
+				// Socket events may update taskIds while this request is in flight. Keep
+				// the newer value, but never abort the chat load and leave the UI spinning.
+				if (taskIds === activeTaskIds) {
+					if (pendingTaskIds.length > 0 && !responseComplete) {
+						taskIds = pendingTaskIds;
+					} else {
+						taskIds = null;
+						// No active tasks and message incomplete → generation was interrupted
+						if (currentMessage?.role === 'assistant' && !currentMessage.done) {
+							currentMessage.done = true;
+						}
 					}
 				}
 
@@ -1806,44 +1898,98 @@
 		}
 	};
 
-	let processingQueueChats = new Set<string>();
+	type QueueRun = {
+		queueItemId: string;
+		responseMessageIds: Set<string>;
+	};
+
+	let processingQueueChats = new Map<string, QueueRun>();
+
+	const removeQueuedRequest = (targetChatId: string, queueItemId: string) => {
+		chatRequestQueues.update((queues) => {
+			const queue = queues[targetChatId] ?? [];
+			const updatedQueue = queue.filter((item) => item.id !== queueItemId);
+			if (updatedQueue.length === queue.length) return queues;
+
+			const updatedQueues = { ...queues };
+			if (updatedQueue.length === 0) {
+				delete updatedQueues[targetChatId];
+			} else {
+				updatedQueues[targetChatId] = updatedQueue;
+			}
+			return updatedQueues;
+		});
+	};
+
+	const releaseQueueRun = async (
+		targetChatId: string,
+		responseMessageId: string | null = null,
+		force = false
+	) => {
+		const queueRun = processingQueueChats.get(targetChatId);
+
+		if (!queueRun) {
+			await processNextInQueue(targetChatId);
+			return;
+		}
+
+		if (!force) {
+			// The response ID makes chat-level inactive events generation-safe.
+			if (!responseMessageId || !queueRun.responseMessageIds.has(responseMessageId)) return;
+		}
+
+		processingQueueChats.delete(targetChatId);
+		await processNextInQueue(targetChatId);
+	};
 
 	const processNextInQueue = async (targetChatId: string) => {
-		if (processingQueueChats.has(targetChatId)) return;
+		if (processingQueueChats.has(targetChatId) || pendingSubmissionChats.has(targetChatId)) return;
+		if (targetChatId !== $chatId || hasPendingAssistantLeaf()) return;
 
 		const queue = $chatRequestQueues[targetChatId];
 		if (!queue || queue.length === 0) return;
 
-		const nextTask = queue[0];
-		processingQueueChats.add(targetChatId);
-		try {
-			chatRequestQueues.update((q) => {
-				const updatedQueue = [...(q[targetChatId] || [])];
-				updatedQueue.shift();
-
-				const newQ = { ...q };
-				if (updatedQueue.length === 0) {
-					delete newQ[targetChatId];
-				} else {
-					newQ[targetChatId] = updatedQueue;
-				}
-				return newQ;
-			});
-
-			await submitPrompt(nextTask.prompt, nextTask.files);
-		} catch (error) {
-			console.error('Failed to process queued message:', error);
-			// 提交失败时，队列里没有"生成完成"事件会触发推进，
-			// 所以这里需要手动释放锁并尝试推进下一条，避免队列卡死
-			processingQueueChats.delete(targetChatId);
-			await tick();
-			if ($chatRequestQueues[targetChatId]?.length > 0) {
-				processNextInQueue(targetChatId);
-			}
+		const selectedModelIds = selectedModels.filter(Boolean);
+		const modelsAvailable =
+			selectedModelIds.length > 0 &&
+			selectedModelIds.every((modelId) => $models.some((model) => model.id === modelId));
+		if (!modelsAvailable) {
+			toast.error($i18n.t('Model not selected'));
 			return;
 		}
-	};
 
+		const nextTask = queue[0];
+		const queueRun: QueueRun = {
+			queueItemId: nextTask.id,
+			responseMessageIds: new Set()
+		};
+		processingQueueChats.set(targetChatId, queueRun);
+
+		try {
+			await submitPrompt(nextTask.prompt, nextTask.files);
+
+			// Keep an unclaimed item in the visible queue instead of silently
+			// dropping it when submission ends before a response placeholder exists.
+			if (
+				processingQueueChats.get(targetChatId) === queueRun &&
+				($chatRequestQueues[targetChatId] ?? []).some((item) => item.id === queueRun.queueItemId)
+			) {
+				processingQueueChats.delete(targetChatId);
+				toast.error($i18n.t('Uh-oh! There was an issue with the response.'));
+			}
+		} catch (error) {
+			console.error('Failed to process queued message:', error);
+			if (
+				processingQueueChats.get(targetChatId) === queueRun &&
+				($chatRequestQueues[targetChatId] ?? []).some((item) => item.id === queueRun.queueItemId)
+			) {
+				// The request never reached the claim point. Keep it queued so the
+				// user can retry, edit, or delete it.
+				processingQueueChats.delete(targetChatId);
+				toast.error($i18n.t('Uh-oh! There was an issue with the response.'));
+			}
+		}
+	};
 	const chatCompletedHandler = async (_chatId, modelId, responseMessageId, messages) => {
 		// Backend handles outlet filters and persistence inline.
 		// Just refresh the sidebar chat list.
@@ -2146,12 +2292,6 @@
 			);
 		}
 
-		if (done || error) {
-			// Process next queued request if any
-			processingQueueChats.delete(chatId);
-			await processNextInQueue(chatId);
-		}
-
 		console.log(data);
 		await tick();
 
@@ -2186,6 +2326,7 @@
 			!isAudioFile(item));
 
 	const submitPrompt = async (inputContent, inputFiles) => {
+		sanitizeHistory(history);
 		const _files = structuredClone(inputFiles);
 
 		chatFiles.push(..._files.filter((item) => isContextFile(item)));
@@ -2282,10 +2423,11 @@
 			return;
 		}
 
-		// Check if the assistant is still generating the main response
-		// (don't block on background tasks like title gen, follow-ups, tags)
-		const lastMessage = history.currentId ? history.messages[history.currentId] : null;
-		const isGenerating = lastMessage && lastMessage.role === 'assistant' && !lastMessage.done;
+		// Queue behind any active response or earlier queued message to preserve FIFO ordering.
+		const isGenerating =
+			hasPendingAssistantLeaf() ||
+			processingQueueChats.has($chatId) ||
+			($chatRequestQueues[$chatId]?.length ?? 0) > 0;
 
 		if (isGenerating) {
 			if ($settings?.enableMessageQueue ?? true) {
@@ -2299,6 +2441,8 @@
 				messageInput?.setText('');
 				prompt = '';
 				files = [];
+				await tick();
+				await processNextInQueue($chatId);
 				return;
 			} else {
 				// Interrupt: stop current generation and proceed
@@ -2393,6 +2537,12 @@
 				messageIdsList.push({ model_id: modelId, message_id: responseMessageId });
 			}
 		}
+
+		const queueRun = processingQueueChats.get(_chatId);
+		if (queueRun) {
+			queueRun.responseMessageIds = new Set(messageIdsList.map(({ message_id }) => message_id));
+		}
+
 		history = history;
 
 		// New chat — backend generates the chat_id on first request
@@ -2492,8 +2642,13 @@
 				web_search: webSearchActive
 			};
 
-		if ($settings?.memory ?? $config?.features?.enable_memories ?? false) {
-			features = { ...features, memory: true };
+		const savedMemoryEnabled = $settings?.memory ?? $config?.features?.enable_memories ?? false;
+		if (!$temporaryChatEnabled && savedMemoryEnabled) {
+			features = {
+				...features,
+				memory: true,
+				chat_history_memory: $settings?.chatHistoryMemory ?? true
+			};
 		}
 
 		return features;
@@ -2672,98 +2827,113 @@
 		// Only send terminal_id if the model has terminal capability enabled
 		const terminalEnabled = model.info?.meta?.capabilities?.terminal ?? true;
 
-		const res = await generateOpenAIChatCompletion(
-			localStorage.token,
-			{
-				stream: stream,
-				model: model.id,
-				...(messages.length > 0 ? { messages } : {}),
-				params: {
-					...$settings?.params,
-					...params,
-					stop: getStopTokens()
-				},
+		const socketSessionId = await waitForSocketSession($socket);
+		if (!socketSessionId) {
+			console.warn('Socket session is unavailable; chat completion may use non-streaming fallback');
+		}
 
-				files: (files?.length ?? 0) > 0 ? files : undefined,
+		if (_chatId) pendingSubmissionChats.add(_chatId);
+		let res;
+		try {
+			res = await generateOpenAIChatCompletion(
+				localStorage.token,
+				{
+					stream: stream,
+					model: model.id,
+					...(messages.length > 0 ? { messages } : {}),
+					params: {
+						...$settings?.params,
+						...params,
+						stop: getStopTokens()
+					},
 
-				filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
-				tool_ids: toolIds.length > 0 ? toolIds : undefined,
-				skill_ids: skillIds.length > 0 ? skillIds : undefined,
-				terminal_id: terminalEnabled ? (activeTerminalId ?? undefined) : undefined,
-				tool_servers: [
-					...($toolServers ?? []).filter(
-						(server, idx) => toolServerIds.includes(idx) || toolServerIds.includes(server?.id)
-					),
-					// Direct terminal servers — always included when enabled (not routed through selectedToolIds)
-					...($terminalServers ?? []).filter((t) => !t.id)
-				],
-				features: getFeatures(),
-				variables: {
-					...getPromptVariables(
-						$user?.name,
-						$settings?.userLocation ? userLocation : undefined,
-						$user?.email
-					)
-				},
-				model_item: $models.find((m) => m.id === model.id),
+					files: (files?.length ?? 0) > 0 ? files : undefined,
 
-				session_id: $socket?.id,
-				chat_id: _chatId || undefined,
-				folder_id: $selectedFolder?.id ?? undefined,
+					filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
+					tool_ids: toolIds.length > 0 ? toolIds : undefined,
+					skill_ids: skillIds.length > 0 ? skillIds : undefined,
+					terminal_id: terminalEnabled ? (activeTerminalId ?? undefined) : undefined,
+					tool_servers: [
+						...($toolServers ?? []).filter(
+							(server, idx) => toolServerIds.includes(idx) || toolServerIds.includes(server?.id)
+						),
+						// Direct terminal servers — always included when enabled (not routed through selectedToolIds)
+						...($terminalServers ?? []).filter((t) => !t.id)
+					],
+					features: getFeatures(),
+					variables: {
+						...getPromptVariables(
+							$user?.name,
+							$settings?.userLocation ? userLocation : undefined,
+							$user?.email
+						)
+					},
+					model_item: $models.find((m) => m.id === model.id),
 
-				id: responseMessageId,
-				...(messageIdsList ? { message_ids: messageIdsList } : {}),
-				parent_id: userMessage?.parentId ?? null,
-				user_message: userMessage,
-				...(regenerationPrompt ? { regeneration_prompt: regenerationPrompt } : {}),
-				...(continueResponse ? { assistant_message_id: responseMessageId } : {}),
+					session_id: socketSessionId ?? undefined,
+					chat_id: _chatId || undefined,
+					folder_id: $selectedFolder?.id ?? undefined,
 
-				background_tasks: {
-					...(!$temporaryChatEnabled && !_chatId && (userMessage?.parentId ?? null) === null
+					id: responseMessageId,
+					...(messageIdsList ? { message_ids: messageIdsList } : {}),
+					parent_id: userMessage?.parentId ?? null,
+					user_message: userMessage,
+					...(regenerationPrompt ? { regeneration_prompt: regenerationPrompt } : {}),
+					...(continueResponse ? { assistant_message_id: responseMessageId } : {}),
+
+					background_tasks: {
+						...(!$temporaryChatEnabled && !_chatId && (userMessage?.parentId ?? null) === null
+							? {
+									title_generation: $settings?.title?.auto ?? true,
+									tags_generation: $settings?.autoTags ?? true
+								}
+							: {}),
+						follow_up_generation: $settings?.autoFollowUps ?? true
+					},
+
+					...(stream && (model.info?.meta?.capabilities?.usage ?? false)
 						? {
-								title_generation: $settings?.title?.auto ?? true,
-								tags_generation: $settings?.autoTags ?? true
+								stream_options: {
+									include_usage: true
+								}
 							}
-						: {}),
-					follow_up_generation: $settings?.autoFollowUps ?? true
+						: {})
 				},
+				`${WEBUI_BASE_URL}/api`
+			).catch(async (error) => {
+				console.log(error);
 
-				...(stream && (model.info?.meta?.capabilities?.usage ?? false)
-					? {
-							stream_options: {
-								include_usage: true
-							}
-						}
-					: {})
-			},
-			`${WEBUI_BASE_URL}/api`
-		).catch(async (error) => {
-			console.log(error);
+				let errorMessage = localizeErrorMessage(error);
 
-			let errorMessage = localizeErrorMessage(error);
+				if (!errorMessage || typeof errorMessage === 'object') {
+					errorMessage = $i18n.t(`Uh-oh! There was an issue with the response.`);
+				}
 
-			if (!errorMessage || typeof errorMessage === 'object') {
-				errorMessage = $i18n.t(`Uh-oh! There was an issue with the response.`);
-			}
+				toast.error(`${errorMessage}`);
+				responseMessage.error = {
+					content: errorMessage
+				};
 
-			toast.error(`${errorMessage}`);
-			responseMessage.error = {
-				content: errorMessage
-			};
+				responseMessage.done = true;
 
-			responseMessage.done = true;
+				history.messages[responseMessageId] = responseMessage;
+				history.currentId = responseMessageId;
 
-			history.messages[responseMessageId] = responseMessage;
-			history.currentId = responseMessageId;
+				return null;
+			});
+		} finally {
+			if (_chatId) pendingSubmissionChats.delete(_chatId);
+		}
 
-			return null;
-		});
+		const activeQueueRun = processingQueueChats.get(_chatId);
+		if (activeQueueRun?.responseMessageIds.has(responseMessage.id)) {
+			removeQueuedRequest(_chatId, activeQueueRun.queueItemId);
+		}
 
 		if (res) {
 			if (res.error) {
 				await handleOpenAIError(res.error, responseMessage);
-				processingQueueChats.delete(_chatId);
-				await processNextInQueue(_chatId);
+				await releaseQueueRun(_chatId, responseMessage.id);
 			} else {
 				// Backend returns task_ids (multi-model) or task_id (single model)
 				const newTaskIds = res.task_ids ?? (res.task_id ? [res.task_id] : []);
@@ -2794,6 +2964,8 @@
 					}
 				}
 			}
+		} else {
+			await releaseQueueRun(_chatId, responseMessage.id);
 		}
 
 		await tick();
@@ -2867,8 +3039,9 @@
 		}
 
 		if (processQueue) {
-			processingQueueChats.delete($chatId);
-			await processNextInQueue($chatId);
+			// Wait until the backend has actually deregistered the canceled task.
+			// This avoids overlapping it with the next queued request.
+			window.setTimeout(() => void reconcilePendingChat(), 250);
 		}
 	};
 
@@ -3420,16 +3593,15 @@
 										{chatTasks}
 										onQueueSendNow={async (id) => {
 											const queue = $chatRequestQueues[$chatId] ?? [];
-											const item = queue.find((m) => m.id === id);
+											const item = queue.find((message) => message.id === id);
 											if (item) {
-												// Remove from queue
-												chatRequestQueues.update((q) => ({
-													...q,
-													[$chatId]: queue.filter((m) => m.id !== id)
+												// Promote the item, then wait for the canceled backend task to
+												// deregister before the normal FIFO runner starts it.
+												chatRequestQueues.update((queues) => ({
+													...queues,
+													[$chatId]: [item, ...queue.filter((message) => message.id !== id)]
 												}));
-												await stopResponse(false);
-												await tick();
-												await submitPrompt(item.prompt, item.files);
+												await stopResponse();
 											}
 										}}
 										onQueueEdit={(id) => {

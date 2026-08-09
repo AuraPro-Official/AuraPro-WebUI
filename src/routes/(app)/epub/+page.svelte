@@ -49,7 +49,9 @@
 		try {
 			selectedBook = await getEpubBook(token(), bookId);
 			selectedVersionId =
-				selectedBook.current_version_id ?? selectedBook.versions.find((version) => version.status === 'READY')?.version_id ?? '';
+				selectedBook.current_version_id ??
+				selectedBook.versions.find((version) => version.status === 'READY')?.version_id ??
+				'';
 			passageOffset = 0;
 			await loadPassages();
 		} catch (error) {
@@ -99,7 +101,8 @@
 		}
 	};
 
-	const tocLabel = (path: string[] | undefined) => path?.filter(Boolean).join(' / ') || '未编排章节';
+	const tocLabel = (path: string[] | undefined) =>
+		path?.filter(Boolean).join(' / ') || '未编排章节';
 
 	onMount(() => {
 		void loadBooks();
@@ -119,13 +122,18 @@
 			</p>
 		</div>
 		{#if $user?.role === 'admin'}
-			<a class="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white hover:bg-gray-700 dark:bg-gray-100 dark:text-gray-900" href="/admin/epub">
+			<a
+				class="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white hover:bg-gray-700 dark:bg-gray-100 dark:text-gray-900"
+				href="/admin/epub"
+			>
 				管理图书与离线任务
 			</a>
 		{/if}
 	</header>
 
-	<section class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+	<section
+		class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+	>
 		<form class="flex flex-col gap-3 sm:flex-row" on:submit|preventDefault={() => search(0)}>
 			<label class="sr-only" for="epub-search">检索概念或术语</label>
 			<input
@@ -134,11 +142,16 @@
 				class="min-w-0 flex-1 rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-gray-600 dark:border-gray-700"
 				placeholder="检索概念或术语"
 			/>
-			<button class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50" disabled={searching}>
+			<button
+				class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+				disabled={searching}
+			>
 				{searching ? '检索中…' : '检索'}
 			</button>
 		</form>
-		<p class="mt-2 text-xs text-gray-500 dark:text-gray-400">仅使用服务器本地或私有网络模型；不可用时会明确显示降级状态。</p>
+		<p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+			仅使用服务器本地或私有网络模型；不可用时会明确显示降级状态。
+		</p>
 	</section>
 
 	{#if searchResult}
@@ -154,15 +167,23 @@
 					</p>
 				</div>
 				{#if searchResult.degraded.length > 0}
-					<p class="rounded bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
-						降级：{searchResult.degraded.map((item) => `${item.component}${item.reason ? `（${item.reason}）` : ''}`).join('；')}
+					<p
+						class="rounded bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200"
+					>
+						降级：{searchResult.degraded
+							.map((item) => `${item.component}${item.reason ? `（${item.reason}）` : ''}`)
+							.join('；')}
 					</p>
 				{/if}
 			</div>
 
-			<article class="rounded-xl border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
+			<article
+				class="rounded-xl border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950"
+			>
 				<h3 class="font-medium">综合排序</h3>
-				<p class="mb-3 text-xs text-gray-600 dark:text-gray-300">图谱与语义候选统一经服务器本地 Cross-Encoder 和 MMR 排序；每项仍引用完整原文段落。</p>
+				<p class="mb-3 text-xs text-gray-600 dark:text-gray-300">
+					图谱与语义候选统一经服务器本地 Cross-Encoder 和 MMR 排序；每项仍引用完整原文段落。
+				</p>
 				{#if searchResult.fused_results.length === 0}
 					<p class="text-sm text-gray-500">没有综合结果，或本地向量/重排服务不可用。</p>
 				{:else}
@@ -175,7 +196,9 @@
 			</article>
 
 			<div class="grid gap-4 xl:grid-cols-2">
-				<article class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
+				<article
+					class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
+				>
 					<h3 class="font-medium">图谱全部匹配</h3>
 					<p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
 						此通道先按相关性排序再分页：直接命中的概念优先于经关系扩展到的概念（从子概念众多的概念扩展而来的权重更低），其次比较同一片段命中的概念数与片段长度，最后按书中位置。排序在整个结果集上稳定，逐页翻阅仍可穷尽全部
@@ -191,20 +214,35 @@
 						</div>
 					{/if}
 					<div class="mt-4 flex items-center justify-between">
-						<button class="rounded border px-2 py-1 text-xs disabled:opacity-50" disabled={searching || (searchResult?.graph_offset ?? 0) === 0} on:click={() => search(Math.max(0, (searchResult?.graph_offset ?? 0) - 20))}>上一页</button>
+						<button
+							class="rounded border px-2 py-1 text-xs disabled:opacity-50"
+							disabled={searching || (searchResult?.graph_offset ?? 0) === 0}
+							on:click={() => search(Math.max(0, (searchResult?.graph_offset ?? 0) - 20))}
+							>上一页</button
+						>
 						{#if searchResult.graph_results.length > 0}
 							<span class="text-xs text-gray-500 dark:text-gray-400">
 								第 {searchResult.graph_offset + 1}–{searchResult.graph_offset +
 									searchResult.graph_results.length} 条 / 共 {searchResult.graph_total} 条（相关性从高到低）
 							</span>
 						{/if}
-						<button class="rounded border px-2 py-1 text-xs disabled:opacity-50" disabled={searching || (searchResult?.graph_offset ?? 0) + (searchResult?.graph_results.length ?? 0) >= (searchResult?.graph_total ?? 0)} on:click={() => search((searchResult?.graph_offset ?? 0) + 20)}>下一页</button>
+						<button
+							class="rounded border px-2 py-1 text-xs disabled:opacity-50"
+							disabled={searching ||
+								(searchResult?.graph_offset ?? 0) + (searchResult?.graph_results.length ?? 0) >=
+									(searchResult?.graph_total ?? 0)}
+							on:click={() => search((searchResult?.graph_offset ?? 0) + 20)}>下一页</button
+						>
 					</div>
 				</article>
 
-				<article class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
+				<article
+					class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
+				>
 					<h3 class="font-medium">语义相关段落</h3>
-					<p class="mb-3 text-xs text-gray-500 dark:text-gray-400">派生向量窗口经本地重排和 MMR 去重，引用仍为完整原文段落。</p>
+					<p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
+						派生向量窗口经本地重排和 MMR 去重，引用仍为完整原文段落。
+					</p>
 					{#if searchResult.vector_results.length === 0}
 						<p class="text-sm text-gray-500">没有语义结果或本地向量服务不可用。</p>
 					{:else}
@@ -220,8 +258,13 @@
 	{/if}
 
 	<section class="grid gap-6 lg:grid-cols-[17rem_minmax(0,1fr)]">
-		<aside class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
-			<div class="mb-3 flex items-center justify-between"><h2 class="font-medium">共享书架</h2><button class="text-xs text-blue-600" on:click={loadBooks}>刷新</button></div>
+		<aside
+			class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
+		>
+			<div class="mb-3 flex items-center justify-between">
+				<h2 class="font-medium">共享书架</h2>
+				<button class="text-xs text-blue-600" on:click={loadBooks}>刷新</button>
+			</div>
 			{#if loadingBooks}
 				<p class="text-sm text-gray-500">正在加载…</p>
 			{:else if books.length === 0}
@@ -229,29 +272,72 @@
 			{:else}
 				<div class="space-y-1">
 					{#each books as book (book.book_id)}
-						<button class="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800 {selectedBook?.book_id === book.book_id ? 'bg-gray-100 dark:bg-gray-800' : ''}" on:click={() => selectBook(book.book_id)}>
-							<span class="block truncate">{book.title}</span><span class="text-xs text-gray-500">{book.current_version_status ?? '未就绪'}</span>
+						<button
+							class="w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-800 {selectedBook?.book_id ===
+							book.book_id
+								? 'bg-gray-100 dark:bg-gray-800'
+								: ''}"
+							on:click={() => selectBook(book.book_id)}
+						>
+							<span class="block truncate">{book.title}</span><span class="text-xs text-gray-500"
+								>{book.current_version_status ?? '未就绪'}</span
+							>
 						</button>
 					{/each}
 				</div>
 			{/if}
 		</aside>
 
-		<article class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
+		<article
+			class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
+		>
 			{#if selectedBook}
 				<div class="mb-4 flex flex-wrap items-end justify-between gap-3">
-					<div><h2 class="text-lg font-medium">{selectedBook.title}</h2><p class="text-xs text-gray-500">选择版本后按原文段落浏览。</p></div>
-					<label class="text-sm">版本 <select bind:value={selectedVersionId} on:change={changeVersion} class="ml-1 rounded border bg-transparent px-2 py-1">{#each selectedBook.versions as version (version.version_id)}<option value={version.version_id}>{version.version_id.slice(0, 8)} · {version.status}</option>{/each}</select></label>
+					<div>
+						<h2 class="text-lg font-medium">{selectedBook.title}</h2>
+						<p class="text-xs text-gray-500">选择版本后按原文段落浏览。</p>
+					</div>
+					<label class="text-sm"
+						>版本 <select
+							bind:value={selectedVersionId}
+							on:change={changeVersion}
+							class="ml-1 rounded border bg-transparent px-2 py-1"
+							>{#each selectedBook.versions as version (version.version_id)}<option
+									value={version.version_id}
+									>{version.version_id.slice(0, 8)} · {version.status}</option
+								>{/each}</select
+						></label
+					>
 				</div>
 				{#if loadingPassages}
 					<p class="text-sm text-gray-500">正在加载原文…</p>
 				{:else if passages}
 					<div class="space-y-4">
 						{#each passages.items as passage (passage.passage_id)}
-							<div class="border-b border-gray-100 pb-4 last:border-0 dark:border-gray-800"><p class="mb-1 text-xs text-gray-500">{tocLabel(passage.toc_path)} · {passage.content_kind ?? 'paragraph'}</p><p class="whitespace-pre-wrap break-words text-sm leading-6">{passage.content}</p></div>
+							<div class="border-b border-gray-100 pb-4 last:border-0 dark:border-gray-800">
+								<p class="mb-1 text-xs text-gray-500">
+									{tocLabel(passage.toc_path)} · {passage.content_kind ?? 'paragraph'}
+								</p>
+								<p class="whitespace-pre-wrap break-words text-sm leading-6">{passage.content}</p>
+							</div>
 						{/each}
 					</div>
-					<div class="mt-5 flex items-center justify-between text-sm"><button class="rounded border px-3 py-1 disabled:opacity-50" disabled={passageOffset === 0} on:click={() => changePassagePage(passageOffset - pageSize)}>上一页</button><span class="text-xs text-gray-500">{passages.total === 0 ? 0 : passageOffset + 1}–{Math.min(passageOffset + passages.items.length, passages.total)} / {passages.total}</span><button class="rounded border px-3 py-1 disabled:opacity-50" disabled={passageOffset + passages.items.length >= passages.total} on:click={() => changePassagePage(passageOffset + pageSize)}>下一页</button></div>
+					<div class="mt-5 flex items-center justify-between text-sm">
+						<button
+							class="rounded border px-3 py-1 disabled:opacity-50"
+							disabled={passageOffset === 0}
+							on:click={() => changePassagePage(passageOffset - pageSize)}>上一页</button
+						><span class="text-xs text-gray-500"
+							>{passages.total === 0 ? 0 : passageOffset + 1}–{Math.min(
+								passageOffset + passages.items.length,
+								passages.total
+							)} / {passages.total}</span
+						><button
+							class="rounded border px-3 py-1 disabled:opacity-50"
+							disabled={passageOffset + passages.items.length >= passages.total}
+							on:click={() => changePassagePage(passageOffset + pageSize)}>下一页</button
+						>
+					</div>
 				{/if}
 			{:else}
 				<p class="text-sm text-gray-500">从书架选择图书以阅读原文。</p>
@@ -262,9 +348,17 @@
 
 {#snippet SearchHit(hit: EpubSearchHit)}
 	<article class="rounded-lg border border-gray-100 p-3 dark:border-gray-800">
-		<p class="text-xs text-gray-500">{hit.book_title} · {tocLabel(hit.toc_path)} · {hit.provenance.join(' / ')}</p>
-		{#if hit.matched_concepts.length > 0}<p class="mt-1 text-xs text-blue-600">{hit.matched_concepts.join('、')}</p>{/if}
-		<p class="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100">精确摘录 [{hit.excerpt.start_codepoint}, {hit.excerpt.end_codepoint})：{hit.excerpt.content}</p>
+		<p class="text-xs text-gray-500">
+			{hit.book_title} · {tocLabel(hit.toc_path)} · {hit.provenance.join(' / ')}
+		</p>
+		{#if hit.matched_concepts.length > 0}<p class="mt-1 text-xs text-blue-600">
+				{hit.matched_concepts.join('、')}
+			</p>{/if}
+		<p
+			class="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100"
+		>
+			精确摘录 [{hit.excerpt.start_codepoint}, {hit.excerpt.end_codepoint})：{hit.excerpt.content}
+		</p>
 		<p class="mt-2 whitespace-pre-wrap break-words text-sm leading-6">{hit.content}</p>
 	</article>
 {/snippet}

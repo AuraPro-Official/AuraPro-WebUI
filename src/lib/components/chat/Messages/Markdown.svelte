@@ -32,6 +32,7 @@
 <script>
 	import { onDestroy } from 'svelte';
 	import { replaceTokens, processResponseContent } from '$lib/utils';
+	import { scheduleFrameWithFallback } from '$lib/utils/render-scheduler';
 	import { user } from '$lib/stores';
 
 	import MarkdownTokens from './Markdown/MarkdownTokens.svelte';
@@ -59,7 +60,7 @@
 	export let onTaskClick = () => {};
 
 	let tokens = [];
-	let pendingUpdate = null;
+	let pendingUpdateCancel = null;
 	let lastContent = '';
 	let lastParsedContent = '';
 
@@ -77,12 +78,12 @@
 	const updateHandler = (content) => {
 		if (content) {
 			if (done) {
-				cancelAnimationFrame(pendingUpdate);
-				pendingUpdate = null;
+				pendingUpdateCancel?.();
+				pendingUpdateCancel = null;
 				parseTokens();
-			} else if (!pendingUpdate) {
-				pendingUpdate = requestAnimationFrame(() => {
-					pendingUpdate = null;
+			} else if (!pendingUpdateCancel) {
+				pendingUpdateCancel = scheduleFrameWithFallback(() => {
+					pendingUpdateCancel = null;
 					parseTokens();
 				});
 			}
@@ -93,7 +94,7 @@
 
 	// Throttle parsing to once per animation frame while streaming
 	onDestroy(() => {
-		cancelAnimationFrame(pendingUpdate);
+		pendingUpdateCancel?.();
 	});
 </script>
 
