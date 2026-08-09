@@ -1,19 +1,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+	applyEpubOverlay,
+	backfillEpubBatchPromptProfiles,
 	createEpubBatchDraft,
 	createEpubSectionGraphBatchDraft,
 	getEpubBatchJob,
 	getEpubBatchJobs,
 	getEpubBooks,
+	getEpubConcepts,
+	getEpubPromptProfiles,
 	getEpubRelationAssertions,
+	getEpubVersionOverlay,
 	getEpubSampleBatchReviews,
 	importEpub,
 	indexEpubVersion,
+	mergeEpubConcepts,
 	reviewEpubRelationAssertion,
 	reviewEpubSampleBatch,
 	recoverEpubBatches,
-	searchEpub
+	searchEpub,
+	splitEpubConcept
 } from './index';
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -149,6 +156,112 @@ describe('EPUB concept API client', () => {
 		});
 	});
 
+	it('reads the concept graph and merges a duplicate through administrator-only endpoints', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				jsonResponse({
+					total: 2,
+					offset: 0,
+					items: [
+						{
+							concept_id: 'concept-1',
+							canonical_name: '扰动源',
+							definition: '',
+							status: 'PROVISIONAL',
+							aliases: ['扰动源'],
+							mention_count: 3
+						}
+					]
+				})
+			)
+			.mockResolvedValueOnce(
+				jsonResponse({
+					concept_merge_id: 'merge-1',
+					target_concept_id: 'concept-1',
+					source_concept_id: 'concept-2',
+					source_canonical_name: '强扰动源',
+					canonical_name: '扰动源',
+					status: 'PROVISIONAL',
+					merged_by: 'administrator',
+					merged_at: '2026-01-01T00:00:00Z',
+					moved_aliases: 2,
+					moved_mentions: 1,
+					duplicate_mentions: 0,
+					repointed_relations: 0,
+					folded_relations: 0,
+					dropped_self_relations: 0
+				})
+			);
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getEpubConcepts('admin-token', { status: 'PROVISIONAL', limit: 100 });
+		const merged = await mergeEpubConcepts('admin-token', {
+			target_concept_id: 'concept-1',
+			source_concept_id: 'concept-2'
+		});
+
+		expect(merged.source_canonical_name).toBe('强扰动源');
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			'/api/v1/epub/admin/concepts?status=PROVISIONAL&offset=0&limit=100'
+		);
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({
+			headers: expect.objectContaining({ authorization: 'Bearer admin-token' })
+		});
+		expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/epub/admin/concepts/merge');
+		expect(fetchMock.mock.calls[1][1]).toMatchObject({
+			method: 'POST',
+			body: JSON.stringify({
+				target_concept_id: 'concept-1',
+				source_concept_id: 'concept-2'
+			})
+		});
+	});
+
+	it('splits a wrongly merged concept back out through its own administrator endpoint', async () => {
+		const fetchMock = vi.fn().mockResolvedValueOnce(
+			jsonResponse({
+				concept_split_id: 'split-1',
+				source_concept_id: 'concept-1',
+				source_canonical_name: '《观测规程》2.4-2.11',
+				new_concept_id: 'concept-3',
+				canonical_name: '双轨校准法',
+				status: 'PROVISIONAL',
+				split_by: 'administrator',
+				split_at: '2026-02-01T00:00:00Z',
+				moved_aliases: 1,
+				moved_mentions: 1,
+				relations_on_source: 2,
+				relations_naming_split_aliases: 1
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const split = await splitEpubConcept('admin-token', {
+			source_concept_id: 'concept-1',
+			canonical_name: '双轨校准法',
+			aliases: ['双轨校准法'],
+			mentions: [{ passage_id: 'p1', start_codepoint: 0, end_codepoint: 5 }]
+		});
+
+		expect(split.new_concept_id).toBe('concept-3');
+		expect(split.moved_mentions).toBe(1);
+		// Relations are never repointed for the administrator; the count is the
+		// shortlist they have to review by hand.
+		expect(split.relations_naming_split_aliases).toBe(1);
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/epub/admin/concepts/split');
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({
+			method: 'POST',
+			headers: expect.objectContaining({ authorization: 'Bearer admin-token' }),
+			body: JSON.stringify({
+				source_concept_id: 'concept-1',
+				canonical_name: '双轨校准法',
+				aliases: ['双轨校准法'],
+				mentions: [{ passage_id: 'p1', start_codepoint: 0, end_codepoint: 5 }]
+			})
+		});
+	});
+
 	it('surfaces an actionable API detail instead of hiding a failed authorization or configuration', async () => {
 		vi.stubGlobal(
 			'fetch',
@@ -182,6 +295,27 @@ describe('EPUB concept API client', () => {
 		);
 	});
 
+	it('reads the selectable prompt profiles from the server instead of a hardcoded list', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse({
+				prompt_profiles: ['zh-glossary-v1', 'zh-glossary-v2', 'zh-glossary-v3', 'zh-glossary-v4'],
+				default_prompt_profile: 'zh-glossary-v4'
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const profiles = await getEpubPromptProfiles('admin-token');
+
+		expect(profiles.default_prompt_profile).toBe('zh-glossary-v4');
+		expect(profiles.prompt_profiles).toContain('zh-glossary-v4');
+		expect(fetchMock).toHaveBeenCalledWith(
+			'/api/v1/epub/admin/prompt-profiles',
+			expect.objectContaining({
+				headers: expect.objectContaining({ authorization: 'Bearer admin-token' })
+			})
+		);
+	});
+
 	it('uses lifecycle-only Batch history and recovery endpoints', async () => {
 		const fetchMock = vi
 			.fn()
@@ -198,5 +332,166 @@ describe('EPUB concept API client', () => {
 		expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/epub/admin/batches/batch-1');
 		expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/epub/admin/batches/recover');
 		expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST' });
+	});
+
+	it('carries every ingest skip counter through the Batch summary', async () => {
+		// A succeeded item is the one an administrator never opens, so a skip
+		// that only the stored result knew about would be silent in practice.
+		// All three counters are integers or null by database schema, which is
+		// why they are safe on a lifecycle-only endpoint at all. The client is a
+		// passthrough; this pins the shape it is typed to carry.
+		const summary = {
+			batch_job_id: 'batch-1',
+			item_skipped_self_relations: 1,
+			item_skipped_short_evidence: 2,
+			item_skipped_ambiguous_concepts: 3,
+			items: [
+				{
+					batch_item_id: 'item-1',
+					custom_id: 'section-1',
+					status: 'SUCCEEDED',
+					skipped_self_relations: 1,
+					skipped_short_evidence: 2,
+					skipped_ambiguous_concepts: 3
+				},
+				{
+					// A row written before the ambiguous-concept column existed:
+					// "not measured", which must survive as null rather than
+					// collapsing to a zero the write never made.
+					batch_item_id: 'item-2',
+					custom_id: 'section-2',
+					status: 'SUCCEEDED',
+					skipped_self_relations: 0,
+					skipped_short_evidence: 0,
+					skipped_ambiguous_concepts: null
+				}
+			]
+		};
+		const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(summary));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await expect(getEpubBatchJob('admin-token', 'batch-1')).resolves.toEqual(summary);
+	});
+
+	it('recovers missing prompt profiles through its own administrator endpoint', async () => {
+		// The full-run approval gate binds to the prompt profile, so a job that
+		// predates the column unlocks nothing. The client reports per job what
+		// was derived and what stays unknown, without ever carrying prompt text.
+		const fetchMock = vi.fn().mockResolvedValueOnce(
+			jsonResponse({
+				examined: 2,
+				resolved: [
+					{
+						batch_job_id: 'batch-1',
+						job_kind: 'CONCEPT_MENTIONS',
+						prompt_profile: 'zh-glossary-v6'
+					}
+				],
+				unresolved: [
+					{
+						batch_job_id: 'batch-2',
+						job_kind: 'CONCEPT_MENTIONS',
+						reason: 'NO_REGISTERED_PROFILE_MATCHES'
+					}
+				]
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		await expect(backfillEpubBatchPromptProfiles('admin-token')).resolves.toMatchObject({
+			examined: 2,
+			resolved: [{ batch_job_id: 'batch-1', prompt_profile: 'zh-glossary-v6' }],
+			unresolved: [{ batch_job_id: 'batch-2', reason: 'NO_REGISTERED_PROFILE_MATCHES' }]
+		});
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			'/api/v1/epub/admin/batches/backfill-prompt-profiles',
+			expect.objectContaining({
+				method: 'POST',
+				headers: expect.objectContaining({ authorization: 'Bearer admin-token' })
+			})
+		);
+	});
+
+	it('downloads the exact overlay bytes with the digest an administrator publishes', async () => {
+		// Deliberately not the shape `JSON.stringify` would produce: the digest
+		// covers the server's canonical bytes, so the client must keep them.
+		const canonical =
+			'{"book_title":"共享书","concepts":[{"aliases":["TCP"],"canonical_name":"TCP","definition":"","key":"tcp","status":"APPROVED"}],"epub_sha256":"a1","mentions":[],"overlay_format_version":1,"parser_version":"1","passage_fingerprint":{"count":2,"digest":"b2"},"relations":[]}';
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(canonical, {
+				status: 200,
+				headers: { 'Content-Type': 'application/json', 'X-Overlay-SHA256': 'digest-1' }
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const download = await getEpubVersionOverlay('admin-token', 'version-1');
+
+		expect(download.text).toBe(canonical);
+		expect(download.overlay_sha256).toBe('digest-1');
+		expect(download.overlay.concepts[0].key).toBe('tcp');
+		// An artifact never carries passage text; only labels and locations.
+		expect(download.overlay.mentions).toEqual([]);
+		expect(fetchMock).toHaveBeenCalledWith(
+			'/api/v1/epub/admin/versions/version-1/overlay',
+			expect.objectContaining({
+				headers: expect.objectContaining({ authorization: 'Bearer admin-token' })
+			})
+		);
+	});
+
+	it('uploads an overlay to the administrator-only apply endpoint', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse({
+				version_id: 'version-1',
+				epub_sha256: 'a1',
+				overlay_format_version: 1,
+				applied: 4,
+				skipped: 1,
+				rejected: 0,
+				applied_detail: { concepts_created: 2, mentions_created: 2 },
+				skipped_detail: { mentions_existing: 1 },
+				skipped_reasons: { mention_admin_owned: 1 },
+				rejection_reasons: {},
+				uploaded_overlay_sha256: 'digest-1',
+				canonical_overlay_sha256: 'digest-1',
+				vectors_require_reindex: true
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const result = await applyEpubOverlay(
+			'admin-token',
+			new File(['{}'], 'overlay.json', { type: 'application/json' })
+		);
+
+		expect(result.applied).toBe(4);
+		expect(result.vectors_require_reindex).toBe(true);
+		expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/epub/admin/overlays');
+		expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+		expect(fetchMock.mock.calls[0][1].body).toBeInstanceOf(FormData);
+	});
+
+	it('surfaces a refused overlay gate as its actionable reason class', async () => {
+		// Each call needs its own Response: a body can only be read once.
+		vi.stubGlobal(
+			'fetch',
+			vi
+				.fn()
+				.mockImplementation(async () =>
+					jsonResponse(
+						{ detail: 'passage_fingerprint_mismatch: this store’s passages differ' },
+						400
+					)
+				)
+		);
+
+		await expect(applyEpubOverlay('admin-token', new File(['{}'], 'overlay.json'))).rejects.toThrow(
+			'passage_fingerprint_mismatch'
+		);
+		await expect(getEpubVersionOverlay('admin-token', 'version-1')).rejects.toThrow(
+			'passage_fingerprint_mismatch'
+		);
 	});
 });

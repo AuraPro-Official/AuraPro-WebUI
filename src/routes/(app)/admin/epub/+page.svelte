@@ -5,14 +5,18 @@
 
 	import { user, WEBUI_NAME } from '$lib/stores';
 	import {
+		applyEpubOverlay,
+		backfillEpubBatchPromptProfiles,
 		createEpubBatchDraft,
 		createEpubSectionGraphBatchDraft,
 		getEpubBatchJob,
 		getEpubBatchJobs,
 		getEpubBook,
 		getEpubBooks,
+		getEpubPromptProfiles,
 		getEpubRelationAssertions,
 		getEpubSampleBatchReviews,
+		getEpubVersionOverlay,
 		importEpub,
 		indexEpubVersion,
 		indexEpubRetrievalUnit,
@@ -25,10 +29,12 @@
 		submitEpubBatch,
 		upsertEpubConcept,
 		type BatchStatus,
+		type EpubBatchPromptProfileBackfill,
 		type EpubBatchRecovery,
 		type EpubBatchSummary,
 		type EpubBook,
 		type EpubBookDetail,
+		type EpubOverlayApplyResult,
 		type EpubVersionIndexResult,
 		type LocalCalibrationReport,
 		type RelationAssertion,
@@ -38,6 +44,10 @@
 	const token = () => localStorage.token ?? '';
 	const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+	// 服务器是 prompt profile 的唯一权威。仅当接口不可用时才退回这个值，
+	// 以免管理页在无法读取列表时完全无法创建 Batch 或本地校准。
+	const FALLBACK_PROMPT_PROFILE = 'zh-glossary-v4';
+
 	let loading = true;
 	let busy = false;
 	let books: EpubBook[] = [];
@@ -45,7 +55,9 @@
 	let selectedVersionId = '';
 	let selectedFile: File | null = null;
 	let profileName = '';
-	let promptProfile = 'zh-glossary-v3';
+	let promptProfiles: string[] = [FALLBACK_PROMPT_PROFILE];
+	let defaultPromptProfile = FALLBACK_PROMPT_PROFILE;
+	let promptProfile = FALLBACK_PROMPT_PROFILE;
 	let sampleOnly = true;
 	let sampleLimit = 20;
 	let batchJobId = '';
@@ -53,6 +65,7 @@
 	let batchHistory: EpubBatchSummary[] = [];
 	let batchDetail: EpubBatchSummary | null = null;
 	let batchRecovery: EpubBatchRecovery | null = null;
+	let promptProfileBackfill: EpubBatchPromptProfileBackfill | null = null;
 	let calibrationState: LocalCalibrationReport | null = null;
 	let conceptName = '';
 	let conceptAliases = '';
@@ -60,8 +73,31 @@
 	let conceptStatus: 'PROVISIONAL' | 'APPROVED' | 'REJECTED' = 'APPROVED';
 	let retrievalUnitId = '';
 	let versionIndexState: EpubVersionIndexResult | null = null;
+	let overlayFile: File | null = null;
+	let exportedOverlaySha = '';
+	let exportedOverlaySummary = '';
+	let overlayApplyState: EpubOverlayApplyResult | null = null;
 	let relationAssertions: RelationAssertion[] = [];
 	let sampleBatchReviews: SampleBatchReview[] = [];
+
+	// 非默认 profile 一律标记为“历史”，这样新增 v5 时无需再改前端。
+	$: promptProfileOptions = promptProfiles.map((profileId) => ({
+		id: profileId,
+		label: profileId === defaultPromptProfile ? profileId : `${profileId}（历史）`
+	}));
+
+	const loadPromptProfiles = async () => {
+		try {
+			const result = await getEpubPromptProfiles(token());
+			if (result.prompt_profiles?.length) promptProfiles = result.prompt_profiles;
+			defaultPromptProfile = promptProfiles.includes(result.default_prompt_profile)
+				? result.default_prompt_profile
+				: promptProfiles[0];
+			promptProfile = defaultPromptProfile;
+		} catch (error) {
+			toast.error(errorMessage(error));
+		}
+	};
 
 	const chooseFile = (event: Event) => {
 		selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
@@ -224,6 +260,23 @@
 		}
 	};
 
+	// 全量任务的审批门现在绑定 prompt profile。列存在之前创建的任务没有记录该
+	// 标识，因此既不能解锁、也不能被解锁；这里从任务自身已发送的请求中精确还原。
+	const backfillPromptProfiles = async () => {
+		busy = true;
+		try {
+			promptProfileBackfill = await backfillEpubBatchPromptProfiles(token());
+			await loadBatchHistory();
+			toast.success(
+				`已还原 ${promptProfileBackfill.resolved.length} 个任务的 prompt profile；${promptProfileBackfill.unresolved.length} 个仍未知。`
+			);
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
 	const loadRelationAssertions = async () => {
 		if (!selectedVersionId) return;
 		busy = true;
@@ -336,6 +389,50 @@
 		}
 	};
 
+	const chooseOverlayFile = (event: Event) => {
+		overlayFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
+	};
+
+	// 下载的必须是服务器返回的原始字节：X-Overlay-SHA256 覆盖的正是这些字节，
+	// 重新序列化会得到不同的摘要，发布出去就无法校验了。
+	const exportOverlay = async () => {
+		if (!selectedVersionId) return;
+		busy = true;
+		try {
+			const download = await getEpubVersionOverlay(token(), selectedVersionId);
+			const url = URL.createObjectURL(new Blob([download.text], { type: 'application/json' }));
+			const anchor = document.createElement('a');
+			anchor.href = url;
+			anchor.download = `${selectedVersionId.slice(0, 8)}-overlay.json`;
+			anchor.click();
+			URL.revokeObjectURL(url);
+			exportedOverlaySha = download.overlay_sha256;
+			exportedOverlaySummary = `${download.overlay.concepts.length} 个概念 · ${download.overlay.mentions.length} 处提及 · ${download.overlay.relations.length} 条关系 · 指纹 ${download.overlay.passage_fingerprint.count} 段`;
+			toast.success('分析层已导出；请连同 SHA-256 一起发布。');
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
+	const applyOverlay = async () => {
+		if (!overlayFile) return;
+		busy = true;
+		try {
+			overlayApplyState = await applyEpubOverlay(token(), overlayFile);
+			overlayFile = null;
+			toast.success(
+				`分析层已应用：新增 ${overlayApplyState.applied} 项，跳过 ${overlayApplyState.skipped} 项。请接着重建当前版本的向量索引。`
+			);
+		} catch (error) {
+			overlayApplyState = null;
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
 	const indexVersion = async (rebuild: boolean) => {
 		if (!selectedVersionId) return;
 		busy = true;
@@ -361,6 +458,7 @@
 			await goto('/epub');
 			return;
 		}
+		await loadPromptProfiles();
 		await loadBooks();
 		await loadBatchHistory();
 	});
@@ -421,12 +519,21 @@
 					class="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50"
 					disabled={busy}
 					on:click={recoverBatches}>恢复未终态任务</button
+				><button
+					class="rounded border px-3 py-2 text-sm disabled:opacity-50"
+					disabled={busy}
+					on:click={backfillPromptProfiles}>还原缺失的 Prompt profile</button
 				>
 			</div>
 		</div>
 		{#if batchRecovery}<p class="mt-3 text-xs text-gray-500">
 				本次恢复：轮询 {batchRecovery.recovered.length} 项；因未配置 Provider 而跳过 {batchRecovery
 					.skipped.length} 项。
+			</p>{/if}
+		{#if promptProfileBackfill}<p class="mt-3 text-xs text-gray-500">
+				本次还原：检查 {promptProfileBackfill.examined} 个未记录 prompt profile 的任务，精确匹配成功 {promptProfileBackfill
+					.resolved.length} 个；{promptProfileBackfill.unresolved.length}
+				个无法确定，保持未知并继续被审批门拒绝（不做近似猜测）。
 			</p>{/if}
 		{#if batchHistory.length}<ul class="mt-3 space-y-2">
 				{#each batchHistory as job (job.batch_job_id)}<li class="rounded border p-3 text-sm">
@@ -435,7 +542,7 @@
 								<p class="font-medium"><code>{job.batch_job_id}</code></p>
 								<p class="mt-1 text-xs text-gray-500">
 									{job.job_kind} · {job.status} · {job.is_sample ? '样本' : '全量'} · {job.item_count}
-									项
+									项 · prompt {job.prompt_profile ?? '未知'}
 									{#if job.has_error}· 有错误{/if}
 									{#if job.results_pending_retrieval}· 结果待重新获取{/if}
 								</p>
@@ -512,9 +619,9 @@
 				>Prompt profile<select
 					bind:value={promptProfile}
 					class="mt-1 w-full rounded border bg-transparent px-2 py-1"
-					><option value="zh-glossary-v3">zh-glossary-v3</option><option value="zh-glossary-v2"
-						>zh-glossary-v2（历史）</option
-					><option value="zh-glossary-v1">zh-glossary-v1（历史）</option></select
+					>{#each promptProfileOptions as option (option.id)}<option value={option.id}
+							>{option.label}</option
+						>{/each}</select
 				></label
 			><label class="text-sm"
 				>样本上限<input
@@ -566,9 +673,9 @@
 				>Prompt profile<select
 					bind:value={promptProfile}
 					class="mt-1 w-full rounded border bg-transparent px-2 py-1"
-					><option value="zh-glossary-v3">zh-glossary-v3</option><option value="zh-glossary-v2"
-						>zh-glossary-v2（历史）</option
-					><option value="zh-glossary-v1">zh-glossary-v1（历史）</option></select
+					>{#each promptProfileOptions as option (option.id)}<option value={option.id}
+							>{option.label}</option
+						>{/each}</select
 				></label
 			><label class="text-sm"
 				>样本上限<input
@@ -636,7 +743,8 @@
 			</div>{/if}
 		<div class="mt-4 flex items-center justify-between gap-2">
 			<p class="text-xs text-gray-500">
-				已审核样本仅保存任务标识、审核状态和时间，不复制原文或云端输出。
+					已审核样本仅保存任务标识、prompt profile 标识、审核状态和时间，不复制原文、prompt
+				正文或云端输出。批准只对同一 prompt profile 生效。
 			</p>
 			<button
 				class="rounded border px-2 py-1 text-xs disabled:opacity-50"
@@ -648,7 +756,8 @@
 				class="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300"
 			>
 				{#each sampleBatchReviews as review (review.sample_batch_job_id)}<li>
-						<code>{review.sample_batch_job_id}</code> · {review.job_kind} · {review.status} · {review.reviewed_at}
+						<code>{review.sample_batch_job_id}</code> · {review.job_kind} · prompt {review.prompt_profile ??
+							'未知'} · {review.status} · {review.reviewed_at}
 					</li>{/each}
 			</ul>{/if}
 	</section>
@@ -700,6 +809,75 @@
 			</ul>{:else}<p class="mt-3 text-sm text-gray-500">
 				尚未加载待审核关系，或当前版本没有待审核项。
 			</p>{/if}
+	</section>
+
+	<section
+		class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
+	>
+		<h2 class="font-medium">分析层导出与导入</h2>
+		<p class="mt-1 text-xs text-gray-500">
+			概念图只需由一位管理员用云端 Batch 构建一次，其余安装导入这份分析层即可，无需再付费跑
+			Batch。分析层只携带概念名称、别名、定义和<strong>位置</strong>（段落序号 + content_sha256 +
+			码点区间），<strong>不含任何原文、证据文本、EPUB 文件或向量</strong
+			>；导入方用自己那本书按位置重新取出证据原文。因此双方必须持有同一个 EPUB：archive
+			哈希、解析器版本和整本书的段落指纹都必须一致，任何一项不符都会整体拒绝，不会写入半份图。
+		</p>
+		<div class="mt-3 flex flex-wrap items-center gap-3">
+			<button
+				class="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50"
+				disabled={busy || !selectedVersionId}
+				on:click={exportOverlay}>导出当前版本分析层</button
+			>
+			<input
+				aria-label="选择分析层 JSON 文件"
+				type="file"
+				accept=".json,application/json"
+				on:change={chooseOverlayFile}
+			/><button
+				class="rounded border px-3 py-2 text-sm disabled:opacity-50"
+				disabled={busy || !overlayFile}
+				on:click={applyOverlay}>应用分析层</button
+			>
+		</div>
+		{#if exportedOverlaySha}<div class="mt-3 rounded bg-gray-50 p-3 text-sm dark:bg-gray-800">
+				<p>已导出：{exportedOverlaySummary}</p>
+				<p class="mt-1 break-all text-xs text-gray-500">
+					导出文件 SHA-256：<code>{exportedOverlaySha}</code>（请与文件一同发布，供接收方校验）
+				</p>
+			</div>{/if}
+		{#if overlayApplyState}<div class="mt-3 rounded bg-gray-50 p-3 text-sm dark:bg-gray-800">
+				<p>
+					已应用到版本 <code>{overlayApplyState.version_id.slice(0, 8)}</code>：新增 {overlayApplyState.applied}
+					项，跳过 {overlayApplyState.skipped} 项，拒绝 {overlayApplyState.rejected} 项。
+				</p>
+				<p class="mt-1 text-xs text-gray-500">
+					新增明细：概念 {overlayApplyState.applied_detail.concepts_created ?? 0}，更新概念 {overlayApplyState
+						.applied_detail.concepts_updated ?? 0}，提及 {overlayApplyState.applied_detail
+						.mentions_created ?? 0}，关系 {overlayApplyState.applied_detail.relations_created ??
+						0}，关系证据
+					{overlayApplyState.applied_detail.relation_evidence_created ?? 0}。
+				</p>
+				{#if Object.keys(overlayApplyState.skipped_reasons).length}<ul
+						class="mt-2 list-disc space-y-1 pl-5 text-xs text-gray-500"
+					>
+						{#each Object.entries(overlayApplyState.skipped_reasons) as [reason, count] (reason)}<li
+							>
+								<code>{reason}</code>：{count} 项（本地已有的判定优先，已批准的概念不会被降级，管理员录入的提及不会被模型输出覆盖）
+							</li>{/each}
+					</ul>{/if}
+				<p class="mt-1 break-all text-xs text-gray-500">
+					上传文件 SHA-256：<code>{overlayApplyState.uploaded_overlay_sha256}</code>
+					{#if overlayApplyState.canonical_overlay_sha256 !== overlayApplyState.uploaded_overlay_sha256}
+						· 规范化后 SHA-256：<code>{overlayApplyState.canonical_overlay_sha256}</code>
+					{/if}
+				</p>
+				{#if overlayApplyState.vectors_require_reindex}<p
+						class="mt-2 text-xs text-amber-700 dark:text-amber-300"
+					>
+						导入的分析层不含向量。请在下方“派生向量索引”中对当前版本执行<strong>重建当前版本</strong
+						>，新概念才可被检索。
+					</p>{/if}
+			</div>{/if}
 	</section>
 
 	<section class="grid gap-6 lg:grid-cols-2">

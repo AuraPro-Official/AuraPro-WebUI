@@ -234,14 +234,28 @@ is reviewed may a full-version Batch be created.
 The server enforces this cloud quality gate durably, rather than relying on the
 administrator UI: a full `openai-batch` job may be created only when an
 administrator has approved an OpenAI **sample** for the same immutable
-`version_id`, `job_kind` (`CONCEPT_MENTIONS` or `SECTION_GRAPH`), and exact
-model `profile_name`/snapshot. A sample is eligible for review only after its
-durable job state is `SUCCEEDED`, it contains at least one item, and every item
-has reached `SUCCEEDED` after strict atomic ingest. The approval audit record
-contains only version ID, job kind, sample job ID, reviewer identity, decision,
-and review time—never source text, prompt, model output, provider response, or
-credentials. An approval for one job kind or model profile cannot unlock
-another. Only an administrator may list or approve/reject these sample reviews.
+`version_id`, `job_kind` (`CONCEPT_MENTIONS` or `SECTION_GRAPH`), exact model
+`profile_name`/snapshot, and the same `prompt_profile`. A sample is eligible
+for review only after its durable job state is `SUCCEEDED`, it contains at
+least one item, and every item has reached `SUCCEEDED` after strict atomic
+ingest. The approval audit record contains only version ID, job kind, sample
+job ID, prompt profile identifier, reviewer identity, decision, and review
+time—never source text, prompt, model output, provider response, or
+credentials. An approval for one job kind, model profile, or prompt profile
+cannot unlock another. Only an administrator may list or approve/reject these
+sample reviews.
+
+`prompt_profile` is recorded on the job itself, because the model snapshot
+alone says nothing about the extraction instruction that was sent: reviewed
+quality belongs to one specific instruction, so promoting a new default prompt
+profile must not ride an older profile's approval. The column is nullable only
+because jobs predating it cannot gain a value inside a SQL migration. A null
+is read as *unknown* and never satisfies the gate from either side—an
+unbackfilled approved sample unlocks nothing, and a full run that names no
+prompt profile is refused. An administrator-only backfill recovers the value
+for such jobs by matching the system instruction in the job's own stored
+request against the registered profiles by exact equality; anything that
+matches none, or more than one, stays unknown rather than being guessed.
 
 ### 4.2.2 Concept-relation graph (required first-release capability)
 
@@ -272,8 +286,99 @@ second, relation layer before its full-version offline Batch is accepted.
    version and names one or more exact immutable-source evidence spans. This
    permits the same grounded relationship to accumulate support across books
    without turning it into an unproven universal fact. Assertions are
-   `PROVISIONAL` until reviewed; ambiguous or invalid output is a failed Batch
-   item with no partial graph mutation.
+   `PROVISIONAL` until reviewed.
+6. **Output that cannot be grounded against the immutable source fails the whole
+   Batch item, with no partial graph mutation. Output that *is* grounded, but
+   which a decision on our side has made unusable, has that element skipped and
+   counted while the rest of the item ingests.**
+
+   This replaces an earlier rule — "ambiguous or invalid output is a failed
+   Batch item" — that drew its line in the wrong place. It read every rejection
+   as a defect in the response, and three separate conditions then had to be
+   exempted from it one at a time. All three share a shape the original rule did
+   not anticipate: the model answered correctly and something *we* decided
+   afterwards is what made one element unusable. A rule that has to be exempted
+   three times is stating its principle wrongly, so the principle is restated
+   here rather than carrying a fourth exemption later.
+
+   Hard failure keeps everything that is genuinely ungrounded: evidence absent
+   from the immutable source, evidence whose occurrence cannot be resolved to
+   one span, a relation endpoint naming a `local_id` the response never
+   declared, a response that is not valid JSON for its schema. None of these
+   becomes lenient, and none of them is recoverable by any decision of ours.
+
+   The skip applies where our own state is the obstacle. Three conditions
+   qualify today; the wording is deliberately general, since the property that
+   matters is the *cause*, not the enumeration.
+
+   a. **A relation whose two endpoints resolve to the same concept.** An
+      administrator merged the endpoints after the response was produced: the
+      model named two distinct concepts and a later, correct administrative act
+      made them one. `merge_concepts` already drops a relation a merge turns
+      into a self-loop rather than refusing the merge, so this keeps ingest
+      consistent with it.
+   b. **An evidence span below the floor its prompt profile enforces**, dropped
+      during grounding. Such a span is real source text, correctly quoted; it is
+      simply too small to locate anything for a reader, and the floor is our
+      threshold, not a property of the response.
+   c. **A concept whose name and aliases match more than one existing concept.**
+      Ingest cannot link it without asserting a merge no administrator decided,
+      and SDD 4.2 forbids a model performing a semantic merge — so the concept
+      and its mentions are skipped, and the rest of the item ingests. This is
+      the case that most clearly belongs on this side of the line: the response
+      is accurate, the passage genuinely contains both spellings, and the
+      collision exists only because an administrator adjudicated those concepts
+      as distinct. It differs from (a) and (b) in one respect worth stating
+      plainly — a human *could* resolve it, by merging. Measured against the
+      full-book runs, that remedy is mostly unavailable: of 33 held items, 32
+      collided on pairs already adjudicated as distinct (13 on
+      `全域潮汐枢纽`｜`潮汐源` alone), which no merge can resolve without
+      reversing the adjudication, and a model will keep proposing them on every
+      future book because the text genuinely uses both. Exactly one was a
+      reviewable merge candidate. So the choice was never "skip versus review by
+      hand"; it was skip versus permanently discarding 32 items and every valid
+      concept and mention that arrived beside the collision. The trade taken in
+      exchange is real and is not hidden: a skipped concept's mentions link to
+      neither concept, and that silence is the cost of not failing the item.
+
+   In every case the skip cascades only to what the contract can no longer
+   express, and never further: a concept left with no mentions is dropped, a
+   relation left with no evidence spans is dropped, and a relation whose
+   endpoint was a dropped or skipped concept is dropped. That last one is not an
+   unresolved endpoint — the model declared the concept correctly and ingest is
+   what removed it. A payload reduced to nothing is still a success contributing
+   nothing; an empty result is what the instruction itself asks for when there is
+   nothing to report.
+
+   Every skip is counted in the item's durable result, per condition, so the
+   count is visible rather than silent. Each count is the only record of what
+   the *write* decided, but the three differ in whether the element itself
+   survives in the stored response, and the difference is a consequence of when
+   it is detected. (b) is detected by the read-only grounding pass, which
+   removes the span before anything is stored, so the count is the only record
+   the span existed at all. (a) and (c) are detected at write time — a
+   `local_id` becomes a concept only through resolution, which is a write — so
+   the relation and the concept are both still in the stored response verbatim.
+   That is deliberate and load-bearing: the stored response is the payload as
+   written, it must serialize byte-identically on replay for ingest to stay
+   idempotent, and a write that edited it to reflect its own skips would destroy
+   that guarantee.
+7. The evidence floor named in 6b, and why it is a number rather than a
+   judgement. Failing an item over a sub-floor span discards everything valid
+   that arrived beside it: on the full-book section-graph run that cost 13 of 43
+   packets, 140 concepts, 140 mentions and 105 relations, against 184 relations
+   actually ingested.
+
+   The enforced floor is deliberately lower than the minimum the same profile's
+   instruction requests. The request encourages a substantive, distinctive
+   citation; the floor rejects only what is genuinely unusable. Length is a
+   proxy for "distinctive and locatable", and the requested 10 code points
+   overshoots that proxy in Chinese — `枢对测点的授时` (7) and `全网同步统一时基`
+   (8) are complete citations, while the pathology is the bare term (`枢`,
+   `潮位观测站`). The two numbers are named apart on the profile records, the
+   requested one asserted against the instruction text so a profile cannot
+   silently disagree with its own wording, and the enforced one pinned
+   separately.
 
 At query time, direct concept mentions and bounded relation traversal form the
 graph candidate set. `HAS_PART` expands a resolved parent concept to its child
@@ -290,8 +395,19 @@ relationship affects retrieval provenance and ranking, never citation text.
 - Tier 2 uses a local/private small LLM to resolve a concept only when Tier 1
   has no useful match. If unavailable, return an explicit degraded state rather
   than calling a cloud fallback.
-- Channel A enumerates all graph occurrences and exposes an exhaustive count and
-  pagination. Channel B returns vector candidates from derived retrieval units.
+- Channel A enumerates all distinct graph source spans and exposes an exhaustive
+  count and pagination over them. The unit of enumeration is a distinct
+  `(passage, start_codepoint, end_codepoint)` span, not a mention row: several
+  concepts anchored on the same characters yield one result, and a span wholly
+  contained by another span in the same result set is not returned separately —
+  the maximal span survives and is attributed to every concept it absorbed.
+  Partially overlapping spans that are not in a containment relation are returned
+  separately; spans are never widened to their union, since that would render a
+  citation no concept anchored. The exhaustive count and the paged list apply the
+  identical predicate, so paging through the channel yields exactly `graph_total`
+  results. Deduplication is scoped within one passage, so the set of passages the
+  channel reaches is unchanged. Channel B returns vector candidates from derived
+  retrieval units.
 - Candidate windows are locally cross-encoder reranked, then diversified with
   MMR before their parent passages are rendered.
 
