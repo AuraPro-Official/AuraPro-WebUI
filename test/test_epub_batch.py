@@ -1722,7 +1722,7 @@ class EpubBatchServiceTest(unittest.TestCase):
     #
     # Sample 965c2c11 sat at 15/16 on exactly this: the model asserted
     # 双轨校准法 --HAS_PART--> 观测规程2.4-2.11 and an administrator had since
-    # merged the parable with its scripture citation, so the relation resolved
+    # merged the procedure with its document citation, so the relation resolved
     # to a self-loop that ``concept_relations`` forbids by CHECK.  The packet's
     # concepts and mentions were valid and were being discarded over an edge
     # the administrator themselves collapsed.  ``merge_concepts`` already drops
