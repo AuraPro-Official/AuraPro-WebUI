@@ -233,6 +233,8 @@ exclude = [
     "backend/open_webui/static/fonts/NotoSansKR-*.ttf",
 ]
 [tool.hatch.build.targets.wheel.force-include]
+"backend/open_webui/env.py" = "open_webui/env.py"
+"backend/open_webui/migrations/env.py" = "open_webui/migrations/env.py"
 "CHANGELOG.md" = "open_webui/CHANGELOG.md"
 "LICENSE" = "open_webui/LICENSE"
 "LICENSE_NOTICE" = "open_webui/LICENSE_NOTICE"
