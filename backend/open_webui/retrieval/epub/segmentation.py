@@ -2,7 +2,7 @@
 
 CJK text has no spaces, so a substring search over a natural-language query
 happily anchors a concept in the middle of an unrelated word: ``律`` inside
-``规律``, or the one-character alias ``锚`` inside ``锚点``.  A segmenter gives
+``规律``, or the one-character alias ``锚`` inside ``锚站``.  A segmenter gives
 the matcher the one thing it is missing — where the query's own words begin and
 end — so a CJK term can be required to sit on a word boundary the way a Latin
 term already is.
