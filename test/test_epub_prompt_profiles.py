@@ -42,6 +42,23 @@ class PromptProfileTest(unittest.TestCase):
         self.assertEqual(local["seed"], 0)
         self.assertEqual(remote["seed"], 0)
 
+    def test_default_cloud_profile_requires_bounded_context_anchors(self) -> None:
+        remote = PROMPTS.build_concept_completion_request(
+            model="remote-model-snapshot",
+            profile_id=PROMPTS.DEFAULT_CONCEPT_PROMPT_PROFILE,
+            passage="甲甲",
+            remote_structured_output=True,
+        )
+        mention = remote["response_format"]["json_schema"]["schema"]["properties"]["concepts"]["items"]["properties"]["mentions"]["items"]
+        self.assertEqual(
+            mention["required"],
+            ["start_codepoint", "end_codepoint", "evidence", "context_before", "context_after"],
+        )
+        self.assertEqual(
+            mention["properties"]["context_before"]["maxLength"],
+            PROMPTS.MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        )
+
     def test_stratified_selection_covers_chapters_instead_of_taking_first_rows(self) -> None:
         passages = [
             {"passage_id": "a1", "ordinal": 1, "toc_path": ["A"]},
