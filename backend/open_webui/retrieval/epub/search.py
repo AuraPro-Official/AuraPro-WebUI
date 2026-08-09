@@ -17,6 +17,7 @@ import math
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 from .inference import ConceptResolver, EmbeddingService, ModelAvailability, RerankerService
+from .segmentation import QuerySegmenter, TokenBoundaries, load_query_segmenter
 from .vector_index import DerivedVectorRecord
 
 
@@ -102,6 +103,13 @@ class EpubSearchRepository(Protocol):
 
     def list_concept_terms(self) -> list[Mapping[str, Any]]: ...
 
+    # A cheap value that changes whenever ``list_concept_terms`` would return
+    # something different, so the Tier-1 matcher can be reused across requests
+    # without ever serving a vocabulary the administrator has already changed.
+    # ``None`` declares that this repository cannot make that promise, and
+    # costs it the reuse rather than the freshness.
+    def concept_term_fingerprint(self) -> tuple[Any, ...] | None: ...
+
     # Both occurrence methods enumerate *distinct source spans*, never mention
     # rows: exact duplicates and spans nested inside another span collapse into
     # one row that carries ``concept_ids``/``canonical_names`` for every
@@ -151,14 +159,26 @@ class _TrieNode:
         self.failure: _TrieNode | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _TermMatch:
+    """One boundary-valid hit, with the span it covered in the searched text."""
+
+    start: int
+    end: int
+    term: ConceptTerm
+
+
 class ConceptTermMatcher:
-    """In-memory multi-pattern matcher with Latin-token boundary semantics.
+    """In-memory multi-pattern matcher with token-boundary semantics.
 
     It is a trie rather than a dependency on a particular Aho-Corasick package:
     all aliases are scanned in one pass, which is equivalent for the search
-    contract and keeps desktop deployments dependency-light.  CJK phrases are
-    matched directly; terms starting/ending in ASCII word characters require a
-    corresponding token boundary.
+    contract and keeps desktop deployments dependency-light.  For the same
+    reason it does not segment anything itself: a caller that has word
+    boundaries for the searched text passes them in, and a caller that has none
+    still gets a working, if broader, match.  Terms starting/ending in ASCII
+    word characters require a corresponding token boundary; terms containing
+    CJK require the supplied boundaries to agree with both of their ends.
     """
 
     def __init__(self, terms: Iterable[ConceptTerm]):
@@ -183,11 +203,42 @@ class ConceptTermMatcher:
     def terms(self) -> tuple[ConceptTerm, ...]:
         return tuple(self._terms)
 
-    def match(self, text: str) -> tuple[ConceptTerm, ...]:
+    def match(self, text: str, *, boundaries: TokenBoundaries | None = None) -> tuple[ConceptTerm, ...]:
+        """Concepts this text mentions, one per concept."""
+        return tuple(hit.term for hit in self.match_spans(text, boundaries=boundaries))
+
+    def match_spans(
+        self, text: str, *, boundaries: TokenBoundaries | None = None
+    ) -> tuple[_TermMatch, ...]:
+        """Concepts this text mentions, each with the span that won it.
+
+        Positions are kept all the way through because two rules need them.
+        Longest-match suppression drops a hit that sits *strictly inside*
+        another surviving hit: with the query ``神对约伯的试炼的意义``, the
+        alias ``约`` is boundary-valid on its own but is covered by the longer
+        ``神对约伯的试炼``, and a reader asking about the trial of Job is not
+        asking about every covenant in the book.  Equal spans are not
+        contained, so two aliases that collide on identical characters both
+        survive — the same rule the store applies when it collapses overlapping
+        source spans.
+
+        Deduplication then keeps the *longest* surviving span per concept.
+        This is a deliberate change from keeping the first: position used to be
+        discarded before anything could compare two hits, so a concept matched
+        by a one-character alias early in the query kept that hit even when its
+        full canonical name matched later.
+        """
         if not text:
             return ()
         folded = text.casefold()
-        matched: dict[str, ConceptTerm] = {}
+        # Offsets are into the folded text, while ``boundaries`` describes the
+        # original.  Casefolding is length-preserving for CJK and for every
+        # script this store indexes, but not universally (``ß`` folds to two
+        # characters).  Where it is not, the offsets cannot be compared, so the
+        # boundary rule is dropped rather than applied to the wrong positions.
+        if boundaries is not None and len(folded) != len(text):
+            boundaries = None
+        hits: list[_TermMatch] = []
         node = self._root
         for end, character in enumerate(folded, start=1):
             while node is not self._root and character not in node.children:
@@ -197,9 +248,15 @@ class ConceptTermMatcher:
             for term in node.terms:
                 term_folded = term.term.casefold()
                 start = end - len(term_folded)
-                if start >= 0 and self._valid_boundaries(folded, start, end, term_folded):
-                    matched.setdefault(term.concept_id, term)
-        return tuple(matched.values())
+                if start >= 0 and self._valid_boundaries(folded, start, end, term_folded, boundaries):
+                    hits.append(_TermMatch(start=start, end=end, term=term))
+        surviving = [hit for hit in hits if not _strictly_contained(hit, hits)]
+        best: dict[str, _TermMatch] = {}
+        for hit in surviving:
+            incumbent = best.get(hit.term.concept_id)
+            if incumbent is None or (hit.end - hit.start) > (incumbent.end - incumbent.start):
+                best[hit.term.concept_id] = hit
+        return tuple(best.values())
 
     def _build_failure_links(self) -> None:
         """Compile the trie into an Aho-Corasick automaton once per request."""
@@ -221,9 +278,22 @@ class ConceptTermMatcher:
                 queue.append(child)
 
     @staticmethod
-    def _valid_boundaries(text: str, start: int, end: int, term: str) -> bool:
-        # Only Latin-style terms require boundaries.  CJK terms intentionally
-        # match directly inside natural-language queries.
+    def _valid_boundaries(
+        text: str, start: int, end: int, term: str, boundaries: TokenBoundaries | None
+    ) -> bool:
+        # A term containing CJK is valid only where the searched text's own
+        # word boundaries agree with both of its ends.  CJK is written without
+        # spaces, so without this a term matches anywhere it appears as a
+        # substring: `义` lands inside `意义`, and the one-character alias `约`
+        # lands inside the name `约伯`, pulling in concepts the query never
+        # mentioned.  Boundaries come from the caller because this matcher does
+        # not own a segmenter; when the caller has none, the older rule applies
+        # and the loss of precision is reported as degraded rather than hidden.
+        if boundaries is not None and any(_is_cjk(character) for character in term):
+            if not boundaries.aligned(start, end):
+                return False
+        # The Latin rule is unchanged: a term with no ASCII word characters has
+        # nothing further to check, and a mixed term must satisfy both.
         if not any(_ascii_word(character) for character in term):
             return True
         if _ascii_word(term[0]) and start > 0 and _ascii_word(text[start - 1]):
@@ -244,6 +314,7 @@ class EpubSearchService:
         embeddings: EmbeddingService | None = None,
         reranker: RerankerService | None = None,
         concept_resolver: ConceptResolver | None = None,
+        segmenter: QuerySegmenter | None = None,
         mmr_lambda: float = 0.7,
     ) -> None:
         if not 0.0 <= mmr_lambda <= 1.0:
@@ -254,6 +325,14 @@ class EpubSearchService:
         self._reranker = reranker
         self._concept_resolver = concept_resolver
         self._mmr_lambda = mmr_lambda
+        # An explicitly injected segmenter is taken as configured and is never
+        # replaced by the loaded one; ``None`` means "load the local default on
+        # first use", which is not the same thing as "run without one".
+        self._segmenter = segmenter
+        self._segmenter_loaded = segmenter is not None
+        self._segmenter_reason: str | None = None
+        self._matcher: ConceptTermMatcher | None = None
+        self._matcher_fingerprint: tuple[Any, ...] | None = None
 
     def search(
         self,
@@ -276,12 +355,12 @@ class EpubSearchService:
         ):
             raise SearchError("search pagination limits are invalid")
 
-        terms = self._concept_terms()
-        matcher = ConceptTermMatcher(terms)
-        matched = matcher.match(query)
         degraded: list[ModelAvailability] = []
+        matcher = self._concept_matcher()
+        segmenter = self._query_segmenter(degraded)
+        matched = matcher.match(query, boundaries=_boundaries(segmenter, query))
         if not matched:
-            matched = self._resolve_tier_two(query, matcher, degraded)
+            matched = self._resolve_tier_two(query, matcher, segmenter, degraded)
         concept_ids = tuple(term.concept_id for term in matched)
         resolved_names = tuple(dict.fromkeys(term.canonical_name for term in matched))
         expansion = self._expand_relation_concepts(concept_ids)
@@ -411,6 +490,58 @@ class EpubSearchService:
         )
         return tuple(self._graph_hit(row, resolved_names, expansion.depths) for row in rows)
 
+    def _concept_matcher(self) -> ConceptTermMatcher:
+        """Return the Tier-1 matcher, rebuilding it only when the vocabulary moved.
+
+        The matcher used to be rebuilt for every request.  That was affordable
+        on its own — a few milliseconds — but it is not affordable next to a
+        segmenter, whose dictionary costs a third of a second to build, so both
+        are now held on the service.
+
+        Freshness is not traded away for it.  The key is a store fingerprint
+        that changes on every write that could change what
+        ``list_concept_terms`` returns — a merge, a split, an alias, an ingest
+        — so an administrator who edits an alias sees the effect on the next
+        query, not after a restart.  A repository that answers ``None`` is
+        declaring it cannot make that promise, and is served a freshly built
+        matcher every time rather than a possibly stale one.
+        """
+        fingerprint = self._source.concept_term_fingerprint()
+        if (
+            self._matcher is not None
+            and fingerprint is not None
+            and fingerprint == self._matcher_fingerprint
+        ):
+            return self._matcher
+        matcher = ConceptTermMatcher(self._concept_terms())
+        self._matcher = matcher
+        self._matcher_fingerprint = fingerprint
+        return matcher
+
+    def _query_segmenter(self, degraded: list[ModelAvailability]) -> QuerySegmenter | None:
+        """Return the query segmenter, loading it at most once per service.
+
+        It is not keyed on the store fingerprint the matcher uses, and that is
+        deliberate: the segmenter reads only the stock dictionary, so no write
+        to this store can change what it returns.  Rebuilding it when an alias
+        changes would pay a third of a second to obtain an identical object.
+
+        An unavailable segmenter is a real reduction in precision — CJK terms
+        fall back to matching anywhere they appear — so it is reported on every
+        response that ran without one, not only on the request that discovered
+        it was missing.
+        """
+        if not self._segmenter_loaded:
+            self._segmenter, self._segmenter_reason = load_query_segmenter()
+            self._segmenter_loaded = True
+        if self._segmenter is None:
+            degraded.append(
+                ModelAvailability.degraded(
+                    "query-segmenter", self._segmenter_reason or "not configured"
+                )
+            )
+        return self._segmenter
+
     def _concept_terms(self) -> list[ConceptTerm]:
         terms: list[ConceptTerm] = []
         for row in self._source.list_concept_terms():
@@ -425,6 +556,7 @@ class EpubSearchService:
         self,
         query: str,
         matcher: ConceptTermMatcher,
+        segmenter: QuerySegmenter | None,
         degraded: list[ModelAvailability],
     ) -> tuple[ConceptTerm, ...]:
         if self._concept_resolver is None:
@@ -446,7 +578,11 @@ class EpubSearchService:
             return ()
         # The local LLM can select only an existing canonical/alias term; it
         # never creates a new graph node or trusts generated free-form text.
-        accepted = matcher.match(resolved)
+        # The boundaries are the resolver's own answer segmented, not the
+        # query's: the offsets being validated are offsets into ``resolved``.
+        # A bare canonical name is one span from 0 to its length, and those two
+        # endpoints are always boundaries, so re-validation still accepts it.
+        accepted = matcher.match(resolved, boundaries=_boundaries(segmenter, resolved))
         if not accepted:
             degraded.append(
                 ModelAvailability.degraded("local-concept-resolver", "returned an unknown concept")
@@ -849,6 +985,53 @@ def _mmr_select_fused(
 
 def _ascii_word(character: str) -> bool:
     return character.isascii() and (character.isalnum() or character == "_")
+
+
+def _boundaries(segmenter: QuerySegmenter | None, text: str) -> TokenBoundaries | None:
+    """Word boundaries for one text, or ``None`` when there is no segmenter.
+
+    A segmenter that raises is treated as absent for this text rather than
+    failing the search: the fallback is a broader match over the same immutable
+    source, and the missing-segmenter degradation is already reported.
+    """
+    if segmenter is None:
+        return None
+    try:
+        return segmenter.boundaries(text)
+    except Exception:
+        return None
+
+
+def _is_cjk(character: str) -> bool:
+    """Whether this character belongs to a script written without word spaces.
+
+    Deliberately narrow: only Han ideographs.  The token-boundary rule exists
+    because such a script gives a substring search nothing to anchor on, and
+    applying it to punctuation or to Latin-with-symbols terms (``TCP/IP``)
+    would reject matches the Latin rule already handles correctly.
+    """
+    code = ord(character)
+    return (
+        0x3400 <= code <= 0x4DBF  # CJK Unified Ideographs Extension A
+        or 0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
+        or 0xF900 <= code <= 0xFAFF  # CJK Compatibility Ideographs
+        or 0x20000 <= code <= 0x3134F  # Extensions B onwards
+    )
+
+
+def _strictly_contained(hit: _TermMatch, hits: Sequence[_TermMatch]) -> bool:
+    """Whether a longer hit wholly covers this one.
+
+    Equal spans are not contained, so two aliases that matched the identical
+    characters both survive; this mirrors the containment rule the store uses
+    when it collapses overlapping source spans, so recall and citation agree
+    about what "the same piece of text" means.
+    """
+    length = hit.end - hit.start
+    return any(
+        other.start <= hit.start and hit.end <= other.end and (other.end - other.start) > length
+        for other in hits
+    )
 
 
 def _validated_vector(vector: Sequence[float]) -> tuple[float, ...]:

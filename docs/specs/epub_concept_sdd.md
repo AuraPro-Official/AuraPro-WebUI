@@ -391,7 +391,20 @@ relationship affects retrieval provenance and ranking, never citation text.
 ### 4.3 Search
 
 - Tier 1 uses an in-memory multi-pattern matcher (Aho-Corasick or equivalent),
-  with Latin-token boundary handling and direct CJK phrase matching.
+  with Latin-token boundary handling and **token-aligned CJK phrase matching**.
+  Only the query is segmented, by a deterministic local dictionary tokenizer
+  that performs no inference and opens no socket; concept terms are never
+  segmented, since a phrase such as `神对约伯的试炼` exists as a term but as no
+  tokenizer's token. Segmentation therefore supplies a boundary predicate, not
+  a pattern set: a CJK match is valid only where both its ends coincide with a
+  query token boundary, so a term may span several adjacent tokens while a term
+  landing inside one (`义` within `意义`, the one-character alias `约` within
+  `约伯`) is rejected. Where two valid matches overlap, one strictly contained
+  in another is suppressed and the longer survives; equal spans both survive,
+  matching Channel A's containment rule. If the segmenter is unavailable, Tier 1
+  falls back to unsegmented CJK matching and the response reports a degraded
+  `query-segmenter` component — a broader match over the same immutable source
+  is acceptable, silently taking it is not.
 - Tier 2 uses a local/private small LLM to resolve a concept only when Tier 1
   has no useful match. If unavailable, return an explicit degraded state rather
   than calling a cloud fallback.

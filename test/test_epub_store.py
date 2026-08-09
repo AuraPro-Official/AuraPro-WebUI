@@ -152,6 +152,41 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(mention["concept_id"], concept_id)
 
+    def test_the_concept_term_fingerprint_moves_whenever_the_vocabulary_does(self) -> None:
+        """Search caches its Tier-1 matcher on this value, so it must never miss a write.
+
+        A stale matcher is worse than a slow one: an administrator who adds an
+        alias would keep getting the old answer with nothing to indicate why.
+        Adding a concept, adding an alias to an existing concept, and merging
+        two concepts each have to move it — the last one changes no row count
+        at all, which is why ``MAX(updated_at)`` is in the value.
+        """
+        self.store.add_passages("version-a", [self._passage()])
+        seen = {self.store.concept_term_fingerprint()}
+
+        tcp = self.store.upsert_concept("TCP")
+        self.assertNotIn(self.store.concept_term_fingerprint(), seen)
+        seen.add(self.store.concept_term_fingerprint())
+
+        self.store.upsert_concept("TCP", aliases=["Transmission Control Protocol"])
+        self.assertNotIn(self.store.concept_term_fingerprint(), seen)
+        seen.add(self.store.concept_term_fingerprint())
+
+        udp = self.store.upsert_concept("UDP")
+        self.store.add_concept_mention(tcp, "passage-a", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(udp, "passage-a", start_codepoint=4, end_codepoint=6)
+        seen.add(self.store.concept_term_fingerprint())
+        self.store.merge_concepts(
+            target_concept_id=tcp, source_concept_id=udp, merged_by="admin"
+        )
+        self.assertNotIn(self.store.concept_term_fingerprint(), seen)
+
+        # Reading twice without writing must give the identical value, or the
+        # cache would rebuild on every request and buy nothing.
+        self.assertEqual(
+            self.store.concept_term_fingerprint(), self.store.concept_term_fingerprint()
+        )
+
     def test_canonical_name_cannot_capture_another_concepts_alias(self) -> None:
         self.store.upsert_concept("TCP", aliases=["Transmission Control Protocol"])
         with self.assertRaisesRegex(IntegrityError, "already an alias"):
