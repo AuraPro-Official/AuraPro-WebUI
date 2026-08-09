@@ -74,9 +74,7 @@ read_pin() {
 SQLITE_VEC_PIN="$(read_pin sqlite-vec 0.1.9)"
 MULTIPART_PIN="$(read_pin python-multipart 0.0.32)"
 JIEBA_PIN="$(read_pin jieba 0.42.1)"
-# ruff is declared as a range (`ruff>=0.15.5`) in [dependency-groups] dev rather
-# than an `==` pin, so read_pin cannot find it; mirror the declared floor.
-RUFF_PIN="ruff>=0.15.5"
+RUFF_PIN="$(read_pin ruff 0.16.2)"
 
 # Minimal set only.  Deliberately NOT `pip install -e .` -- that drags in torch
 # and several hundred packages that no EPUB test touches.
@@ -268,7 +266,7 @@ venv_is_complete() {
 	[ -x "${VENV_PYTHON}" ] || return 1
 	[ -x "${VENV_DIR}/bin/ruff" ] || return 1
 	validate_python "${VENV_PYTHON}" quiet || return 1
-	AURAPRO_REQUIRED_PINS="${SQLITE_VEC_PIN} ${MULTIPART_PIN} ${JIEBA_PIN}" \
+	AURAPRO_REQUIRED_PINS="${SQLITE_VEC_PIN} ${MULTIPART_PIN} ${JIEBA_PIN} ${RUFF_PIN}" \
 		"${VENV_PYTHON}" - <<'PY' >/dev/null 2>&1 || return 1
 import os
 from importlib import metadata
