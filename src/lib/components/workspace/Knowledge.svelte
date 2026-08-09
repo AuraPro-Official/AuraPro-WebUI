@@ -175,9 +175,9 @@
 		}
 	};
 
-
 	const exportHandler = async (item: KnowledgeListItem) => {
-		const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+		const requestId =
+			crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 		exportRequestId = requestId;
 
 		const controller = new AbortController();
@@ -318,7 +318,9 @@
 							{$i18n.t('Export failed')}
 						</div>
 					</div>
-					<div class="text-xs text-gray-500 dark:text-gray-400 break-words max-h-24 overflow-y-auto mb-4">
+					<div
+						class="text-xs text-gray-500 dark:text-gray-400 break-words max-h-24 overflow-y-auto mb-4"
+					>
 						{exportError}
 					</div>
 					<button
