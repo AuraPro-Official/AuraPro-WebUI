@@ -1,8 +1,8 @@
 """Query-side word segmentation for Tier-1 concept matching.
 
 CJK text has no spaces, so a substring search over a natural-language query
-happily anchors a concept in the middle of an unrelated word: ``义`` inside
-``意义``, or the one-character alias ``约`` inside ``锚站``.  A segmenter gives
+happily anchors a concept in the middle of an unrelated word: ``律`` inside
+``规律``, or the one-character alias ``锚`` inside ``锚站``.  A segmenter gives
 the matcher the one thing it is missing — where the query's own words begin and
 end — so a CJK term can be required to sit on a word boundary the way a Latin
 term already is.
@@ -43,8 +43,8 @@ class TokenBoundaries:
     ``text[a:b]`` contributes ``a`` to ``starts`` and ``b`` to ``ends``.  A
     match ``[start, end)`` is boundary-valid when both endpoints are members,
     which allows a term to span several adjacent tokens (``枢对锚站的校验``
-    covers four) while rejecting one that begins or ends mid-token (``义``
-    inside ``意义``).
+    covers four) while rejecting one that begins or ends mid-token (``律``
+    inside ``规律``).
 
     ``0`` and ``len(text)`` are always members, whatever the tokenizer said.
     Without that, a text consisting of exactly one term could fail its own

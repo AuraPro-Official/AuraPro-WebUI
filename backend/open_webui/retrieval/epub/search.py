@@ -280,9 +280,9 @@ class ConceptTermMatcher:
         Positions are kept all the way through because two rules need them.
         Longest-match suppression drops a hit that sits *strictly inside*
         another surviving hit: with the query ``枢对锚站的校验的规律``, the
-        alias ``约`` is boundary-valid on its own but is covered by the longer
-        ``枢对锚站的校验``, and a reader asking about the anchor-station validation is not
-        asking about every covenant in the book.  Equal spans are not
+        one-code-point alias ``锚`` is boundary-valid on its own but is covered
+        by the longer ``枢对锚站的校验``, and a reader asking about that one
+        procedure is not asking about every concept whose name contains it.  Equal spans are not
         contained, so two aliases that collide on identical characters both
         survive — the same rule the store applies when it collapses overlapping
         source spans.
@@ -347,7 +347,7 @@ class ConceptTermMatcher:
         # A term containing CJK is valid only where the searched text's own
         # word boundaries agree with both of its ends.  CJK is written without
         # spaces, so without this a term matches anywhere it appears as a
-        # substring: `义` lands inside `意义`, and the one-character alias `约`
+        # substring: `律` lands inside `规律`, and the one-character alias `锚`
         # lands inside the name `锚站`, pulling in concepts the query never
         # mentioned.  Boundaries come from the caller because this matcher does
         # not own a segmenter; when the caller has none, the older rule applies
@@ -517,8 +517,8 @@ class EpubSearchService:
         Deliberately *not* a condition: **how many mentions the concept has.**
         That was tried as a proxy for a generic term and it misfires exactly
         where it matters.  ``枢纽的权重`` is matched by its full five-code-point
-        name; it is not generic, it is a specific topic that a acceptance corpus
-        naturally discusses often, and a reader who searches for it by name
+        name; it is not generic, it is a specific topic that the acceptance
+        book naturally discusses often, and a reader who searches for it by name
         almost certainly wants its sub-topics.  A ceiling on the count refused
         them, cutting that query from 174 spans to 42.  Frequency is a fact
         about the book, not about what the reader asked for.

@@ -2162,7 +2162,7 @@ class SQLiteEpubStore:
 
         :meth:`merge_concepts` is one-way, and an administrator merge is a
         fallible judgement -- a context-specific designation folded into a
-        generic one, a teaching folded into the document locator that names
+        generic one, a procedure folded into the document locator that names
         it.  Restoring a backup and replaying stops being possible as soon as a
         later job postdates the backup, so this is the correction path.
 
