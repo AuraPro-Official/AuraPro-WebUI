@@ -480,12 +480,64 @@ second, relation layer before its full-version offline Batch is accepted.
    separately.
 
 At query time, direct concept mentions and bounded relation traversal form the
-graph candidate set. `HAS_PART` expands a resolved parent concept to its child
-concepts; TOC provenance orders the resulting passages in book order. The
-graph candidate set is combined with local vector candidates, locally
-Cross-Encoder reranked, and MMR diversified. A graph-derived result always
-returns its complete immutable passage and a verified source excerpt; the
-relationship affects retrieval provenance and ranking, never citation text.
+graph candidate set. All six predicates are traversed, but they are **not one
+graph**: the traversal a predicate earns follows from what it asserts, and the
+three classes below are walked separately, each out of the resolved seeds only.
+
+- **Containment** (`HAS_PART`) expands a resolved parent concept to its child
+  concepts, **downwards, two hops**. Direction is not in question for it — a
+  whole names its parts, and a part of a part is still a part — and it is the
+  only class that may travel more than one hop.
+- **Quasi-containment** (`ELABORATES`) travels **one hop, both directions**, at
+  a higher base cost. Both directions because the stored direction does not
+  survive inspection: on the acceptance graph these edges lean about 2:1
+  towards subject-as-topic, which is the opposite of what the predicate's own
+  name asserts, some pairs are stated reciprocally, and where the same pair also
+  carries a containment edge the two agree about 7 times to 3. A direction that
+  has to be guessed is not a direction, and the honest traversal is both ends
+  with the uncertainty priced into the hop.
+- **Association and sequence** (`PRECEDES`, `PREREQUISITE`, `CAUSES`,
+  `CONTRASTS`) travel **one hop, both directions**, at the highest base cost.
+  Bidirectional is the point rather than a concession: a cause is reachable from
+  its effect, and a query landing on a link in the middle of a chain must reach
+  the link before it as well as the one after.
+
+**One hop is a hard stop, not a default a deeper rule may override.** A concept
+reached by anything other than containment is recorded, counted and paged like
+any other, and is never a frontier — not for its own class and not for
+containment — so the classes cannot be composed into a longer path by
+alternating between them. This bound is measured, not assumed. Walking every
+predicate downwards to the containment depth took one seed from 8 concepts /
+184 spans to 51 / 968, and bidirectionally to 61 / 1,119; that is not recall,
+it is the rest of the book. Under the classes above the same graph's worst
+seeds gain single digits: across every eligible seed the growth in reached
+concepts is a median of 1, a 95th percentile of 6 and a maximum of 11.
+
+Nothing here is a second ordering. Every class writes into the one cost map
+Channel A already ranks by — a hop costs `base + log2(fan-out of that parent
+through that predicate)`, so a new predicate is a new _cost source_ and not a
+new sort key — and hop count keeps meaning hop count. Where two classes reach
+the same concept the shallower hop wins, then the cheaper, then a fixed label
+order in which containment outranks the weaker semantic predicates and every
+semantic predicate outranks the structural TOC edge. Retrieval provenance names
+the predicate that won, `relation:{predicate}:{depth}`, because "reached by a
+relation" tells a reader almost nothing while "reached by a containment edge
+rather than a contrastive one" lets them judge it; structural TOC provenance
+keeps its own distinct `structure:` prefix and is unaffected. TOC provenance
+orders the resulting passages in book order. The graph candidate set is combined
+with local vector candidates, locally Cross-Encoder reranked, and MMR
+diversified. A graph-derived result always returns its complete immutable
+passage and a verified source excerpt; the relationship affects retrieval
+provenance and ranking, never citation text.
+
+One observation about the model's use of `HAS_PART` is recorded here as
+**prompt quality**, and deliberately not acted on. It is demonstrably used as a
+generic association bag in places — edges exist where the object is not a part
+of the subject under any reading. That is not evidence for retuning its
+two-hop treatment: a few dozen such edges is far too small a sample to move a
+traversal rule, and the `log2(fan-out)` term already prices a promiscuous parent
+by down-weighting everything it reaches. It is evidence about the extraction
+instruction, and belongs to the prompt profile that produced it.
 
 ### 4.3 Search
 
@@ -526,9 +578,12 @@ relationship affects retrieval provenance and ranking, never citation text.
   ends at `graph_total`; a per-page rerank is not permitted, because it would
   make page 2 meaningless. Three deterministic signals apply strictly in order:
   (1) how expensive it was to reach the span's concepts, where a Tier-1 match
-  costs nothing and one `HAS_PART` hop costs `1 + log2(children of that parent)`,
-  so a span reached only by expanding through a high-degree hub always sorts
-  below a directly matched one; (2) how many queried concepts the one span is
+  costs nothing while one relation hop costs its predicate's base plus
+  `log2(neighbours of that parent through that predicate)` — base 1 for a
+  containment hop and higher for the weaker predicates, per 4.2.2 — so a span
+  reached only by expanding through a high-degree hub, or only by a weak
+  association, always sorts below a directly matched one; (2) how many queried
+  concepts the one span is
   attributed to; (3) span length, so a bare two-character name sorts below a
   substantive citation and an unanchored mention sorts last. Book order is the
   final tie-break. The ranking signals a span is ordered by are derived
