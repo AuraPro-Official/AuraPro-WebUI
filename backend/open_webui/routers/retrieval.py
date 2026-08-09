@@ -2732,9 +2732,7 @@ async def _process_bilingual(
 
     def _emit_wordalign_progress(message: str, step: str | None = None, **extra):
         try:
-            asyncio.get_running_loop().create_task(
-                _emit_bilingual_progress(message, step=step, **extra)
-            )
+            asyncio.get_running_loop().create_task(_emit_bilingual_progress(message, step=step, **extra))
         except RuntimeError:
             pass
 
@@ -3151,7 +3149,7 @@ def _locate_offset(para_text: str, sentence_text: str, cursor: int, lang_code: s
     则退化为 cursor 到 cursor+len(sentence_text)，并记录日志排查。
     """
 
-    if lang_code == "zh":
+    if lang_code == 'zh':
         find_text = sentence_text.replace(' ', '')
     else:
         find_text = sentence_text
@@ -3191,7 +3189,7 @@ async def get_bilingual_align(
         if group_id is None:
             continue
         if group_id not in groups:
-            if meta.get("lang") == primary_lang:
+            if meta.get('lang') == primary_lang:
                 groups[group_id] = {
                     'para_index': meta.get('para_index', 0),
                     'sentence_index': meta.get('sentence_index', 0),

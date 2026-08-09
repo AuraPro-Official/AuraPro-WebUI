@@ -2273,10 +2273,7 @@ class BilingualKnowledgeReader:
                         }
                     )
 
-        matched_sentences = [
-            s for s in all_source_sentences
-            if self.combined_similarity(queries, s['text']) >= 99
-        ]
+        matched_sentences = [s for s in all_source_sentences if self.combined_similarity(queries, s['text']) >= 99]
         if not matched_sentences:
             return [], [], True
 
