@@ -80,9 +80,9 @@ _PUBLISHED_PROFILE_OFFSET_CONTRACTS = {
 # *Enforced* is what ingest applies to a returned span: below it, the span is
 # dropped from the payload.  It is lower on purpose.  10 code points was chosen
 # as a proxy for "distinctive and locatable" and overshoots badly in Chinese -
-# ``神对亚当的嘱咐`` (7) and ``万口在称独一真神`` (8) are complete citations, and
+# ``枢对测点的授时`` (7) and ``全网同步统一时基`` (8) are complete citations, and
 # enforcing 10 discarded 13 of 43 packets on the full section-graph run.  6
-# rejects the bare terms the floor was actually aimed at (``耶和华神`` is 4) and
+# rejects the bare terms the floor was actually aimed at (``潮位观测站`` is 4) and
 # admits the rest.  Raising this to match the requested number is not a fix.
 _PUBLISHED_PROFILE_REQUESTED_EVIDENCE_MINIMA = {
     'zh-glossary-v1': 0,

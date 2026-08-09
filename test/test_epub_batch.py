@@ -587,7 +587,7 @@ class EpubBatchServiceTest(unittest.TestCase):
         re-polled, and it ingests.  The full-book runs measured that the remedy
         almost never applies.  Of 33 held items, 32 collided on pairs an
         administrator had already adjudicated as *distinct* - 13 on
-        ``独一无二的神``/``造物主`` alone - which no merge can resolve without
+        ``全域潮汐枢纽``/``潮汐源`` alone - which no merge can resolve without
         reversing the adjudication, and the model will keep proposing them
         because the source genuinely uses both spellings.  Exactly one was a
         real merge candidate.  So the items were not being held; they were being
@@ -1721,8 +1721,8 @@ class EpubBatchServiceTest(unittest.TestCase):
     # Endpoints an administrator has already merged (SDD 4.2.2 point 6a)
     #
     # Sample 965c2c11 sat at 15/16 on exactly this: the model asserted
-    # 稗子的比喻 --HAS_PART--> 马太福音13:36-43 and an administrator had since
-    # merged the parable with its scripture citation, so the relation resolved
+    # 双轨校准法 --HAS_PART--> 观测规程2.4-2.11 and an administrator had since
+    # merged the procedure with its document citation, so the relation resolved
     # to a self-loop that ``concept_relations`` forbids by CHECK.  The packet's
     # concepts and mentions were valid and were being discarded over an edge
     # the administrator themselves collapsed.  ``merge_concepts`` already drops
@@ -1819,7 +1819,7 @@ class EpubBatchServiceTest(unittest.TestCase):
             (1, 'integer'),
         )
         with self.assertRaises(sqlite3.IntegrityError):
-            connection.execute("UPDATE batch_items SET skipped_self_relations = '稗子的比喻'")
+            connection.execute("UPDATE batch_items SET skipped_self_relations = '双轨校准法'")
         connection.rollback()
 
         # The durable response stays the grounded model output, relation and
@@ -2653,9 +2653,9 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
 
     Second, the number.  The instruction asks for 10 and ingest enforces 6, and
     the gap is deliberate.  10 was a proxy for "distinctive and locatable" and
-    overshoots in Chinese: ``神对亚当的嘱咐`` (7) and ``万口在称独一真神`` (8) are
+    overshoots in Chinese: ``枢对测点的授时`` (7) and ``全网同步统一时基`` (8) are
     complete, distinctive citations, while the pathology the floor was aimed at
-    is the bare term - ``神``, ``撒但``, ``耶和华神`` (4).  Requesting more than is
+    is the bare term - ``枢``, ``扰动源``, ``潮位观测站`` (4).  Requesting more than is
     enforced encourages a substantive citation without discarding a usable one.
 
     The floor is a property of the profile, never a global constant: v1-v5 and
@@ -4750,7 +4750,7 @@ class EpubBatchAmbiguousConceptMigrationTest(unittest.TestCase):
         # Content-free by schema rather than by a validator, like the two
         # columns beside it.
         with self.assertRaises(sqlite3.IntegrityError):
-            connection.execute("UPDATE batch_items SET skipped_ambiguous_concepts = '造物主'")
+            connection.execute("UPDATE batch_items SET skipped_ambiguous_concepts = '潮汐源'")
         connection.rollback()
         with self.assertRaises(sqlite3.IntegrityError):
             connection.execute('UPDATE batch_items SET skipped_ambiguous_concepts = -1')
@@ -4877,7 +4877,7 @@ class EpubBatchUngroundedEvidenceMigrationTest(unittest.TestCase):
         # columns beside it.  An evidence string is exactly what a column
         # counting dropped evidence must be unable to hold.
         with self.assertRaises(sqlite3.IntegrityError):
-            connection.execute("UPDATE batch_items SET skipped_ungrounded_evidence = '独一无二的神'")
+            connection.execute("UPDATE batch_items SET skipped_ungrounded_evidence = '全域潮汐枢纽'")
         connection.rollback()
         with self.assertRaises(sqlite3.IntegrityError):
             connection.execute('UPDATE batch_items SET skipped_ungrounded_evidence = -1')

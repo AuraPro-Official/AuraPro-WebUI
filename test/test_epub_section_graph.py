@@ -50,7 +50,7 @@ _PUBLISHED_PROFILE_DIGESTS = {
 # *Enforced* is what ingest applies to a returned span, and is lower on purpose:
 # enforcing the requested 10 on this very path discarded 13 of 43 packets on the
 # full-book run - 140 concepts, 140 mentions and 105 relations - over citations
-# like ``神对亚当的嘱咐`` (7 code points) that are perfectly locatable.
+# like ``枢对测点的授时`` (7 code points) that are perfectly locatable.
 _PUBLISHED_PROFILE_REQUESTED_EVIDENCE_MINIMA = {
     'zh-section-graph-v1': 0,
     'zh-section-graph-v2': 10,
@@ -323,7 +323,7 @@ class SectionGraphProfileTest(unittest.TestCase):
         # was copying a section title out of a field the packet gave it and
         # never scoped.  Removing the field removes the temptation, and it costs
         # nothing - TOC provenance is a deterministic server-side write.
-        titles = ('神是万物生命的源头（二）', '神为人类预备的日用饮食')
+        titles = ('枢纽是全网时基的来源（二）', '枢纽为测点预备的日常配额')
         packet = GRAPH.build_section_graph_packets(
             [
                 {'passage_id': 'a1', 'ordinal': 1, 'toc_path': ['卷一', titles[0]], 'content': '原文甲'},

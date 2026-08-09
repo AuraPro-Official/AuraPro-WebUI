@@ -166,10 +166,10 @@ describe('EPUB concept API client', () => {
 					items: [
 						{
 							concept_id: 'concept-1',
-							canonical_name: '撒但',
+							canonical_name: '扰动源',
 							definition: '',
 							status: 'PROVISIONAL',
-							aliases: ['撒但'],
+							aliases: ['扰动源'],
 							mention_count: 3
 						}
 					]
@@ -180,8 +180,8 @@ describe('EPUB concept API client', () => {
 					concept_merge_id: 'merge-1',
 					target_concept_id: 'concept-1',
 					source_concept_id: 'concept-2',
-					source_canonical_name: '魔鬼撒但',
-					canonical_name: '撒但',
+					source_canonical_name: '强扰动源',
+					canonical_name: '扰动源',
 					status: 'PROVISIONAL',
 					merged_by: 'administrator',
 					merged_at: '2026-01-01T00:00:00Z',
@@ -201,7 +201,7 @@ describe('EPUB concept API client', () => {
 			source_concept_id: 'concept-2'
 		});
 
-		expect(merged.source_canonical_name).toBe('魔鬼撒但');
+		expect(merged.source_canonical_name).toBe('强扰动源');
 		expect(fetchMock.mock.calls[0][0]).toBe(
 			'/api/v1/epub/admin/concepts?status=PROVISIONAL&offset=0&limit=100'
 		);
@@ -223,9 +223,9 @@ describe('EPUB concept API client', () => {
 			jsonResponse({
 				concept_split_id: 'split-1',
 				source_concept_id: 'concept-1',
-				source_canonical_name: '《马太福音》13:36-43',
+				source_canonical_name: '《观测规程》2.4-2.11',
 				new_concept_id: 'concept-3',
-				canonical_name: '稗子的比喻',
+				canonical_name: '双轨校准法',
 				status: 'PROVISIONAL',
 				split_by: 'administrator',
 				split_at: '2026-02-01T00:00:00Z',
@@ -239,8 +239,8 @@ describe('EPUB concept API client', () => {
 
 		const split = await splitEpubConcept('admin-token', {
 			source_concept_id: 'concept-1',
-			canonical_name: '稗子的比喻',
-			aliases: ['稗子的比喻'],
+			canonical_name: '双轨校准法',
+			aliases: ['双轨校准法'],
 			mentions: [{ passage_id: 'p1', start_codepoint: 0, end_codepoint: 5 }]
 		});
 
@@ -255,8 +255,8 @@ describe('EPUB concept API client', () => {
 			headers: expect.objectContaining({ authorization: 'Bearer admin-token' }),
 			body: JSON.stringify({
 				source_concept_id: 'concept-1',
-				canonical_name: '稗子的比喻',
-				aliases: ['稗子的比喻'],
+				canonical_name: '双轨校准法',
+				aliases: ['双轨校准法'],
 				mentions: [{ passage_id: 'p1', start_codepoint: 0, end_codepoint: 5 }]
 			})
 		});
