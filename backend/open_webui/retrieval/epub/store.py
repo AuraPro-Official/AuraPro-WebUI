@@ -1047,12 +1047,50 @@ class SQLiteEpubStore:
         )
 
     def list_concept_terms(self) -> list[dict[str, Any]]:
-        """Return canonical names and aliases for the in-memory Tier-1 matcher."""
+        """Return the Tier-1 vocabulary together with how specific each concept is.
+
+        The first three columns are the matcher's own: a concept, its display
+        name, and one surface form to scan for.  The remaining three describe
+        the concept rather than the match, so that *resolution* can decide what
+        to expand out of without a second query per matched concept.  None of
+        them is source text:
+
+        * ``term_source`` — whether a model, a seed list or an administrator
+          supplied this surface form.  A one-character alias a model proposed
+          is the weakest kind of evidence in the whole vocabulary.
+        * ``has_part_fanout`` — how many distinct ``HAS_PART`` children the
+          concept has under exactly the predicate
+          :meth:`list_concept_relation_neighbors` walks, so the two can never
+          disagree about whether a concept has a semantic decomposition.
+        * ``mention_count`` — how much of the book the concept touches, by the
+          same correlated subquery :meth:`list_concepts` already reports to an
+          administrator.  Nothing in search gates on it today: it was tried as
+          a proxy for a generic term and withdrawn, because how often a book
+          discusses something is a fact about the book rather than about what
+          the reader asked for.  It is reported anyway — it is 0.5 ms of the
+          1.1 ms these three columns add, the administrator surface already
+          computes the identical number, and a later specificity signal will
+          want it rather than a column deleted and re-added.
+
+        Measured cost on the full acceptance book: 1.9 ms for the three-column
+        form, 3.0 ms for this one, for 1,293 rows.  That is paid once per
+        vocabulary change, not once per query, because search holds the
+        compiled matcher across requests (see ``concept_term_fingerprint``).
+        """
         return [
             dict(row)
             for row in self._connection()
             .execute(
-                """SELECT c.concept_id, c.canonical_name, a.alias AS term
+                """SELECT c.concept_id, c.canonical_name, a.alias AS term,
+                          a.source AS term_source,
+                          (SELECT COUNT(*) FROM concept_mentions AS m
+                            WHERE m.concept_id = c.concept_id) AS mention_count,
+                          (SELECT COUNT(DISTINCT r.object_concept_id)
+                             FROM concept_relations AS r
+                             JOIN concept_relation_assertions AS s
+                               ON s.relation_id = r.relation_id AND s.status != 'REJECTED'
+                            WHERE r.subject_concept_id = c.concept_id
+                              AND r.predicate = 'HAS_PART') AS has_part_fanout
                    FROM concepts AS c
                    JOIN concept_aliases AS a ON a.concept_id = c.concept_id
                    WHERE c.status != 'REJECTED'
@@ -1247,6 +1285,77 @@ class SQLiteEpubStore:
                       AND a.status != 'REJECTED'
                     ORDER BY r.subject_concept_id, r.predicate, r.object_concept_id, r.relation_id""",
                 (*concept_ids, *predicates),
+            )
+            .fetchall()
+        ]
+
+    def list_toc_child_concepts(self, concept_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """Return, per queried concept, the concepts living in its TOC children.
+
+        The book's own table of contents is structural provenance the parser
+        read out of the EPUB; no model proposed it and none can revise it.  It
+        is therefore usable as a *fallback* decomposition for a concept the
+        model never decomposed — the acceptance book's ``六道闸门`` has no
+        relation of any predicate, while its TOC node
+        ``观测网所必经的六道闸门`` has exactly the six sections that answer the
+        question.
+
+        Nothing here is stored.  A TOC edge has no prose evidence, and
+        :meth:`_add_concept_relation` will not accept a relation without an
+        evidence span validated as an exact slice of a real passage; the only
+        way to satisfy it would be to anchor structural edges on heading
+        passages, which is the very pathology this fallback exists to route
+        around.  So the join runs per query and the result is a ranking and
+        coverage input, never a row in ``concept_relations``.
+
+        Two rules keep the result bounded, both expressed in the ``bound`` CTE
+        and its second use:
+
+        * A concept *binds* to a TOC node only when **every** one of its
+          mentions lands in a passage under that one node.  On the acceptance
+          book 821 of 1,111 mentioned concepts qualify; ``全域潮汐枢纽`` and
+          ``潮汐源``, which are discussed throughout, do not — which is what
+          stops this channel from becoming another hub.
+        * A child concept is admitted only if it is itself fully bound inside
+          one of those child nodes.  Ungated, the acceptance query reaches 138
+          spans; gated, 16.
+
+        Only child nodes are walked, never siblings: measured over this book,
+        a node's sibling set holds a median of 10 bound concepts against a
+        median of 0 for its children, so siblings are an unbounded associative
+        bag rather than a decomposition.  ``REJECTED`` concepts are excluded
+        here for the same reason :meth:`list_concept_terms` excludes them; the
+        relation walk gets that filtering from its assertions, and a structural
+        edge has no assertion to filter on.
+        """
+        if not concept_ids:
+            return []
+        placeholders = ", ".join("?" for _ in concept_ids)
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                f"""WITH bound AS (
+                        SELECT m.concept_id AS concept_id,
+                               MAX(p.toc_node_id) AS toc_node_id
+                          FROM concept_mentions AS m
+                          JOIN passages AS p ON p.passage_id = m.passage_id
+                         GROUP BY m.concept_id
+                        HAVING COUNT(DISTINCT p.toc_node_id) = 1
+                           AND COUNT(*) = COUNT(p.toc_node_id)
+                    )
+                    SELECT seed.concept_id AS seed_concept_id,
+                           seed.toc_node_id AS seed_toc_node_id,
+                           child.concept_id AS concept_id
+                      FROM bound AS seed
+                      JOIN toc_nodes AS n ON n.parent_toc_node_id = seed.toc_node_id
+                      JOIN bound AS child ON child.toc_node_id = n.toc_node_id
+                      JOIN concepts AS c ON c.concept_id = child.concept_id
+                     WHERE seed.concept_id IN ({placeholders})
+                       AND child.concept_id != seed.concept_id
+                       AND c.status != 'REJECTED'
+                     ORDER BY seed.concept_id, child.concept_id""",
+                tuple(concept_ids),
             )
             .fetchall()
         ]
