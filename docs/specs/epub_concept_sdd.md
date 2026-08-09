@@ -170,6 +170,15 @@ precedence over NCX; disagreement is retained as an auditable warning.
   temporary JSONL file as the job record.
 - Support sample validation, JSONL construction, provider submission, polling,
   output retrieval, idempotent ingest, per-item retry, and restart recovery.
+- A terminal provider state is not enough to infer that every output was read.
+  Only after the complete output/error result set has been fetched and
+  structurally validated may the service mark an otherwise unreported item as
+  `FAILED`. A successor job copies only durable `FAILED` items, never
+  `SUCCEEDED` items. If result retrieval/download/parsing fails, preserve every
+  unconfirmed item, record only the controlled `RESULTS_PENDING_RETRIEVAL`
+  operator state, and require a later administrator poll before retry is
+  enabled. Do not persist or display raw provider errors or result data for
+  this condition.
 - Provider credentials are administrator server configuration and are never sent
   to or supplied by the client.
 - Seed glossary aliases are authoritative. Only deterministic normalized-name or
