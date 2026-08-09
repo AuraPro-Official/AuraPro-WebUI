@@ -90,12 +90,50 @@ export type BatchDraft = {
 	item_count: number;
 	status: string;
 	prompt_profile?: string;
-	job_kind?: 'SECTION_GRAPH';
+	job_kind?: 'CONCEPT_MENTIONS' | 'SECTION_GRAPH';
+	is_sample?: boolean;
 };
 
 export type SectionGraphBatchDraftInput = Omit<BatchDraftInput, 'prompt_profile'>;
 
-export type BatchStatus = Record<string, string | number | null | undefined>;
+export type BatchStatus = Record<string, string | number | boolean | null | undefined>;
+
+export type EpubBatchItemSummary = {
+	batch_item_id: string;
+	passage_id: string;
+	custom_id: string;
+	status: string;
+	attempt_count: number;
+	has_response: boolean;
+	has_error: boolean;
+	updated_at: string | null;
+};
+
+/** Lifecycle-only operational history. Prompts, model output and raw errors are excluded. */
+export type EpubBatchSummary = {
+	batch_job_id: string;
+	version_id: string;
+	provider: string;
+	provider_job_id: string | null;
+	profile_name: string;
+	job_kind: 'CONCEPT_MENTIONS' | 'SECTION_GRAPH';
+	status: string;
+	is_sample: boolean;
+	submitted_at: string | null;
+	completed_at: string | null;
+	created_at: string | null;
+	updated_at: string | null;
+	has_error: boolean;
+	item_count: number;
+	item_status_counts: Record<string, number>;
+	items?: EpubBatchItemSummary[];
+};
+
+export type EpubBatchPage = { total: number; offset: number; items: EpubBatchSummary[] };
+export type EpubBatchRecovery = {
+	recovered: Array<{ job_id: string; state: string; ingested: number; failed: number }>;
+	skipped: Array<{ job_id: string; provider: string; reason: string }>;
+};
 
 export type LocalCalibrationInput = {
 	version_id: string;
@@ -150,6 +188,16 @@ export type RelationAssertion = {
 };
 
 export type RelationAssertionPage = { total: number; offset: number; items: RelationAssertion[] };
+
+export type SampleBatchReview = {
+	sample_batch_job_id: string;
+	version_id: string;
+	job_kind: 'CONCEPT_MENTIONS' | 'SECTION_GRAPH';
+	status: 'APPROVED' | 'REJECTED';
+	reviewed_by: string;
+	reviewed_at: string;
+	batch_status: string;
+};
 
 type ApiErrorBody = { detail?: unknown };
 
@@ -239,6 +287,24 @@ export const runEpubLocalCalibration = (token: string, input: LocalCalibrationIn
 		body: JSON.stringify(input)
 	});
 
+export const getEpubBatchJobs = (
+	token: string,
+	input: { version_id?: string; offset?: number; limit?: number } = {}
+) => {
+	const params = new URLSearchParams();
+	if (input.version_id) params.set('version_id', input.version_id);
+	params.set('offset', String(input.offset ?? 0));
+	params.set('limit', String(input.limit ?? 50));
+	return request<EpubBatchPage>(token, `/admin/batches?${params.toString()}`);
+};
+
+export const getEpubBatchJob = (token: string, batchJobId: string) =>
+	request<EpubBatchSummary>(token, `/admin/batches/${encodeURIComponent(batchJobId)}`);
+
+/** Poll durable submitted/running jobs only; this endpoint never submits a draft. */
+export const recoverEpubBatches = (token: string) =>
+	request<EpubBatchRecovery>(token, '/admin/batches/recover', { method: 'POST' });
+
 export const submitEpubBatch = (token: string, batchJobId: string) =>
 	request<BatchStatus>(token, `/admin/batches/${encodeURIComponent(batchJobId)}/submit`, {
 		method: 'POST'
@@ -253,6 +319,31 @@ export const retryEpubBatch = (token: string, batchJobId: string) =>
 	request<BatchStatus>(token, `/admin/batches/${encodeURIComponent(batchJobId)}/retry`, {
 		method: 'POST'
 	});
+
+export const getEpubSampleBatchReviews = (
+	token: string,
+	input: { version_id?: string; job_kind?: SampleBatchReview['job_kind'] } = {}
+) => {
+	const params = new URLSearchParams();
+	if (input.version_id) params.set('version_id', input.version_id);
+	if (input.job_kind) params.set('job_kind', input.job_kind);
+	return request<{ items: SampleBatchReview[] }>(token, `/admin/sample-batch-reviews?${params}`);
+};
+
+export const reviewEpubSampleBatch = (
+	token: string,
+	batchJobId: string,
+	status: SampleBatchReview['status']
+) =>
+	request<SampleBatchReview>(
+		token,
+		`/admin/sample-batches/${encodeURIComponent(batchJobId)}/review`,
+		{
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ status })
+		}
+	);
 
 export const upsertEpubConcept = (token: string, input: ConceptInput) =>
 	request<{ concept_id: string }>(token, '/admin/concepts', {

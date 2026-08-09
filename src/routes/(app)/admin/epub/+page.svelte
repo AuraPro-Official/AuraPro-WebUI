@@ -7,24 +7,32 @@
 	import {
 		createEpubBatchDraft,
 		createEpubSectionGraphBatchDraft,
+		getEpubBatchJob,
+		getEpubBatchJobs,
 		getEpubBook,
 		getEpubBooks,
 		getEpubRelationAssertions,
+		getEpubSampleBatchReviews,
 		importEpub,
 		indexEpubVersion,
 		indexEpubRetrievalUnit,
 		pollEpubBatch,
+		recoverEpubBatches,
 		runEpubLocalCalibration,
 		retryEpubBatch,
 		reviewEpubRelationAssertion,
+		reviewEpubSampleBatch,
 		submitEpubBatch,
 		upsertEpubConcept,
 		type BatchStatus,
+		type EpubBatchRecovery,
+		type EpubBatchSummary,
 		type EpubBook,
 		type EpubBookDetail,
 		type EpubVersionIndexResult,
 		type LocalCalibrationReport,
-		type RelationAssertion
+		type RelationAssertion,
+		type SampleBatchReview
 	} from '$lib/apis/epub';
 
 	const token = () => localStorage.token ?? '';
@@ -42,6 +50,9 @@
 	let sampleLimit = 20;
 	let batchJobId = '';
 	let batchState: BatchStatus | null = null;
+	let batchHistory: EpubBatchSummary[] = [];
+	let batchDetail: EpubBatchSummary | null = null;
+	let batchRecovery: EpubBatchRecovery | null = null;
 	let calibrationState: LocalCalibrationReport | null = null;
 	let conceptName = '';
 	let conceptAliases = '';
@@ -50,6 +61,7 @@
 	let retrievalUnitId = '';
 	let versionIndexState: EpubVersionIndexResult | null = null;
 	let relationAssertions: RelationAssertion[] = [];
+	let sampleBatchReviews: SampleBatchReview[] = [];
 
 	const chooseFile = (event: Event) => {
 		selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
@@ -107,7 +119,44 @@
 			});
 			batchJobId = result.batch_job_id;
 			batchState = result;
+			batchDetail = await getEpubBatchJob(token(), batchJobId);
+			await loadBatchHistory();
 			toast.success(`已创建 ${result.item_count} 项离线 Batch 草稿。`);
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
+	const loadSampleBatchReviews = async () => {
+		if (!selectedVersionId) return;
+		busy = true;
+		try {
+			sampleBatchReviews = (
+				await getEpubSampleBatchReviews(token(), { version_id: selectedVersionId })
+			).items;
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
+	const reviewSampleBatch = async (status: 'APPROVED' | 'REJECTED') => {
+		if (!batchJobId) return;
+		busy = true;
+		try {
+			const review = await reviewEpubSampleBatch(token(), batchJobId, status);
+			sampleBatchReviews = [
+				review,
+				...sampleBatchReviews.filter(
+					(item) => item.sample_batch_job_id !== review.sample_batch_job_id
+				)
+			];
+			toast.success(
+				status === 'APPROVED' ? '云端样本已批准，可以创建同类型全量任务。' : '云端样本已拒绝。'
+			);
 		} catch (error) {
 			toast.error(errorMessage(error));
 		} finally {
@@ -127,7 +176,47 @@
 			});
 			batchJobId = result.batch_job_id;
 			batchState = result;
+			batchDetail = await getEpubBatchJob(token(), batchJobId);
+			await loadBatchHistory();
 			toast.success(`已创建 ${result.item_count} 项章节概念图 Batch 草稿。`);
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
+	const loadBatchHistory = async () => {
+		busy = true;
+		try {
+			batchHistory = (
+				await getEpubBatchJobs(token(), { version_id: selectedVersionId || undefined, limit: 50 })
+			).items;
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
+	const viewBatch = async (batchJobIdToView: string) => {
+		busy = true;
+		try {
+			batchJobId = batchJobIdToView;
+			batchDetail = await getEpubBatchJob(token(), batchJobIdToView);
+		} catch (error) {
+			toast.error(errorMessage(error));
+		} finally {
+			busy = false;
+		}
+	};
+
+	const recoverBatches = async () => {
+		busy = true;
+		try {
+			batchRecovery = await recoverEpubBatches(token());
+			await loadBatchHistory();
+			toast.success(`已恢复轮询 ${batchRecovery.recovered.length} 个未终态任务。`);
 		} catch (error) {
 			toast.error(errorMessage(error));
 		} finally {
@@ -174,6 +263,8 @@
 			](token(), batchJobId);
 			if (action === 'retry' && typeof batchState.batch_job_id === 'string')
 				batchJobId = batchState.batch_job_id;
+			await loadBatchHistory();
+			if (action !== 'retry') batchDetail = await getEpubBatchJob(token(), batchJobId);
 			toast.success(
 				action === 'submit'
 					? 'Batch 已提交到服务器管理员配置的离线 Provider。'
@@ -271,6 +362,7 @@
 			return;
 		}
 		await loadBooks();
+		await loadBatchHistory();
 	});
 </script>
 
@@ -306,6 +398,66 @@
 				on:click={upload}>导入 EPUB</button
 			>
 		</div>
+	</section>
+
+	<section
+		class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
+	>
+		<div class="flex flex-wrap items-start justify-between gap-3">
+			<div>
+				<h2 class="font-medium">Batch 历史与恢复</h2>
+				<p class="mt-1 text-xs text-gray-500">
+					仅显示生命周期与项目计数，不显示云端
+					prompt、模型输出或原始错误内容。恢复只轮询已提交/运行中的持久化任务，绝不会提交草稿。
+				</p>
+			</div>
+			<div class="flex gap-2">
+				<button
+					class="rounded border px-3 py-2 text-sm disabled:opacity-50"
+					disabled={busy}
+					on:click={loadBatchHistory}>刷新历史</button
+				>
+				<button
+					class="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50"
+					disabled={busy}
+					on:click={recoverBatches}>恢复未终态任务</button
+				>
+			</div>
+		</div>
+		{#if batchRecovery}<p class="mt-3 text-xs text-gray-500">
+				本次恢复：轮询 {batchRecovery.recovered.length} 项；因未配置 Provider 而跳过 {batchRecovery
+					.skipped.length} 项。
+			</p>{/if}
+		{#if batchHistory.length}<ul class="mt-3 space-y-2">
+				{#each batchHistory as job (job.batch_job_id)}<li class="rounded border p-3 text-sm">
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<div>
+								<p class="font-medium"><code>{job.batch_job_id}</code></p>
+								<p class="mt-1 text-xs text-gray-500">
+									{job.job_kind} · {job.status} · {job.is_sample ? '样本' : '全量'} · {job.item_count}
+									项
+									{#if job.has_error}· 有错误{/if}
+								</p>
+							</div>
+							<button
+								class="rounded border px-2 py-1 text-xs disabled:opacity-50"
+								disabled={busy}
+								on:click={() => viewBatch(job.batch_job_id)}>查看项目</button
+							>
+						</div>
+					</li>{/each}
+			</ul>{:else}<p class="mt-3 text-sm text-gray-500">当前范围没有 Batch 历史。</p>{/if}
+		{#if batchDetail}<div class="mt-4 rounded bg-gray-50 p-3 text-sm dark:bg-gray-800">
+				<p>
+					任务 <code>{batchDetail.batch_job_id}</code>：{batchDetail.status}，项目 {batchDetail.item_count}。
+				</p>
+				{#if batchDetail.items?.length}<ul class="mt-2 space-y-1 text-xs">
+						{#each batchDetail.items as item (item.batch_item_id)}<li>
+								<code>{item.custom_id}</code> · {item.status} · 尝试 {item.attempt_count}
+								{#if item.has_error}· 有错误{/if}
+							</li>{/each}
+					</ul>{/if}
+			</div>{/if}
 	</section>
 
 	<section
@@ -394,7 +546,8 @@
 	>
 		<h2 class="font-medium">离线概念图 Batch</h2>
 		<p class="mt-1 text-xs text-gray-500">
-			先经本地校准和管理员审阅。章节图任务会在受限目录范围中同时提取概念、精确原文映射和有证据关系；轮询和重试不从浏览器接收凭证。
+			先经本地校准、完成云端样本并由管理员批准。服务端会拒绝跳过此步骤的同版本、同任务类型全量
+			OpenAI Batch；章节图任务会在受限目录范围中同时提取概念、精确原文映射和有证据关系。
 		</p>
 		<div class="mt-3 grid gap-3 sm:grid-cols-3">
 			<label class="text-sm"
@@ -456,8 +609,39 @@
 						disabled={busy}
 						on:click={() => runBatchAction('retry')}>重试失败项</button
 					>
+					{#if batchDetail?.is_sample}<button
+							class="rounded bg-blue-600 px-2 py-1 text-xs text-white disabled:opacity-50"
+							disabled={busy || batchDetail.status !== 'SUCCEEDED'}
+							on:click={() => reviewSampleBatch('APPROVED')}>批准已完成样本</button
+						><button
+							class="rounded border px-2 py-1 text-xs disabled:opacity-50"
+							disabled={busy || batchDetail.status !== 'SUCCEEDED'}
+							on:click={() => reviewSampleBatch('REJECTED')}>拒绝已完成样本</button
+						>{/if}
 				</div>
+				{#if batchDetail?.is_sample && batchDetail.status !== 'SUCCEEDED'}<p
+						class="mt-2 text-xs text-gray-500"
+					>
+						只有云端样本处于 SUCCEEDED 且所有项目已成功导入后，才可进行批准或拒绝审核。
+					</p>{/if}
 			</div>{/if}
+		<div class="mt-4 flex items-center justify-between gap-2">
+			<p class="text-xs text-gray-500">
+				已审核样本仅保存任务标识、审核状态和时间，不复制原文或云端输出。
+			</p>
+			<button
+				class="rounded border px-2 py-1 text-xs disabled:opacity-50"
+				disabled={busy || !selectedVersionId}
+				on:click={loadSampleBatchReviews}>刷新样本审核</button
+			>
+		</div>
+		{#if sampleBatchReviews.length}<ul
+				class="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300"
+			>
+				{#each sampleBatchReviews as review (review.sample_batch_job_id)}<li>
+						<code>{review.sample_batch_job_id}</code> · {review.job_kind} · {review.status} · {review.reviewed_at}
+					</li>{/each}
+			</ul>{/if}
 	</section>
 
 	<section
