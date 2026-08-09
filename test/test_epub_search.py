@@ -311,13 +311,17 @@ class HubFakeSource(FakeSource):
 
 
 class GenericTermFakeSource(FakeSource):
-    """One concept the whole book is about, and one that names a single thing.
+    """One concept reachable by two very different surface forms.
 
-    ``全域潮汐枢纽`` is reachable by its full canonical name *and* by the
-    one-character alias ``枢`` a model proposed, has 175 mentions, and has 20
-    grounded ``HAS_PART`` children.  ``汛期观测`` is reachable by a four-character
-    name, has two mentions, and has one child.  Both must resolve; only the
-    second may seed a walk.
+    ``全域潮汐枢纽`` is what the book is about: 175 mentions and 20 grounded
+    ``HAS_PART`` children.  It is reachable by its full canonical name and by
+    the one-character alias ``枢`` a model proposed.  The whole resolution guard
+    is the claim that those two matches are not the same event — naming it in
+    full is a request for it, while a stray 枢 inside some other question is
+    not — so the fixture exists to make a single concept answer both ways.
+
+    ``汛期观测`` is the ordinary case: a four-character name on a two-mention
+    concept with one child, which has always expanded and must keep expanding.
 
     The specificity columns are supplied exactly as the SQLite store supplies
     them.  :class:`FakeSource` deliberately supplies none of them, which is how
@@ -885,38 +889,55 @@ class EpubSearchTest(unittest.TestCase):
             [("graph",), ("graph", "relation:HAS_PART:1")],
         )
 
-    def test_a_generic_term_still_resolves_but_seeds_no_expansion(self) -> None:
-        """Resolution and expansion are different questions about the same match.
+    def test_seeding_follows_the_matched_term_and_not_the_concept(self) -> None:
+        """One concept, two surface forms, two different answers.
 
-        ``全域潮汐枢纽`` is matched by its full canonical name, so it resolves
-        and contributes every one of its own spans — nothing here is capped,
-        hidden, or down-weighted.  What it does not do is seed a walk: at 175
-        mentions it is what the whole book is about, and one hop out of it
-        returns spans about something else entirely, which is how a query about
-        one thing came back holding a hub child the reader never named.
+        This is the whole rule, and both halves have to be pinned together or
+        it reads as an arbitrary threshold on a hub.
 
-        The same concept reached through its one-character model alias ``枢`` is
-        refused for two independent reasons at once, and must behave
-        identically — the guard is about the concept's specificity, not about
-        which surface form happened to win.
+        Naming ``全域潮汐枢纽`` in full **expands**.  It has 175 mentions and 20
+        children, and that is not a reason to refuse: how often a book discusses
+        something is a fact about the book, not about what the reader asked
+        for.  Someone who spells out the hub's name is asking for its subtree
+        and should get it.  An earlier version of this guard capped by mention
+        count and refused here, which also cut ``枢纽的权重`` — a specific topic
+        that a book about God simply mentions often — from 174 spans to 42.
+
+        A query where only the one-character alias ``枢`` can match **does
+        not** expand.  The concept still resolves and still contributes its own
+        span; what it may not do is drag 20 children in behind an incidental
+        character the reader never meant as a topic.  That is the case that
+        produced a citation of ``枢对测点的授时`` on a query about something
+        else.
         """
         service = EpubSearchService(source=GenericTermFakeSource())
 
-        for query in ("全域潮汐枢纽", "枢"):
-            with self.subTest(query=query):
-                response = service.search(query, graph_limit=10)
-                self.assertEqual(response.resolved_concepts, ("全域潮汐枢纽",))
-                # Its own span, and none of its 20 children's.
-                self.assertEqual(response.graph_total, 1)
-                names = {name for hit in response.graph_results for name in hit.matched_concepts}
-                self.assertNotIn("枢纽的基准线", names)
-                self.assertEqual(
-                    {hit.provenance for hit in response.graph_results}, {("graph",)}
-                )
+        named = service.search("全域潮汐枢纽", graph_limit=10)
+        self.assertEqual(named.resolved_concepts, ("全域潮汐枢纽",))
+        self.assertEqual(named.graph_total, 2)
+        self.assertEqual(
+            [hit.provenance for hit in named.graph_results],
+            [("graph",), ("graph", "relation:HAS_PART:1")],
+        )
+        self.assertIn(
+            "枢纽的基准线",
+            {name for hit in named.graph_results for name in hit.matched_concepts},
+        )
 
-        # The contrast is what makes the rule a rule rather than a cap: a
-        # four-character name on a two-mention concept seeds its walk exactly as
-        # it did before, and its child arrives with relation provenance.
+        brushed = service.search("枢", graph_limit=10)
+        # Same concept, same `resolved_concepts`: refusing to seed expansion is
+        # not refusing to resolve, and the concept's own span is still returned.
+        self.assertEqual(brushed.resolved_concepts, ("全域潮汐枢纽",))
+        self.assertEqual(brushed.graph_total, 1)
+        self.assertEqual(
+            {hit.provenance for hit in brushed.graph_results}, {("graph",)}
+        )
+        self.assertNotIn(
+            "枢纽的基准线",
+            {name for hit in brushed.graph_results for name in hit.matched_concepts},
+        )
+
+        # And the ordinary case is untouched throughout.
         specific = service.search("汛期观测", graph_limit=10)
         self.assertEqual(specific.graph_total, 2)
         self.assertEqual(
@@ -978,9 +999,9 @@ class EpubSearchTest(unittest.TestCase):
         :class:`FakeSource` answers the three-column vocabulary and has no
         ``list_toc_child_concepts`` at all, which is the shape a read model that
         has not caught up would present.  It must keep today's behaviour rather
-        than raise or silently stop expanding: ``父主题`` still reaches its
-        ``HAS_PART`` child, and the mention ceiling — which nothing has declared
-        — refuses nothing.
+        than raise or silently stop expanding: ``父主题`` still seeds, still
+        reaches its ``HAS_PART`` child, and the alias-source rule — which
+        nothing has declared — refuses nothing.
         """
         source = FakeSource()
         service = EpubSearchService(source=source)

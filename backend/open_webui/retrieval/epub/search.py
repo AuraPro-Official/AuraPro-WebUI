@@ -41,12 +41,11 @@ _LABEL_PRIORITY = (_RELATION_HAS_PART, _STRUCTURE_TOC_CHILD)
 
 _EMPTY_LABELS: Mapping[str, str] = MappingProxyType({})
 
-# A concept matched only by a short, very common, or model-invented surface
-# form still resolves and still contributes its own spans; it just does not get
-# to seed expansion.  See :meth:`EpubSearchService._expansion_seed_ids` for why
-# each of these is where it is.
+# A concept matched only by a short or model-invented surface form still
+# resolves and still contributes its own spans; it just does not get to seed
+# expansion.  See :meth:`EpubSearchService._expansion_seed_ids` for why the test
+# is about the term and not about the concept behind it.
 _MIN_SEED_TERM_LENGTH = 2
-_MAX_SEED_MENTION_COUNT = 40
 
 # A TOC node whose children hold more bound concepts than this contributes no
 # expansion at all.  Skipping is deliberate: truncating would leave
@@ -59,12 +58,23 @@ class ConceptTerm:
     """One canonical concept/alias term available to the Tier-1 matcher.
 
     The first three fields are all the matcher itself ever reads.  The last
-    three are *specificity*: they say nothing about where a term matches, only
-    how much the concept behind it is worth expanding out of, and they exist
-    because a concept resolved through a short generic surface form should
-    still contribute its own spans while not being allowed to drag the graph
-    behind it into the result (see
-    :meth:`EpubSearchService._expansion_seed_ids`).
+    three describe the concept rather than the match, and each has one reader:
+
+    * ``term_source`` distinguishes a surface form a model invented from one a
+      seed list or an administrator supplied, and
+      :meth:`EpubSearchService._expansion_seed_ids` refuses to seed expansion
+      from a single character a model proposed.
+    * ``has_part_fanout`` is how
+      :meth:`EpubSearchService._expand_toc_child_concepts` knows the model
+      already decomposed a concept and that TOC structure must stay out of the
+      way.
+    * ``mention_count`` currently gates nothing.  It was tried as a proxy for a
+      generic term and removed, because frequency is a fact about the book and
+      not about what the reader asked for — see
+      :meth:`EpubSearchService._expansion_seed_ids`.  It is kept because it is
+      free alongside the fan-out the store already computes, and because a
+      future specificity signal will want it; it is deliberately not deleted
+      and re-added.
 
     All three default to ``None``, meaning "this repository did not say".  A
     repository that supplies none of them — a test double, a future PostgreSQL
@@ -487,13 +497,13 @@ class EpubSearchService:
     def _expansion_seed_ids(self, matches: Sequence[_TermMatch]) -> tuple[str, ...]:
         """Which resolved concepts are allowed to *seed* expansion.
 
-        A concept the query genuinely named should bring its neighbourhood with
-        it.  A concept the query only brushed — because one of its aliases is a
-        single very common character, or because it is a concept the whole book
-        is about — should not: expanding out of it returns spans about
-        something else entirely, which is how the query about one thing came
-        back with ``枢对测点的授时``, a hub *child* reached by walking out of a
-        concept the reader never mentioned.
+        The question is about the **matched term**, never about the concept
+        behind it.  A query that names something brings its neighbourhood with
+        it; a query that merely happens to contain a single very common
+        character does not, because expanding out of a concept the reader never
+        actually named returns spans about something else entirely — which is
+        how one query came back citing ``枢对测点的授时``, a hub *child* reached
+        by walking out of a concept nobody had asked for.
 
         This is a **resolution** rule, not a ranking one, and it is the only
         place the two could be confused.  Ranking still down-weights a
@@ -502,31 +512,37 @@ class EpubSearchService:
         are seeds at all.  The concept itself stays resolved either way and
         contributes every one of its own spans — that is what makes this safe.
 
-        Three conditions, all of which must hold:
+        Two conditions, both about the term's shape, and both must hold:
 
         1. **The winning matched term is at least two code points.**  Measured
            on the query, not on the vocabulary: ``match_spans`` keeps the
            longest surviving span per concept, so a concept whose full name the
            query spelled out is judged on that name even if a one-character
            alias also matched somewhere.
-        2. **The concept has at most 40 mentions.**  The acceptance book
-           separates cleanly at this line — 扰动源 179, 全域潮汐枢纽 175, 锚点 160,
-           主控制台 75, 权重 43, 总志 41 above it, and the long tail of things a
-           reader actually asks about below.  A concept the book discusses
-           everywhere is not evidence that *this* query is about its children.
-        3. **Not a one-character alias a model invented.**  Implied by (1)
+        2. **Not a one-character alias a model invented.**  Implied by (1)
            today, and stated anyway: (1) is about how much of the query the
            term covered, this is about how much the term is worth, and a future
            relaxation of the first must not silently readmit the second.
 
-        Deliberately *not* a condition: what fraction of the query the term
-        covered.  That number moves with phrasing rather than with meaning, and
-        longest-match suppression already discards the short alias that sits
-        inside a longer one.
+        Deliberately *not* a condition: **how many mentions the concept has.**
+        That was tried as a proxy for a generic term and it misfires exactly
+        where it matters.  ``枢纽的权重`` is matched by its full five-code-point
+        name; it is not generic, it is a specific topic that a book about God
+        naturally discusses often, and a reader who searches for it by name
+        almost certainly wants its sub-topics.  A ceiling on the count refused
+        them, cutting that query from 174 spans to 42.  Frequency is a fact
+        about the book, not about what the reader asked for.
 
-        A repository that declares no mention count is not overruled by a guess:
-        the count condition is skipped, and the concept seeds expansion exactly
-        as it does today.
+        The accepted consequence is that naming the hub outright —
+        ``全域潮汐枢纽``, spelled in full — expands to its whole subtree.  That
+        is correct: you asked for it by name.  What stays blocked is its
+        one-character alias ``枢``, by rule (1), so an incidental 枢 inside an
+        unrelated query still drags nothing in.
+
+        Also deliberately *not* a condition: what fraction of the query the
+        term covered.  That number moves with phrasing rather than with
+        meaning, and longest-match suppression already discards the short alias
+        that sits inside a longer one.
         """
         seeds: list[str] = []
         for hit in matches:
@@ -534,8 +550,6 @@ class EpubSearchService:
             if (hit.end - hit.start) < _MIN_SEED_TERM_LENGTH:
                 continue
             if term.term_source == "MODEL" and len(term.term) < _MIN_SEED_TERM_LENGTH:
-                continue
-            if term.mention_count is not None and term.mention_count > _MAX_SEED_MENTION_COUNT:
                 continue
             seeds.append(term.concept_id)
         return tuple(dict.fromkeys(seeds))
