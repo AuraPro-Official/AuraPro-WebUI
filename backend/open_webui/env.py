@@ -1014,6 +1014,24 @@ if CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS == -1:
     CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS = None
 
 
+# Maximum number of chat generation tasks that may hit the model backend
+# simultaneously. Fan-out (multi-model) chats create one task per model;
+# this caps the total number of tasks actually running at any moment,
+# keeping the rest queued until a slot frees up. Prevents task loss and
+# message-truncation caused by unbounded concurrent generation.
+CHAT_TASK_CONCURRENCY_LIMIT = os.getenv('CHAT_TASK_CONCURRENCY_LIMIT', '2')
+if CHAT_TASK_CONCURRENCY_LIMIT == '':
+    CHAT_TASK_CONCURRENCY_LIMIT = 2
+else:
+    try:
+        CHAT_TASK_CONCURRENCY_LIMIT = int(CHAT_TASK_CONCURRENCY_LIMIT)
+    except Exception:
+        CHAT_TASK_CONCURRENCY_LIMIT = 2
+
+if CHAT_TASK_CONCURRENCY_LIMIT < 1:
+    CHAT_TASK_CONCURRENCY_LIMIT = 2
+
+
 # WARNING: Experimental. Only enable if your upstream Responses API endpoint
 # supports stateful sessions (i.e. server-side response storage with
 # previous_response_id anchoring). Most proxies and third-party endpoints

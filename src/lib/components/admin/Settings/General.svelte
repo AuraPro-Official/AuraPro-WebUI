@@ -27,6 +27,9 @@
 	};
 
 	let adminConfig = null;
+	let memoryUpdateNotifications = true;
+	let memoryReviewInterval = 6;
+	let memoryReviewModel = '';
 
 	let banners: Banner[] = [];
 
@@ -50,7 +53,12 @@
 	};
 
 	const updateHandler = async () => {
-		const res = await updateAdminConfig(localStorage.token, adminConfig);
+		const res = await updateAdminConfig(localStorage.token, {
+			...adminConfig,
+			ENABLE_MEMORY_UPDATE_NOTIFICATIONS: memoryUpdateNotifications,
+			MEMORIES_REVIEW_INTERVAL_TURNS: memoryReviewInterval,
+			MEMORIES_REVIEW_MODEL: memoryReviewModel
+		});
 
 		await updateBanners();
 
@@ -64,7 +72,11 @@
 	};
 
 	onMount(async () => {
-		adminConfig = await getAdminConfig(localStorage.token);
+		const loadedAdminConfig = await getAdminConfig(localStorage.token);
+		adminConfig = loadedAdminConfig;
+		memoryUpdateNotifications = loadedAdminConfig?.ENABLE_MEMORY_UPDATE_NOTIFICATIONS ?? true;
+		memoryReviewInterval = loadedAdminConfig?.MEMORIES_REVIEW_INTERVAL_TURNS ?? 6;
+		memoryReviewModel = loadedAdminConfig?.MEMORIES_REVIEW_MODEL ?? '';
 
 		banners = [...$_banners];
 	});
@@ -278,6 +290,43 @@
 							</div>
 
 							<Switch bind:state={adminConfig.ENABLE_MEMORY_BACKGROUND_REVIEW} />
+						</div>
+
+						<div class="mb-2.5 flex w-full items-center justify-between pr-2 pl-8">
+							<div class="self-center text-xs text-gray-500 dark:text-gray-400">
+								{$i18n.t('Memory update notifications')}
+							</div>
+							<Switch bind:state={memoryUpdateNotifications} />
+						</div>
+
+						<div class="mb-2.5 pl-8 pr-2">
+							<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+								{$i18n.t('Fallback review interval')}
+							</div>
+							<input
+								class="mt-1 w-full rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="number"
+								min="1"
+								max="50"
+								bind:value={memoryReviewInterval}
+							/>
+							<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+								{$i18n.t(
+									'Durable information is reviewed immediately. This interval only checks conversations without a clear memory signal.'
+								)}
+							</div>
+						</div>
+
+						<div class="mb-2.5 pl-8 pr-2">
+							<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+								{$i18n.t('Memory review model')}
+							</div>
+							<input
+								class="mt-1 w-full rounded-lg py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+								type="text"
+								bind:value={memoryReviewModel}
+								placeholder={$i18n.t('Leave empty to use the current chat model')}
+							/>
 						</div>
 					{/if}
 

@@ -82,9 +82,27 @@ class VectorDBBase(ABC):
         pass
 
     @abstractmethod
-    def get(self, collection_name: str) -> Optional[GetResult]:
-        """Retrieve all vectors from a collection."""
+    def get(
+        self,
+        collection_name: str,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> GetResult | None:
+        """Retrieve vectors from a collection.
+
+        `offset`/`limit` page through the collection without materialising it.
+        Backends that support native paging set `supports_paged_get = True`
+        and honour these arguments; other backends ignore them and return the
+        full collection (callers must gate on `supports_paged_get`).
+        """
         pass
+
+    def count(self, collection_name: str) -> int | None:
+        """Return the number of items in a collection, or None if unknown."""
+        result = self.get(collection_name)
+        if result is None:
+            return 0
+        return len(result.ids[0]) if result.ids else 0
 
     @abstractmethod
     def delete(

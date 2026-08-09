@@ -191,3 +191,100 @@ export const deleteMemoriesByUserId = async (token: string) => {
 
 	return res;
 };
+export const getMemoryStatus = async (token: string) => {
+	let error = null;
+	const res = await fetch(`${WEBUI_API_BASE_URL}/memories/status`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) throw error;
+	return res;
+};
+
+export const deleteChatHistoryMemory = async (token: string) => {
+	let error = null;
+	const res = await fetch(`${WEBUI_API_BASE_URL}/memories/delete/chat-history`, {
+		method: 'DELETE',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) throw error;
+	return res;
+};
+
+export const setMemoryPinned = async (token: string, id: string, pinned: boolean) => {
+	let error = null;
+	const res = await fetch(`${WEBUI_API_BASE_URL}/memories/${id}/update`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify({ pinned })
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) throw error;
+	return res;
+};
+
+export const restoreMemoryVersion = async (token: string, id: string, revisionIndex = -1) => {
+	let error = null;
+	const res = await fetch(`${WEBUI_API_BASE_URL}/memories/${id}/restore`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify({ revision_index: revisionIndex })
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) throw error;
+	return res;
+};

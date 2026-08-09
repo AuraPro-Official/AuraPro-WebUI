@@ -9,24 +9,23 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, Field
-
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.utils.auth import get_verified_user
 from open_webui.utils.glossary_translation import (
-    fork_official_glossary_for_edit,
+    get_editable_glossary,
+    get_glossary_view,
     invalidate_cache,
     is_official_glossary_path,
     make_relative_glossary_path,
-    normalize_term,
     normalize_settings,
-    read_entries,
+    normalize_term,
+    read_glossary_entries,
     read_settings,
     resolve_glossary_path,
-    write_entries,
+    write_glossary_entries,
     write_settings,
 )
-
+from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -44,11 +43,18 @@ class GlossaryEntry(BaseModel):
 class GlossaryResponse(BaseModel):
     entries: dict[str, str]
     updated_at: Optional[float] = None
+    entry_origins: dict[str, str] = Field(default_factory=dict)
+    routes: list[dict[str, Any]] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
+    mode: str = 'fixed'
 
 
 class GlossarySettings(BaseModel):
     active_glossary_id: Optional[str] = None
     glossaries: Optional[list[dict[str, Any]]] = None
+    glossary_mode: Optional[str] = None
+    smart_source_lang: Optional[str] = None
+    smart_target_lang: Optional[str] = None
     glossary_path: Optional[str] = None
     glossary_version: Optional[str] = None
     source_lang: Optional[str] = None
@@ -57,6 +63,8 @@ class GlossarySettings(BaseModel):
     max_terms_injected: Optional[int] = None
     max_turns: Optional[int] = None
     token_limit: Optional[int] = None
+    mtp_enabled: Optional[bool] = None
+    multimodal_enabled: Optional[bool] = None
     debug: Optional[bool] = None
 
 
@@ -237,14 +245,14 @@ def parse_import_content(content: str) -> dict[str, str]:
 @router.get('/', response_model=GlossaryResponse)
 async def get_glossary(user=Depends(get_verified_user)):
     try:
-        entries, updated_at = await read_entries()
+        view = await get_glossary_view()
     except Exception as e:
         log.warning('Glossary JSON is invalid: %s', e)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Glossary JSON is invalid. Fix the file or replace it from the app.',
         )
-    return GlossaryResponse(entries=entries, updated_at=updated_at)
+    return GlossaryResponse(**view)
 
 
 @router.get('/settings', response_model=GlossarySettingsResponse)
@@ -295,16 +303,43 @@ async def create_glossary(form_data: GlossaryCreate, user=Depends(get_verified_u
             'target_lang': target_lang,
         }
     )
-    settings = await write_settings({'active_glossary_id': glossary_id, 'glossaries': glossaries})
+    values: dict[str, Any] = {
+        'active_glossary_id': glossary_id,
+        'glossaries': glossaries,
+    }
+    if settings.get('glossary_mode') == 'smart':
+        values.update(
+            {
+                'smart_source_lang': source_lang,
+                'smart_target_lang': target_lang,
+            }
+        )
+    settings = await write_settings(values)
     return GlossarySettingsResponse(settings=settings)
 
 
 @router.post('/glossaries/{glossary_id}/activate', response_model=GlossarySettingsResponse)
 async def activate_glossary(glossary_id: str, user=Depends(get_verified_user)):
     settings = normalize_settings(await read_settings())
-    if glossary_id not in {item.get('id') for item in settings.get('glossaries', [])}:
+    selected = next(
+        (item for item in settings.get('glossaries', []) if item.get('id') == glossary_id),
+        None,
+    )
+    if selected is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Glossary not found')
-    settings = await write_settings({'active_glossary_id': glossary_id, 'glossaries': settings['glossaries']})
+
+    values: dict[str, Any] = {
+        'active_glossary_id': glossary_id,
+        'glossaries': settings['glossaries'],
+    }
+    if settings.get('glossary_mode') == 'smart':
+        values.update(
+            {
+                'smart_source_lang': selected.get('source_lang'),
+                'smart_target_lang': selected.get('target_lang') or selected.get('glossary_lang'),
+            }
+        )
+    settings = await write_settings(values)
     return GlossarySettingsResponse(settings=settings)
 
 
@@ -352,13 +387,26 @@ async def delete_glossary(glossary_id: str, user=Depends(get_verified_user)):
 @router.get('/export')
 async def export_active_glossary(user=Depends(get_verified_user)):
     settings = normalize_settings(await read_settings())
-    active = next(item for item in settings['glossaries'] if item.get('id') == settings['active_glossary_id'])
-    entries, updated_at = await read_entries(settings)
-    payload = {
-        'format': 'aurapro-glossary',
-        'format_version': 1,
-        'exported_at': time.time(),
-        'glossary': {
+    view = await get_glossary_view(settings)
+    entries = dict(view['entries'])
+    updated_at = view.get('updated_at')
+
+    if settings.get('glossary_mode') == 'smart':
+        source_lang = str(settings.get('smart_source_lang') or '')
+        target_lang = str(settings.get('smart_target_lang') or '')
+        glossary_meta = {
+            'id': f'smart-{safe_glossary_id(source_lang)}-{safe_glossary_id(target_lang)}',
+            'name': f'{source_lang}-{target_lang}',
+            'version': '1.0.0',
+            'source_lang': source_lang,
+            'glossary_lang': target_lang,
+            'target_lang': target_lang,
+            'updated_at': updated_at,
+            'routes': view.get('routes') or [],
+        }
+    else:
+        active = next(item for item in settings['glossaries'] if item.get('id') == settings['active_glossary_id'])
+        glossary_meta = {
             'id': active.get('id'),
             'name': active.get('name'),
             'version': active.get('version') or '1.0.0',
@@ -366,12 +414,19 @@ async def export_active_glossary(user=Depends(get_verified_user)):
             'glossary_lang': active.get('glossary_lang'),
             'target_lang': active.get('target_lang'),
             'updated_at': updated_at,
-        },
+        }
+
+    payload = {
+        'format': 'aurapro-glossary',
+        'format_version': 1,
+        'exported_at': time.time(),
+        'glossary': glossary_meta,
         'entries': entries,
     }
-    export_name = safe_filename_stem(str(active.get('name') or active.get('id') or 'glossary'))
-    filename = f'{export_name}-{active.get("version") or "1.0.0"}.aurapro-glossary.json'
-    fallback_filename = f'{safe_glossary_id(export_name)}-{active.get("version") or "1.0.0"}.aurapro-glossary.json'
+    export_name = safe_filename_stem(str(glossary_meta.get('name') or glossary_meta.get('id') or 'glossary'))
+    version = str(glossary_meta.get('version') or '1.0.0')
+    filename = f'{export_name}-{version}.aurapro-glossary.json'
+    fallback_filename = f'{safe_glossary_id(export_name)}-{version}.aurapro-glossary.json'
     return Response(
         content=json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
         media_type='application/json',
@@ -398,12 +453,17 @@ async def upsert_glossary_entry(form_data: GlossaryEntry, user=Depends(get_verif
         )
 
     async with glossary_lock:
-        settings = await fork_official_glossary_for_edit()
-        entries, _ = await read_entries(settings)
+        _settings, editable = await get_editable_glossary()
+        entries, _updated_at, _signature = await read_glossary_entries(editable)
         entries[source] = target
-        await write_entries(entries, settings)
+        await write_glossary_entries(entries, editable)
 
-    return GlossaryResponse(entries={source: target}, updated_at=time.time())
+    return GlossaryResponse(
+        entries={source: target},
+        entry_origins={source: 'user'},
+        mode=str(_settings.get('glossary_mode') or 'fixed'),
+        updated_at=time.time(),
+    )
 
 
 @router.post('/import', response_model=GlossaryResponse)
@@ -443,40 +503,48 @@ async def import_glossary_entries(form_data: GlossaryImport, user=Depends(get_ve
                 ),
                 user,
             )
-            current = {}
             settings = created.settings
+            editable = next(item for item in settings['glossaries'] if item.get('id') == settings['active_glossary_id'])
+            current: dict[str, str] = {}
         else:
-            settings = await fork_official_glossary_for_edit()
-            current, _ = ({}, None) if form_data.replace else await read_entries(settings)
-        current.update(incoming)
-        await write_entries(current, settings)
+            settings, editable = await get_editable_glossary()
+            if form_data.replace:
+                current = {}
+            else:
+                current, _updated_at, _signature = await read_glossary_entries(editable)
 
-    return GlossaryResponse(entries=current, updated_at=time.time())
+        current.update(incoming)
+        await write_glossary_entries(current, editable)
+
+    return GlossaryResponse(**(await get_glossary_view(settings)))
 
 
 @router.delete('/entry/{source}', response_model=GlossaryResponse)
 async def delete_glossary_entry(source: str, user=Depends(get_verified_user)):
     source = normalize_term(source)
     async with glossary_lock:
-        settings = await fork_official_glossary_for_edit()
-        entries, _ = await read_entries(settings)
+        settings, editable = await get_editable_glossary()
+        entries, _updated_at, _signature = await read_glossary_entries(editable)
         entries.pop(source, None)
-        await write_entries(entries, settings)
+        await write_glossary_entries(entries, editable)
 
-    return GlossaryResponse(entries=entries, updated_at=time.time())
+    return GlossaryResponse(**(await get_glossary_view(settings)))
 
 
 @router.post('/entries/delete', response_model=GlossaryResponse)
 async def delete_glossary_entries(form_data: GlossaryBulkDelete, user=Depends(get_verified_user)):
     sources = {normalize_term(source) for source in form_data.sources if normalize_term(source)}
     if not sources:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.EMPTY_CONTENT)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.EMPTY_CONTENT,
+        )
 
     async with glossary_lock:
-        settings = await fork_official_glossary_for_edit()
-        entries, _ = await read_entries(settings)
+        settings, editable = await get_editable_glossary()
+        entries, _updated_at, _signature = await read_glossary_entries(editable)
         for source in sources:
             entries.pop(source, None)
-        await write_entries(entries, settings)
+        await write_glossary_entries(entries, editable)
 
-    return GlossaryResponse(entries=entries, updated_at=time.time())
+    return GlossaryResponse(**(await get_glossary_view(settings)))
