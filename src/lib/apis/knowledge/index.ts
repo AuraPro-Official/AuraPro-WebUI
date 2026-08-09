@@ -954,29 +954,21 @@ export const reindexKnowledgeFiles = async (token: string) => {
 	return res;
 };
 
-export const exportKnowledgeById = async (token: string, id: string) => {
-	let error = null;
-
-	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/${id}/export-with-vectors`, {
+export const exportKnowledgeById = async (
+	token: string,
+	id: string,
+	requestId?: string,
+	signal?: AbortSignal
+) => {
+	const url = `${WEBUI_API_BASE_URL}/knowledge/${id}/export-with-vectors${requestId ? `?request_id=${requestId}` : ''}`;
+	const res = await fetch(url, {
 		method: 'GET',
 		headers: {
 			authorization: `Bearer ${token}`
-		}
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.blob();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
-			return null;
-		});
-
-	if (error) {
-		throw error;
-	}
-
+		},
+		signal
+	});
+	if (!res.ok) throw await res.json();
 	return res;
 };
 
@@ -1262,6 +1254,7 @@ export function parseFileName(name: string): { base: string; lang: string } | nu
 
 export type SentenceAlignItem = {
 	id: string;
+	align_group_id: string;
 	para_index: number;
 	sentence_index: number;
 	primary_text: string;
@@ -1304,12 +1297,12 @@ export const getBilingualAlign = async (
 
 export const updateSentenceTranslation = async (
 	token: string,
-	payload: { collection_name: string; id: string; lang: string; text: string }
+	payload: { collection_name: string; align_group_id: string; lang: string; text: string }
 ): Promise<{
 	status: boolean;
-	id: string;
+	align_group_id: string;
 	lang: string;
-	langs_modified: Record<string, boolean>;
+	langs_modified: boolean;
 }> => {
 	const res = await fetch(`${WEBUI_API_BASE_URL}/retrieval/process/bilingual/sentence`, {
 		method: 'PUT',

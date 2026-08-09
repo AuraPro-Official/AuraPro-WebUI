@@ -1,9 +1,13 @@
-<script lang="ts">
+﻿<script lang="ts">
 	import { getContext, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
 	import { showArchivedChats, showSidebar, mobile, user } from '$lib/stores';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
+	import {
+		buildGlossaryLanguageSelectItems,
+		normalizeGlossaryLanguage
+	} from '$lib/utils/glossaryLanguages';
 	import {
 		activateGlossary,
 		createGlossary,
@@ -32,12 +36,26 @@
 
 	const i18n = getContext('i18n');
 
+	type GlossaryOrigin = 'user' | 'direct' | 'combined';
+
 	type GlossaryEntry = {
 		source: string;
 		target: string;
 		draftSource: string;
 		draftTarget: string;
 		dirty: boolean;
+		origin: GlossaryOrigin;
+		editingOverride: boolean;
+	};
+
+	type GlossaryRoute = {
+		kind: 'direct' | 'combined';
+		source_lang: string;
+		target_lang: string;
+		pivot_lang?: string | null;
+		glossary_ids: string[];
+		glossary_names: string[];
+		coverage: number;
 	};
 
 	type GlossarySummary = {
@@ -53,6 +71,9 @@
 
 	type GlossarySettings = {
 		active_glossary_id?: string;
+		glossary_mode?: 'smart' | 'fixed';
+		smart_source_lang?: string;
+		smart_target_lang?: string;
 		glossaries?: GlossarySummary[];
 		glossary_lang?: string;
 		glossary_path?: string;
@@ -87,6 +108,8 @@
 	let query = '';
 	let entries: GlossaryEntry[] = [];
 	let settings: GlossarySettings = {};
+	let glossaryRoutes: GlossaryRoute[] = [];
+	let availableLanguages: string[] = [];
 	let importText = '';
 	let replaceImport = false;
 	let importAsNewGlossary = false;
@@ -151,9 +174,11 @@
 	$: activeGlossary = (settings.glossaries ?? []).find(
 		(glossary) => glossary.id === settings.active_glossary_id
 	);
-	$: activeGlossaryPair = `${activeGlossary?.source_lang ?? settings.source_lang ?? ''} -> ${
+	$: activeGlossaryPair = `${normalizeGlossaryLanguage(
+		activeGlossary?.source_lang ?? settings.source_lang ?? ''
+	)} -> ${normalizeGlossaryLanguage(
 		activeGlossary?.target_lang ?? settings.target_lang ?? activeGlossary?.glossary_lang ?? ''
-	}`;
+	)}`;
 	$: activeGlossaryVersion = activeGlossary?.version ?? settings.glossary_version ?? '1.0.0';
 
 	const safeExportName = (value: string) =>
@@ -163,7 +188,9 @@
 			.replace(/^[\s.-]+|[\s.-]+$/g, '') || 'glossary';
 	$: activeGlossaryPath = activeGlossary?.path ?? settings.glossary_path ?? '';
 	$: activeGlossaryFile = getGlossaryFileName(activeGlossaryPath);
-	$: selectableFilteredEntries = filteredEntries.filter((entry) => entry.source);
+	$: selectableFilteredEntries = filteredEntries.filter(
+		(entry) => entry.source && entry.origin === 'user'
+	);
 	$: allFilteredSelected =
 		selectableFilteredEntries.length > 0 &&
 		selectableFilteredEntries.every((entry) => selectedEntries.has(entry.source));
@@ -171,13 +198,15 @@
 	const getGlossaryFileName = (path: string = '') => path.split(/[\\/]/).pop() ?? '';
 
 	$: glossarySelectItems = (settings.glossaries ?? []).map((glossary) => {
-		const source = glossary.source_lang ?? settings.source_lang ?? '';
-		const target =
+		const rawSource = glossary.source_lang ?? settings.source_lang ?? '';
+		const rawTarget =
 			glossary.target_lang ??
 			glossary.glossary_lang ??
 			settings.target_lang ??
 			settings.glossary_lang ??
 			'';
+		const source = normalizeGlossaryLanguage(rawSource);
+		const target = normalizeGlossaryLanguage(rawTarget);
 		const fileName = getGlossaryFileName(glossary.path ?? '');
 		const label = `${source} → ${target}${glossary.official ? ` ${$i18n.t('Official')}` : ''} v${
 			glossary.version ?? '1.0.0'
@@ -188,6 +217,8 @@
 			label,
 			searchTerms: [
 				glossary.name,
+				rawSource,
+				rawTarget,
 				glossary.source_lang,
 				glossary.target_lang,
 				glossary.glossary_lang,
@@ -196,6 +227,23 @@
 			]
 		};
 	});
+
+	$: isSmartMode = (settings.glossary_mode ?? 'smart') === 'smart';
+	$: smartSourceLang = normalizeGlossaryLanguage(
+		settings.smart_source_lang ?? settings.source_lang ?? '中文'
+	);
+	$: smartTargetLang = normalizeGlossaryLanguage(
+		settings.smart_target_lang ?? settings.target_lang ?? '外文'
+	);
+	$: languageSelectItems = buildGlossaryLanguageSelectItems([
+		...availableLanguages,
+		...(settings.glossaries ?? []).flatMap((glossary) => [
+			glossary.source_lang,
+			glossary.target_lang ?? glossary.glossary_lang
+		]),
+		smartSourceLang,
+		smartTargetLang
+	]);
 
 	const load = async () => {
 		loading = true;
@@ -210,10 +258,14 @@
 					target: String(target),
 					draftSource: source,
 					draftTarget: String(target),
-					dirty: false
+					dirty: false,
+					origin: (glossary?.entry_origins?.[source] ?? 'user') as GlossaryOrigin,
+					editingOverride: false
 				}))
 				.reverse();
 			settings = glossarySettings ?? {};
+			glossaryRoutes = glossary?.routes ?? [];
+			availableLanguages = glossary?.languages ?? [];
 			selectedEntries = new Set();
 		} catch (error) {
 			toast.error(`${error}`);
@@ -221,7 +273,24 @@
 		loading = false;
 	};
 
+	const isEntryEditable = (entry: GlossaryEntry) =>
+		entry.origin === 'user' || entry.editingOverride;
+
+	const beginPersonalCorrection = (entry: GlossaryEntry) => {
+		entry.editingOverride = true;
+		entries = entries;
+	};
+
+	const cancelPersonalCorrection = (entry: GlossaryEntry) => {
+		entry.draftSource = entry.source;
+		entry.draftTarget = entry.target;
+		entry.dirty = false;
+		entry.editingOverride = false;
+		entries = entries;
+	};
+
 	const saveEntry = async (entry: GlossaryEntry) => {
+		if (!isEntryEditable(entry)) return;
 		const source = entry.draftSource.trim();
 		const target = entry.draftTarget.trim();
 		if (!source || !target) {
@@ -230,7 +299,7 @@
 		}
 
 		try {
-			if (entry.source && entry.source !== source) {
+			if (entry.origin === 'user' && entry.source && entry.source !== source) {
 				await deleteGlossaryEntry(localStorage.token, entry.source);
 			}
 			await upsertGlossaryEntry(localStorage.token, source, target);
@@ -251,13 +320,16 @@
 				target: '',
 				draftSource: '',
 				draftTarget: '',
-				dirty: true
+				dirty: true,
+				origin: 'user',
+				editingOverride: true
 			},
 			...entries
 		];
 	};
 
 	const removeEntry = async (entry: GlossaryEntry) => {
+		if (entry.origin !== 'user') return;
 		if (!entry.source) {
 			entries = entries.filter((item) => item !== entry);
 			return;
@@ -268,6 +340,7 @@
 			selectedEntries.delete(entry.source);
 			selectedEntries = new Set(selectedEntries);
 			toast.success($i18n.t('Deleted'));
+			await load();
 		} catch (error) {
 			toast.error(`${error}`);
 		}
@@ -349,6 +422,9 @@
 		savingSettings = true;
 		try {
 			settings = await updateGlossarySettings(localStorage.token, {
+				glossary_mode: settings.glossary_mode ?? 'smart',
+				smart_source_lang: settings.smart_source_lang,
+				smart_target_lang: settings.smart_target_lang,
 				glossary_path: settings.glossary_path,
 				glossary_version: settings.glossary_version,
 				source_lang: settings.source_lang,
@@ -366,6 +442,46 @@
 		savingSettings = false;
 	};
 
+	const updateGlossaryMode = async (mode: 'smart' | 'fixed') => {
+		if ((settings.glossary_mode ?? 'smart') === mode) return;
+		savingSettings = true;
+		try {
+			settings = await updateGlossarySettings(localStorage.token, {
+				glossary_mode: mode,
+				smart_source_lang: smartSourceLang,
+				smart_target_lang: smartTargetLang
+			});
+			showGlossarySettings = false;
+			await load();
+		} catch (error) {
+			toast.error(`${error}`);
+		} finally {
+			savingSettings = false;
+		}
+	};
+
+	const updateSmartLanguage = async (side: 'source' | 'target', value: string) => {
+		const language = normalizeGlossaryLanguage(value);
+		if (!language) return;
+		const source = side === 'source' ? language : smartSourceLang;
+		const target = side === 'target' ? language : smartTargetLang;
+		if (source === smartSourceLang && target === smartTargetLang) return;
+
+		savingSettings = true;
+		try {
+			settings = await updateGlossarySettings(localStorage.token, {
+				glossary_mode: 'smart',
+				smart_source_lang: source,
+				smart_target_lang: target
+			});
+			await load();
+		} catch (error) {
+			toast.error(`${error}`);
+		} finally {
+			savingSettings = false;
+		}
+	};
+
 	const switchGlossary = async (id: string) => {
 		if (!id || id === settings.active_glossary_id) return;
 		loading = true;
@@ -381,9 +497,16 @@
 
 	const createNewGlossary = async () => {
 		const name = newGlossaryName.trim();
-		const sourceLang = newGlossarySourceLang.trim() || settings.source_lang || '中文';
-		const targetLang =
-			newGlossaryTargetLang.trim() || settings.target_lang || settings.glossary_lang || '西班牙语';
+		const sourceLang = normalizeGlossaryLanguage(
+			newGlossarySourceLang.trim() ||
+				(isSmartMode ? smartSourceLang : settings.source_lang) ||
+				'中文'
+		);
+		const targetLang = normalizeGlossaryLanguage(
+			newGlossaryTargetLang.trim() ||
+				(isSmartMode ? smartTargetLang : settings.target_lang || settings.glossary_lang) ||
+				'西班牙语'
+		);
 		if (!sourceLang || !targetLang) return;
 		loading = true;
 		try {
@@ -509,9 +632,13 @@
 			const active = (settings.glossaries ?? []).find(
 				(item) => item.id === settings.active_glossary_id
 			);
-			const name = `${safeExportName(active?.name ?? active?.id ?? 'glossary')}-${
-				active?.version ?? settings.glossary_version ?? '1.0.0'
-			}.aurapro-glossary.json`;
+			const exportLabel = isSmartMode
+				? `${smartSourceLang}-${smartTargetLang}`
+				: (active?.name ?? active?.id ?? 'glossary');
+			const exportVersion = isSmartMode
+				? '1.0.0'
+				: (active?.version ?? settings.glossary_version ?? '1.0.0');
+			const name = `${safeExportName(exportLabel)}-${exportVersion}.aurapro-glossary.json`;
 			const url = URL.createObjectURL(blob);
 			const anchor = document.createElement('a');
 			anchor.href = url;
@@ -597,138 +724,270 @@
 				<section class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4">
 					<div class="space-y-3">
 						<div class="rounded-lg border border-gray-100 dark:border-gray-800 p-3 space-y-3">
-							<div class="flex flex-col md:flex-row gap-2 md:items-end md:justify-between">
-								<label class="flex-1 space-y-1">
-									<div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
-										<span>{$i18n.t('Active glossary')}</span>
-										<span class="text-gray-400 dark:text-gray-500">
-											没有找到所需语言？点击创建词典，设置后即可使用。
-										</span>
-									</div>
-									<div class="flex gap-2">
-										<SearchableSelect
-											id="active-glossary-selector"
-											className="w-full rounded-lg border border-gray-100 bg-gray-50 dark:border-gray-800 dark:bg-gray-900"
-											inputClassName="px-3 py-2"
-											value={settings.active_glossary_id}
-											items={glossarySelectItems}
-											placeholder={$i18n.t('Search')}
-											emptyText={$i18n.t('No results found')}
-											on:change={(event) => switchGlossary(event.detail)}
-										/>
-										<Tooltip content={$i18n.t('Current glossary settings')}>
-											<button
-												class="shrink-0 rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 p-2 text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-850 dark:text-gray-300"
-												on:click={() => (showGlossarySettings = !showGlossarySettings)}
-												aria-label={$i18n.t('Current glossary settings')}
-											>
-												<Cog6 className="size-4" strokeWidth="1.8" />
-											</button>
-										</Tooltip>
-									</div>
-								</label>
-								<button
-									class="px-3 py-2 rounded-lg text-sm bg-gray-100 dark:bg-gray-850 hover:bg-gray-200 dark:hover:bg-gray-800"
-									on:click={openCreateGlossaryModal}
-								>
-									{$i18n.t('Create glossary')}
-								</button>
-								<button
-									class="px-3 py-2 rounded-lg text-sm bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-950/30 dark:hover:bg-red-950/50 disabled:opacity-40 disabled:cursor-not-allowed"
-									disabled={activeGlossary?.official || (settings.glossaries ?? []).length <= 1}
-									on:click={removeActiveGlossary}
-								>
-									{$i18n.t('Delete glossary')}
-								</button>
-							</div>
-
-							<div class="text-xs text-gray-500 space-y-1">
-								<div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-									{#if activeGlossaryPair.trim() !== '->'}
-										<span class="font-medium text-gray-700 dark:text-gray-200">
-											{activeGlossaryPair}
-										</span>
-									{/if}
-									{#if activeGlossary?.official}
-										<span
-											class="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-950/40 dark:text-blue-300"
+							<div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+								<div class="space-y-1">
+									<div class="text-xs text-gray-500">{$i18n.t('Glossary mode')}</div>
+									<div
+										class="inline-flex rounded-lg bg-gray-100 p-1 dark:bg-gray-850"
+										role="group"
+										aria-label={$i18n.t('Glossary mode')}
+									>
+										<button
+											class="min-w-28 rounded-md px-3 py-1.5 text-sm transition {isSmartMode
+												? 'bg-white font-medium text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white'
+												: 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'}"
+											aria-pressed={isSmartMode}
+											disabled={savingSettings}
+											on:click={() => updateGlossaryMode('smart')}
 										>
-											{$i18n.t('Official')}
-										</span>
-									{/if}
-									<span class="font-mono">v{activeGlossaryVersion}</span>
-									{#if activeGlossaryFile}
-										<span class="font-mono">{activeGlossaryFile}</span>
-									{/if}
-								</div>
-								{#if activeGlossary?.official}
-									<div>
-										{$i18n.t(
-											'Official glossaries stay updateable. When you edit one, AuraPro creates an edited user copy.'
-										)}
+											{$i18n.t('Smart glossary')}
+										</button>
+										<button
+											class="min-w-28 rounded-md px-3 py-1.5 text-sm transition {!isSmartMode
+												? 'bg-white font-medium text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white'
+												: 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'}"
+											aria-pressed={!isSmartMode}
+											disabled={savingSettings}
+											on:click={() => updateGlossaryMode('fixed')}
+										>
+											{$i18n.t('Specific glossary')}
+										</button>
 									</div>
+								</div>
+								{#if isSmartMode}
+									<button
+										class="px-3 py-2 rounded-lg text-sm bg-gray-100 dark:bg-gray-850 hover:bg-gray-200 dark:hover:bg-gray-800"
+										on:click={openCreateGlossaryModal}
+									>
+										{$i18n.t('Create glossary')}
+									</button>
 								{/if}
 							</div>
 
-							{#if showGlossarySettings}
-								<div
-									class="rounded-lg border border-gray-100 bg-gray-50/70 p-3 dark:border-gray-800 dark:bg-gray-900/60 space-y-3"
-								>
-									<div class="flex items-center justify-between gap-2">
-										<div>
-											<div class="text-sm font-medium">{$i18n.t('Current glossary settings')}</div>
-											<div class="text-xs text-gray-500">
-												{$i18n.t('These settings follow the selected glossary.')}
-											</div>
-										</div>
-										<button
-											class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-850 dark:hover:text-gray-200"
-											on:click={() => (showGlossarySettings = false)}
-											aria-label={$i18n.t('Close')}
-										>
-											<XMark className="size-4" strokeWidth="2" />
-										</button>
-									</div>
-									<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-										<label class="block space-y-1 md:col-span-2">
-											<div class="text-xs text-gray-500">{$i18n.t('Glossary JSON path')}</div>
-											<input
-												class="w-full rounded-lg bg-white dark:bg-gray-950 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
-												bind:value={settings.glossary_path}
-											/>
-										</label>
-										<label class="block space-y-1">
-											<div class="text-xs text-gray-500">{$i18n.t('Glossary version')}</div>
-											<input
-												class="w-full rounded-lg bg-white dark:bg-gray-950 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
-												bind:value={settings.glossary_version}
-											/>
-										</label>
-										<label class="block space-y-1">
-											<div class="text-xs text-gray-500">{$i18n.t('Source language')}</div>
-											<input
-												class="w-full rounded-lg bg-white dark:bg-gray-950 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
-												bind:value={settings.source_lang}
-											/>
-										</label>
-										<label class="block space-y-1">
-											<div class="text-xs text-gray-500">{$i18n.t('Target language')}</div>
-											<input
-												class="w-full rounded-lg bg-white dark:bg-gray-950 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
-												bind:value={settings.target_lang}
-											/>
-										</label>
-										<div class="flex items-end">
-											<button
-												class="w-full px-3 py-2 rounded-lg text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-50"
+							{#if isSmartMode}
+								<div class="space-y-3 border-t border-gray-100 pt-3 dark:border-gray-800">
+									<div class="grid grid-cols-1 gap-2 md:grid-cols-2">
+										<label class="min-w-0 space-y-1">
+											<div class="text-xs text-gray-500">{$i18n.t('Language 1')}</div>
+											<SearchableSelect
+												id="smart-glossary-source-language"
+												className="w-full rounded-lg border border-gray-100 bg-gray-50 dark:border-gray-800 dark:bg-gray-900"
+												inputClassName="px-3 py-2"
+												value={smartSourceLang}
+												items={languageSelectItems}
+												allowCustom={true}
+												placeholder={$i18n.t('Enter or select a language')}
+												emptyText={$i18n.t('Enter a custom language')}
 												disabled={savingSettings}
-												on:click={saveSettings}
-											>
-												{savingSettings ? $i18n.t('Saving...') : $i18n.t('Save glossary settings')}
-											</button>
-										</div>
+												on:change={(event) => updateSmartLanguage('source', event.detail)}
+											/>
+										</label>
+										<label class="min-w-0 space-y-1">
+											<div class="text-xs text-gray-500">{$i18n.t('Language 2')}</div>
+											<SearchableSelect
+												id="smart-glossary-target-language"
+												className="w-full rounded-lg border border-gray-100 bg-gray-50 dark:border-gray-800 dark:bg-gray-900"
+												inputClassName="px-3 py-2"
+												value={smartTargetLang}
+												items={languageSelectItems}
+												allowCustom={true}
+												placeholder={$i18n.t('Enter or select a language')}
+												emptyText={$i18n.t('Enter a custom language')}
+												disabled={savingSettings}
+												on:change={(event) => updateSmartLanguage('target', event.detail)}
+											/>
+										</label>
+									</div>
+									<div class="text-xs text-gray-500">
+										{$i18n.t(
+											'Smart mode uses a direct glossary first, then combines compatible glossaries through a shared language.'
+										)}
+									</div>
+									<div class="space-y-2 border-t border-gray-100 pt-3 dark:border-gray-800">
+										{#if glossaryRoutes.length > 0}
+											{#each glossaryRoutes as route}
+												<div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+													<span
+														class="inline-flex rounded-full px-2 py-0.5 font-medium {route.kind ===
+														'direct'
+															? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
+															: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'}"
+													>
+														{route.kind === 'direct'
+															? $i18n.t('Direct glossary')
+															: $i18n.t('Combined glossary')}
+													</span>
+													<span class="font-medium text-gray-700 dark:text-gray-200">
+														{normalizeGlossaryLanguage(route.source_lang)} ↔
+														{normalizeGlossaryLanguage(route.target_lang)}
+													</span>
+													{#if route.kind === 'combined' && route.pivot_lang}
+														<span class="text-gray-500">
+															{$i18n.t('via {{language}}', {
+																language: normalizeGlossaryLanguage(route.pivot_lang)
+															})}
+														</span>
+													{/if}
+													<span class="text-gray-400">
+														{$i18n.t('{{count}} terms', { count: route.coverage })}
+													</span>
+													{#if route.glossary_names?.length}
+														<span
+															class="min-w-0 truncate text-gray-400"
+															title={route.glossary_names.join(' + ')}
+														>
+															{route.glossary_names.join(' + ')}
+														</span>
+													{/if}
+												</div>
+											{/each}
+										{:else}
+											<div class="text-xs text-amber-700 dark:text-amber-300">
+												{$i18n.t(
+													'No compatible glossary was found. Translation will continue without glossary terms.'
+												)}
+											</div>
+										{/if}
 									</div>
 								</div>
+							{:else}
+								<div class="flex flex-col md:flex-row gap-2 md:items-end md:justify-between">
+									<label class="flex-1 space-y-1">
+										<div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+											<span>{$i18n.t('Active glossary')}</span>
+											<span class="text-gray-400 dark:text-gray-500">
+												没有找到所需语言？点击创建词典，设置后即可使用。
+											</span>
+										</div>
+										<div class="flex gap-2">
+											<SearchableSelect
+												id="active-glossary-selector"
+												className="w-full rounded-lg border border-gray-100 bg-gray-50 dark:border-gray-800 dark:bg-gray-900"
+												inputClassName="px-3 py-2"
+												value={settings.active_glossary_id}
+												items={glossarySelectItems}
+												placeholder={$i18n.t('Search')}
+												emptyText={$i18n.t('No results found')}
+												on:change={(event) => switchGlossary(event.detail)}
+											/>
+											<Tooltip content={$i18n.t('Current glossary settings')}>
+												<button
+													class="shrink-0 rounded-lg border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 p-2 text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-850 dark:text-gray-300"
+													on:click={() => (showGlossarySettings = !showGlossarySettings)}
+													aria-label={$i18n.t('Current glossary settings')}
+												>
+													<Cog6 className="size-4" strokeWidth="1.8" />
+												</button>
+											</Tooltip>
+										</div>
+									</label>
+									<button
+										class="px-3 py-2 rounded-lg text-sm bg-gray-100 dark:bg-gray-850 hover:bg-gray-200 dark:hover:bg-gray-800"
+										on:click={openCreateGlossaryModal}
+									>
+										{$i18n.t('Create glossary')}
+									</button>
+									<button
+										class="px-3 py-2 rounded-lg text-sm bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-950/30 dark:hover:bg-red-950/50 disabled:opacity-40 disabled:cursor-not-allowed"
+										disabled={activeGlossary?.official || (settings.glossaries ?? []).length <= 1}
+										on:click={removeActiveGlossary}
+									>
+										{$i18n.t('Delete glossary')}
+									</button>
+								</div>
+
+								<div class="text-xs text-gray-500 space-y-1">
+									<div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+										{#if activeGlossaryPair.trim() !== '->'}
+											<span class="font-medium text-gray-700 dark:text-gray-200">
+												{activeGlossaryPair}
+											</span>
+										{/if}
+										{#if activeGlossary?.official}
+											<span
+												class="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-950/40 dark:text-blue-300"
+											>
+												{$i18n.t('Official')}
+											</span>
+										{/if}
+										<span class="font-mono">v{activeGlossaryVersion}</span>
+										{#if activeGlossaryFile}
+											<span class="font-mono">{activeGlossaryFile}</span>
+										{/if}
+									</div>
+									{#if activeGlossary?.official}
+										<div>
+											{$i18n.t(
+												'Official glossaries stay updateable. When you edit one, AuraPro creates an edited user copy.'
+											)}
+										</div>
+									{/if}
+								</div>
+
+								{#if showGlossarySettings}
+									<div
+										class="rounded-lg border border-gray-100 bg-gray-50/70 p-3 dark:border-gray-800 dark:bg-gray-900/60 space-y-3"
+									>
+										<div class="flex items-center justify-between gap-2">
+											<div>
+												<div class="text-sm font-medium">
+													{$i18n.t('Current glossary settings')}
+												</div>
+												<div class="text-xs text-gray-500">
+													{$i18n.t('These settings follow the selected glossary.')}
+												</div>
+											</div>
+											<button
+												class="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-850 dark:hover:text-gray-200"
+												on:click={() => (showGlossarySettings = false)}
+												aria-label={$i18n.t('Close')}
+											>
+												<XMark className="size-4" strokeWidth="2" />
+											</button>
+										</div>
+										<div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+											<label class="block space-y-1 md:col-span-2">
+												<div class="text-xs text-gray-500">{$i18n.t('Glossary JSON path')}</div>
+												<input
+													class="w-full rounded-lg bg-white dark:bg-gray-950 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
+													bind:value={settings.glossary_path}
+												/>
+											</label>
+											<label class="block space-y-1">
+												<div class="text-xs text-gray-500">{$i18n.t('Glossary version')}</div>
+												<input
+													class="w-full rounded-lg bg-white dark:bg-gray-950 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
+													bind:value={settings.glossary_version}
+												/>
+											</label>
+											<label class="block space-y-1">
+												<div class="text-xs text-gray-500">{$i18n.t('Source language')}</div>
+												<input
+													class="w-full rounded-lg bg-white dark:bg-gray-950 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
+													bind:value={settings.source_lang}
+												/>
+											</label>
+											<label class="block space-y-1">
+												<div class="text-xs text-gray-500">{$i18n.t('Target language')}</div>
+												<input
+													class="w-full rounded-lg bg-white dark:bg-gray-950 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
+													bind:value={settings.target_lang}
+												/>
+											</label>
+											<div class="flex items-end">
+												<button
+													class="w-full px-3 py-2 rounded-lg text-sm bg-black text-white dark:bg-white dark:text-black disabled:opacity-50"
+													disabled={savingSettings}
+													on:click={saveSettings}
+												>
+													{savingSettings
+														? $i18n.t('Saving...')
+														: $i18n.t('Save glossary settings')}
+												</button>
+											</div>
+										</div>
+									</div>
+								{/if}
 							{/if}
 						</div>
 
@@ -800,9 +1059,9 @@
 							</div>
 						</div>
 
-						<div class="rounded-lg border border-gray-100 dark:border-gray-800 overflow-hidden">
+						<div class="overflow-x-auto rounded-lg border border-gray-100 dark:border-gray-800">
 							<div
-								class="grid grid-cols-[44px_minmax(120px,1fr)_minmax(120px,1fr)_112px] bg-gray-50 dark:bg-gray-900 text-xs font-medium text-gray-500"
+								class="grid grid-cols-[44px_minmax(140px,1fr)_minmax(140px,1fr)_156px] bg-gray-50 dark:bg-gray-900 text-xs font-medium text-gray-500"
 							>
 								<div class="px-3 py-2 flex items-center justify-center">
 									<input
@@ -829,47 +1088,93 @@
 
 							{#each pagedEntries as entry (entry.source || entry)}
 								<div
-									class="grid grid-cols-[44px_minmax(120px,1fr)_minmax(120px,1fr)_112px] border-t border-gray-100 dark:border-gray-800"
+									class="grid min-h-14 grid-cols-[44px_minmax(140px,1fr)_minmax(140px,1fr)_156px] border-t border-gray-100 dark:border-gray-800"
 								>
 									<div class="px-3 py-2 flex items-center justify-center">
 										<input
 											type="checkbox"
-											disabled={!entry.source}
+											disabled={!entry.source || entry.origin !== 'user'}
 											checked={entry.source ? selectedEntries.has(entry.source) : false}
-											on:change={(e) => toggleEntrySelectionFromEvent(entry.source, e)}
+											on:change={(event) => toggleEntrySelectionFromEvent(entry.source, event)}
 										/>
 									</div>
+									<div class="min-w-0 px-3 py-1.5">
+										<input
+											class="block w-full bg-transparent py-0.5 text-sm outline-none read-only:text-gray-600 dark:read-only:text-gray-300"
+											bind:value={entry.draftSource}
+											readonly={entry.origin !== 'user' && Boolean(entry.source)}
+											on:input={() => (entry.dirty = true)}
+											on:blur={() =>
+												entry.origin === 'user' &&
+												entry.dirty &&
+												entry.draftSource.trim() &&
+												entry.draftTarget.trim() &&
+												saveEntry(entry)}
+										/>
+										<span
+											class="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium {entry.origin ===
+											'user'
+												? 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
+												: entry.origin === 'direct'
+													? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
+													: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'}"
+										>
+											{entry.origin === 'user'
+												? $i18n.t('Personal term')
+												: entry.origin === 'direct'
+													? $i18n.t('Direct glossary')
+													: $i18n.t('Combined glossary')}
+										</span>
+									</div>
 									<input
-										class="px-3 py-2 bg-transparent text-sm outline-none"
-										bind:value={entry.draftSource}
-										on:input={() => (entry.dirty = true)}
-										on:blur={() => entry.dirty && saveEntry(entry)}
-									/>
-									<input
-										class="px-3 py-2 bg-transparent text-sm outline-none border-l border-gray-100 dark:border-gray-800"
+										class="min-w-0 border-l border-gray-100 bg-transparent px-3 py-2 text-sm outline-none read-only:text-gray-600 dark:border-gray-800 dark:read-only:text-gray-300"
 										bind:value={entry.draftTarget}
+										readonly={!isEntryEditable(entry)}
 										on:input={() => (entry.dirty = true)}
-										on:blur={() => entry.dirty && saveEntry(entry)}
+										on:blur={() =>
+											entry.origin === 'user' &&
+											entry.dirty &&
+											entry.draftSource.trim() &&
+											entry.draftTarget.trim() &&
+											saveEntry(entry)}
 									/>
 									<div
 										class="px-2 py-1.5 flex items-center justify-end gap-1 border-l border-gray-100 dark:border-gray-800"
 									>
-										<button
-											class="px-2 py-1 rounded-md text-xs {entry.dirty
-												? 'bg-black text-white dark:bg-white dark:text-black'
-												: 'text-gray-400'}"
-											disabled={!entry.dirty}
-											on:click={() => saveEntry(entry)}
-										>
-											{$i18n.t('Save')}
-										</button>
-										<button
-											class="p-1.5 rounded-md text-gray-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30"
-											on:click={() => removeEntry(entry)}
-											aria-label={$i18n.t('Delete')}
-										>
-											<XMark className="size-4" strokeWidth="2" />
-										</button>
+										{#if entry.origin !== 'user' && !entry.editingOverride}
+											<button
+												class="rounded-md bg-gray-100 px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-200 dark:bg-gray-850 dark:text-gray-200 dark:hover:bg-gray-800"
+												on:click={() => beginPersonalCorrection(entry)}
+											>
+												{$i18n.t('Personal correction')}
+											</button>
+										{:else}
+											<button
+												class="px-2 py-1 rounded-md text-xs {entry.dirty
+													? 'bg-black text-white dark:bg-white dark:text-black'
+													: 'text-gray-400'}"
+												disabled={!entry.dirty}
+												on:click={() => saveEntry(entry)}
+											>
+												{$i18n.t('Save')}
+											</button>
+											{#if entry.origin !== 'user'}
+												<button
+													class="rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-850"
+													on:click={() => cancelPersonalCorrection(entry)}
+												>
+													{$i18n.t('Cancel')}
+												</button>
+											{:else}
+												<button
+													class="p-1.5 rounded-md text-gray-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30"
+													on:click={() => removeEntry(entry)}
+													aria-label={$i18n.t('Delete')}
+												>
+													<XMark className="size-4" strokeWidth="2" />
+												</button>
+											{/if}
+										{/if}
 									</div>
 								</div>
 							{/each}

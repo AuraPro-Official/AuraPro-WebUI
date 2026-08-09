@@ -386,8 +386,10 @@ ENABLE_CODE_INTERPRETER = os.getenv('ENABLE_CODE_INTERPRETER', 'True').lower() =
 
 ENABLE_MEMORIES = os.getenv('ENABLE_MEMORIES', 'True').lower() == 'true'
 ENABLE_MEMORY_SYSTEM_CONTEXT = os.getenv('ENABLE_MEMORY_SYSTEM_CONTEXT', 'True').lower() == 'true'
-ENABLE_MEMORY_BACKGROUND_REVIEW = os.getenv('ENABLE_MEMORY_BACKGROUND_REVIEW', 'False').lower() == 'true'
-MEMORIES_REVIEW_INTERVAL_TURNS = int(os.getenv('MEMORIES_REVIEW_INTERVAL_TURNS', '10'))
+ENABLE_MEMORY_BACKGROUND_REVIEW = os.getenv('ENABLE_MEMORY_BACKGROUND_REVIEW', 'True').lower() == 'true'
+MEMORIES_REVIEW_INTERVAL_TURNS = int(os.getenv('MEMORIES_REVIEW_INTERVAL_TURNS', '6'))
+MEMORIES_REVIEW_MODEL = os.getenv('MEMORIES_REVIEW_MODEL', '')
+ENABLE_MEMORY_UPDATE_NOTIFICATIONS = os.getenv('ENABLE_MEMORY_UPDATE_NOTIFICATIONS', 'True').lower() == 'true'
 MEMORIES_USER_CHAR_LIMIT = int(os.getenv('MEMORIES_USER_CHAR_LIMIT', '2000'))
 MEMORIES_CONTEXT_CHAR_LIMIT = int(os.getenv('MEMORIES_CONTEXT_CHAR_LIMIT', '2000'))
 
@@ -2752,6 +2754,8 @@ DEFAULT_CONFIG = {
     'memories.system_context.enable': ENABLE_MEMORY_SYSTEM_CONTEXT,
     'memories.background_review.enable': ENABLE_MEMORY_BACKGROUND_REVIEW,
     'memories.review_interval_turns': MEMORIES_REVIEW_INTERVAL_TURNS,
+    'memories.review_model': MEMORIES_REVIEW_MODEL,
+    'memories.update_notifications.enable': ENABLE_MEMORY_UPDATE_NOTIFICATIONS,
     'memories.user_char_limit': MEMORIES_USER_CHAR_LIMIT,
     'memories.context_char_limit': MEMORIES_CONTEXT_CHAR_LIMIT,
     'code_interpreter.engine': CODE_INTERPRETER_ENGINE,
