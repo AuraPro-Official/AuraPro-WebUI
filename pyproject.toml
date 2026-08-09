@@ -267,9 +267,9 @@ line-length = 120
 # error paths are invisible to the happy-path test suite: a missing import
 # raises NameError exactly when the degraded path fires, turning an actionable
 # 400/404/degraded response into an opaque 500.  Pyflakes (F821) catches that
-# statically, so these modules are kept clean under the pyflakes rule set even
-# though the repo-wide style rules (quotes, line length) are not yet applied to
-# them.  Run from the repo root; it must report "All checks passed!":
+# statically, so these modules are kept clean under the pyflakes rule set in
+# addition to the repo-wide style rules (quotes, line length), which now apply
+# to them too.  Run from the repo root; it must report "All checks passed!":
 #
 #   ruff check --select F \
 #     backend/open_webui/retrieval/epub \
