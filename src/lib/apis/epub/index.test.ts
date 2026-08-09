@@ -337,14 +337,18 @@ describe('EPUB concept API client', () => {
 	it('carries every ingest skip counter through the Batch summary', async () => {
 		// A succeeded item is the one an administrator never opens, so a skip
 		// that only the stored result knew about would be silent in practice.
-		// All three counters are integers or null by database schema, which is
-		// why they are safe on a lifecycle-only endpoint at all. The client is a
+		// All four counters are integers or null by database schema, which is
+		// why they are safe on a lifecycle-only endpoint at all. They stay four
+		// columns rather than one total because they answer different questions
+		// and settle at different times — a sub-floor span is our threshold, an
+		// unverifiable citation is the model's bookkeeping. The client is a
 		// passthrough; this pins the shape it is typed to carry.
 		const summary = {
 			batch_job_id: 'batch-1',
 			item_skipped_self_relations: 1,
 			item_skipped_short_evidence: 2,
 			item_skipped_ambiguous_concepts: 3,
+			item_skipped_ungrounded_evidence: 4,
 			items: [
 				{
 					batch_item_id: 'item-1',
@@ -352,18 +356,21 @@ describe('EPUB concept API client', () => {
 					status: 'SUCCEEDED',
 					skipped_self_relations: 1,
 					skipped_short_evidence: 2,
-					skipped_ambiguous_concepts: 3
+					skipped_ambiguous_concepts: 3,
+					skipped_ungrounded_evidence: 4
 				},
 				{
-					// A row written before the ambiguous-concept column existed:
-					// "not measured", which must survive as null rather than
-					// collapsing to a zero the write never made.
+					// A row written before the ambiguous-concept column existed,
+					// and a CONCEPT_MENTIONS item the ungrounded-citation rule
+					// does not cover: both are "not measured", which must survive
+					// as null rather than collapsing to a zero no write made.
 					batch_item_id: 'item-2',
 					custom_id: 'section-2',
 					status: 'SUCCEEDED',
 					skipped_self_relations: 0,
 					skipped_short_evidence: 0,
-					skipped_ambiguous_concepts: null
+					skipped_ambiguous_concepts: null,
+					skipped_ungrounded_evidence: null
 				}
 			]
 		};
