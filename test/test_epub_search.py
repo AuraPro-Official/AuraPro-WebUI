@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import importlib.util
+import math
 from pathlib import Path
 import sys
 import types
@@ -39,6 +40,13 @@ DerivedVectorRecord = VECTOR_INDEX.DerivedVectorRecord
 
 def _hash(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _span_length(span) -> int:
+    """An unanchored mention is not a span, so it has no length to rank by."""
+    if span["start_codepoint"] is None or span["end_codepoint"] is None:
+        return 0
+    return int(span["end_codepoint"]) - int(span["start_codepoint"])
 
 
 def _contains(start, end, other_start, other_end) -> bool:
@@ -77,6 +85,9 @@ class FakeSource:
             "u2": self._unit("u2", "p2", 0, 9),
             "u3": self._unit("u3", "p3", 0, 8),
         }
+        # Every ``list_concept_occurrences`` call, so a test can assert what
+        # relevance the service declared as well as what came back.
+        self.occurrence_calls: list[dict[str, object]] = []
 
     @staticmethod
     def _passage(passage_id: str, chapter: str, content: str) -> dict[str, object]:
@@ -102,7 +113,7 @@ class FakeSource:
     def list_concept_terms(self):
         return self.terms
 
-    def _occurrence_spans(self, concept_ids):
+    def _occurrence_spans(self, concept_ids, concept_costs=None):
         """Mirror the store contract: one row per distinct surviving source span.
 
         The graph channel enumerates distinct source spans, not mention rows,
@@ -111,6 +122,13 @@ class FakeSource:
         row carries every concept that anchored on it.  Count and page are both
         derived from this one list, exactly as the SQL store derives them from
         one shared predicate.
+
+        The list is then ordered exactly as the store's ``ORDER BY`` does:
+        cheapest relation cost, then most queried concepts on the span, then
+        longest span, then book order — which is this fixture's occurrence
+        order.  Ranking is applied to the whole list before it is sliced, so a
+        page here means what a page means in SQL.  ``concept_costs`` never
+        reaches the count, because ordering cannot change how many spans exist.
         """
         rows = [row for row in self.occurrences if row["concept_id"] in concept_ids]
         spans = []
@@ -143,13 +161,24 @@ class FakeSource:
                     "canonical_names": tuple(sorted({row["canonical_name"] for row in attributed})),
                 }
             )
+        costs = concept_costs or {}
+        spans.sort(
+            key=lambda span: (
+                min((costs.get(concept, 0.0) for concept in span["concept_ids"]), default=0.0),
+                -len(span["concept_ids"]),
+                -_span_length(span),
+            )
+        )
         return spans
 
     def count_concept_occurrences(self, concept_ids):
         return len(self._occurrence_spans(concept_ids))
 
-    def list_concept_occurrences(self, concept_ids, *, offset, limit):
-        return self._occurrence_spans(concept_ids)[offset : offset + limit]
+    def list_concept_occurrences(self, concept_ids, *, offset, limit, concept_costs=None):
+        self.occurrence_calls.append(
+            {"concept_ids": tuple(concept_ids), "offset": offset, "limit": limit, "costs": dict(concept_costs or {})}
+        )
+        return self._occurrence_spans(concept_ids, concept_costs)[offset : offset + limit]
 
     def get_search_passage(self, passage_id):
         return self.passages.get(passage_id)
@@ -166,6 +195,90 @@ class FakeSource:
             for relation in self.relations
             if relation["subject_concept_id"] in concept_ids and relation["predicate"] in predicates
         ]
+
+
+class HubFakeSource(FakeSource):
+    """The acceptance book's shape, reduced to what ranking has to get right.
+
+    Three things about that book matter here.  It opens with front matter, so
+    the earliest span in the book is a bare `枢` in a preface sentence about
+    nothing.  `全域潮汐枢纽` legitimately has 20 grounded `HAS_PART` children,
+    so expanding through it drags in spans that have no particular connection
+    to the query — that hub is why `枢纽的权重` reaches 778 spans.  And `锚站`
+    has a single child, so expanding through it says something.
+
+    A `汛期观测` query resolves the hub (through its `枢` alias) and the flood
+    concept directly.  In book order the preface span comes first; that is the
+    reported symptom, and it was never arbitrary — it was the front of the book.
+    """
+
+    PREFACE = "前言：本册所收录的是枢的运行记录选编，供人查阅。"
+    FLOOD = "枢在汛期观测，通知值守员建锚站，以保全流量记录的完整。"
+    JUDGMENT = "汛期观测之后的水位与浮标阵列读数都得以留存，为下一轮标定作了铺垫。"
+    HUB_CHILD = "枢纽的基准线由长期观测归算得到，只能从历次校验的残差中读出它的稳定程度。"
+    ARK_CHILD = "锚站建成之后，枢即调度值守员将浮标阵列布放到位。"
+
+    @staticmethod
+    def _passage(passage_id: str, chapter: str, content: str) -> dict[str, object]:
+        return {
+            "passage_id": passage_id,
+            "book_title": "潮汐观测总志",
+            "toc_path": (chapter,),
+            "content": content,
+            "content_sha256": _hash(content),
+        }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.passages = {
+            "preface": self._passage("preface", "前言", self.PREFACE),
+            "flood": self._passage("flood", "第四章", self.FLOOD),
+            "judgment": self._passage("judgment", "第四章", self.JUDGMENT),
+            "righteousness": self._passage("righteousness", "第九章", self.HUB_CHILD),
+            "ark": self._passage("ark", "第四章", self.ARK_CHILD),
+        }
+        self.terms = [
+            {"concept_id": "hub", "canonical_name": "全域潮汐枢纽", "term": "全域潮汐枢纽"},
+            {"concept_id": "hub", "canonical_name": "全域潮汐枢纽", "term": "枢"},
+            {"concept_id": "flood", "canonical_name": "汛期观测", "term": "汛期观测"},
+            {"concept_id": "ark", "canonical_name": "锚站", "term": "锚站"},
+        ]
+        # Book order, deliberately opening with the preface: the front-matter
+        # span is the earliest mention of the hub in the whole book.
+        self.occurrences = [
+            {**self.passages["preface"], "concept_id": "hub", "canonical_name": "全域潮汐枢纽",
+             "start_codepoint": 10, "end_codepoint": 11},
+            {**self.passages["flood"], "concept_id": "flood", "canonical_name": "汛期观测",
+             "start_codepoint": 0, "end_codepoint": 15},
+            {**self.passages["flood"], "concept_id": "hub", "canonical_name": "全域潮汐枢纽",
+             "start_codepoint": 0, "end_codepoint": 15},
+            {**self.passages["judgment"], "concept_id": "flood", "canonical_name": "汛期观测",
+             "start_codepoint": 0, "end_codepoint": 13},
+            # Reached only by expanding out of the hub, yet earlier in the book
+            # than nothing and longer than the flood span.  Book order and span
+            # length both favour it; relation cost must not.
+            {**self.passages["righteousness"], "concept_id": "righteousness",
+             "canonical_name": "枢纽的基准线", "start_codepoint": 0, "end_codepoint": 35},
+            {**self.passages["ark"], "concept_id": "ark_animals", "canonical_name": "浮标阵列",
+             "start_codepoint": 0, "end_codepoint": 23},
+        ]
+        # 20 children under the hub, one child under `锚站`: one hop out of the
+        # hub is worth far less than one hop out of a concept that names a
+        # single part.
+        self.relations = [
+            {"subject_concept_id": "hub", "predicate": "HAS_PART", "object_concept_id": name}
+            for name in ("righteousness", *(f"hub-child-{index}" for index in range(19)))
+        ] + [{"subject_concept_id": "ark", "predicate": "HAS_PART", "object_concept_id": "ark_animals"}]
+        self.units = {}
+
+    def matched_concept_names(self, passage_id, concept_ids):
+        return sorted(
+            {
+                row["canonical_name"]
+                for row in self.occurrences
+                if row["passage_id"] == passage_id and row["concept_id"] in concept_ids
+            }
+        )
 
 
 class FakeEmbeddings:
@@ -341,6 +454,126 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(response.graph_results[3].matched_concepts, ("子主题",))
         self.assertEqual(response.graph_results[3].provenance, ("graph", "relation:HAS_PART:1"))
 
+    def test_graph_pages_stay_exhaustive_once_the_channel_is_ranked(self) -> None:
+        """Ranking reorders the result set; it must not change what is in it.
+
+        Relevance is one stable total order over every span, applied before the
+        page is cut, so walking one span at a time still visits each span once
+        and still ends at ``graph_total``.  A per-page rerank would have passed
+        an ordering test and quietly made page 2 meaningless, so the walk — not
+        a recomputed expectation — is what this asserts.
+        """
+        source = HubFakeSource()
+        query = "枢在汛期观测，通知值守员建锚站"
+        total = EpubSearchService(source=source).search(query).graph_total
+        self.assertEqual(total, 5)
+
+        walked: list[object] = []
+        for offset in range(total + 1):
+            page = EpubSearchService(source=source).search(query, graph_offset=offset, graph_limit=1)
+            self.assertEqual(page.graph_total, total)
+            if not page.graph_results:
+                break
+            hit = page.graph_results[0]
+            walked.append((hit.passage_id, hit.excerpt.start_codepoint, hit.excerpt.end_codepoint))
+
+        self.assertEqual(len(walked), total)
+        self.assertEqual(len(set(walked)), total)
+        whole = EpubSearchService(source=source).search(query, graph_limit=total)
+        self.assertEqual(
+            walked,
+            [(hit.passage_id, hit.excerpt.start_codepoint, hit.excerpt.end_codepoint) for hit in whole.graph_results],
+        )
+
+    def test_a_directly_matched_span_outranks_one_reached_through_a_hub(self) -> None:
+        """Reaching a concept through a 20-child hub is weak evidence, and ranks so.
+
+        `枢纽的基准线` is a real `HAS_PART` child of `全域潮汐枢纽`, and its span
+        is the longest in the fixture — under book order or under length alone
+        it would lead the page.  It is still last, because one hop out of a hub
+        that fans out to 20 children costs `1 + log2(20)`, while one hop out of
+        `锚站`, which names a single part, costs a plain hop.  Nothing is
+        dropped: both expanded spans are still counted and still reachable, so
+        `graph_total` is unchanged by the weighting.
+        """
+        source = HubFakeSource()
+        response = EpubSearchService(source=source).search(
+            "枢在汛期观测，通知值守员建锚站", graph_limit=10
+        )
+
+        self.assertEqual(response.graph_total, 5)
+        self.assertEqual(
+            [hit.passage_id for hit in response.graph_results],
+            ["flood", "judgment", "preface", "ark", "righteousness"],
+        )
+        # Both expanded spans keep their hop count in provenance; only their
+        # ranking weight differs, so a reader still sees how each was reached.
+        self.assertEqual(response.graph_results[3].provenance, ("graph", "relation:HAS_PART:1"))
+        self.assertEqual(response.graph_results[4].provenance, ("graph", "relation:HAS_PART:1"))
+        costs = source.occurrence_calls[0]["costs"]
+        self.assertEqual(costs["hub"], 0.0)
+        self.assertEqual(costs["ark_animals"], 1.0)
+        self.assertAlmostEqual(costs["righteousness"], 1.0 + math.log2(20))
+
+    def test_a_front_matter_hub_span_does_not_outrank_a_topical_span(self) -> None:
+        """The reported symptom, asserted directly.
+
+        A `汛期观测` query used to open its graph panel on the book's preface,
+        because the preface is where the hub concept is first mentioned and the
+        channel was ordered by book position.  The ordering was never arbitrary
+        — it was the front of the book — but it was useless.  The single
+        character `枢` in a sentence about how the book was compiled must now
+        rank below the spans that actually discuss the flood, and the panel's
+        first result must be the span carrying both queried concepts.
+        """
+        source = HubFakeSource()
+        response = EpubSearchService(source=source).search("枢用汛期观测", graph_limit=3)
+
+        first = response.graph_results[0]
+        self.assertEqual(first.passage_id, "flood")
+        self.assertEqual(first.matched_concepts, ("汛期观测", "全域潮汐枢纽"))
+        self.assertEqual(first.excerpt.content, "枢在汛期观测，通知值守员建锚站")
+        self.assertEqual(first.content, HubFakeSource.FLOOD)
+        # Ranking demoted the preface span; it did not remove it.  It is still
+        # counted, still paged, and still cites its complete passage.
+        self.assertEqual([hit.passage_id for hit in response.graph_results][:3], ["flood", "judgment", "preface"])
+        preface = response.graph_results[2]
+        self.assertEqual(preface.excerpt.content, "枢")
+        self.assertEqual(preface.content, HubFakeSource.PREFACE)
+        self.assertEqual(
+            preface.content[preface.excerpt.start_codepoint : preface.excerpt.end_codepoint], "枢"
+        )
+
+    def test_a_small_graph_page_no_longer_starves_the_fused_channel(self) -> None:
+        """`graph_limit` sizes the panel's page, not the fused channel's recall.
+
+        Fusion used to be handed whatever page the panel had asked for, so a
+        `graph_limit` of 1 gave the local Cross-Encoder exactly one graph
+        candidate — and with the channel ordered by book position that one was
+        the front of the book.  Fusion now always reads the top of the ranked
+        channel from offset 0, so paging the panel cannot change the fused
+        answer either.
+        """
+        source = HubFakeSource()
+        service = EpubSearchService(source=source)
+
+        service.search("枢在汛期观测，通知值守员建锚站", graph_limit=1, graph_fusion_limit=4)
+        panel_call, fusion_call = source.occurrence_calls
+        self.assertEqual((panel_call["offset"], panel_call["limit"]), (0, 1))
+        self.assertEqual((fusion_call["offset"], fusion_call["limit"]), (0, 4))
+
+        source.occurrence_calls.clear()
+        service.search("枢在汛期观测，通知值守员建锚站", graph_offset=3, graph_limit=2, graph_fusion_limit=4)
+        panel_call, fusion_call = source.occurrence_calls
+        self.assertEqual((panel_call["offset"], panel_call["limit"]), (3, 2))
+        self.assertEqual((fusion_call["offset"], fusion_call["limit"]), (0, 4))
+
+        # A page that already contains the ranked top of the channel is reused
+        # rather than read twice.
+        source.occurrence_calls.clear()
+        service.search("枢在汛期观测，通知值守员建锚站", graph_limit=10, graph_fusion_limit=4)
+        self.assertEqual(len(source.occurrence_calls), 1)
+
     def test_vector_candidates_are_cross_encoder_reranked_then_mmr_diversified(self) -> None:
         source = FakeSource()
         backend = FakeVectorBackend(
@@ -400,7 +633,16 @@ class EpubSearchTest(unittest.TestCase):
             embeddings=embeddings,
             reranker=reranker,
             mmr_lambda=1.0,
-        ).search("TCP", graph_limit=1, vector_limit=2, vector_candidate_limit=2)
+        ).search(
+            "TCP",
+            graph_limit=1,
+            # Bound the graph side of the fusion explicitly: the display page
+            # no longer bounds it, so this test names the one graph candidate
+            # it is about instead of relying on the panel's page size.
+            graph_fusion_limit=1,
+            vector_limit=2,
+            vector_candidate_limit=2,
+        )
 
         # The legacy fields stay independently usable, while fused_results
         # ranks the exact graph excerpt and exact vector window together.
