@@ -367,7 +367,7 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         question are its TOC children.  The fixture reproduces exactly that,
         plus the two things the binding rule has to reject:
 
-        * ``贯穿全书的概念`` is mentioned inside a child section *and* in an
+        * ``贯穿全册的概念`` is mentioned inside a child section *and* in an
           unrelated chapter, so it is not bound to any single node and must not
           be admitted from either.
         * ``被否决的概念`` lives entirely inside a child section but is
@@ -386,7 +386,7 @@ class SQLiteEpubStoreTest(unittest.TestCase):
                 {
                     'toc_node_id': 'gate-one',
                     'parent_toc_node_id': 'gates',
-                    'title': '第一关　人的出生',
+                    'title': '第一闸门　流量校准',
                     'href': 'c1.xhtml',
                     'spine_index': 0,
                     'ordinal': 1,
@@ -394,7 +394,7 @@ class SQLiteEpubStoreTest(unittest.TestCase):
                 {
                     'toc_node_id': 'gate-two',
                     'parent_toc_node_id': 'gates',
-                    'title': '第二关　人的成长',
+                    'title': '第二闸门　基线复核',
                     'href': 'c1.xhtml',
                     'spine_index': 0,
                     'ordinal': 2,
@@ -413,9 +413,9 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         )
         concepts = {
             'gates': self.store.upsert_concept('六道闸门'),
-            'birth': self.store.upsert_concept('人的出生'),
-            'growth': self.store.upsert_concept('人的成长'),
-            'everywhere': self.store.upsert_concept('贯穿全书的概念'),
+            'birth': self.store.upsert_concept('流量校准'),
+            'growth': self.store.upsert_concept('基线复核'),
+            'everywhere': self.store.upsert_concept('贯穿全册的概念'),
             'rejected': self.store.upsert_concept('被否决的概念', status='REJECTED'),
         }
         self.store.add_concept_mention(concepts['gates'], 'p-gates', start_codepoint=0, end_codepoint=2)
@@ -447,10 +447,10 @@ class SQLiteEpubStoreTest(unittest.TestCase):
     def test_toc_child_concepts_do_not_reach_siblings_or_unbound_seeds(self) -> None:
         """Children only, and only from a seed the book itself localises.
 
-        ``人的出生`` is bound to a leaf node, so it has no children and returns
-        nothing — it must *not* pick up its sibling ``人的成长``, which is the
+        ``流量校准`` is bound to a leaf node, so it has no children and returns
+        nothing — it must *not* pick up its sibling ``基线复核``, which is the
         difference between a decomposition and an unbounded associative bag.
-        ``贯穿全书的概念`` is mentioned in two nodes, so it binds to neither and
+        ``贯穿全册的概念`` is mentioned in two nodes, so it binds to neither and
         cannot start a walk at all, however many children those nodes have.
         """
         concepts = self._toc_child_fixture()
@@ -724,7 +724,7 @@ class SQLiteEpubConceptMergeTest(unittest.TestCase):
         )
 
         last = self.store.upsert_concept('单轨校准法', concept_id='third')
-        other = self.store.upsert_concept('比喻', concept_id='procedure-genre')
+        other = self.store.upsert_concept('校准法', concept_id='procedure-genre')
         self.store.add_concept_mention(last, 'p2', start_codepoint=2, end_codepoint=7)
         self.store.add_concept_mention(other, 'p1', start_codepoint=3, end_codepoint=5)
         # Distinct predicates, so no relation folds away and every chain member
@@ -907,7 +907,7 @@ class SQLiteEpubConceptMergeTest(unittest.TestCase):
         )
 
     def test_merge_repoints_relations_on_both_sides_and_folds_a_duplicate(self) -> None:
-        other = self.store.upsert_concept('比喻', concept_id='procedure-genre')
+        other = self.store.upsert_concept('校准法', concept_id='procedure-genre')
         self.store.add_concept_mention(other, 'p1', start_codepoint=3, end_codepoint=5)
 
         def evidence(start: int, end: int) -> list[dict[str, object]]:
@@ -1009,7 +1009,7 @@ class SQLiteEpubConceptMergeTest(unittest.TestCase):
         self.assertEqual(self._count('SELECT COUNT(*) FROM concept_relation_evidence'), 0)
 
     def test_merge_deletes_the_source_and_leaves_no_orphan_in_any_referencing_table(self) -> None:
-        other = self.store.upsert_concept('比喻', concept_id='procedure-genre')
+        other = self.store.upsert_concept('校准法', concept_id='procedure-genre')
         self.store.add_concept_mention(other, 'p1', start_codepoint=3, end_codepoint=5)
         self.store.add_concept_mention(self.source, 'p2', start_codepoint=2, end_codepoint=7)
         self.store.add_concept_relation(
@@ -1163,7 +1163,7 @@ class SQLiteEpubConceptSplitTest(unittest.TestCase):
     ``merge_concepts`` is one-way, and two merges have already had to be undone
     after review.  Restoring a backup and replaying stops working the moment a
     later job postdates the backup, which is why this exists.  The fixture is
-    the second of those two mistakes, committed for real: the teaching
+    the second of those two mistakes, committed for real: the procedure
     ``双轨校准法`` folded into ``《观测规程》2.4-2.11``, the document locator that
     merely names it.  Every test starts from that merged state.
 
@@ -1203,7 +1203,9 @@ class SQLiteEpubConceptSplitTest(unittest.TestCase):
                 },
             ],
         )
-        self.citation = self.store.upsert_concept('《观测规程》2.4-2.11', aliases=['规程2.4-2.11'], concept_id='citation')
+        self.citation = self.store.upsert_concept(
+            '《观测规程》2.4-2.11', aliases=['规程2.4-2.11'], concept_id='citation'
+        )
         self.procedure = self.store.upsert_concept('双轨校准法', aliases=['双轨对照'], concept_id='procedure')
         self.store.add_concept_mention(self.citation, 'p1', start_codepoint=7, end_codepoint=21)
         self.store.add_concept_mention(self.procedure, 'p1', start_codepoint=0, end_codepoint=5)
@@ -1322,12 +1324,12 @@ class SQLiteEpubConceptSplitTest(unittest.TestCase):
         self.assertEqual(self._connection().execute('PRAGMA foreign_key_check').fetchall(), [])
 
     def test_the_new_canonical_name_may_be_a_moving_alias_but_never_a_taken_spelling(self) -> None:
-        third = self.store.upsert_concept('单轨校准法', aliases=['撒种者'], concept_id='third')
+        third = self.store.upsert_concept('单轨校准法', aliases=['单轨法'], concept_id='third')
 
         with self.assertRaisesRegex(IntegrityError, 'already belongs to an existing concept'):
             self._split(canonical_name='单轨校准法')
         with self.assertRaisesRegex(IntegrityError, 'already an alias of an existing concept'):
-            self._split(canonical_name='撒种者')
+            self._split(canonical_name='单轨法')
         # The source's own name is owned by the source, so it is taken too.
         with self.assertRaisesRegex(IntegrityError, 'already belongs to an existing concept'):
             self._split(canonical_name='《观测规程》2.4-2.11')
@@ -1344,7 +1346,7 @@ class SQLiteEpubConceptSplitTest(unittest.TestCase):
             {'双轨校准法', '双轨对照', '双轨对照校准法'},
         )
         self.assertEqual(free['moved_aliases'], 3)
-        self.assertEqual(self._aliases(third), {'单轨校准法', '撒种者'})
+        self.assertEqual(self._aliases(third), {'单轨校准法', '单轨法'})
 
     def test_split_refuses_to_move_every_mention_because_that_is_a_rename(self) -> None:
         every = [
@@ -1364,13 +1366,13 @@ class SQLiteEpubConceptSplitTest(unittest.TestCase):
         )
 
     def test_split_refuses_an_unknown_source_a_foreign_alias_or_a_foreign_mention(self) -> None:
-        other = self.store.upsert_concept('比喻', concept_id='procedure-genre')
+        other = self.store.upsert_concept('校准法', concept_id='procedure-genre')
         self.store.add_concept_mention(other, 'p1', start_codepoint=3, end_codepoint=5)
 
         with self.assertRaisesRegex(UnknownConceptError, 'unknown concept_id: missing'):
             self._split(source_concept_id='missing')
         with self.assertRaisesRegex(IntegrityError, 'does not own this alias'):
-            self._split(aliases=['双轨校准法', '比喻'])
+            self._split(aliases=['双轨校准法', '校准法'])
         with self.assertRaisesRegex(IntegrityError, 'does not own this alias'):
             self._split(aliases=['双轨校准法', '从未出现的别名'])
         with self.assertRaisesRegex(IntegrityError, 'belongs to a different concept'):
@@ -1388,7 +1390,7 @@ class SQLiteEpubConceptSplitTest(unittest.TestCase):
             self._count('SELECT COUNT(*) FROM concept_mentions WHERE concept_id = ?', self.citation),
             3,
         )
-        self.assertEqual(self._aliases(other), {'比喻'})
+        self.assertEqual(self._aliases(other), {'校准法'})
 
     def test_relations_stay_on_the_source_and_the_report_names_the_ones_to_review(self) -> None:
         """A relation's correct endpoint after a split is nobody's derivation.
@@ -1396,7 +1398,7 @@ class SQLiteEpubConceptSplitTest(unittest.TestCase):
         Moving one automatically would assert something no administrator
         decided, which is the very class of error a split exists to correct.
         """
-        other = self.store.upsert_concept('比喻', concept_id='procedure-genre')
+        other = self.store.upsert_concept('校准法', concept_id='procedure-genre')
         self.store.add_concept_mention(other, 'p1', start_codepoint=3, end_codepoint=5)
 
         def evidence(start: int, end: int) -> list[dict[str, object]]:

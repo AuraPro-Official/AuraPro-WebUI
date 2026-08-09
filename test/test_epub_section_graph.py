@@ -323,7 +323,7 @@ class SectionGraphProfileTest(unittest.TestCase):
         # was copying a section title out of a field the packet gave it and
         # never scoped.  Removing the field removes the temptation, and it costs
         # nothing - TOC provenance is a deterministic server-side write.
-        titles = ('枢是全网数据的源头（二）', '枢为测站预备的每日记录')
+        titles = ('枢纽是全网时基的来源（二）', '枢纽为测点预备的日常配额')
         packet = GRAPH.build_section_graph_packets(
             [
                 {'passage_id': 'a1', 'ordinal': 1, 'toc_path': ['卷一', titles[0]], 'content': '原文甲'},

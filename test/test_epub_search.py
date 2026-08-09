@@ -43,6 +43,57 @@ load_query_segmenter = SEGMENTATION.load_query_segmenter
 SEGMENTER, SEGMENTER_REASON = load_query_segmenter()
 
 
+# ---------------------------------------------------------------------------
+# Why the Chinese fixtures below look the way they do
+# ---------------------------------------------------------------------------
+#
+# The EPUB acceptance corpus is a copyrighted book, so none of its text,
+# headings or concept names appear in this repository.  Every Chinese fixture
+# here is invented: a fictional tidal-observation network built around a
+# scheduler (``全域潮汐枢纽``), its measurement stations, and a calibration
+# procedure.  It refers to no real book, person, organisation or place.
+#
+# The substitution is structural, not decorative.  Each fixture reproduces one
+# property of the real corpus that a test depends on, and changing a name
+# without preserving that property silently stops the test from testing
+# anything:
+#
+#   * ``全域潮汐枢纽`` + the one-code-point alias ``枢`` — a hub with 20
+#     grounded ``HAS_PART`` children reachable by a single character.  This is
+#     the case the resolution-stage expansion guard exists for: naming the hub
+#     in full expands to its subtree, brushing it with the alias does not.
+#   * ``枢纽的基准线`` — a grounded child of that hub carrying the *longest*
+#     span in the fixture, so relation cost has to beat both book order and
+#     span length rather than agreeing with them.
+#   * ``汛期观测`` / ``汛情`` / ``主汛情`` — a two-code-point name strictly
+#     inside a four-code-point one (longest-match suppression), plus two terms
+#     matching identical characters, which are *not* in a containment relation
+#     and must both survive.
+#   * ``锚站`` → ``浮标阵列`` — a model-decomposed concept with exactly one
+#     child, so one hop costs a plain hop against ``1 + log2(20)`` out of the
+#     hub.  ``锚站的缆索`` sits in its TOC child and must never surface.
+#   * ``枢对锚站的校验`` — a seven-code-point phrase that spans several jieba
+#     tokens and that no segmenter emits as one token, which is why only the
+#     query is segmented and never the terms.
+#   * ``律`` inside ``规律`` — a one-code-point concept name landing inside a
+#     common two-code-point word: rejected with a segmenter, admitted without
+#     one.  Both halves are pinned, so the degraded path cannot rot unnoticed.
+#   * ``锚`` inside ``枢对锚站的校验`` — a one-code-point alias suppressed by
+#     containment whether or not boundaries are available.
+#   * ``观测网所必经的六道闸门`` — a TOC parent with six leaf children, whose
+#     concept ``六道闸门`` is a one-mention island with no relation of any
+#     predicate, so only TOC structure can reach the sections that answer it.
+#   * ``巡检记录`` — mentioned under two TOC nodes, therefore bound to neither
+#     and admitted from neither; the rule that stops the TOC channel becoming
+#     a second hub.
+#   * ``全网的结算`` plus 65 fillers — an over-budget TOC node whose expansion
+#     is skipped whole and reported degraded, never truncated.
+#
+# Counts that appear in prose below (``174 spans``, ``778``, ``851``, ``20``
+# children) are real measurements against the real store.  The names they are
+# attached to are not.
+
+
 def _boundaries(text: str):
     """Real segmentation for ``text``, so the tests pin the shipped tokenizer.
 
@@ -252,9 +303,10 @@ class FakeSource:
 
 
 class HubFakeSource(FakeSource):
-    """The acceptance book's shape, reduced to what ranking has to get right.
+    """The acceptance corpus's shape, reduced to what ranking has to get right.
 
-    Three things about that book matter here.  It opens with front matter, so
+    Names are invented (see the substitution note at the top of this module);
+    the shape is the real one.  Three things about that corpus matter here.  It opens with front matter, so
     the earliest span in the book is a bare `枢` in a preface sentence about
     nothing.  `全域潮汐枢纽` legitimately has 20 grounded `HAS_PART` children,
     so expanding through it drags in spans that have no particular connection
@@ -271,11 +323,11 @@ class HubFakeSource(FakeSource):
     the front of the book.
     """
 
-    PREFACE = '写在前面的话：本书是枢的话语的选编，供人阅读。'
-    FLOOD = '枢要用汛期观测，嘱咐值守员造锚站，为要保全一家人的性命。'
-    JUDGMENT = '汛期观测之后的人类与浮标阵列都得以保全，为枢下一步的经营作了铺垫。'
-    HUB_CHILD = '枢纽的基准线是人无法测透的，人只能从枢所作的事上认识枢的实质与所有所是。'
-    ARK_CHILD = '锚站造成之后，枢吩咐值守员将浮标阵列带进锚站里面。'
+    PREFACE = '前言：本册所收录的是枢的运行记录选编，供人查阅。'
+    FLOOD = '枢在汛期观测，通知值守员建锚站，以保全流量记录的完整。'
+    JUDGMENT = '汛期观测之后的水位与浮标阵列读数都得以留存，为下一轮标定作了铺垫。'
+    HUB_CHILD = '枢纽的基准线由长期观测归算得到，只能从历次校验的残差中读出它的稳定程度。'
+    ARK_CHILD = '锚站建成之后，枢即调度值守员将浮标阵列布放到位。'
 
     @staticmethod
     def _passage(passage_id: str, chapter: str, content: str) -> dict[str, object]:
@@ -290,7 +342,7 @@ class HubFakeSource(FakeSource):
     def __init__(self) -> None:
         super().__init__()
         self.passages = {
-            'preface': self._passage('preface', '写在前面的话', self.PREFACE),
+            'preface': self._passage('preface', '前言', self.PREFACE),
             'flood': self._passage('flood', '第四章', self.FLOOD),
             'judgment': self._passage('judgment', '第四章', self.JUDGMENT),
             'righteousness': self._passage('righteousness', '第九章', self.HUB_CHILD),
@@ -389,10 +441,10 @@ class GenericTermFakeSource(FakeSource):
     shape still expands exactly as it did.
     """
 
-    HUB = '枢所作的事无人能测透，人只能从中认识枢。'
-    HUB_CHILD = '枢纽的基准线是人无法测透的。'
-    FLOOD = '枢要用汛期观测，嘱咐值守员造锚站。'
-    ARK = '锚站造成之后，浮标阵列都进去了。'
+    HUB = '枢纽调度的时序无人能凭直觉复现，只能从记录中还原。'
+    HUB_CHILD = '枢纽的基准线由长期观测归算得到。'
+    FLOOD = '枢在汛期观测，通知值守员建锚站。'
+    ARK = '锚站建成之后，浮标阵列都已就位。'
 
     def __init__(self) -> None:
         super().__init__()
@@ -475,7 +527,7 @@ class GenericTermFakeSource(FakeSource):
 
 
 class TocFakeSource(FakeSource):
-    """The acceptance book's TOC shape, reduced to the four rules that bind it.
+    """The acceptance corpus's TOC shape, reduced to the four rules that bind it.
 
     ``观测网所必经的六道闸门`` is a real node in the parsed ``toc_nodes`` with
     the six 关口 as its children, while the concept ``六道闸门`` is a
@@ -486,11 +538,11 @@ class TocFakeSource(FakeSource):
     Everything else in this fixture exists to be *refused*:
 
     * ``锚站`` was decomposed by the model, so its TOC children must stay out of
-      the way entirely — ``锚站的木料`` sits in its child node and must never
+      the way entirely — ``锚站的缆索`` sits in its child node and must never
       appear.
-    * ``贯穿的话`` is mentioned inside a 关口 section *and* somewhere else, so it
+    * ``巡检记录`` is mentioned inside a 关口 section *and* somewhere else, so it
       is bound to neither and is admitted from neither.
-    * ``众人的结局`` binds to a node whose children hold more concepts than the
+    * ``全网的结算`` binds to a node whose children hold more concepts than the
       budget allows, so its expansion is skipped whole rather than cut short.
 
     The specificity columns are supplied here exactly as the SQLite store
@@ -505,14 +557,14 @@ class TocFakeSource(FakeSource):
         super().__init__()
         self.passages = {
             'gates': self._passage('gates', '观测网所必经的六道闸门', '观测网所必经的六道闸门'),
-            'birth': self._passage('birth', '第一关　人的出生', '一个人生在何处，生在什么家庭。'),
-            'growth': self._passage('growth', '第二关　人的成长', '一个人的成长背景决定很多事。'),
-            'ark': self._passage('ark', '锚站', '锚站造成之后，枢吩咐值守员。'),
-            'timber': self._passage('timber', '锚站的木料', '歌斐木是造锚站所用的木料。'),
-            'animals': self._passage('animals', '浮标阵列', '浮标阵列都进了锚站里面。'),
-            'elsewhere': self._passage('elsewhere', '另一章', '贯穿的话也出现在别处。'),
-            'crowd': self._passage('crowd', '众人的结局', '众人的结局各不相同。'),
-            'crowd_body': self._passage('crowd_body', '结局细目', '细目一二三四五六七八九十。'),
+            'birth': self._passage('birth', '第一闸门　流量校准', '流量校准记录见于巡检记录之中。'),
+            'growth': self._passage('growth', '第二闸门　基线复核', '基线复核决定后续标定的取值。'),
+            'ark': self._passage('ark', '锚站', '锚站建成之后，值守员随即布放。'),
+            'timber': self._passage('timber', '锚站的缆索', '缆索是锚站所用的主要构件。'),
+            'animals': self._passage('animals', '浮标阵列', '浮标阵列都已布入锚站周边。'),
+            'elsewhere': self._passage('elsewhere', '另一章', '巡检记录也出现在别处。'),
+            'crowd': self._passage('crowd', '全网的结算', '全网的结算各不相同。'),
+            'crowd_body': self._passage('crowd_body', '结算细目', '细目一二三四五六七八九十。'),
         }
         # concept -> the one TOC node every one of its mentions falls under.
         # ``everywhere`` is absent because it is mentioned under two nodes,
@@ -534,22 +586,22 @@ class TocFakeSource(FakeSource):
         }
         self.terms = [
             self._term('gates', '六道闸门', '六道闸门', mentions=1, fanout=0),
-            self._term('birth', '人的出生', '人的出生', mentions=1, fanout=0),
-            self._term('growth', '人的成长', '人的成长', mentions=1, fanout=0),
+            self._term('birth', '流量校准', '流量校准', mentions=1, fanout=0),
+            self._term('growth', '基线复核', '基线复核', mentions=1, fanout=0),
             # Decomposed by the model: TOC structure must defer to that.
             self._term('ark', '锚站', '锚站', mentions=2, fanout=1),
-            self._term('crowd', '众人的结局', '众人的结局', mentions=1, fanout=0),
+            self._term('crowd', '全网的结算', '全网的结算', mentions=1, fanout=0),
         ]
         self.occurrences = [
-            self._occurrence('gates', '六道闸门', 'gates', 6, 10),
-            self._occurrence('birth', '人的出生', 'birth', 0, 6),
-            self._occurrence('growth', '人的成长', 'growth', 0, 6),
+            self._occurrence('gates', '六道闸门', 'gates', 7, 11),
+            self._occurrence('birth', '流量校准', 'birth', 0, 4),
+            self._occurrence('growth', '基线复核', 'growth', 0, 4),
             self._occurrence('ark', '锚站', 'ark', 0, 2),
-            self._occurrence('timber', '锚站的木料', 'timber', 0, 3),
+            self._occurrence('timber', '锚站的缆索', 'timber', 0, 3),
             self._occurrence('animals', '浮标阵列', 'animals', 0, 4),
-            self._occurrence('everywhere', '贯穿的话', 'birth', 7, 9),
-            self._occurrence('everywhere', '贯穿的话', 'elsewhere', 0, 4),
-            self._occurrence('crowd', '众人的结局', 'crowd', 0, 5),
+            self._occurrence('everywhere', '巡检记录', 'birth', 8, 12),
+            self._occurrence('everywhere', '巡检记录', 'elsewhere', 0, 4),
+            self._occurrence('crowd', '全网的结算', 'crowd', 0, 5),
         ] + [
             self._occurrence(f'filler-{index}', f'细目{index}', 'crowd_body', index, index + 1)
             for index in range(self.FILLERS)
@@ -718,8 +770,8 @@ class EpubSearchTest(unittest.TestCase):
         """A CJK term must sit on the query's own word boundaries, not anywhere.
 
         The Latin rule is unchanged.  What changes is that a CJK term no longer
-        matches merely because its characters appear: `义` is a real concept
-        name and it is *inside* `意义`, which is not a mention of it.  A term
+        matches merely because its characters appear: `律` is a real concept
+        name and it is *inside* `规律`, which is not a mention of it.  A term
         may still span several tokens — `枢对锚站的校验` covers four — because
         the query is segmented to supply boundaries, never to supply patterns.
         """
@@ -747,8 +799,8 @@ class EpubSearchTest(unittest.TestCase):
         job = '枢对锚站的校验的规律'
         trial = ConceptTermMatcher(
             [
-                ConceptTerm('meaning', '意义', '义'),
-                ConceptTerm('covenant', '枢与站定约', '约'),
+                ConceptTerm('regularity', '规律', '律'),
+                ConceptTerm('agreement', '枢与站点约定', '锚'),
                 ConceptTerm('the hub', '全域潮汐枢纽', '枢'),
                 ConceptTerm('job', '枢对锚站的校验', '枢对锚站的校验'),
             ]
@@ -757,23 +809,23 @@ class EpubSearchTest(unittest.TestCase):
             [term.concept_id for term in trial.match(job, boundaries=_boundaries(job))],
             ['job'],
         )
-        # Without a segmenter the older substring rule applies and `义` is
-        # admitted again from inside `意义` — the exact defect, restored.  The
-        # fallback is not the old behaviour in full: `约` and `枢` stay out,
+        # Without a segmenter the older substring rule applies and `律` is
+        # admitted again from inside `规律` — the exact defect, restored.  The
+        # fallback is not the old behaviour in full: `锚` and `枢` stay out,
         # because longest-match suppression needs no boundaries to see that
         # both sit inside `枢对锚站的校验`.  Pinning this keeps the degraded
         # path from rotting unnoticed, and marks how much of the fix survives
         # a missing tokenizer.
         self.assertEqual(
             sorted(term.concept_id for term in trial.match(job)),
-            ['job', 'meaning'],
+            ['job', 'regularity'],
         )
 
     @unittest.skipIf(SEGMENTER is None, f'local query segmenter unavailable: {SEGMENTER_REASON}')
     def test_a_shorter_term_inside_a_longer_matched_term_is_suppressed(self) -> None:
         """Containment decides, and only strict containment.
 
-        `约` is boundary-valid nowhere in `枢对锚站的校验的规律`, but even where
+        `锚` is boundary-valid nowhere in `枢对锚站的校验的规律`, but even where
         a short alias is boundary-valid it must lose to a longer term that
         covers it — otherwise the long phrase and its own fragments would both
         resolve.  Two terms that matched the *identical* characters are not in
@@ -782,9 +834,9 @@ class EpubSearchTest(unittest.TestCase):
         """
         matcher = ConceptTermMatcher(
             [
-                ConceptTerm('flood', '洪水', '洪水'),
+                ConceptTerm('flood', '汛情', '汛情'),
                 ConceptTerm('flood_world', '汛期观测', '汛期观测'),
-                ConceptTerm('flood_alias', '大洪水', '汛期观测'),
+                ConceptTerm('flood_alias', '主汛情', '汛期观测'),
             ]
         )
         query = '汛期观测的经过'
@@ -810,7 +862,7 @@ class EpubSearchTest(unittest.TestCase):
                 ConceptTerm('the hub', '全域潮汐枢纽', '全域潮汐枢纽'),
             ]
         )
-        query = '潮汐观测总志与全域潮汐枢纽'
+        query = '枢纽的运行与全域潮汐枢纽'
         spans = matcher.match_spans(query, boundaries=_boundaries(query))
         self.assertEqual(len(spans), 1)
         self.assertEqual(query[spans[0].start : spans[0].end], '全域潮汐枢纽')
@@ -937,7 +989,7 @@ class EpubSearchTest(unittest.TestCase):
         the concept the query actually contained, because a TOC child is
         expansion-derived and was never a Tier-1 match.
 
-        ``贯穿的话`` is mentioned inside 第一关 but also elsewhere in the book,
+        ``巡检记录`` is mentioned inside 第一闸门 but also elsewhere in the book,
         so it binds to no node and is admitted from neither — that is what keeps
         this channel from becoming a second hub.
         """
@@ -950,14 +1002,14 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(response.graph_results[0].provenance, ('graph',))
         self.assertEqual(response.graph_results[1].provenance, ('graph', 'structure:TOC_CHILD:1'))
         self.assertEqual(response.graph_results[2].provenance, ('graph', 'structure:TOC_CHILD:1'))
-        self.assertNotIn('贯穿的话', {name for hit in response.graph_results for name in hit.matched_concepts})
+        self.assertNotIn('巡检记录', {name for hit in response.graph_results for name in hit.matched_concepts})
 
     def test_a_model_decomposed_concept_never_falls_back_to_toc_structure(self) -> None:
         """Where the semantic graph exists it is authoritative; TOC is the fallback.
 
         ``锚站`` has a grounded ``HAS_PART`` child, so the model answered the
         "what are its parts?" question and this channel must not answer it
-        again.  Its TOC child node holds ``锚站的木料``, which is a perfectly
+        again.  Its TOC child node holds ``锚站的缆索``, which is a perfectly
         real concept and still must not appear: a structural edge competing
         with a semantic one would make the two orderings disagree about what a
         decomposition even is.
@@ -967,7 +1019,7 @@ class EpubSearchTest(unittest.TestCase):
 
         names = {name for hit in response.graph_results for name in hit.matched_concepts}
         self.assertIn('浮标阵列', names)
-        self.assertNotIn('锚站的木料', names)
+        self.assertNotIn('锚站的缆索', names)
         self.assertEqual(
             [hit.provenance for hit in response.graph_results],
             [('graph',), ('graph', 'relation:HAS_PART:1')],
@@ -985,7 +1037,7 @@ class EpubSearchTest(unittest.TestCase):
         for.  Someone who spells out the hub's name is asking for its subtree
         and should get it.  An earlier version of this guard capped by mention
         count and refused here, which also cut ``枢纽的权重`` — a specific topic
-        that a acceptance corpus simply mentions often — from 174 spans to 42.
+        that the acceptance book simply mentions often — from 174 spans to 42.
 
         A query where only the one-character alias ``枢`` can match **does
         not** expand.  The concept still resolves and still contributes its own
@@ -1027,7 +1079,7 @@ class EpubSearchTest(unittest.TestCase):
     def test_an_oversized_toc_node_is_skipped_whole_and_reported(self) -> None:
         """A budget that truncated would leave ``graph_total`` unexplainable.
 
-        ``众人的结局`` binds to a node whose children hold more concepts than
+        ``全网的结算`` binds to a node whose children hold more concepts than
         the channel will accept.  Returning the first 64 of them would come back
         as a smaller number with nothing anywhere saying which source had been
         dropped, and paging to the end would simply stop early.  So the seed's
@@ -1036,7 +1088,7 @@ class EpubSearchTest(unittest.TestCase):
         component so the number has an explanation attached to it.
         """
         source = TocFakeSource()
-        response = EpubSearchService(source=source).search('众人的结局', graph_limit=100)
+        response = EpubSearchService(source=source).search('全网的结算', graph_limit=100)
 
         self.assertEqual(response.graph_total, 1)
         self.assertEqual(response.graph_results[0].provenance, ('graph',))
@@ -1168,8 +1220,8 @@ class EpubSearchTest(unittest.TestCase):
 
         first = response.graph_results[0]
         self.assertEqual(first.passage_id, 'flood')
-        self.assertEqual(first.matched_concepts, ('汛期观测', '全域潮汐枢纽'))
-        self.assertEqual(first.excerpt.content, '枢要用汛期观测，嘱咐值守员造锚站')
+        self.assertEqual(first.matched_concepts, ('全域潮汐枢纽', '汛期观测'))
+        self.assertEqual(first.excerpt.content, '枢在汛期观测，通知值守员建锚站')
         self.assertEqual(first.content, HubFakeSource.FLOOD)
         # Ranking demoted the preface span; it did not remove it.  It is still
         # counted, still paged, and still cites its complete passage.
