@@ -160,7 +160,7 @@
 				<div>
 					<h2 class="text-lg font-medium">概念检索：{searchResult.query}</h2>
 					<p class="text-sm text-gray-500 dark:text-gray-400">
-						{searchResult.graph_total} 个图谱命中
+						{searchResult.graph_total} 个图谱命中（按相关性排序）
 						{#if searchResult.resolved_concepts.length > 0}
 							· 已解析：{searchResult.resolved_concepts.join('、')}
 						{/if}
@@ -201,7 +201,8 @@
 				>
 					<h3 class="font-medium">图谱全部匹配</h3>
 					<p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
-						此通道可分页穷尽所有概念出现位置。
+						此通道先按相关性排序再分页：直接命中的概念优先于经关系扩展到的概念（从子概念众多的概念扩展而来的权重更低），其次比较同一片段命中的概念数与片段长度，最后按书中位置。排序在整个结果集上稳定，逐页翻阅仍可穷尽全部
+						{searchResult.graph_total} 个片段，不遗漏也不重复。
 					</p>
 					{#if searchResult.graph_results.length === 0}
 						<p class="text-sm text-gray-500">没有当前页结果。</p>
@@ -212,13 +213,19 @@
 							{/each}
 						</div>
 					{/if}
-					<div class="mt-4 flex justify-between">
+					<div class="mt-4 flex items-center justify-between">
 						<button
 							class="rounded border px-2 py-1 text-xs disabled:opacity-50"
 							disabled={searching || (searchResult?.graph_offset ?? 0) === 0}
 							on:click={() => search(Math.max(0, (searchResult?.graph_offset ?? 0) - 20))}
 							>上一页</button
 						>
+						{#if searchResult.graph_results.length > 0}
+							<span class="text-xs text-gray-500 dark:text-gray-400">
+								第 {searchResult.graph_offset + 1}–{searchResult.graph_offset +
+									searchResult.graph_results.length} 条 / 共 {searchResult.graph_total} 条（相关性从高到低）
+							</span>
+						{/if}
 						<button
 							class="rounded border px-2 py-1 text-xs disabled:opacity-50"
 							disabled={searching ||

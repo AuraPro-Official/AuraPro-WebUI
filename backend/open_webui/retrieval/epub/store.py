@@ -21,8 +21,20 @@ import threading
 from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 from uuid import uuid4
 
+from .overlay import (
+    OVERLAY_FORMAT_VERSION,
+    ConceptOverlay,
+    OverlayConcept,
+    OverlayMention,
+    OverlayRelation,
+    OverlaySpan,
+    build_overlay,
+    normalize_concept_key,
+    passage_fingerprint,
+)
 
-SCHEMA_VERSION = 3
+
+SCHEMA_VERSION = 11
 
 
 class IntegrityError(ValueError):
@@ -31,6 +43,23 @@ class IntegrityError(ValueError):
 
 class DuplicateEpubError(IntegrityError):
     """The complete EPUB hash already identifies an existing book version."""
+
+
+class UnknownConceptError(IntegrityError):
+    """A referenced concept identifier does not exist in the graph."""
+
+
+class OverlayRejected(IntegrityError):
+    """An analysis overlay failed a source-fidelity gate and was not applied.
+
+    ``reason`` is a stable, content-free class name so an operator surface can
+    report *why* an artifact was refused without echoing passage text, a
+    concept label, or an offset back to the caller.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -101,6 +130,10 @@ class EpubStore(Protocol):
     def count_concept_relation_assertions(self, *, status: str | None = None, version_id: str | None = None) -> int: ...
 
     def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
+
+    def export_concept_overlay(self, version_id: str) -> ConceptOverlay: ...
+
+    def apply_overlay(self, overlay: ConceptOverlay, *, version_id: str | None = None) -> dict[str, Any]: ...
 
 
 _MIGRATION_1: tuple[str, ...] = (
@@ -344,15 +377,272 @@ _MIGRATION_3: tuple[str, ...] = (
 )
 
 
+_MIGRATION_4: tuple[str, ...] = (
+    # A failed Batch item deliberately keeps ``response_json`` NULL, so the
+    # durable record retains only a failure class string.  This column holds a
+    # content-free numeric record of *why* grounding rejected the result:
+    # counts, code point lengths and booleans only, never source text,
+    # evidence, anchors, prompts, model output, or raw provider errors.  It is
+    # nullable because most failures (provider transport errors, missing
+    # terminal results) have no such measurement, and because rows written
+    # before this migration cannot gain one retroactively.
+    'ALTER TABLE batch_items ADD COLUMN failure_diagnostics_json TEXT',
+)
+
+
+_MIGRATION_5: tuple[str, ...] = (
+    # An administrator merge folds one concept into another and deletes the
+    # source row, so the graph itself can no longer answer "what was merged
+    # here, by whom".  This audit table deliberately holds identifiers, the
+    # source's own concept label, the acting administrator and the time.  A
+    # canonical name is a concept label, never source passage text, evidence,
+    # a prompt or model output, and nothing else from the merge is copied.
+    # ``source_concept_id`` cannot be a foreign key: its row is gone by design.
+    """
+    CREATE TABLE concept_merges (
+        concept_merge_id TEXT PRIMARY KEY,
+        target_concept_id TEXT NOT NULL REFERENCES concepts(concept_id) ON DELETE RESTRICT,
+        source_concept_id TEXT NOT NULL,
+        source_canonical_name TEXT NOT NULL,
+        merged_by TEXT NOT NULL,
+        merged_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    'CREATE INDEX idx_concept_merges_target ON concept_merges(target_concept_id, merged_at)',
+    'CREATE INDEX idx_concept_merges_source ON concept_merges(source_concept_id)',
+)
+
+
+_MIGRATION_6: tuple[str, ...] = (
+    # ``profile_name`` pins the *model* snapshot; the extraction *instruction*
+    # lived only inside each item's request envelope.  The durable sample
+    # review gate could therefore let an approval of one prompt profile unlock
+    # a full run on a different one, which is exactly what the review exists
+    # to prevent.  This column records the requested prompt profile identifier
+    # on the job itself so the gate can bind to it.
+    #
+    # It is an identifier only: never instruction text, never model output.
+    # It is nullable because rows written before this migration cannot gain a
+    # value inside a SQL migration -- deriving one requires the registered
+    # extraction policy, which this module must not import.  A NULL is read as
+    # "unknown", and the gate treats unknown as "does not match", so a
+    # legacy row unlocks nothing until an administrator runs the service-level
+    # backfill.
+    'ALTER TABLE batch_jobs ADD COLUMN prompt_profile TEXT',
+)
+
+
+_MIGRATION_7: tuple[str, ...] = (
+    # A section-graph relation whose two endpoints resolve to one concept is
+    # skipped rather than failing its packet, because it is what an
+    # administrator merge looks like from the far side of an offline Batch, not
+    # a defect in the output.  ``response_json`` cannot carry that count: it is
+    # the grounded model output, and a replay of the same result has to
+    # serialize byte-identically for ingest to stay idempotent.  The count is
+    # therefore a property of the *write*, and lives on the item row.
+    #
+    # It is an integer or nothing, enforced by the schema rather than by a
+    # validator, so this column cannot carry a concept name, an evidence string
+    # or any other source text even from a hand-edited or restored database.
+    # NULL means "not measured": every item written before this migration, and
+    # every CONCEPT_MENTIONS item, which has no relations to skip.  A
+    # SECTION_GRAPH success always stores a number, so a genuine zero is
+    # distinguishable from an absent measurement.
+    """
+    ALTER TABLE batch_items ADD COLUMN skipped_self_relations INTEGER
+        CHECK (skipped_self_relations IS NULL
+               OR (typeof(skipped_self_relations) = 'integer' AND skipped_self_relations >= 0))
+    """,
+)
+
+
+_MIGRATION_8: tuple[str, ...] = (
+    # A span shorter than its profile's enforced evidence floor is dropped from
+    # the payload during grounding rather than failing its item, exactly as a
+    # merged-away self-relation is skipped rather than failing its packet
+    # (SDD 4.2.2 points 6b and 6a).  One unusable citation must not discard the
+    # valid concepts, mentions and relations around it -- measured on the
+    # full-book section-graph run, that behaviour cost 140 concepts, 140
+    # mentions and 105 relations across 13 of 43 packets.
+    #
+    # The count cannot live in ``response_json``: that column stores the
+    # grounded payload, from which the dropped spans are by definition absent,
+    # and it must serialize byte-identically on replay for ingest to stay
+    # idempotent.  How many spans the grounding pass removed is a fact about
+    # that pass, so it lives on the item row beside ``skipped_self_relations``.
+    #
+    # One counter, not one per span kind: a dropped concept mention and a
+    # dropped relation-evidence span are the same defect with the same fix, and
+    # both are removed by the same resolver.  It is an integer or nothing,
+    # enforced by the schema rather than by a validator, so the column cannot
+    # carry an evidence string even in a hand-edited or restored database.
+    # NULL means "not measured": every item written before this migration, and
+    # every item whose payload was never put through a grounding pass.
+    """
+    ALTER TABLE batch_items ADD COLUMN skipped_short_evidence INTEGER
+        CHECK (skipped_short_evidence IS NULL
+               OR (typeof(skipped_short_evidence) = 'integer' AND skipped_short_evidence >= 0))
+    """,
+)
+
+
+_MIGRATION_9: tuple[str, ...] = (
+    # ``merge_concepts`` is one-way, and an administrator merge is a fallible
+    # judgement: two have already had to be undone after review.  The only
+    # recovery was restoring a backup and replaying, which stops working the
+    # moment a later job postdates the backup.  ``split_concept`` is the
+    # correction path, and like a merge it deletes nothing from the graph that
+    # would let the graph answer "who decided this, and when" afterwards -- the
+    # new concept looks exactly like any other concept once it exists.
+    #
+    # This is a separate table rather than a typed row in ``concept_merges``
+    # because the two records are not the same shape read in opposite
+    # directions.  A merge audit names one surviving concept and one identifier
+    # whose row is *gone*; a split audit names two concepts that both exist.
+    # ``concept_merges.target_concept_id`` is a real foreign key that means "the
+    # survivor", and ``merge_concepts`` repoints it when that survivor is itself
+    # folded onward -- a rule that is correct for merge lineage and simply false
+    # for a split, whose source is not lineage but the concept an administrator
+    # chose to divide.  Discriminating the two inside one table would make every
+    # column's meaning depend on the discriminator and would put split rows in
+    # the path of that UPDATE.
+    #
+    # Neither identifier is a foreign key, for the reason the audit exists at
+    # all.  A ``RESTRICT`` reference to ``concepts`` would let an audit row veto
+    # the very operations it records: a split concept could never afterwards be
+    # merged, and a merge could never absorb a concept that had been split off.
+    # ``concept_merges.source_concept_id`` already establishes that an audit row
+    # may name an identifier the schema does not police; here both do, so the
+    # record survives whatever the administrator decides next.
+    #
+    # It holds identifiers, the new concept's own label, the acting
+    # administrator and the time.  A canonical name is a concept label, never
+    # source passage text, evidence, a prompt or model output, and nothing else
+    # from the split is copied.  Which aliases and mentions moved is not
+    # recorded: reconstructing them is exactly the derivation this feature
+    # refuses to fake, and the counts an operator needs are returned by the call.
+    """
+    CREATE TABLE concept_splits (
+        concept_split_id TEXT PRIMARY KEY,
+        source_concept_id TEXT NOT NULL,
+        new_concept_id TEXT NOT NULL,
+        new_canonical_name TEXT NOT NULL,
+        split_by TEXT NOT NULL,
+        split_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (source_concept_id <> new_concept_id)
+    )
+    """,
+    'CREATE INDEX idx_concept_splits_source ON concept_splits(source_concept_id, split_at)',
+    'CREATE INDEX idx_concept_splits_new ON concept_splits(new_concept_id)',
+)
+
+
+_MIGRATION_10: tuple[str, ...] = (
+    # A concept whose name and aliases match more than one existing concept used
+    # to fail its whole item.  It is now skipped and counted, and the rest of the
+    # item ingests (SDD 4.2.2 point 6c).  Measured on the full-book runs, the
+    # failing behaviour held 33 items, of which 32 collided on pairs an
+    # administrator had already adjudicated as *distinct* -- 13 on
+    # ``独一无二的神``/``造物主`` alone -- so no merge could resolve them and the
+    # items were being discarded permanently, taking every valid concept and
+    # mention beside the collision with them.
+    #
+    # Counted here rather than in ``response_json`` for the same reason as the
+    # two columns above, but note the asymmetry with ``skipped_short_evidence``:
+    # a sub-floor span is removed by the read-only grounding pass and is
+    # therefore absent from the stored payload, whereas an ambiguous concept is
+    # only discovered at *write* time -- ``_resolve_or_create_concept`` is a
+    # write -- so the skipped concept is still present verbatim in the stored
+    # response, exactly as a merged-away self-relation is.  The column records
+    # what the write did, which the response cannot express either way.
+    #
+    # This counts *concepts*, not the relations that cascade off them.  That
+    # matches ``skipped_short_evidence``, which counts the spans the floor
+    # removed and not the relations left without evidence: the counter names the
+    # cause, and a cascade is derivable from the payload while the cause is not.
+    # NULL means "not measured": every item written before this migration, and
+    # every item that never reached concept resolution.
+    """
+    ALTER TABLE batch_items ADD COLUMN skipped_ambiguous_concepts INTEGER
+        CHECK (skipped_ambiguous_concepts IS NULL
+               OR (typeof(skipped_ambiguous_concepts) = 'integer'
+                   AND skipped_ambiguous_concepts >= 0))
+    """,
+)
+
+
+_MIGRATION_11: tuple[str, ...] = (
+    # An evidence span that could not be verified against the passage it named
+    # used to fail its whole Batch item.  It is now dropped from the payload
+    # during grounding and counted here, and the rest of the item ingests
+    # (SDD 4.2.2 point 6d).  Measured on the ten failed section-graph packets of
+    # job 31efbf3b: they hold 183 evidence spans of which only 17 are
+    # ungrounded, and failing whole over those 17 was discarding 78 concepts,
+    # 78 mentions and 51 relations -- including every relation in two chapters
+    # that consequently held none at all.
+    #
+    # Counted apart from ``skipped_short_evidence`` rather than added to it,
+    # even though the grounding pass drops both and the cascade treats them
+    # identically.  A sub-floor span is *our* threshold refusing a citation too
+    # small to be useful, and that number falls when we lower the floor.  An
+    # unverifiable citation is the model's bookkeeping, and that number falls
+    # only with a different prompt or a different model.  Summed into one
+    # column, a floor change and a model regression would be indistinguishable,
+    # and each could mask the other's movement.
+    #
+    # It cannot live in ``response_json`` for the reason ``skipped_short_evidence``
+    # cannot: that column stores the grounded payload, from which a dropped span
+    # is by definition absent, and it must serialize byte-identically on replay
+    # for ingest to stay idempotent.  A count of what the read-only pass removed
+    # is a fact about that pass, so it belongs on the item row.  Integer or
+    # nothing, enforced by the schema rather than by a validator, so the column
+    # cannot carry an evidence string even in a hand-edited or restored database.
+    #
+    # NULL means the rule did not run: a row predating this migration, an item
+    # that never succeeded, or a CONCEPT_MENTIONS item -- point 6d is scoped to
+    # section-graph packets, which are what it was measured on, so a 0 there
+    # would claim a measurement nobody made.
+    """
+    ALTER TABLE batch_items ADD COLUMN skipped_ungrounded_evidence INTEGER
+        CHECK (skipped_ungrounded_evidence IS NULL
+               OR (typeof(skipped_ungrounded_evidence) = 'integer'
+                   AND skipped_ungrounded_evidence >= 0))
+    """,
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode('utf-8')).hexdigest()
 
 
 def _normalize(value: str) -> str:
-    normalized = ' '.join(value.split()).casefold()
+    # The folding rule is shared with the portable overlay artifact, whose
+    # concept key *is* ``normalized_name``.  A second copy of the rule here
+    # would eventually disagree and reattach an imported analysis to the wrong
+    # concept, so the pure module owns it and this wrapper only adds the
+    # store's own emptiness invariant.
+    if not isinstance(value, str):
+        raise IntegrityError('a concept name or alias must be a string')
+    normalized = normalize_concept_key(value)
     if not normalized:
         raise IntegrityError('a concept name or alias cannot be empty')
     return normalized
+
+
+def _span_contains(start: Any, end: Any, other_start: Any, other_end: Any) -> bool:
+    """Report whether span ``[start, end)`` covers span ``[other_start, other_end)``.
+
+    Equal spans count as containment: this is the attribution rule that puts
+    every concept anchored on a span onto the one row that survives the
+    de-duplication in :meth:`SQLiteEpubStore._occurrence_span_source`.  An
+    unanchored (``NULL``) mention is not a span, so it is attributed only to
+    the unanchored row for the same passage.
+    """
+    if start is None or end is None:
+        return other_start is None or other_end is None
+    if other_start is None or other_end is None:
+        return False
+    return int(other_start) >= int(start) and int(other_end) <= int(end)
 
 
 class SQLiteEpubStore:
@@ -402,7 +692,19 @@ class SQLiteEpubStore:
                 '(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'
             )
             applied = {row[0] for row in connection.execute('SELECT version FROM schema_migrations')}
-            migrations = ((1, _MIGRATION_1), (2, _MIGRATION_2), (3, _MIGRATION_3))
+            migrations = (
+                (1, _MIGRATION_1),
+                (2, _MIGRATION_2),
+                (3, _MIGRATION_3),
+                (4, _MIGRATION_4),
+                (5, _MIGRATION_5),
+                (6, _MIGRATION_6),
+                (7, _MIGRATION_7),
+                (8, _MIGRATION_8),
+                (9, _MIGRATION_9),
+                (10, _MIGRATION_10),
+                (11, _MIGRATION_11),
+            )
             try:
                 connection.execute('BEGIN')
                 for version, statements in migrations:
@@ -755,12 +1057,50 @@ class SQLiteEpubStore:
         )
 
     def list_concept_terms(self) -> list[dict[str, Any]]:
-        """Return canonical names and aliases for the in-memory Tier-1 matcher."""
+        """Return the Tier-1 vocabulary together with how specific each concept is.
+
+        The first three columns are the matcher's own: a concept, its display
+        name, and one surface form to scan for.  The remaining three describe
+        the concept rather than the match, so that *resolution* can decide what
+        to expand out of without a second query per matched concept.  None of
+        them is source text:
+
+        * ``term_source`` — whether a model, a seed list or an administrator
+          supplied this surface form.  A one-character alias a model proposed
+          is the weakest kind of evidence in the whole vocabulary.
+        * ``has_part_fanout`` — how many distinct ``HAS_PART`` children the
+          concept has under exactly the predicate
+          :meth:`list_concept_relation_neighbors` walks, so the two can never
+          disagree about whether a concept has a semantic decomposition.
+        * ``mention_count`` — how much of the book the concept touches, by the
+          same correlated subquery :meth:`list_concepts` already reports to an
+          administrator.  Nothing in search gates on it today: it was tried as
+          a proxy for a generic term and withdrawn, because how often a book
+          discusses something is a fact about the book rather than about what
+          the reader asked for.  It is reported anyway — it is 0.5 ms of the
+          1.1 ms these three columns add, the administrator surface already
+          computes the identical number, and a later specificity signal will
+          want it rather than a column deleted and re-added.
+
+        Measured cost on the full acceptance book: 1.9 ms for the three-column
+        form, 3.0 ms for this one, for 1,293 rows.  That is paid once per
+        vocabulary change, not once per query, because search holds the
+        compiled matcher across requests (see ``concept_term_fingerprint``).
+        """
         return [
             dict(row)
             for row in self._connection()
             .execute(
-                """SELECT c.concept_id, c.canonical_name, a.alias AS term
+                """SELECT c.concept_id, c.canonical_name, a.alias AS term,
+                          a.source AS term_source,
+                          (SELECT COUNT(*) FROM concept_mentions AS m
+                            WHERE m.concept_id = c.concept_id) AS mention_count,
+                          (SELECT COUNT(DISTINCT r.object_concept_id)
+                             FROM concept_relations AS r
+                             JOIN concept_relation_assertions AS s
+                               ON s.relation_id = r.relation_id AND s.status != 'REJECTED'
+                            WHERE r.subject_concept_id = c.concept_id
+                              AND r.predicate = 'HAS_PART') AS has_part_fanout
                    FROM concepts AS c
                    JOIN concept_aliases AS a ON a.concept_id = c.concept_id
                    WHERE c.status != 'REJECTED'
@@ -768,6 +1108,28 @@ class SQLiteEpubStore:
             )
             .fetchall()
         ]
+
+    def concept_term_fingerprint(self) -> tuple[Any, ...]:
+        """A cheap value that changes whenever the Tier-1 vocabulary changes.
+
+        Search holds its compiled matcher across requests, so it asks this
+        question on every one of them; the answer must therefore cost close to
+        nothing and must never miss a change.  Three aggregates over two small
+        tables satisfy both: the row counts move when a concept or an alias is
+        added or removed, and ``MAX(updated_at)`` moves when an existing
+        concept is renamed, merged, split or re-approved in place — every one
+        of those paths already touches ``concepts.updated_at``.
+        """
+        row = (
+            self._connection()
+            .execute(
+                """SELECT (SELECT COUNT(*) FROM concepts) AS concept_count,
+                          (SELECT COUNT(*) FROM concept_aliases) AS alias_count,
+                          (SELECT MAX(updated_at) FROM concepts) AS updated_at"""
+            )
+            .fetchone()
+        )
+        return (row['concept_count'], row['alias_count'], row['updated_at'])
 
     def add_concept_relation(
         self,
@@ -935,6 +1297,77 @@ class SQLiteEpubStore:
             .fetchall()
         ]
 
+    def list_toc_child_concepts(self, concept_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """Return, per queried concept, the concepts living in its TOC children.
+
+        The book's own table of contents is structural provenance the parser
+        read out of the EPUB; no model proposed it and none can revise it.  It
+        is therefore usable as a *fallback* decomposition for a concept the
+        model never decomposed — the acceptance book's ``六个关口`` has no
+        relation of any predicate, while its TOC node
+        ``人一生所必经的六个关口`` has exactly the six sections that answer the
+        question.
+
+        Nothing here is stored.  A TOC edge has no prose evidence, and
+        :meth:`_add_concept_relation` will not accept a relation without an
+        evidence span validated as an exact slice of a real passage; the only
+        way to satisfy it would be to anchor structural edges on heading
+        passages, which is the very pathology this fallback exists to route
+        around.  So the join runs per query and the result is a ranking and
+        coverage input, never a row in ``concept_relations``.
+
+        Two rules keep the result bounded, both expressed in the ``bound`` CTE
+        and its second use:
+
+        * A concept *binds* to a TOC node only when **every** one of its
+          mentions lands in a passage under that one node.  On the acceptance
+          book 821 of 1,111 mentioned concepts qualify; ``独一无二的神`` and
+          ``造物主``, which are discussed throughout, do not — which is what
+          stops this channel from becoming another hub.
+        * A child concept is admitted only if it is itself fully bound inside
+          one of those child nodes.  Ungated, the acceptance query reaches 138
+          spans; gated, 16.
+
+        Only child nodes are walked, never siblings: measured over this book,
+        a node's sibling set holds a median of 10 bound concepts against a
+        median of 0 for its children, so siblings are an unbounded associative
+        bag rather than a decomposition.  ``REJECTED`` concepts are excluded
+        here for the same reason :meth:`list_concept_terms` excludes them; the
+        relation walk gets that filtering from its assertions, and a structural
+        edge has no assertion to filter on.
+        """
+        if not concept_ids:
+            return []
+        placeholders = ', '.join('?' for _ in concept_ids)
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                f"""WITH bound AS (
+                        SELECT m.concept_id AS concept_id,
+                               MAX(p.toc_node_id) AS toc_node_id
+                          FROM concept_mentions AS m
+                          JOIN passages AS p ON p.passage_id = m.passage_id
+                         GROUP BY m.concept_id
+                        HAVING COUNT(DISTINCT p.toc_node_id) = 1
+                           AND COUNT(*) = COUNT(p.toc_node_id)
+                    )
+                    SELECT seed.concept_id AS seed_concept_id,
+                           seed.toc_node_id AS seed_toc_node_id,
+                           child.concept_id AS concept_id
+                      FROM bound AS seed
+                      JOIN toc_nodes AS n ON n.parent_toc_node_id = seed.toc_node_id
+                      JOIN bound AS child ON child.toc_node_id = n.toc_node_id
+                      JOIN concepts AS c ON c.concept_id = child.concept_id
+                     WHERE seed.concept_id IN ({placeholders})
+                       AND child.concept_id != seed.concept_id
+                       AND c.status != 'REJECTED'
+                     ORDER BY seed.concept_id, child.concept_id""",
+                tuple(concept_ids),
+            )
+            .fetchall()
+        ]
+
     def list_concept_relation_assertions(
         self,
         *,
@@ -1021,46 +1454,241 @@ class SQLiteEpubStore:
             if changed != 1:
                 raise IntegrityError('unknown concept relation assertion')
 
+    def _occurrence_span_source(self, concept_ids: Sequence[str]) -> tuple[str, tuple[str, ...]]:
+        """Return the one FROM/WHERE/GROUP BY clause both occurrence queries use.
+
+        The unit of enumeration is a **distinct source span**, not a mention
+        row.  A reader asking for the graph occurrences of a query wants each
+        piece of source text once; two concepts anchored on the very same
+        characters, or one concept anchored inside another concept's span, are
+        still one piece of source text.  So the clause below
+
+        * collapses exact duplicates with ``GROUP BY`` on
+          ``(passage_id, start_codepoint, end_codepoint)``, and
+        * drops a span that some *other* span in the same passage wholly
+          contains, keeping the maximal one.
+
+        Only containment collapses.  A partial overlap keeps both spans,
+        because widening a span to their union would render a citation that
+        no concept actually anchored.  Unanchored (``NULL``) mentions are not
+        spans, so they neither contain nor are contained; they group together
+        per passage and are enumerated once.
+
+        ``count_concept_occurrences`` and ``list_concept_occurrences`` share
+        this text verbatim.  If the two ever applied different predicates the
+        total would disagree with the pages, and pagination would silently
+        drop or repeat source.
+        """
+        placeholders = ', '.join('?' for _ in concept_ids)
+        clause = f"""
+            FROM concept_mentions AS m
+            JOIN passages AS p ON p.passage_id = m.passage_id
+            JOIN book_versions AS v ON v.version_id = p.version_id
+            JOIN books AS b ON b.book_id = v.book_id
+            WHERE m.concept_id IN ({placeholders})
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM concept_mentions AS wider
+                  WHERE wider.passage_id = m.passage_id
+                    AND wider.concept_id IN ({placeholders})
+                    AND wider.start_codepoint IS NOT NULL
+                    AND m.start_codepoint IS NOT NULL
+                    AND wider.start_codepoint <= m.start_codepoint
+                    AND wider.end_codepoint >= m.end_codepoint
+                    AND (wider.start_codepoint < m.start_codepoint
+                         OR wider.end_codepoint > m.end_codepoint)
+              )
+            GROUP BY m.passage_id, m.start_codepoint, m.end_codepoint
+        """
+        return clause, (*concept_ids, *concept_ids)
+
+    def _attributed_mention_aggregate(self, aggregate: str, concept_ids: Sequence[str]) -> str:
+        """Aggregate ``aggregate`` over exactly the mentions a span is attributed with.
+
+        A surviving span carries every queried concept anchored *inside* it,
+        not only the concepts anchored on its exact offsets — that is what
+        :meth:`_attribute_span_concepts` reports and what the reader sees in
+        ``canonical_names``.  A ranking signal computed over the narrower
+        group-local mention set would disagree with the attribution beside it:
+        a span whose displayed concepts include a direct match could still sort
+        as if it had only been reached by relation expansion.  So the ordering
+        reads the same mention set the attribution does, using the containment
+        rule of :func:`_span_contains` expressed in SQL.
+        """
+        placeholders = ', '.join('?' for _ in concept_ids)
+        return f"""(
+                    SELECT {aggregate}
+                    FROM concept_mentions AS anchored
+                    WHERE anchored.passage_id = m.passage_id
+                      AND anchored.concept_id IN ({placeholders})
+                      AND CASE
+                            WHEN m.start_codepoint IS NULL
+                                THEN anchored.start_codepoint IS NULL
+                            ELSE anchored.start_codepoint IS NOT NULL
+                                 AND anchored.start_codepoint >= m.start_codepoint
+                                 AND anchored.end_codepoint <= m.end_codepoint
+                          END
+                )"""
+
+    def _occurrence_rank_columns(
+        self, concept_ids: Sequence[str], concept_costs: Mapping[str, float] | None
+    ) -> tuple[str, tuple[Any, ...]]:
+        """Build the derived ranking columns the paged enumeration orders by.
+
+        These are *derived retrieval signals*, not source: they change which
+        spans a reader sees first, never what a span cites.  Three cheap,
+        deterministic signals, applied strictly in this order:
+
+        1. ``rank_relation_cost`` — how directly the query reached the span.
+           The caller supplies a cost per concept (0 for a Tier-1 match, more
+           for a concept only reached by walking ``HAS_PART``), and a span
+           takes the cheapest cost among the concepts attributed to it.  A
+           directly matched concept's span therefore always precedes a span
+           reached only by expansion, which is the whole point: expanding
+           through a 20-child hub concept contributes thousands of spans that
+           are, individually, far weaker evidence than a direct match.
+        2. ``rank_concept_count`` — how many queried concepts the one span is
+           attributed to.  A span where two queried concepts co-occur is more
+           likely to answer the query than one carrying a single term.
+        3. span length — a longer verified span is a more substantive citation
+           than a bare two-character name.  An unanchored mention has no span
+           at all and renders its whole passage, so it sorts last.
+
+        Deliberately *not* used: any model.  Channel A works today with no
+        local model configured at all, and a ranking that needed the local
+        Cross-Encoder would either lose that property or have to fail closed
+        and leave the channel unordered.  These three signals already fix the
+        measured symptom, so the cross-encoder stays where it belongs — in the
+        fused channel, which is allowed to fail closed.
+
+        Book order remains the final tie-break, so the whole result set has one
+        stable total order.  Ranking only replaces the ``ORDER BY``; the
+        predicate shared with :meth:`count_concept_occurrences` is untouched,
+        so the count still agrees with the pages exactly.
+        """
+        costs = concept_costs or {}
+        branches = ' '.join('WHEN ? THEN ?' for _ in concept_ids)
+        cost_column = self._attributed_mention_aggregate(
+            f'MIN(CASE anchored.concept_id {branches} ELSE 0.0 END)', concept_ids
+        )
+        count_column = self._attributed_mention_aggregate('COUNT(DISTINCT anchored.concept_id)', concept_ids)
+        parameters: list[Any] = []
+        for concept_id in concept_ids:
+            # An unlisted concept is a direct match by definition: a caller that
+            # expanded nothing declares no costs, and its spans are all direct.
+            parameters.extend((concept_id, float(costs.get(concept_id, 0.0))))
+        parameters.extend(concept_ids)  # cost column's own IN list
+        parameters.extend(concept_ids)  # count column's own IN list
+        columns = f'{cost_column} AS rank_relation_cost, {count_column} AS rank_concept_count'
+        return columns, tuple(parameters)
+
     def count_concept_occurrences(self, concept_ids: Sequence[str]) -> int:
+        """Count the distinct source spans the graph channel will enumerate.
+
+        See :meth:`_occurrence_span_source` for why a span, and not a mention
+        row, is the unit that is counted and paged.  Ranking never reaches this
+        method: ordering the pages cannot change how many spans exist, and the
+        count deliberately stays a function of the shared predicate alone.
+        """
         if not concept_ids:
             return 0
-        placeholders = ', '.join('?' for _ in concept_ids)
-        row = (
-            self._connection()
-            .execute(
-                f'SELECT COUNT(*) AS count FROM concept_mentions WHERE concept_id IN ({placeholders})',
-                tuple(concept_ids),
-            )
-            .fetchone()
-        )
+        clause, parameters = self._occurrence_span_source(concept_ids)
+        row = self._connection().execute(f'SELECT COUNT(*) AS count FROM (SELECT 1 {clause})', parameters).fetchone()
         return int(row['count'])
 
-    def list_concept_occurrences(self, concept_ids: Sequence[str], *, offset: int, limit: int) -> list[dict[str, Any]]:
-        """Page all matching graph occurrences in a stable source order."""
+    def list_concept_occurrences(
+        self,
+        concept_ids: Sequence[str],
+        *,
+        offset: int,
+        limit: int,
+        concept_costs: Mapping[str, float] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Page the distinct graph source spans, most relevant span first.
+
+        Each returned row carries ``concept_ids``/``canonical_names`` for every
+        queried concept anchored on the span — including the concepts of the
+        spans this one absorbed — so collapsing a duplicate never drops an
+        attribution.  See :meth:`_occurrence_span_source` for the unit of
+        enumeration and for why the count agrees with these pages.
+
+        The enumeration is *ranked and then paginated*, not merely paginated.
+        Book order alone was deterministic but useless as a first page: a query
+        whose concepts occur 778 times showed the reader the 20 spans nearest
+        the front of the book, which for a book with front matter means the
+        table of contents.  ``concept_costs`` is how the caller declares what
+        it had to do to reach each concept — see :meth:`_occurrence_rank_columns`
+        for the three signals and their order.  Omitting it means every queried
+        concept was matched directly, which is the truthful statement for a
+        caller that expanded no relations, not a silent "unranked" mode.
+
+        Ranking is expressed entirely in ``ORDER BY`` over one stable total
+        order on the whole result set.  Pagination therefore still walks every
+        span exactly once and still ends at ``count_concept_occurrences`` — a
+        per-page rerank would have made page 2 mean nothing.
+
+        Each row also carries its two ranking signals (``rank_relation_cost``,
+        ``rank_concept_count``).  They are derived retrieval signals a caller
+        may explain an ordering with; they are never part of a citation.
+        """
         if not concept_ids:
             return []
         if offset < 0 or limit < 1:
             raise IntegrityError('concept occurrence pagination values are invalid')
-        placeholders = ', '.join('?' for _ in concept_ids)
+        clause, parameters = self._occurrence_span_source(concept_ids)
+        rank_columns, rank_parameters = self._occurrence_rank_columns(concept_ids, concept_costs)
         rows = (
             self._connection()
             .execute(
-                f"""SELECT m.mention_id, m.concept_id, m.passage_id, m.start_codepoint,
-                       m.end_codepoint, c.canonical_name, p.content, p.content_sha256,
-                       p.toc_node_id, b.title AS book_title
-                FROM concept_mentions AS m
-                JOIN concepts AS c ON c.concept_id = m.concept_id
-                JOIN passages AS p ON p.passage_id = m.passage_id
-                JOIN book_versions AS v ON v.version_id = p.version_id
-                JOIN books AS b ON b.book_id = v.book_id
-                WHERE m.concept_id IN ({placeholders})
-                ORDER BY p.spine_index, p.ordinal, m.start_codepoint, m.mention_id
+                f"""SELECT m.passage_id, m.start_codepoint, m.end_codepoint,
+                       p.content, p.content_sha256, p.toc_node_id,
+                       b.title AS book_title,
+                       {rank_columns}
+                {clause}
+                ORDER BY rank_relation_cost, rank_concept_count DESC,
+                         COALESCE(m.end_codepoint - m.start_codepoint, 0) DESC,
+                         p.spine_index, p.ordinal, m.start_codepoint, MIN(m.mention_id)
                 LIMIT ? OFFSET ?""",
-                (*concept_ids, limit, offset),
+                (*rank_parameters, *parameters, limit, offset),
             )
             .fetchall()
         )
-        return [self._search_row_with_toc(dict(row)) for row in rows]
+        spans = [self._search_row_with_toc(dict(row)) for row in rows]
+        self._attribute_span_concepts(spans, concept_ids)
+        return spans
+
+    def _attribute_span_concepts(self, spans: list[dict[str, Any]], concept_ids: Sequence[str]) -> None:
+        """Attach every queried concept anchored inside each surviving span."""
+        if not spans:
+            return
+        passage_ids = tuple(dict.fromkeys(str(span['passage_id']) for span in spans))
+        concept_placeholders = ', '.join('?' for _ in concept_ids)
+        passage_placeholders = ', '.join('?' for _ in passage_ids)
+        rows = (
+            self._connection()
+            .execute(
+                f"""SELECT DISTINCT m.passage_id, m.start_codepoint, m.end_codepoint,
+                       m.concept_id, c.canonical_name
+                FROM concept_mentions AS m
+                JOIN concepts AS c ON c.concept_id = m.concept_id
+                WHERE m.concept_id IN ({concept_placeholders})
+                  AND m.passage_id IN ({passage_placeholders})""",
+                (*concept_ids, *passage_ids),
+            )
+            .fetchall()
+        )
+        mentions_by_passage: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            mentions_by_passage.setdefault(str(row['passage_id']), []).append(row)
+        for span in spans:
+            start, end = span['start_codepoint'], span['end_codepoint']
+            attributed = [
+                row
+                for row in mentions_by_passage.get(str(span['passage_id']), ())
+                if _span_contains(start, end, row['start_codepoint'], row['end_codepoint'])
+            ]
+            span['concept_ids'] = tuple(sorted({str(row['concept_id']) for row in attributed}))
+            span['canonical_names'] = tuple(sorted({str(row['canonical_name']) for row in attributed}))
 
     def get_search_passage(self, passage_id: str) -> dict[str, Any] | None:
         row = (
@@ -1135,6 +1763,34 @@ class SQLiteEpubStore:
         alias_source: str = 'MODEL',
     ) -> str:
         """Create/update a concept without replacing its foreign-key parent row."""
+        with self._write() as connection:
+            return self._upsert_concept(
+                connection,
+                canonical_name,
+                aliases=aliases,
+                definition=definition,
+                status=status,
+                concept_id=concept_id,
+                alias_source=alias_source,
+            )
+
+    def _upsert_concept(
+        self,
+        connection: sqlite3.Connection,
+        canonical_name: str,
+        *,
+        aliases: Iterable[str] = (),
+        definition: str = '',
+        status: str = 'PROVISIONAL',
+        concept_id: str | None = None,
+        alias_source: str = 'MODEL',
+    ) -> str:
+        """Create/update a concept using an existing store transaction.
+
+        :meth:`apply_overlay` uses this private primitive so a whole imported
+        analysis — concepts, mentions, relations and evidence — commits or
+        rolls back together.  Public callers should use :meth:`upsert_concept`.
+        """
         if status not in {'PROVISIONAL', 'APPROVED', 'REJECTED'}:
             raise IntegrityError(f'invalid concept status: {status}')
         if alias_source not in {'SEED', 'MODEL', 'ADMIN'}:
@@ -1143,43 +1799,717 @@ class SQLiteEpubStore:
         requested_aliases: dict[str, str] = {normalized_name: canonical_name}
         for alias in aliases:
             requested_aliases[_normalize(alias)] = alias
-        with self._write() as connection:
-            existing = connection.execute(
-                'SELECT concept_id FROM concepts WHERE normalized_name = ?', (normalized_name,)
+        existing = connection.execute(
+            'SELECT concept_id FROM concepts WHERE normalized_name = ?', (normalized_name,)
+        ).fetchone()
+        resolved_id = concept_id or (existing['concept_id'] if existing else str(uuid4()))
+        if existing is not None and concept_id is not None and existing['concept_id'] != concept_id:
+            raise IntegrityError('canonical name already belongs to a different concept')
+        canonical_alias_owner = connection.execute(
+            'SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?', (normalized_name,)
+        ).fetchone()
+        if canonical_alias_owner is not None and canonical_alias_owner['concept_id'] != resolved_id:
+            raise IntegrityError('canonical name is already an alias of a different concept')
+        if existing is None:
+            connection.execute(
+                """INSERT INTO concepts(concept_id, canonical_name, normalized_name, definition, status)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (resolved_id, canonical_name, normalized_name, definition, status),
+            )
+        else:
+            connection.execute(
+                """UPDATE concepts SET canonical_name = ?, definition = ?, status = ?,
+                           updated_at = CURRENT_TIMESTAMP WHERE concept_id = ?""",
+                (canonical_name, definition, status, resolved_id),
+            )
+        for normalized_alias, alias in requested_aliases.items():
+            owner = connection.execute(
+                'SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?', (normalized_alias,)
             ).fetchone()
-            resolved_id = concept_id or (existing['concept_id'] if existing else str(uuid4()))
-            if existing is not None and concept_id is not None and existing['concept_id'] != concept_id:
-                raise IntegrityError('canonical name already belongs to a different concept')
-            canonical_alias_owner = connection.execute(
-                'SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?', (normalized_name,)
-            ).fetchone()
-            if canonical_alias_owner is not None and canonical_alias_owner['concept_id'] != resolved_id:
-                raise IntegrityError('canonical name is already an alias of a different concept')
-            if existing is None:
+            if owner is not None and owner['concept_id'] != resolved_id:
+                raise IntegrityError(f'alias already belongs to another concept: {alias}')
+            if owner is None:
                 connection.execute(
-                    """INSERT INTO concepts(concept_id, canonical_name, normalized_name, definition, status)
+                    """INSERT INTO concept_aliases(alias_id, concept_id, alias, normalized_alias, source)
                        VALUES (?, ?, ?, ?, ?)""",
-                    (resolved_id, canonical_name, normalized_name, definition, status),
+                    (str(uuid4()), resolved_id, alias, normalized_alias, alias_source),
+                )
+        return resolved_id
+
+    def count_concepts(self, *, status: str | None = None) -> int:
+        if status is not None and status not in {'PROVISIONAL', 'APPROVED', 'REJECTED'}:
+            raise IntegrityError(f'invalid concept status: {status}')
+        where = 'WHERE status = ?' if status is not None else ''
+        parameters = (status,) if status is not None else ()
+        row = self._connection().execute(f'SELECT COUNT(*) AS count FROM concepts {where}', parameters).fetchone()
+        return int(row['count'])
+
+    def list_concepts(self, *, status: str | None = None, offset: int = 0, limit: int = 50) -> list[dict[str, Any]]:
+        """Page the concept graph itself for administrator review.
+
+        Merge candidates are only visible to an administrator who can see the
+        graph, so this returns every concept's aliases and mention count in a
+        stable order.  It deliberately carries no passage text or evidence:
+        alias and canonical spellings are concept labels, not source material.
+        """
+        if status is not None and status not in {'PROVISIONAL', 'APPROVED', 'REJECTED'}:
+            raise IntegrityError(f'invalid concept status: {status}')
+        if offset < 0 or not 1 <= limit <= 200:
+            raise IntegrityError('concept pagination values are invalid')
+        where = 'WHERE c.status = ?' if status is not None else ''
+        parameters: tuple[Any, ...] = (status,) if status is not None else ()
+        rows = (
+            self._connection()
+            .execute(
+                f"""SELECT c.concept_id, c.canonical_name, c.definition, c.status,
+                       c.created_at, c.updated_at,
+                       (SELECT COUNT(*) FROM concept_mentions AS m
+                         WHERE m.concept_id = c.concept_id) AS mention_count
+                  FROM concepts AS c
+                  {where}
+                 ORDER BY c.canonical_name COLLATE NOCASE, c.concept_id
+                 LIMIT ? OFFSET ?""",
+                (*parameters, limit, offset),
+            )
+            .fetchall()
+        )
+        concepts = [dict(row) for row in rows]
+        if not concepts:
+            return []
+        placeholders = ', '.join('?' for _ in concepts)
+        aliases: dict[str, list[str]] = {concept['concept_id']: [] for concept in concepts}
+        for alias_row in self._connection().execute(
+            f"""SELECT concept_id, alias FROM concept_aliases
+                 WHERE concept_id IN ({placeholders})
+                 ORDER BY alias COLLATE NOCASE, alias_id""",
+            tuple(concept['concept_id'] for concept in concepts),
+        ):
+            aliases[str(alias_row['concept_id'])].append(str(alias_row['alias']))
+        for concept in concepts:
+            concept['aliases'] = aliases[concept['concept_id']]
+        return concepts
+
+    def merge_concepts(
+        self,
+        *,
+        target_concept_id: str,
+        source_concept_id: str,
+        merged_by: str,
+        canonical_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Fold ``source`` into ``target`` in one transaction, or change nothing.
+
+        A model may suggest a semantic merge but can never perform one: when a
+        suggestion exactly matches two existing concepts, ingest refuses the
+        item and an administrator resolves it here.  Everything below happens
+        inside a single ``_write()`` transaction because a partially merged
+        graph is worse than an unmerged one.
+
+        The source's canonical spelling becomes an alias of the target.  That
+        spelling is exactly what a future model response will match on, so
+        losing it would immediately reintroduce the failure this resolves.
+
+        Mentions keep their exact passage, offsets, evidence and source; only
+        ``concept_id`` is repointed.  A source mention that would duplicate one
+        the target already holds for the same passage and span is dropped
+        rather than duplicated.
+
+        Relations are repointed, with two deliberate degenerate cases:
+
+        * A relation *between* the two merged concepts would become a
+          self-loop, which ``concept_relations`` forbids by CHECK.  It is
+          deleted together with its assertions and evidence, because after the
+          merge it asserts a relation from a concept to itself.  The count is
+          reported so an operator sees it happened.
+        * A relation whose repointed endpoints duplicate an existing relation
+          is folded into that surviving relation instead of being dropped: its
+          version-scoped assertions move across, and evidence spans that the
+          surviving assertion already holds are deduplicated.  No grounded
+          evidence span is discarded this way.
+
+        Audit rows from earlier merges *into* the source are repointed onto the
+        target before the source row is deleted, so merges chain: a concept
+        that has already absorbed another can itself be folded onward, and the
+        recorded lineage follows the mentions it describes.
+        """
+        if not target_concept_id or not source_concept_id:
+            raise IntegrityError('a concept merge needs both a target and a source concept')
+        if target_concept_id == source_concept_id:
+            raise IntegrityError('a concept cannot be merged into itself')
+        merger = merged_by.strip()
+        if not merger or len(merger) > 200:
+            raise IntegrityError('concept merge operator identity must be a non-empty value of at most 200 characters')
+        # ``_normalize`` refuses an empty or whitespace-only override rather
+        # than letting it read as "keep the target's current name".
+        requested_canonical = canonical_name.strip() if canonical_name is not None else None
+        requested_normalized = _normalize(canonical_name) if canonical_name is not None else None
+
+        with self._write() as connection:
+            target = connection.execute('SELECT * FROM concepts WHERE concept_id = ?', (target_concept_id,)).fetchone()
+            if target is None:
+                raise UnknownConceptError(f'unknown concept_id: {target_concept_id}')
+            source = connection.execute('SELECT * FROM concepts WHERE concept_id = ?', (source_concept_id,)).fetchone()
+            if source is None:
+                raise UnknownConceptError(f'unknown concept_id: {source_concept_id}')
+            source_canonical_name = str(source['canonical_name'])
+
+            if requested_normalized is not None:
+                owner = connection.execute(
+                    """SELECT concept_id FROM concepts
+                        WHERE normalized_name = ? AND concept_id NOT IN (?, ?)""",
+                    (requested_normalized, target_concept_id, source_concept_id),
+                ).fetchone()
+                if owner is not None:
+                    raise IntegrityError('the requested canonical name already belongs to a different concept')
+                alias_owner = connection.execute(
+                    """SELECT concept_id FROM concept_aliases
+                        WHERE normalized_alias = ? AND concept_id NOT IN (?, ?)""",
+                    (requested_normalized, target_concept_id, source_concept_id),
+                ).fetchone()
+                if alias_owner is not None:
+                    raise IntegrityError('the requested canonical name is already an alias of a different concept')
+
+            # ``normalized_alias`` is globally unique, so a row owned by the
+            # source can never collide with one owned by the target.
+            moved_aliases = connection.execute(
+                'UPDATE concept_aliases SET concept_id = ? WHERE concept_id = ?',
+                (target_concept_id, source_concept_id),
+            ).rowcount
+            moved_aliases += self._ensure_alias(
+                connection,
+                concept_id=target_concept_id,
+                alias=source_canonical_name,
+                normalized_alias=str(source['normalized_name']),
+            )
+            # The target's own canonical spelling must survive an override as
+            # an alias; usually ``upsert_concept`` already stored it.
+            moved_aliases += self._ensure_alias(
+                connection,
+                concept_id=target_concept_id,
+                alias=str(target['canonical_name']),
+                normalized_alias=str(target['normalized_name']),
+            )
+
+            # ``IS`` is SQLite's NULL-safe comparison: a mention without
+            # offsets must still deduplicate against the target's own
+            # offset-less mention of the same passage.
+            duplicate_mentions = connection.execute(
+                """DELETE FROM concept_mentions
+                    WHERE concept_id = ?
+                      AND EXISTS (
+                          SELECT 1 FROM concept_mentions AS kept
+                           WHERE kept.concept_id = ?
+                             AND kept.passage_id = concept_mentions.passage_id
+                             AND kept.start_codepoint IS concept_mentions.start_codepoint
+                             AND kept.end_codepoint IS concept_mentions.end_codepoint
+                      )""",
+                (source_concept_id, target_concept_id),
+            ).rowcount
+            moved_mentions = connection.execute(
+                'UPDATE concept_mentions SET concept_id = ? WHERE concept_id = ?',
+                (target_concept_id, source_concept_id),
+            ).rowcount
+
+            dropped_self_relations = connection.execute(
+                """DELETE FROM concept_relations
+                    WHERE (subject_concept_id = ? AND object_concept_id = ?)
+                       OR (subject_concept_id = ? AND object_concept_id = ?)""",
+                (source_concept_id, target_concept_id, target_concept_id, source_concept_id),
+            ).rowcount
+            repointed_relations = folded_relations = 0
+            for relation in connection.execute(
+                """SELECT relation_id, subject_concept_id, predicate, object_concept_id
+                     FROM concept_relations
+                    WHERE subject_concept_id = ? OR object_concept_id = ?
+                    ORDER BY relation_id""",
+                (source_concept_id, source_concept_id),
+            ).fetchall():
+                subject = (
+                    target_concept_id
+                    if relation['subject_concept_id'] == source_concept_id
+                    else str(relation['subject_concept_id'])
+                )
+                object_ = (
+                    target_concept_id
+                    if relation['object_concept_id'] == source_concept_id
+                    else str(relation['object_concept_id'])
+                )
+                survivor = connection.execute(
+                    """SELECT relation_id FROM concept_relations
+                        WHERE subject_concept_id = ? AND predicate = ? AND object_concept_id = ?
+                          AND relation_id <> ?""",
+                    (subject, relation['predicate'], object_, relation['relation_id']),
+                ).fetchone()
+                if survivor is None:
+                    connection.execute(
+                        """UPDATE concept_relations
+                              SET subject_concept_id = ?, object_concept_id = ?
+                            WHERE relation_id = ?""",
+                        (subject, object_, relation['relation_id']),
+                    )
+                    repointed_relations += 1
+                    continue
+                self._fold_relation_assertions(
+                    connection,
+                    from_relation_id=str(relation['relation_id']),
+                    into_relation_id=str(survivor['relation_id']),
+                )
+                connection.execute(
+                    'DELETE FROM concept_relations WHERE relation_id = ?',
+                    (relation['relation_id'],),
+                )
+                folded_relations += 1
+
+            # An earlier merge *into* this source left audit rows naming it as
+            # their target, and ``concept_merges.target_concept_id`` is a
+            # RESTRICT reference: with those rows in place the DELETE below
+            # fails the foreign key, so a concept that has ever absorbed
+            # another could never itself be merged.  Chained consolidation is
+            # exactly how an administrator reviews a large graph, so the rows
+            # are repointed onto the surviving target rather than the
+            # constraint being dropped.  The lineage they record genuinely
+            # lives in the target now, and an audit table that nothing can
+            # verify is not worth keeping as one.
+            #
+            # The ordering is load-bearing in both directions and deliberate:
+            # this statement runs *before* the DELETE, which is what makes the
+            # delete legal at all, and *before* the INSERT of this merge's own
+            # audit row further down.  That row names the target, not the
+            # source, so it could not match this WHERE clause even if it
+            # already existed -- but writing it afterwards means the
+            # arrangement does not depend on that argument staying true.
+            #
+            # A repointed row can only end up naming the target as its own
+            # source if some caller resurrected a deleted identifier through
+            # the explicit ``concept_id`` argument of :meth:`upsert_concept`;
+            # the store never recycles one itself, since a new concept gets a
+            # fresh uuid4 and the overlay reuses an id only for a concept that
+            # still exists.  Such a row is still true -- those mentions did end
+            # up here -- and is kept, because deleting it is the one outcome
+            # that would lose history.
+            repointed_merge_audits = connection.execute(
+                'UPDATE concept_merges SET target_concept_id = ? WHERE target_concept_id = ?',
+                (target_concept_id, source_concept_id),
+            ).rowcount
+
+            deleted = connection.execute('DELETE FROM concepts WHERE concept_id = ?', (source_concept_id,)).rowcount
+            if deleted != 1:
+                raise UnknownConceptError(f'unknown concept_id: {source_concept_id}')
+
+            if requested_normalized is not None and requested_normalized != target['normalized_name']:
+                connection.execute(
+                    """UPDATE concepts SET canonical_name = ?, normalized_name = ?,
+                              updated_at = CURRENT_TIMESTAMP
+                        WHERE concept_id = ?""",
+                    (requested_canonical, requested_normalized, target_concept_id),
+                )
+                moved_aliases += self._ensure_alias(
+                    connection,
+                    concept_id=target_concept_id,
+                    alias=str(requested_canonical),
+                    normalized_alias=requested_normalized,
                 )
             else:
                 connection.execute(
-                    """UPDATE concepts SET canonical_name = ?, definition = ?, status = ?,
-                               updated_at = CURRENT_TIMESTAMP WHERE concept_id = ?""",
-                    (canonical_name, definition, status, resolved_id),
+                    'UPDATE concepts SET updated_at = CURRENT_TIMESTAMP WHERE concept_id = ?',
+                    (target_concept_id,),
                 )
+
+            merge_id = str(uuid4())
+            connection.execute(
+                """INSERT INTO concept_merges(
+                       concept_merge_id, target_concept_id, source_concept_id,
+                       source_canonical_name, merged_by
+                   ) VALUES (?, ?, ?, ?, ?)""",
+                (merge_id, target_concept_id, source_concept_id, source_canonical_name, merger),
+            )
+            merged = connection.execute(
+                """SELECT c.canonical_name, c.status, m.merged_at
+                     FROM concept_merges AS m
+                     JOIN concepts AS c ON c.concept_id = m.target_concept_id
+                    WHERE m.concept_merge_id = ?""",
+                (merge_id,),
+            ).fetchone()
+        assert merged is not None
+        return {
+            'concept_merge_id': merge_id,
+            'target_concept_id': target_concept_id,
+            'source_concept_id': source_concept_id,
+            'source_canonical_name': source_canonical_name,
+            'canonical_name': str(merged['canonical_name']),
+            'status': str(merged['status']),
+            'merged_by': merger,
+            'merged_at': merged['merged_at'],
+            'moved_aliases': moved_aliases,
+            'moved_mentions': moved_mentions,
+            'duplicate_mentions': duplicate_mentions,
+            'repointed_relations': repointed_relations,
+            'folded_relations': folded_relations,
+            'dropped_self_relations': dropped_self_relations,
+            'repointed_merge_audits': repointed_merge_audits,
+        }
+
+    def split_concept(
+        self,
+        *,
+        source_concept_id: str,
+        canonical_name: str,
+        aliases: Sequence[str] = (),
+        mentions: Sequence[Mapping[str, Any]] = (),
+        split_by: str,
+    ) -> dict[str, Any]:
+        """Carve part of one concept out into a new one, or change nothing.
+
+        :meth:`merge_concepts` is one-way, and an administrator merge is a
+        fallible judgement -- a context-specific designation folded into a
+        generic one, a teaching folded into the scripture locator that names
+        it.  Restoring a backup and replaying stops being possible as soon as a
+        later job postdates the backup, so this is the correction path.
+
+        It is deliberately **not** an undo.  ``concept_merges`` records the
+        source's canonical name but not which aliases or mentions moved, so no
+        faithful reverse is derivable from an audit row, and pretending
+        otherwise would silently invent an administrator's decision.  The
+        caller therefore states the whole decision explicitly: which concept
+        survives, what the new one is called, which aliases go with it, and
+        which mentions go with it.  Everything below happens inside a single
+        ``_write()`` transaction because a half-split graph is worse than an
+        unsplit one.
+
+        A mention is named by ``{"passage_id", "start_codepoint",
+        "end_codepoint"}`` -- the natural key of ``concept_mentions`` and the
+        only vocabulary the rest of this API uses for a mention.
+        ``add_concept_mention`` takes a passage and offsets, ``merge_concepts``
+        deduplicates on exactly that triple, and the portable overlay travels
+        mentions as locations rather than as surrogate keys; ``mention_id`` is
+        an internal uuid that no read path in this store, service or API ever
+        returns, so an administrator could not supply one.  Offsets are omitted
+        together to name an unanchored mention, matching
+        ``add_concept_mention``.
+
+        ``canonical_name`` must either be one of the moving aliases or be a
+        spelling no concept owns as a name or alias.  These are
+        ``upsert_concept``'s own collision rules, reused so that a split cannot
+        manufacture the very ambiguity a merge exists to resolve.  The source's
+        own canonical spelling can never move: it would leave the surviving
+        concept named by an alias belonging to a different concept.
+
+        Moving *every* mention is refused.  That is a rename, and
+        ``upsert_concept`` already renames a concept without inventing a second
+        one.
+
+        Mentions keep their exact passage, offsets, evidence and source; only
+        ``concept_id`` changes, and each moved row is re-read and re-sliced from
+        its passage afterwards, so a split that disturbed a citation by even one
+        code point rolls back rather than committing.
+
+        **Relations are deliberately not repointed.**  Which endpoint a
+        relation belongs on after a split is a semantic judgement about what the
+        relation asserts, and this store has no basis to make it: the row
+        records two concept identifiers and a predicate, not which sense of the
+        subject was meant.  Moving one automatically would assert something no
+        administrator decided, and silently moving the wrong one is precisely
+        the class of error this method exists to correct.  Every relation
+        therefore stays on the source, and the result reports how many of them
+        are grounded on evidence that literally names one of the split-off
+        spellings, so an administrator can review that shortlist by hand.
+        """
+        if not source_concept_id:
+            raise IntegrityError('a concept split needs a source concept')
+        splitter = split_by.strip()
+        if not splitter or len(splitter) > 200:
+            raise IntegrityError('concept split operator identity must be a non-empty value of at most 200 characters')
+        new_canonical = canonical_name.strip()
+        normalized_new = _normalize(canonical_name)
+        requested_aliases: dict[str, str] = {}
+        for alias in aliases:
+            requested_aliases[_normalize(alias)] = alias
+        requested_mentions = self._mention_keys(mentions)
+
+        with self._write() as connection:
+            source = connection.execute('SELECT * FROM concepts WHERE concept_id = ?', (source_concept_id,)).fetchone()
+            if source is None:
+                raise UnknownConceptError(f'unknown concept_id: {source_concept_id}')
+            source_canonical_name = str(source['canonical_name'])
+            source_normalized_name = str(source['normalized_name'])
+
+            if source_normalized_name in requested_aliases:
+                raise IntegrityError("a split cannot move the source concept's own canonical spelling")
+            moving_alias_ids: list[str] = []
+            moving_alias_spellings: list[str] = []
             for normalized_alias, alias in requested_aliases.items():
                 owner = connection.execute(
-                    'SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?', (normalized_alias,)
+                    'SELECT alias_id, concept_id, alias FROM concept_aliases WHERE normalized_alias = ?',
+                    (normalized_alias,),
                 ).fetchone()
-                if owner is not None and owner['concept_id'] != resolved_id:
-                    raise IntegrityError(f'alias already belongs to another concept: {alias}')
-                if owner is None:
-                    connection.execute(
-                        """INSERT INTO concept_aliases(alias_id, concept_id, alias, normalized_alias, source)
-                           VALUES (?, ?, ?, ?, ?)""",
-                        (str(uuid4()), resolved_id, alias, normalized_alias, alias_source),
-                    )
-        return resolved_id
+                if owner is None or owner['concept_id'] != source_concept_id:
+                    raise IntegrityError(f'the source concept does not own this alias: {alias}')
+                moving_alias_ids.append(str(owner['alias_id']))
+                moving_alias_spellings.append(str(owner['alias']))
+
+            # ``upsert_concept``'s collision rules, restated for a name that has
+            # to be free *after* the requested aliases have moved.
+            name_owner = connection.execute(
+                'SELECT concept_id FROM concepts WHERE normalized_name = ?', (normalized_new,)
+            ).fetchone()
+            if name_owner is not None:
+                raise IntegrityError('the new canonical name already belongs to an existing concept')
+            alias_owner = connection.execute(
+                'SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?',
+                (normalized_new,),
+            ).fetchone()
+            if alias_owner is not None and normalized_new not in requested_aliases:
+                raise IntegrityError('the new canonical name is already an alias of an existing concept')
+
+            moving_mentions: list[dict[str, Any]] = []
+            for passage_id, start, end in requested_mentions:
+                candidates = connection.execute(
+                    """SELECT mention_id, concept_id, passage_id, start_codepoint,
+                              end_codepoint, evidence, source
+                         FROM concept_mentions
+                        WHERE passage_id = ?
+                          AND start_codepoint IS ?
+                          AND end_codepoint IS ?""",
+                    (passage_id, start, end),
+                ).fetchall()
+                owned = [row for row in candidates if row['concept_id'] == source_concept_id]
+                if not owned:
+                    if candidates:
+                        raise IntegrityError('a mention named for the split belongs to a different concept')
+                    raise IntegrityError('a mention named for the split does not exist')
+                moving_mentions.append(dict(owned[0]))
+
+            total_mentions = int(
+                connection.execute(
+                    'SELECT COUNT(*) FROM concept_mentions WHERE concept_id = ?',
+                    (source_concept_id,),
+                ).fetchone()[0]
+            )
+            if total_mentions and len(moving_mentions) == total_mentions:
+                raise IntegrityError(
+                    'a split cannot move every mention of the source concept; '
+                    "renaming a concept is upsert_concept's job"
+                )
+
+            new_concept_id = str(uuid4())
+            connection.execute(
+                """INSERT INTO concepts(concept_id, canonical_name, normalized_name, definition, status)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (new_concept_id, new_canonical, normalized_new, '', str(source['status'])),
+            )
+            moved_aliases = 0
+            for alias_id in moving_alias_ids:
+                moved_aliases += connection.execute(
+                    'UPDATE concept_aliases SET concept_id = ? WHERE alias_id = ?',
+                    (new_concept_id, alias_id),
+                ).rowcount
+            # A canonical spelling that was not among the moving aliases owns no
+            # row yet; ``upsert_concept`` always stores one, so a split must too.
+            moved_aliases += self._ensure_alias(
+                connection,
+                concept_id=new_concept_id,
+                alias=new_canonical,
+                normalized_alias=normalized_new,
+            )
+
+            moved_mentions = 0
+            for mention in moving_mentions:
+                moved_mentions += connection.execute(
+                    'UPDATE concept_mentions SET concept_id = ? WHERE mention_id = ?',
+                    (new_concept_id, mention['mention_id']),
+                ).rowcount
+            self._verify_moved_mentions(connection, concept_id=new_concept_id, before=moving_mentions)
+
+            split_names = {*moving_alias_spellings, new_canonical}
+            relation_ids: set[str] = set()
+            naming_relation_ids: set[str] = set()
+            for row in connection.execute(
+                """SELECT r.relation_id, e.evidence
+                     FROM concept_relations AS r
+                     LEFT JOIN concept_relation_assertions AS a ON a.relation_id = r.relation_id
+                     LEFT JOIN concept_relation_evidence AS e ON e.assertion_id = a.assertion_id
+                    WHERE r.subject_concept_id = ? OR r.object_concept_id = ?""",
+                (source_concept_id, source_concept_id),
+            ):
+                relation_id = str(row['relation_id'])
+                relation_ids.add(relation_id)
+                evidence = row['evidence']
+                if evidence is not None and any(name in str(evidence) for name in split_names):
+                    naming_relation_ids.add(relation_id)
+
+            connection.execute(
+                'UPDATE concepts SET updated_at = CURRENT_TIMESTAMP WHERE concept_id = ?',
+                (source_concept_id,),
+            )
+            split_id = str(uuid4())
+            connection.execute(
+                """INSERT INTO concept_splits(
+                       concept_split_id, source_concept_id, new_concept_id,
+                       new_canonical_name, split_by
+                   ) VALUES (?, ?, ?, ?, ?)""",
+                (split_id, source_concept_id, new_concept_id, new_canonical, splitter),
+            )
+            recorded = connection.execute(
+                'SELECT split_at FROM concept_splits WHERE concept_split_id = ?', (split_id,)
+            ).fetchone()
+        assert recorded is not None
+        return {
+            'concept_split_id': split_id,
+            'source_concept_id': source_concept_id,
+            'source_canonical_name': source_canonical_name,
+            'new_concept_id': new_concept_id,
+            'canonical_name': new_canonical,
+            'status': str(source['status']),
+            'split_by': splitter,
+            'split_at': recorded['split_at'],
+            'moved_aliases': moved_aliases,
+            'moved_mentions': moved_mentions,
+            # Deliberately left where they were; see this method's docstring.
+            'relations_on_source': len(relation_ids),
+            'relations_naming_split_aliases': len(naming_relation_ids),
+        }
+
+    @staticmethod
+    def _mention_keys(mentions: Sequence[Mapping[str, Any]]) -> list[tuple[str, int | None, int | None]]:
+        """Read the caller's mention list as ``concept_mentions``' natural key.
+
+        Offsets are supplied together or not at all, exactly as in
+        :meth:`add_concept_mention`; omitting both names an unanchored mention.
+        """
+        keys: list[tuple[str, int | None, int | None]] = []
+        for spec in mentions:
+            passage_id = str(spec.get('passage_id') or '').strip()
+            if not passage_id:
+                raise IntegrityError('a mention named for a split must name a passage')
+            start = spec.get('start_codepoint')
+            end = spec.get('end_codepoint')
+            if (start is None) != (end is None):
+                raise IntegrityError('mention offsets must be supplied together')
+            key = (
+                passage_id,
+                None if start is None else int(start),
+                None if end is None else int(end),
+            )
+            if key in keys:
+                raise IntegrityError('the same mention was named twice for one split')
+            keys.append(key)
+        return keys
+
+    @staticmethod
+    def _verify_moved_mentions(
+        connection: sqlite3.Connection,
+        *,
+        concept_id: str,
+        before: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Re-read every moved mention and re-slice it from its own passage.
+
+        A split must be a pure change of ``concept_id``.  This reads each row
+        back after the write and compares its passage, offsets, evidence and
+        source against the values it had before, then re-derives the evidence
+        from the immutable passage the same way :meth:`_add_concept_mention`
+        does.  Any disagreement raises, which rolls the whole split back.
+        """
+        for original in before:
+            row = connection.execute(
+                """SELECT m.concept_id, m.passage_id, m.start_codepoint, m.end_codepoint,
+                          m.evidence, m.source, p.content
+                     FROM concept_mentions AS m
+                     JOIN passages AS p ON p.passage_id = m.passage_id
+                    WHERE m.mention_id = ?""",
+                (original['mention_id'],),
+            ).fetchone()
+            if row is None or row['concept_id'] != concept_id:
+                raise IntegrityError('a mention named for the split did not move')
+            if tuple(
+                row[column] for column in ('passage_id', 'start_codepoint', 'end_codepoint', 'evidence', 'source')
+            ) != tuple(
+                original[column] for column in ('passage_id', 'start_codepoint', 'end_codepoint', 'evidence', 'source')
+            ):
+                raise IntegrityError('a split may change nothing about a mention but its concept')
+            start, end = row['start_codepoint'], row['end_codepoint']
+            if start is None:
+                continue
+            content = str(row['content'])
+            if start < 0 or end is None or end <= start or end > len(content):
+                raise IntegrityError('a moved mention must identify a non-empty source substring')
+            if row['evidence'] != content[start:end]:
+                raise IntegrityError("a moved mention's evidence must equal the source substring")
+
+    @staticmethod
+    def _ensure_alias(
+        connection: sqlite3.Connection,
+        *,
+        concept_id: str,
+        alias: str,
+        normalized_alias: str,
+    ) -> int:
+        """Give ``concept_id`` this alias unless the spelling is already taken.
+
+        Returns 1 when a row was written.  A spelling owned by a third concept
+        is an invariant violation the caller must not silently paper over: the
+        whole merge is refused instead.
+        """
+        owner = connection.execute(
+            'SELECT concept_id FROM concept_aliases WHERE normalized_alias = ?', (normalized_alias,)
+        ).fetchone()
+        if owner is not None:
+            if owner['concept_id'] != concept_id:
+                raise IntegrityError(f'alias already belongs to another concept: {alias}')
+            return 0
+        connection.execute(
+            """INSERT INTO concept_aliases(alias_id, concept_id, alias, normalized_alias, source)
+               VALUES (?, ?, ?, ?, 'ADMIN')""",
+            (str(uuid4()), concept_id, alias, normalized_alias),
+        )
+        return 1
+
+    @staticmethod
+    def _fold_relation_assertions(
+        connection: sqlite3.Connection, *, from_relation_id: str, into_relation_id: str
+    ) -> None:
+        """Move version-scoped assertions onto a surviving duplicate relation.
+
+        ``concept_relation_assertions`` is unique per (relation, version,
+        source) and its evidence is unique per (assertion, passage, span), so
+        both levels deduplicate rather than fail.  Evidence rows keep their
+        exact passage and offsets; only their parent identifier changes.
+        """
+        for assertion in connection.execute(
+            'SELECT assertion_id, version_id, source FROM concept_relation_assertions WHERE relation_id = ?',
+            (from_relation_id,),
+        ).fetchall():
+            survivor = connection.execute(
+                """SELECT assertion_id FROM concept_relation_assertions
+                    WHERE relation_id = ? AND version_id = ? AND source = ?""",
+                (into_relation_id, assertion['version_id'], assertion['source']),
+            ).fetchone()
+            if survivor is None:
+                connection.execute(
+                    'UPDATE concept_relation_assertions SET relation_id = ? WHERE assertion_id = ?',
+                    (into_relation_id, assertion['assertion_id']),
+                )
+                continue
+            connection.execute(
+                """DELETE FROM concept_relation_evidence
+                    WHERE assertion_id = ?
+                      AND EXISTS (
+                          SELECT 1 FROM concept_relation_evidence AS kept
+                           WHERE kept.assertion_id = ?
+                             AND kept.passage_id = concept_relation_evidence.passage_id
+                             AND kept.start_codepoint = concept_relation_evidence.start_codepoint
+                             AND kept.end_codepoint = concept_relation_evidence.end_codepoint
+                      )""",
+                (assertion['assertion_id'], survivor['assertion_id']),
+            )
+            connection.execute(
+                'UPDATE concept_relation_evidence SET assertion_id = ? WHERE assertion_id = ?',
+                (survivor['assertion_id'], assertion['assertion_id']),
+            )
+            connection.execute(
+                'DELETE FROM concept_relation_assertions WHERE assertion_id = ?',
+                (assertion['assertion_id'],),
+            )
 
     def add_concept_mention(
         self,
@@ -1193,36 +2523,531 @@ class SQLiteEpubStore:
         mention_id: str | None = None,
     ) -> str:
         """Link an existing concept to an existing source passage in FK-safe order."""
+        with self._write() as connection:
+            return self._add_concept_mention(
+                connection,
+                concept_id,
+                passage_id,
+                start_codepoint=start_codepoint,
+                end_codepoint=end_codepoint,
+                evidence=evidence,
+                source=source,
+                mention_id=mention_id,
+            )
+
+    def _add_concept_mention(
+        self,
+        connection: sqlite3.Connection,
+        concept_id: str,
+        passage_id: str,
+        *,
+        start_codepoint: int | None = None,
+        end_codepoint: int | None = None,
+        evidence: str | None = None,
+        source: str = 'MODEL',
+        mention_id: str | None = None,
+    ) -> str:
+        """Link a concept to a passage using an existing store transaction.
+
+        The evidence string is always *derived* from the immutable passage;
+        a caller may supply one only to have it checked.  :meth:`apply_overlay`
+        relies on that: a portable overlay ships no text at all, so the
+        receiving store reconstructs each mention from its own copy of the book.
+        """
         if source not in {'SEED', 'MODEL', 'ADMIN'}:
             raise IntegrityError(f'invalid mention source: {source}')
         if (start_codepoint is None) != (end_codepoint is None):
             raise IntegrityError('mention offsets must be supplied together')
-        with self._write() as connection:
-            if connection.execute('SELECT 1 FROM concepts WHERE concept_id = ?', (concept_id,)).fetchone() is None:
-                raise IntegrityError(f'unknown concept_id: {concept_id}')
-            passage = connection.execute('SELECT content FROM passages WHERE passage_id = ?', (passage_id,)).fetchone()
-            if passage is None:
-                raise IntegrityError(f'unknown passage_id: {passage_id}')
-            if start_codepoint is not None:
-                if (
-                    start_codepoint < 0
-                    or end_codepoint is None
-                    or end_codepoint <= start_codepoint
-                    or end_codepoint > len(passage['content'])
-                ):
-                    raise IntegrityError('mention offsets must identify a non-empty source substring')
-                expected = passage['content'][start_codepoint:end_codepoint]
-                if evidence is not None and evidence != expected:
-                    raise IntegrityError('mention evidence must equal the source substring')
-                evidence = expected
-            mention = mention_id or str(uuid4())
-            connection.execute(
-                """INSERT INTO concept_mentions(
-                     mention_id, concept_id, passage_id, start_codepoint, end_codepoint, evidence, source
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (mention, concept_id, passage_id, start_codepoint, end_codepoint, evidence, source),
-            )
+        if connection.execute('SELECT 1 FROM concepts WHERE concept_id = ?', (concept_id,)).fetchone() is None:
+            raise IntegrityError(f'unknown concept_id: {concept_id}')
+        passage = connection.execute('SELECT content FROM passages WHERE passage_id = ?', (passage_id,)).fetchone()
+        if passage is None:
+            raise IntegrityError(f'unknown passage_id: {passage_id}')
+        if start_codepoint is not None:
+            if (
+                start_codepoint < 0
+                or end_codepoint is None
+                or end_codepoint <= start_codepoint
+                or end_codepoint > len(passage['content'])
+            ):
+                raise IntegrityError('mention offsets must identify a non-empty source substring')
+            expected = passage['content'][start_codepoint:end_codepoint]
+            if evidence is not None and evidence != expected:
+                raise IntegrityError('mention evidence must equal the source substring')
+            evidence = expected
+        mention = mention_id or str(uuid4())
+        connection.execute(
+            """INSERT INTO concept_mentions(
+                 mention_id, concept_id, passage_id, start_codepoint, end_codepoint, evidence, source
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (mention, concept_id, passage_id, start_codepoint, end_codepoint, evidence, source),
+        )
         return mention
+
+    def export_concept_overlay(self, version_id: str) -> ConceptOverlay:
+        """Read one version's analysis as a portable, text-free artifact.
+
+        Concept labels, aliases and definitions are the analysis product and
+        do travel.  Everything that points *into* the book travels as a
+        location — ``(ordinal, content_sha256, start, end)`` — so a receiving
+        store can verify it against its own copy and derive the evidence
+        string itself.  No passage text, evidence string, EPUB blob or vector
+        is read here, let alone written to the artifact.
+
+        A mention without code-point offsets cannot be located in another copy
+        of the book and is therefore not exportable; the grounded ingest paths
+        always record offsets, so this omits nothing they produced.
+        """
+        connection = self._connection()
+        version = connection.execute(
+            """SELECT v.version_id, v.epub_sha256, v.parser_version, b.title AS book_title
+                 FROM book_versions AS v JOIN books AS b ON b.book_id = v.book_id
+                WHERE v.version_id = ?""",
+            (version_id,),
+        ).fetchone()
+        if version is None:
+            raise IntegrityError(f'unknown version_id: {version_id}')
+
+        passages = connection.execute(
+            'SELECT passage_id, ordinal, content_sha256 FROM passages WHERE version_id = ? ORDER BY ordinal',
+            (version_id,),
+        ).fetchall()
+        located = {str(row['passage_id']): (int(row['ordinal']), str(row['content_sha256'])) for row in passages}
+        fingerprint = passage_fingerprint((int(row['ordinal']), str(row['content_sha256'])) for row in passages)
+
+        aliases: dict[str, list[str]] = {}
+        for row in connection.execute(
+            """SELECT DISTINCT a.concept_id, a.alias
+                 FROM concept_aliases AS a
+                 JOIN concept_mentions AS m ON m.concept_id = a.concept_id
+                 JOIN passages AS p ON p.passage_id = m.passage_id
+                WHERE p.version_id = ?""",
+            (version_id,),
+        ):
+            aliases.setdefault(str(row['concept_id']), []).append(str(row['alias']))
+
+        concept_keys: dict[str, str] = {}
+        concepts: list[OverlayConcept] = []
+        for row in connection.execute(
+            """SELECT DISTINCT c.concept_id, c.canonical_name, c.normalized_name, c.definition, c.status
+                 FROM concepts AS c
+                 JOIN concept_mentions AS m ON m.concept_id = c.concept_id
+                 JOIN passages AS p ON p.passage_id = m.passage_id
+                WHERE p.version_id = ?""",
+            (version_id,),
+        ):
+            concept_id = str(row['concept_id'])
+            concept_keys[concept_id] = str(row['normalized_name'])
+            concepts.append(
+                OverlayConcept(
+                    key=str(row['normalized_name']),
+                    canonical_name=str(row['canonical_name']),
+                    aliases=tuple(aliases.get(concept_id, ())),
+                    definition=str(row['definition']),
+                    status=str(row['status']),
+                )
+            )
+
+        mentions = [
+            OverlayMention(
+                concept_key=concept_keys[str(row['concept_id'])],
+                ordinal=located[str(row['passage_id'])][0],
+                content_sha256=located[str(row['passage_id'])][1],
+                start_codepoint=int(row['start_codepoint']),
+                end_codepoint=int(row['end_codepoint']),
+            )
+            for row in connection.execute(
+                """SELECT m.concept_id, m.passage_id, m.start_codepoint, m.end_codepoint
+                     FROM concept_mentions AS m
+                     JOIN passages AS p ON p.passage_id = m.passage_id
+                    WHERE p.version_id = ? AND m.start_codepoint IS NOT NULL""",
+                (version_id,),
+            )
+        ]
+
+        evidence: dict[str, list[OverlaySpan]] = {}
+        for row in connection.execute(
+            """SELECT e.assertion_id, e.passage_id, e.start_codepoint, e.end_codepoint
+                 FROM concept_relation_evidence AS e
+                 JOIN concept_relation_assertions AS a ON a.assertion_id = e.assertion_id
+                WHERE a.version_id = ?""",
+            (version_id,),
+        ):
+            ordinal, digest = located[str(row['passage_id'])]
+            evidence.setdefault(str(row['assertion_id']), []).append(
+                OverlaySpan(ordinal, digest, int(row['start_codepoint']), int(row['end_codepoint']))
+            )
+
+        relations: list[OverlayRelation] = []
+        for row in connection.execute(
+            """SELECT a.assertion_id, a.status, r.subject_concept_id, r.predicate, r.object_concept_id
+                 FROM concept_relation_assertions AS a
+                 JOIN concept_relations AS r ON r.relation_id = a.relation_id
+                WHERE a.version_id = ?""",
+            (version_id,),
+        ):
+            subject = concept_keys.get(str(row['subject_concept_id']))
+            object_ = concept_keys.get(str(row['object_concept_id']))
+            spans = evidence.get(str(row['assertion_id']), [])
+            # An endpoint with no mention in this version cannot be named by a
+            # key the artifact declares, and an assertion with no surviving
+            # evidence is not verifiable against another copy of the book.
+            if subject is None or object_ is None or subject == object_ or not spans:
+                continue
+            relations.append(
+                OverlayRelation(
+                    subject_key=subject,
+                    predicate=str(row['predicate']),
+                    object_key=object_,
+                    status=str(row['status']),
+                    evidence=tuple(spans),
+                )
+            )
+
+        return build_overlay(
+            epub_sha256=str(version['epub_sha256']),
+            parser_version=str(version['parser_version']),
+            book_title=str(version['book_title']),
+            fingerprint=fingerprint,
+            concepts=concepts,
+            mentions=mentions,
+            relations=relations,
+        )
+
+    def apply_overlay(self, overlay: ConceptOverlay, *, version_id: str | None = None) -> dict[str, Any]:
+        """Attach a portable analysis to this store's own copy of the book.
+
+        Everything below happens in one transaction: a half-applied graph is
+        worse than none, so a single failed gate leaves the store untouched.
+        The gates run in order, and nothing can be stored that was not already
+        in the importer's own passages:
+
+        1. ``epub_sha256`` must identify the target version.
+        2. ``parser_version`` must equal the format that produced the target
+           version's passages — a parser change can shift every offset.
+        3. The artifact's fingerprint, recomputed over this store's complete
+           ordered passage set, must match.
+        4. Every mention and evidence location must name a passage that exists
+           at that ordinal *and* whose ``content_sha256`` still matches.
+        5. Offsets must satisfy ``0 <= start < end <= len(content)``; the
+           evidence string is then derived from this store's own passage.
+
+        Conflict policy — an overlay is other people's analysis arriving in a
+        store whose administrator may already have curated the same graph, so
+        it is strictly additive and never overrides a local decision:
+
+        * A concept's status is adopted only while the local one is still
+          ``PROVISIONAL``, the sole undecided state.  A local ``APPROVED`` is
+          never downgraded and a local ``REJECTED`` is never resurrected.
+        * A local canonical spelling and a non-empty local definition win; the
+          overlay's spelling survives as an alias and its definition fills an
+          empty one.  Aliases are unioned, never removed.
+        * Rows are written with source ``MODEL``: an overlay is published
+          model output, and must never masquerade as this operator's own
+          ``ADMIN`` decision.  An existing mention for the same concept,
+          passage and span is left exactly as it is, so an ``ADMIN`` mention
+          is never overwritten by ``PROVISIONAL`` model output.
+        * A relation assertion is scoped to (relation, version, source), so an
+          ``ADMIN`` assertion is a different row and is untouched; an existing
+          ``MODEL`` assertion keeps its reviewed status and only gains
+          evidence spans it did not already hold.
+
+        Applying the same artifact twice therefore changes nothing the second
+        time.
+        """
+        if overlay.overlay_format_version != OVERLAY_FORMAT_VERSION:
+            raise OverlayRejected(
+                'overlay_format_version_unsupported',
+                f'this server applies overlay format version {OVERLAY_FORMAT_VERSION}',
+            )
+        applied = {
+            'concepts_created': 0,
+            'concepts_updated': 0,
+            'mentions_created': 0,
+            'relations_created': 0,
+            'relation_evidence_created': 0,
+        }
+        skipped = {
+            'concepts_unchanged': 0,
+            'mentions_existing': 0,
+            'relations_existing': 0,
+        }
+        reasons: dict[str, int] = {}
+
+        def note(reason: str) -> None:
+            reasons[reason] = reasons.get(reason, 0) + 1
+
+        with self._write() as connection:
+            version = self._overlay_target(connection, overlay, version_id)
+            resolved_version_id = str(version['version_id'])
+            if overlay.parser_version != str(version['parser_version']):
+                raise OverlayRejected(
+                    'parser_version_mismatch',
+                    'the overlay was produced by a different EPUB parser format version',
+                )
+            passages = {
+                int(row['ordinal']): row
+                for row in connection.execute(
+                    'SELECT passage_id, ordinal, content, content_sha256 FROM passages WHERE version_id = ?',
+                    (resolved_version_id,),
+                )
+            }
+            local = passage_fingerprint((ordinal, str(row['content_sha256'])) for ordinal, row in passages.items())
+            if local != overlay.fingerprint:
+                raise OverlayRejected(
+                    'passage_fingerprint_mismatch',
+                    "this store's passages are not the ones the overlay was built against",
+                )
+
+            concept_ids: dict[str, str] = {}
+            for concept in overlay.concepts:
+                existing = connection.execute(
+                    'SELECT concept_id, canonical_name, definition, status FROM concepts WHERE normalized_name = ?',
+                    (concept.key,),
+                ).fetchone()
+                if existing is None:
+                    # A key with no concept row can still be an alias of a
+                    # local concept, which is a genuine duplicate an
+                    # administrator has to merge rather than something an
+                    # import may quietly decide.
+                    concept_ids[concept.key] = self._overlay_concept(
+                        connection,
+                        concept.canonical_name,
+                        aliases=concept.aliases,
+                        definition=concept.definition,
+                        status=concept.status,
+                    )
+                    applied['concepts_created'] += 1
+                    continue
+                concept_id = str(existing['concept_id'])
+                before = (
+                    str(existing['canonical_name']),
+                    str(existing['definition']),
+                    str(existing['status']),
+                    self._alias_count(connection, concept_id),
+                )
+                status = concept.status if before[2] == 'PROVISIONAL' else before[2]
+                if status != concept.status:
+                    note('concept_status_locked')
+                definition = before[1] or concept.definition
+                if concept.definition and definition != concept.definition:
+                    note('concept_definition_locked')
+                concept_ids[concept.key] = self._overlay_concept(
+                    connection,
+                    before[0],
+                    aliases=(*concept.aliases, concept.canonical_name),
+                    definition=definition,
+                    status=status,
+                    concept_id=concept_id,
+                )
+                after = (before[0], definition, status, self._alias_count(connection, concept_id))
+                if after == before:
+                    skipped['concepts_unchanged'] += 1
+                else:
+                    applied['concepts_updated'] += 1
+
+            for mention in overlay.mentions:
+                passage = self._overlay_passage(passages, mention.span)
+                existing = connection.execute(
+                    """SELECT source FROM concept_mentions
+                        WHERE concept_id = ? AND passage_id = ? AND start_codepoint = ? AND end_codepoint = ?""",
+                    (
+                        concept_ids[mention.concept_key],
+                        passage['passage_id'],
+                        mention.start_codepoint,
+                        mention.end_codepoint,
+                    ),
+                ).fetchone()
+                if existing is not None:
+                    skipped['mentions_existing'] += 1
+                    note('mention_admin_owned' if str(existing['source']) == 'ADMIN' else 'mention_already_present')
+                    continue
+                self._add_concept_mention(
+                    connection,
+                    concept_ids[mention.concept_key],
+                    str(passage['passage_id']),
+                    start_codepoint=mention.start_codepoint,
+                    end_codepoint=mention.end_codepoint,
+                    source='MODEL',
+                )
+                applied['mentions_created'] += 1
+
+            assertions_before, evidence_before = self._relation_counts(connection, resolved_version_id)
+            for relation in overlay.relations:
+                if relation.predicate not in _RELATION_PREDICATES:
+                    raise OverlayRejected(
+                        'unsupported_predicate',
+                        'the overlay uses a relation predicate this server does not implement',
+                    )
+                subject_id = concept_ids[relation.subject_key]
+                object_id = concept_ids[relation.object_key]
+                if not self._has_mention_in_version(connection, resolved_version_id, (subject_id, object_id)):
+                    note('relation_endpoint_unmentioned')
+                    continue
+                existing = connection.execute(
+                    """SELECT a.status FROM concept_relation_assertions AS a
+                         JOIN concept_relations AS r ON r.relation_id = a.relation_id
+                        WHERE r.subject_concept_id = ? AND r.predicate = ? AND r.object_concept_id = ?
+                          AND a.version_id = ? AND a.source = 'MODEL'""",
+                    (subject_id, relation.predicate, object_id, resolved_version_id),
+                ).fetchone()
+                if existing is not None:
+                    skipped['relations_existing'] += 1
+                    if str(existing['status']) != relation.status:
+                        note('relation_status_locked')
+                self._add_concept_relation(
+                    connection,
+                    version_id=resolved_version_id,
+                    subject_concept_id=subject_id,
+                    predicate=relation.predicate,
+                    object_concept_id=object_id,
+                    evidence=[self._overlay_evidence(passages, span) for span in relation.evidence],
+                    status=relation.status,
+                    source='MODEL',
+                )
+            assertions_after, evidence_after = self._relation_counts(connection, resolved_version_id)
+            applied['relations_created'] = assertions_after - assertions_before
+            applied['relation_evidence_created'] = evidence_after - evidence_before
+
+        return {
+            'version_id': resolved_version_id,
+            'epub_sha256': overlay.epub_sha256,
+            'overlay_format_version': overlay.overlay_format_version,
+            'applied': sum(applied.values()),
+            'skipped': sum(skipped.values()),
+            'rejected': 0,
+            'applied_detail': applied,
+            'skipped_detail': skipped,
+            'skipped_reasons': reasons,
+            'rejection_reasons': {},
+        }
+
+    def _overlay_concept(
+        self,
+        connection: sqlite3.Connection,
+        canonical_name: str,
+        *,
+        aliases: Iterable[str],
+        definition: str,
+        status: str,
+        concept_id: str | None = None,
+    ) -> str:
+        """Write one overlay concept, reporting a spelling clash as its class.
+
+        Overlay concepts are written with alias source ``MODEL``: a published
+        analysis is model output and must never be recorded as this operator's
+        own ``ADMIN`` decision.
+        """
+        try:
+            return self._upsert_concept(
+                connection,
+                canonical_name,
+                aliases=aliases,
+                definition=definition,
+                status=status,
+                concept_id=concept_id,
+                alias_source='MODEL',
+            )
+        except IntegrityError as error:
+            raise OverlayRejected(
+                'alias_conflict',
+                'an overlay spelling already belongs to a different local concept',
+            ) from error
+
+    @staticmethod
+    def _overlay_target(connection: sqlite3.Connection, overlay: ConceptOverlay, version_id: str | None) -> sqlite3.Row:
+        """Resolve and verify the version an overlay claims to describe."""
+        if version_id is not None:
+            version = connection.execute(
+                'SELECT version_id, epub_sha256, parser_version FROM book_versions WHERE version_id = ?',
+                (version_id,),
+            ).fetchone()
+            if version is None:
+                raise IntegrityError(f'unknown version_id: {version_id}')
+            if str(version['epub_sha256']) != overlay.epub_sha256:
+                raise OverlayRejected(
+                    'epub_sha256_mismatch',
+                    'the overlay describes a different EPUB archive than the target version',
+                )
+            return version
+        version = connection.execute(
+            'SELECT version_id, epub_sha256, parser_version FROM book_versions WHERE epub_sha256 = ?',
+            (overlay.epub_sha256,),
+        ).fetchone()
+        if version is None:
+            raise OverlayRejected(
+                'epub_sha256_mismatch',
+                'no stored EPUB version has the archive hash this overlay describes',
+            )
+        return version
+
+    @staticmethod
+    def _overlay_passage(passages: Mapping[int, sqlite3.Row], span: OverlaySpan) -> sqlite3.Row:
+        """Resolve one artifact location against this store's own passages."""
+        passage = passages.get(span.ordinal)
+        if passage is None:
+            raise OverlayRejected('passage_missing', 'the overlay points at a passage ordinal this store does not have')
+        if str(passage['content_sha256']) != span.content_sha256:
+            raise OverlayRejected(
+                'passage_content_drift',
+                'a passage this overlay points at differs from the one it was built against',
+            )
+        if (
+            span.start_codepoint < 0
+            or span.end_codepoint <= span.start_codepoint
+            or span.end_codepoint > len(passage['content'])
+        ):
+            raise OverlayRejected(
+                'offsets_out_of_range',
+                'an overlay span falls outside the passage it points at',
+            )
+        return passage
+
+    @classmethod
+    def _overlay_evidence(cls, passages: Mapping[int, sqlite3.Row], span: OverlaySpan) -> dict[str, Any]:
+        """Derive one relation evidence row from the importer's own passage."""
+        passage = cls._overlay_passage(passages, span)
+        return {
+            'passage_id': str(passage['passage_id']),
+            'start_codepoint': span.start_codepoint,
+            'end_codepoint': span.end_codepoint,
+            'evidence': str(passage['content'])[span.start_codepoint : span.end_codepoint],
+        }
+
+    @staticmethod
+    def _alias_count(connection: sqlite3.Connection, concept_id: str) -> int:
+        return int(
+            connection.execute(
+                'SELECT COUNT(*) AS count FROM concept_aliases WHERE concept_id = ?', (concept_id,)
+            ).fetchone()['count']
+        )
+
+    @staticmethod
+    def _has_mention_in_version(connection: sqlite3.Connection, version_id: str, concept_ids: Sequence[str]) -> bool:
+        return all(
+            connection.execute(
+                """SELECT 1 FROM concept_mentions AS m
+                     JOIN passages AS p ON p.passage_id = m.passage_id
+                    WHERE m.concept_id = ? AND p.version_id = ?""",
+                (concept_id, version_id),
+            ).fetchone()
+            is not None
+            for concept_id in concept_ids
+        )
+
+    @staticmethod
+    def _relation_counts(connection: sqlite3.Connection, version_id: str) -> tuple[int, int]:
+        assertions = connection.execute(
+            'SELECT COUNT(*) AS count FROM concept_relation_assertions WHERE version_id = ?',
+            (version_id,),
+        ).fetchone()['count']
+        evidence = connection.execute(
+            """SELECT COUNT(*) AS count FROM concept_relation_evidence AS e
+                 JOIN concept_relation_assertions AS a ON a.assertion_id = e.assertion_id
+                WHERE a.version_id = ?""",
+            (version_id,),
+        ).fetchone()['count']
+        return int(assertions), int(evidence)
 
     def create_batch_job(
         self,
