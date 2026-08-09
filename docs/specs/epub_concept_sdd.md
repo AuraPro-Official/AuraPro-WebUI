@@ -9,6 +9,15 @@ Wiki. It records decisions confirmed with the product owner and takes precedence
 over earlier planning documents when they conflict. Read this document and the
 task tracker before starting or resuming work.
 
+> **Source-book redaction note.** The EPUB acceptance corpus is a copyrighted
+> book. No text, heading or concept name from it appears in this repository.
+> Where a concept, heading or query is named below, the name is an **invented
+> substitute** drawn from a fictional tidal-observation domain; the shape it
+> stands for — code-point length, containment, fan-out, mention count — is the
+> real one, and so are the measured numbers attached to it. Do not expect these
+> names to match anything in the acceptance store. The mapping from substitute
+> to real name is kept locally and is never committed.
+
 ## 1. Product scope
 
 The system imports EPUB books into a shared private-server library, builds a
@@ -314,7 +323,7 @@ second, relation layer before its full-version offline Batch is accepted.
    grounding pass. They hold **183 evidence spans, of which only 17 are
    ungrounded**, and failing whole over those 17 was discarding **78 concepts,
    78 mentions and 51 relations** — including every relation in two chapters
-   (`全域潮汐枢纽自己 七` and `八`) that consequently held none at all. The
+   (`全域潮汐枢纽自身 七` and `八`) that consequently held none at all. The
    classification also showed `EVIDENCE_ABSENT` to be a misnomer. **None of its
    six spans was invented text.** Three were verbatim book text filed against a
    neighbouring passage the same packet had shown the model — one named a
@@ -488,7 +497,7 @@ relationship affects retrieval provenance and ranking, never citation text.
   tokenizer's token. Segmentation therefore supplies a boundary predicate, not
   a pattern set: a CJK match is valid only where both its ends coincide with a
   query token boundary, so a term may span several adjacent tokens while a term
-  landing inside one (`义` within `意义`, the one-character alias `约` within
+  landing inside one (`律` within `规律`, the one-character alias `锚` within
   `锚站`) is rejected. Where two valid matches overlap, one strictly contained
   in another is suppressed and the longer survives; equal spans both survive,
   matching Channel A's containment rule. If the segmenter is unavailable, Tier 1
@@ -547,7 +556,7 @@ relationship affects retrieval provenance and ranking, never citation text.
 - Two properties of the _concept_ are deliberately excluded from that rule.
   **Mention count is not a signal.** How often a book discusses something is a
   fact about the book, not about what the reader asked for: `枢纽的权重` is matched
-  by its full five-code-point name and is a specific topic that a acceptance corpus
+  by its full five-code-point name and is a specific topic that the acceptance book
   naturally mentions often, so a frequency ceiling refuses exactly the reader who
   asked for it by name. The accepted consequence is that naming a high-degree
   concept in full expands to its subtree — that is the correct answer to having
