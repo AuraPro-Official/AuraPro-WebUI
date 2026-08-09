@@ -1047,12 +1047,50 @@ class SQLiteEpubStore:
         )
 
     def list_concept_terms(self) -> list[dict[str, Any]]:
-        """Return canonical names and aliases for the in-memory Tier-1 matcher."""
+        """Return the Tier-1 vocabulary together with how specific each concept is.
+
+        The first three columns are the matcher's own: a concept, its display
+        name, and one surface form to scan for.  The remaining three describe
+        the concept rather than the match, so that *resolution* can decide what
+        to expand out of without a second query per matched concept.  None of
+        them is source text:
+
+        * ``term_source`` — whether a model, a seed list or an administrator
+          supplied this surface form.  A one-character alias a model proposed
+          is the weakest kind of evidence in the whole vocabulary.
+        * ``has_part_fanout`` — how many distinct ``HAS_PART`` children the
+          concept has under exactly the predicate
+          :meth:`list_concept_relation_neighbors` walks, so the two can never
+          disagree about whether a concept has a semantic decomposition.
+        * ``mention_count`` — how much of the book the concept touches, by the
+          same correlated subquery :meth:`list_concepts` already reports to an
+          administrator.  Nothing in search gates on it today: it was tried as
+          a proxy for a generic term and withdrawn, because how often a book
+          discusses something is a fact about the book rather than about what
+          the reader asked for.  It is reported anyway — it is 0.5 ms of the
+          1.1 ms these three columns add, the administrator surface already
+          computes the identical number, and a later specificity signal will
+          want it rather than a column deleted and re-added.
+
+        Measured cost on the full acceptance book: 1.9 ms for the three-column
+        form, 3.0 ms for this one, for 1,293 rows.  That is paid once per
+        vocabulary change, not once per query, because search holds the
+        compiled matcher across requests (see ``concept_term_fingerprint``).
+        """
         return [
             dict(row)
             for row in self._connection()
             .execute(
-                """SELECT c.concept_id, c.canonical_name, a.alias AS term
+                """SELECT c.concept_id, c.canonical_name, a.alias AS term,
+                          a.source AS term_source,
+                          (SELECT COUNT(*) FROM concept_mentions AS m
+                            WHERE m.concept_id = c.concept_id) AS mention_count,
+                          (SELECT COUNT(DISTINCT r.object_concept_id)
+                             FROM concept_relations AS r
+                             JOIN concept_relation_assertions AS s
+                               ON s.relation_id = r.relation_id AND s.status != 'REJECTED'
+                            WHERE r.subject_concept_id = c.concept_id
+                              AND r.predicate = 'HAS_PART') AS has_part_fanout
                    FROM concepts AS c
                    JOIN concept_aliases AS a ON a.concept_id = c.concept_id
                    WHERE c.status != 'REJECTED'
@@ -1060,6 +1098,28 @@ class SQLiteEpubStore:
             )
             .fetchall()
         ]
+
+    def concept_term_fingerprint(self) -> tuple[Any, ...]:
+        """A cheap value that changes whenever the Tier-1 vocabulary changes.
+
+        Search holds its compiled matcher across requests, so it asks this
+        question on every one of them; the answer must therefore cost close to
+        nothing and must never miss a change.  Three aggregates over two small
+        tables satisfy both: the row counts move when a concept or an alias is
+        added or removed, and ``MAX(updated_at)`` moves when an existing
+        concept is renamed, merged, split or re-approved in place — every one
+        of those paths already touches ``concepts.updated_at``.
+        """
+        row = (
+            self._connection()
+            .execute(
+                """SELECT (SELECT COUNT(*) FROM concepts) AS concept_count,
+                          (SELECT COUNT(*) FROM concept_aliases) AS alias_count,
+                          (SELECT MAX(updated_at) FROM concepts) AS updated_at"""
+            )
+            .fetchone()
+        )
+        return (row["concept_count"], row["alias_count"], row["updated_at"])
 
     def add_concept_relation(
         self,
@@ -1229,6 +1289,77 @@ class SQLiteEpubStore:
             .fetchall()
         ]
 
+    def list_toc_child_concepts(self, concept_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """Return, per queried concept, the concepts living in its TOC children.
+
+        The book's own table of contents is structural provenance the parser
+        read out of the EPUB; no model proposed it and none can revise it.  It
+        is therefore usable as a *fallback* decomposition for a concept the
+        model never decomposed — the acceptance book's ``六个关口`` has no
+        relation of any predicate, while its TOC node
+        ``人一生所必经的六个关口`` has exactly the six sections that answer the
+        question.
+
+        Nothing here is stored.  A TOC edge has no prose evidence, and
+        :meth:`_add_concept_relation` will not accept a relation without an
+        evidence span validated as an exact slice of a real passage; the only
+        way to satisfy it would be to anchor structural edges on heading
+        passages, which is the very pathology this fallback exists to route
+        around.  So the join runs per query and the result is a ranking and
+        coverage input, never a row in ``concept_relations``.
+
+        Two rules keep the result bounded, both expressed in the ``bound`` CTE
+        and its second use:
+
+        * A concept *binds* to a TOC node only when **every** one of its
+          mentions lands in a passage under that one node.  On the acceptance
+          book 821 of 1,111 mentioned concepts qualify; ``独一无二的神`` and
+          ``造物主``, which are discussed throughout, do not — which is what
+          stops this channel from becoming another hub.
+        * A child concept is admitted only if it is itself fully bound inside
+          one of those child nodes.  Ungated, the acceptance query reaches 138
+          spans; gated, 16.
+
+        Only child nodes are walked, never siblings: measured over this book,
+        a node's sibling set holds a median of 10 bound concepts against a
+        median of 0 for its children, so siblings are an unbounded associative
+        bag rather than a decomposition.  ``REJECTED`` concepts are excluded
+        here for the same reason :meth:`list_concept_terms` excludes them; the
+        relation walk gets that filtering from its assertions, and a structural
+        edge has no assertion to filter on.
+        """
+        if not concept_ids:
+            return []
+        placeholders = ", ".join("?" for _ in concept_ids)
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                f"""WITH bound AS (
+                        SELECT m.concept_id AS concept_id,
+                               MAX(p.toc_node_id) AS toc_node_id
+                          FROM concept_mentions AS m
+                          JOIN passages AS p ON p.passage_id = m.passage_id
+                         GROUP BY m.concept_id
+                        HAVING COUNT(DISTINCT p.toc_node_id) = 1
+                           AND COUNT(*) = COUNT(p.toc_node_id)
+                    )
+                    SELECT seed.concept_id AS seed_concept_id,
+                           seed.toc_node_id AS seed_toc_node_id,
+                           child.concept_id AS concept_id
+                      FROM bound AS seed
+                      JOIN toc_nodes AS n ON n.parent_toc_node_id = seed.toc_node_id
+                      JOIN bound AS child ON child.toc_node_id = n.toc_node_id
+                      JOIN concepts AS c ON c.concept_id = child.concept_id
+                     WHERE seed.concept_id IN ({placeholders})
+                       AND child.concept_id != seed.concept_id
+                       AND c.status != 'REJECTED'
+                     ORDER BY seed.concept_id, child.concept_id""",
+                tuple(concept_ids),
+            )
+            .fetchall()
+        ]
+
     def list_concept_relation_assertions(
         self,
         *,
@@ -1355,11 +1486,95 @@ class SQLiteEpubStore:
         """
         return clause, (*concept_ids, *concept_ids)
 
+    def _attributed_mention_aggregate(self, aggregate: str, concept_ids: Sequence[str]) -> str:
+        """Aggregate ``aggregate`` over exactly the mentions a span is attributed with.
+
+        A surviving span carries every queried concept anchored *inside* it,
+        not only the concepts anchored on its exact offsets — that is what
+        :meth:`_attribute_span_concepts` reports and what the reader sees in
+        ``canonical_names``.  A ranking signal computed over the narrower
+        group-local mention set would disagree with the attribution beside it:
+        a span whose displayed concepts include a direct match could still sort
+        as if it had only been reached by relation expansion.  So the ordering
+        reads the same mention set the attribution does, using the containment
+        rule of :func:`_span_contains` expressed in SQL.
+        """
+        placeholders = ", ".join("?" for _ in concept_ids)
+        return f"""(
+                    SELECT {aggregate}
+                    FROM concept_mentions AS anchored
+                    WHERE anchored.passage_id = m.passage_id
+                      AND anchored.concept_id IN ({placeholders})
+                      AND CASE
+                            WHEN m.start_codepoint IS NULL
+                                THEN anchored.start_codepoint IS NULL
+                            ELSE anchored.start_codepoint IS NOT NULL
+                                 AND anchored.start_codepoint >= m.start_codepoint
+                                 AND anchored.end_codepoint <= m.end_codepoint
+                          END
+                )"""
+
+    def _occurrence_rank_columns(
+        self, concept_ids: Sequence[str], concept_costs: Mapping[str, float] | None
+    ) -> tuple[str, tuple[Any, ...]]:
+        """Build the derived ranking columns the paged enumeration orders by.
+
+        These are *derived retrieval signals*, not source: they change which
+        spans a reader sees first, never what a span cites.  Three cheap,
+        deterministic signals, applied strictly in this order:
+
+        1. ``rank_relation_cost`` — how directly the query reached the span.
+           The caller supplies a cost per concept (0 for a Tier-1 match, more
+           for a concept only reached by walking ``HAS_PART``), and a span
+           takes the cheapest cost among the concepts attributed to it.  A
+           directly matched concept's span therefore always precedes a span
+           reached only by expansion, which is the whole point: expanding
+           through a 20-child hub concept contributes thousands of spans that
+           are, individually, far weaker evidence than a direct match.
+        2. ``rank_concept_count`` — how many queried concepts the one span is
+           attributed to.  A span where two queried concepts co-occur is more
+           likely to answer the query than one carrying a single term.
+        3. span length — a longer verified span is a more substantive citation
+           than a bare two-character name.  An unanchored mention has no span
+           at all and renders its whole passage, so it sorts last.
+
+        Deliberately *not* used: any model.  Channel A works today with no
+        local model configured at all, and a ranking that needed the local
+        Cross-Encoder would either lose that property or have to fail closed
+        and leave the channel unordered.  These three signals already fix the
+        measured symptom, so the cross-encoder stays where it belongs — in the
+        fused channel, which is allowed to fail closed.
+
+        Book order remains the final tie-break, so the whole result set has one
+        stable total order.  Ranking only replaces the ``ORDER BY``; the
+        predicate shared with :meth:`count_concept_occurrences` is untouched,
+        so the count still agrees with the pages exactly.
+        """
+        costs = concept_costs or {}
+        branches = " ".join("WHEN ? THEN ?" for _ in concept_ids)
+        cost_column = self._attributed_mention_aggregate(
+            f"MIN(CASE anchored.concept_id {branches} ELSE 0.0 END)", concept_ids
+        )
+        count_column = self._attributed_mention_aggregate(
+            "COUNT(DISTINCT anchored.concept_id)", concept_ids
+        )
+        parameters: list[Any] = []
+        for concept_id in concept_ids:
+            # An unlisted concept is a direct match by definition: a caller that
+            # expanded nothing declares no costs, and its spans are all direct.
+            parameters.extend((concept_id, float(costs.get(concept_id, 0.0))))
+        parameters.extend(concept_ids)  # cost column's own IN list
+        parameters.extend(concept_ids)  # count column's own IN list
+        columns = f"{cost_column} AS rank_relation_cost, {count_column} AS rank_concept_count"
+        return columns, tuple(parameters)
+
     def count_concept_occurrences(self, concept_ids: Sequence[str]) -> int:
         """Count the distinct source spans the graph channel will enumerate.
 
         See :meth:`_occurrence_span_source` for why a span, and not a mention
-        row, is the unit that is counted and paged.
+        row, is the unit that is counted and paged.  Ranking never reaches this
+        method: ordering the pages cannot change how many spans exist, and the
+        count deliberately stays a function of the shared predicate alone.
         """
         if not concept_ids:
             return 0
@@ -1370,29 +1585,57 @@ class SQLiteEpubStore:
         return int(row["count"])
 
     def list_concept_occurrences(
-        self, concept_ids: Sequence[str], *, offset: int, limit: int
+        self,
+        concept_ids: Sequence[str],
+        *,
+        offset: int,
+        limit: int,
+        concept_costs: Mapping[str, float] | None = None,
     ) -> list[dict[str, Any]]:
-        """Page the distinct graph source spans in a stable source order.
+        """Page the distinct graph source spans, most relevant span first.
 
         Each returned row carries ``concept_ids``/``canonical_names`` for every
         queried concept anchored on the span — including the concepts of the
         spans this one absorbed — so collapsing a duplicate never drops an
         attribution.  See :meth:`_occurrence_span_source` for the unit of
         enumeration and for why the count agrees with these pages.
+
+        The enumeration is *ranked and then paginated*, not merely paginated.
+        Book order alone was deterministic but useless as a first page: a query
+        whose concepts occur 778 times showed the reader the 20 spans nearest
+        the front of the book, which for a book with front matter means the
+        table of contents.  ``concept_costs`` is how the caller declares what
+        it had to do to reach each concept — see :meth:`_occurrence_rank_columns`
+        for the three signals and their order.  Omitting it means every queried
+        concept was matched directly, which is the truthful statement for a
+        caller that expanded no relations, not a silent "unranked" mode.
+
+        Ranking is expressed entirely in ``ORDER BY`` over one stable total
+        order on the whole result set.  Pagination therefore still walks every
+        span exactly once and still ends at ``count_concept_occurrences`` — a
+        per-page rerank would have made page 2 mean nothing.
+
+        Each row also carries its two ranking signals (``rank_relation_cost``,
+        ``rank_concept_count``).  They are derived retrieval signals a caller
+        may explain an ordering with; they are never part of a citation.
         """
         if not concept_ids:
             return []
         if offset < 0 or limit < 1:
             raise IntegrityError("concept occurrence pagination values are invalid")
         clause, parameters = self._occurrence_span_source(concept_ids)
+        rank_columns, rank_parameters = self._occurrence_rank_columns(concept_ids, concept_costs)
         rows = self._connection().execute(
             f"""SELECT m.passage_id, m.start_codepoint, m.end_codepoint,
                        p.content, p.content_sha256, p.toc_node_id,
-                       b.title AS book_title
+                       b.title AS book_title,
+                       {rank_columns}
                 {clause}
-                ORDER BY p.spine_index, p.ordinal, m.start_codepoint, MIN(m.mention_id)
+                ORDER BY rank_relation_cost, rank_concept_count DESC,
+                         COALESCE(m.end_codepoint - m.start_codepoint, 0) DESC,
+                         p.spine_index, p.ordinal, m.start_codepoint, MIN(m.mention_id)
                 LIMIT ? OFFSET ?""",
-            (*parameters, limit, offset),
+            (*rank_parameters, *parameters, limit, offset),
         ).fetchall()
         spans = [self._search_row_with_toc(dict(row)) for row in rows]
         self._attribute_span_concepts(spans, concept_ids)
