@@ -13,7 +13,7 @@ import json
 import math
 from typing import Any, Iterator, Sequence
 
-from .sqlite_vec import SQLiteVecHealth, load_sqlite_vec
+from .sqlite_vec import SQLiteVecHealth, SQLiteVecUnavailable, load_sqlite_vec
 from .vector_index import DerivedVectorRecord, VectorIndexError
 
 

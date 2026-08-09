@@ -24,9 +24,10 @@ auth_dependencies.get_admin_user = lambda: None
 auth_dependencies.get_verified_user = lambda: None
 sys.modules.setdefault("open_webui.utils.auth", auth_dependencies)
 
+from open_webui.retrieval.epub.batch import BatchPayloadError, BatchServiceError  # noqa: E402
 from open_webui.retrieval.epub.store import SQLiteEpubStore  # noqa: E402
 from open_webui.routers.epub import get_epub_concept_service, router  # noqa: E402
-from open_webui.services.epub_concept import EpubConceptService  # noqa: E402
+from open_webui.services.epub_concept import EpubConceptService, EpubServiceError  # noqa: E402
 from open_webui.services.epub_runtime import initialize_epub_concept_service  # noqa: E402
 from open_webui.utils.auth import get_admin_user, get_verified_user  # noqa: E402
 
@@ -41,6 +42,35 @@ def _admin_user():
 
 def _ordinary_user_cannot_administer():
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="access prohibited")
+
+
+class FailingBatchJobService:
+    """A BatchJobService double whose every read path violates an invariant.
+
+    ``BatchServiceError`` belongs to the durable Batch layer; the router knows
+    only ``EpubServiceError``.  The application service is the single place
+    that translates one into the other, so a double that raises on every read
+    path is what proves the translation exists for each of them.
+    """
+
+    failure = "batch job 'missing' does not exist"
+
+    def list_job_summaries(self, *, version_id=None, offset=0, limit=50):
+        raise BatchServiceError(self.failure)
+
+    def get_job_summary(self, batch_job_id):
+        raise BatchServiceError(self.failure)
+
+    def review_sample_job(self, batch_job_id, *, status, reviewed_by):
+        raise BatchServiceError(self.failure)
+
+    def list_sample_reviews(self, *, version_id=None, job_kind=None):
+        raise BatchServiceError(self.failure)
+
+    def recover_all(self, providers):
+        # The recovery path also catches BatchPayloadError, the subclass raised
+        # when a provider result cannot become graph records.
+        raise BatchPayloadError(self.failure)
 
 
 class EpubAuthenticatedApiTest(unittest.TestCase):
@@ -348,6 +378,45 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(response.json()["ready"], 1)
         self.assertEqual(indexed, [unit_id])
         self.assertEqual(self.service._store.get_retrieval_unit(unit_id)["vector_state"], "READY")
+
+    def test_batch_lifecycle_failures_reach_the_administrator_as_actionable_errors(self) -> None:
+        """Every Batch read path must degrade to 400/404, never to an opaque 500.
+
+        ``EpubConceptService`` wraps five separate ``except BatchServiceError``
+        clauses around the durable Batch service.  Each one is independent, so
+        each is exercised here: a fix that restored the translation for only
+        some of them would otherwise still look green.
+        """
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        service = EpubConceptService(store=self.service._store, batch=FailingBatchJobService())
+        self.app.dependency_overrides[get_epub_concept_service] = lambda: service
+
+        service_calls = (
+            lambda: service.list_batch_jobs(version_id="version-1"),
+            lambda: service.get_batch_job("missing"),
+            lambda: service.review_sample_batch(
+                batch_job_id="missing", status="APPROVED", reviewed_by="administrator"
+            ),
+            lambda: service.list_sample_batch_reviews(version_id="version-1", job_kind=None),
+            lambda: service.recover_batches(),
+        )
+        for call in service_calls:
+            with self.assertRaises(EpubServiceError) as raised:
+                call()
+            self.assertIn("does not exist", str(raised.exception))
+
+        requests = [
+            ("get", "/api/v1/epub/admin/batches?version_id=version-1", None, 400),
+            ("get", "/api/v1/epub/admin/batches/missing", None, 404),
+            ("get", "/api/v1/epub/admin/sample-batch-reviews?version_id=version-1", None, 400),
+            ("put", "/api/v1/epub/admin/sample-batches/missing/review", {"status": "APPROVED"}, 400),
+            ("post", "/api/v1/epub/admin/batches/recover", None, 400),
+        ]
+        for method, url, payload, expected_status in requests:
+            kwargs = {"json": payload} if payload is not None else {}
+            response = getattr(self.client, method)(url, **kwargs)
+            self.assertEqual(response.status_code, expected_status, url)
+            self.assertEqual(response.json()["detail"], FailingBatchJobService.failure, url)
 
     def test_service_is_fail_closed_when_startup_did_not_configure_it(self) -> None:
         app = FastAPI()
