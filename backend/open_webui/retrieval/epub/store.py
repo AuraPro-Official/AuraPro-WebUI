@@ -1249,6 +1249,77 @@ class SQLiteEpubStore:
             .fetchall()
         ]
 
+    def list_toc_child_concepts(self, concept_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """Return, per queried concept, the concepts living in its TOC children.
+
+        The book's own table of contents is structural provenance the parser
+        read out of the EPUB; no model proposed it and none can revise it.  It
+        is therefore usable as a *fallback* decomposition for a concept the
+        model never decomposed — the acceptance book's ``六道闸门`` has no
+        relation of any predicate, while its TOC node
+        ``观测网所必经的六道闸门`` has exactly the six sections that answer the
+        question.
+
+        Nothing here is stored.  A TOC edge has no prose evidence, and
+        :meth:`_add_concept_relation` will not accept a relation without an
+        evidence span validated as an exact slice of a real passage; the only
+        way to satisfy it would be to anchor structural edges on heading
+        passages, which is the very pathology this fallback exists to route
+        around.  So the join runs per query and the result is a ranking and
+        coverage input, never a row in ``concept_relations``.
+
+        Two rules keep the result bounded, both expressed in the ``bound`` CTE
+        and its second use:
+
+        * A concept *binds* to a TOC node only when **every** one of its
+          mentions lands in a passage under that one node.  On the acceptance
+          book 821 of 1,111 mentioned concepts qualify; ``全域潮汐枢纽`` and
+          ``潮汐源``, which are discussed throughout, do not — which is what
+          stops this channel from becoming another hub.
+        * A child concept is admitted only if it is itself fully bound inside
+          one of those child nodes.  Ungated, the acceptance query reaches 138
+          spans; gated, 16.
+
+        Only child nodes are walked, never siblings: measured over this book,
+        a node's sibling set holds a median of 10 bound concepts against a
+        median of 0 for its children, so siblings are an unbounded associative
+        bag rather than a decomposition.  ``REJECTED`` concepts are excluded
+        here for the same reason :meth:`list_concept_terms` excludes them; the
+        relation walk gets that filtering from its assertions, and a structural
+        edge has no assertion to filter on.
+        """
+        if not concept_ids:
+            return []
+        placeholders = ", ".join("?" for _ in concept_ids)
+        return [
+            dict(row)
+            for row in self._connection()
+            .execute(
+                f"""WITH bound AS (
+                        SELECT m.concept_id AS concept_id,
+                               MAX(p.toc_node_id) AS toc_node_id
+                          FROM concept_mentions AS m
+                          JOIN passages AS p ON p.passage_id = m.passage_id
+                         GROUP BY m.concept_id
+                        HAVING COUNT(DISTINCT p.toc_node_id) = 1
+                           AND COUNT(*) = COUNT(p.toc_node_id)
+                    )
+                    SELECT seed.concept_id AS seed_concept_id,
+                           seed.toc_node_id AS seed_toc_node_id,
+                           child.concept_id AS concept_id
+                      FROM bound AS seed
+                      JOIN toc_nodes AS n ON n.parent_toc_node_id = seed.toc_node_id
+                      JOIN bound AS child ON child.toc_node_id = n.toc_node_id
+                      JOIN concepts AS c ON c.concept_id = child.concept_id
+                     WHERE seed.concept_id IN ({placeholders})
+                       AND child.concept_id != seed.concept_id
+                       AND c.status != 'REJECTED'
+                     ORDER BY seed.concept_id, child.concept_id""",
+                tuple(concept_ids),
+            )
+            .fetchall()
+        ]
+
     def list_concept_relation_assertions(
         self,
         *,

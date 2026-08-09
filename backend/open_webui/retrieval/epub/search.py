@@ -14,6 +14,7 @@ from collections import deque
 from dataclasses import dataclass
 from hashlib import sha256
 import math
+from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 from .inference import ConceptResolver, EmbeddingService, ModelAvailability, RerankerService
@@ -25,12 +26,32 @@ class SearchError(ValueError):
     """The caller supplied an invalid search request or source invariant failed."""
 
 
+# How a concept was reached when it was not matched directly.  The prefix is
+# load-bearing: ``relation:`` is a semantic claim a model made and an
+# administrator can revise, ``structure:`` is the book's own table of contents,
+# which no model authored.  A reader who sees the second must not be able to
+# mistake it for the first.
+_RELATION_HAS_PART = "relation:HAS_PART"
+_STRUCTURE_TOC_CHILD = "structure:TOC_CHILD"
+
+# When one span is attributed to several expansion-derived concepts at the same
+# hop count, this order decides which edge explains it.  The semantic graph
+# wins wherever it exists; TOC structure is the fallback, never a competitor.
+_LABEL_PRIORITY = (_RELATION_HAS_PART, _STRUCTURE_TOC_CHILD)
+
+_EMPTY_LABELS: Mapping[str, str] = MappingProxyType({})
+
 # A concept matched only by a short, very common, or model-invented surface
 # form still resolves and still contributes its own spans; it just does not get
 # to seed expansion.  See :meth:`EpubSearchService._expansion_seed_ids` for why
 # each of these is where it is.
 _MIN_SEED_TERM_LENGTH = 2
 _MAX_SEED_MENTION_COUNT = 40
+
+# A TOC node whose children hold more bound concepts than this contributes no
+# expansion at all.  Skipping is deliberate: truncating would leave
+# ``graph_total`` a number with no explanation of what was left out.
+_MAX_TOC_CHILD_CONCEPTS = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,11 +124,18 @@ class _RelationExpansion:
     span than one hop out of a concept with a single child.  Keeping the two
     apart means bounding a hub changes ranking without rewriting the provenance
     a reader is shown.
+
+    ``labels`` records *by what kind of edge* a concept was reached, for the
+    concepts that were not matched directly.  A semantic ``HAS_PART`` edge a
+    model proposed and an administrator can revise, and a structural TOC edge
+    the parser read out of the book, are both one hop, but they are not the
+    same claim, and a reader is shown which one they got.
     """
 
     concept_ids: tuple[str, ...]
     depths: Mapping[str, int]
     costs: Mapping[str, float]
+    labels: Mapping[str, str] = _EMPTY_LABELS
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +192,14 @@ class EpubSearchRepository(Protocol):
 
     def list_concept_relation_neighbors(
         self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+    ) -> list[Mapping[str, Any]]: ...
+
+    # Structural, deterministic decomposition read from the book's own table of
+    # contents, for concepts the model never decomposed.  Search calls it only
+    # when the repository actually has it, so a read model that cannot answer
+    # the question is served today's behaviour rather than an AttributeError.
+    def list_toc_child_concepts(
+        self, concept_ids: Sequence[str]
     ) -> list[Mapping[str, Any]]: ...
 
 
@@ -394,6 +430,7 @@ class EpubSearchService:
         # that names something specific gets to pull the graph behind it.
         seed_ids = self._expansion_seed_ids(matches)
         expansion = self._expand_relation_concepts(concept_ids, seed_ids)
+        expansion = self._expand_toc_child_concepts(expansion, matches, seed_ids, degraded)
         graph_concept_ids = expansion.concept_ids
 
         graph_total = self._source.count_concept_occurrences(graph_concept_ids) if graph_concept_ids else 0
@@ -534,6 +571,7 @@ class EpubSearchService:
         """
         depths = {concept_id: 0 for concept_id in concept_ids}
         costs: dict[str, float] = {concept_id: 0.0 for concept_id in concept_ids}
+        labels: dict[str, str] = {}
         frontier = list(concept_ids if seed_ids is None else seed_ids)
         for depth in range(1, max_depth + 1):
             if not frontier:
@@ -558,11 +596,108 @@ class EpubSearchService:
             for target, cost in step_costs.items():
                 if target not in depths:
                     depths[target] = depth
+                    labels[target] = _RELATION_HAS_PART
                     next_frontier.append(target)
                 if cost < costs.get(target, math.inf):
                     costs[target] = cost
             frontier = next_frontier
-        return _RelationExpansion(concept_ids=tuple(depths), depths=depths, costs=costs)
+        return _RelationExpansion(
+            concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels
+        )
+
+    def _expand_toc_child_concepts(
+        self,
+        expansion: _RelationExpansion,
+        matches: Sequence[_TermMatch],
+        seed_ids: Sequence[str],
+        degraded: list[ModelAvailability],
+    ) -> _RelationExpansion:
+        """Add the concepts a seed's TOC child sections hold, where the model added none.
+
+        The book states its own hierarchy.  ``观测网所必经的六道闸门`` has six
+        child sections in the parsed ``toc_nodes``, one per 关口, and the query
+        ``观测网六道闸门是什么`` used to return exactly one span — the heading —
+        because ``六道闸门`` is a one-mention island with no relation of any
+        predicate.  Structural provenance the parser read out of the EPUB is
+        not something a model has to be asked for, and it is not something a
+        model may overrule.
+
+        It is also not allowed to compete with the semantic graph.  Three gates,
+        in this order:
+
+        * The seed must be **expansion-eligible** by the same rule the relation
+          walk uses, so a concept the query only brushed cannot reach TOC
+          structure either.
+        * The seed must have **``HAS_PART`` out-degree 0**.  Where a model did
+          decompose a concept, that decomposition is authoritative and this
+          fallback stays out of the way entirely.  A repository that does not
+          report the degree cannot answer the question, so it gets no TOC
+          expansion rather than an assumed zero.
+        * The seed must be **bound to exactly one TOC node**, and only concepts
+          themselves fully bound inside that node's children are admitted.  The
+          repository enforces both; see
+          :meth:`SQLiteEpubStore.list_toc_child_concepts` for why an
+          all-mentions-in-one-node rule and not a majority.
+
+        Only child nodes, never siblings — measured on the acceptance book, a
+        node's siblings hold a median of 10 bound concepts against a median of
+        0 for its children, so siblings are association rather than
+        decomposition.
+
+        A child set larger than ``_MAX_TOC_CHILD_CONCEPTS`` is **skipped
+        whole**, and the skip is reported as a degraded component.  Truncating
+        it would be worse than not expanding: ``graph_total`` would come back a
+        smaller number with nothing anywhere saying what had been dropped.
+
+        The hop is priced exactly as a ``HAS_PART`` hop is —
+        ``parent_cost + 1 + log2(children)`` over the concepts the hop actually
+        reached — so these concepts drop straight into ``costs`` and are ordered
+        by the one existing ranking, with no second ordering to keep in step.
+
+        Nothing new reaches the store's occurrence queries but a longer tuple of
+        concept ids: this method never touches passages, spans, or offsets, so
+        the count and the pages still share their one predicate.
+        """
+        children_of = getattr(self._source, "list_toc_child_concepts", None)
+        if children_of is None or not seed_ids:
+            return expansion
+        fanouts = {hit.term.concept_id: hit.term.has_part_fanout for hit in matches}
+        undecomposed = [
+            concept_id for concept_id in seed_ids if fanouts.get(concept_id) == 0
+        ]
+        if not undecomposed:
+            return expansion
+        by_seed: dict[str, list[str]] = {}
+        for row in children_of(undecomposed):
+            seed = row.get("seed_concept_id")
+            child = row.get("concept_id")
+            if isinstance(seed, str) and seed and isinstance(child, str) and child:
+                by_seed.setdefault(seed, []).append(child)
+        depths = dict(expansion.depths)
+        costs = dict(expansion.costs)
+        labels = dict(expansion.labels)
+        for seed, children in by_seed.items():
+            reached = tuple(dict.fromkeys(children))
+            if len(reached) > _MAX_TOC_CHILD_CONCEPTS:
+                degraded.append(
+                    ModelAvailability.degraded(
+                        "toc-child-expansion",
+                        f"{len(reached)} concepts under one node exceeds the "
+                        f"{_MAX_TOC_CHILD_CONCEPTS} budget; skipped whole",
+                    )
+                )
+                continue
+            depth = depths.get(seed, 0) + 1
+            cost = costs.get(seed, 0.0) + 1.0 + math.log2(max(len(reached), 1))
+            for child in reached:
+                if child not in depths:
+                    depths[child] = depth
+                    labels[child] = _STRUCTURE_TOC_CHILD
+                if cost < costs.get(child, math.inf):
+                    costs[child] = cost
+        return _RelationExpansion(
+            concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels
+        )
 
     def _graph_page(
         self,
@@ -716,12 +851,18 @@ class EpubSearchService:
         matched = names or tuple(resolved_names)
         concept_ids = _row_strings(row, "concept_ids")
         # A span that a directly matched concept anchored is a direct hit even
-        # when it also absorbed a relation-derived concept, so the shallowest
-        # depth wins.  A span reached only through HAS_PART keeps its relation
-        # provenance.
+        # when it also absorbed an expansion-derived concept, so the shallowest
+        # depth wins.  A span reached only by expansion keeps the provenance of
+        # the edge that reached it, and the edge *kind* is part of that: a
+        # semantic ``HAS_PART`` the model proposed and a structural TOC edge the
+        # parser read out of the book are both one hop and are not the same
+        # claim.  Where both explain the same span at the same depth, the
+        # semantic edge is reported, because the model's decomposition is
+        # authoritative wherever it exists.
         depths = [expansion.depths.get(concept_id, 0) for concept_id in concept_ids]
         relation_depth = min(depths) if depths else 0
-        provenance = ("graph",) if not relation_depth else ("graph", f"relation:HAS_PART:{relation_depth}")
+        label = _best_label(expansion, concept_ids, relation_depth)
+        provenance = ("graph",) if not relation_depth else ("graph", f"{label}:{relation_depth}")
         return SearchHit(
             passage_id=passage["passage_id"],
             book_title=passage["book_title"],
@@ -1181,6 +1322,29 @@ def _optional_int(value: Any) -> int | None:
     repository answering ``True`` for a count has answered nothing.
     """
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _best_label(
+    expansion: _RelationExpansion, concept_ids: Sequence[str], depth: int
+) -> str:
+    """Which kind of edge explains a span reached at ``depth``.
+
+    Only the concepts that were actually reached at that depth get a say, so a
+    span carrying both a one-hop concept and a two-hop one is described by the
+    one-hop edge.  Among those, ``_LABEL_PRIORITY`` decides, and it is an
+    explicit order rather than whatever ``sorted`` would do to the strings:
+    a semantic relation the model asserted outranks a structural TOC edge, and
+    that must stay true if either label is ever renamed.
+    """
+    candidates = {
+        expansion.labels[concept_id]
+        for concept_id in concept_ids
+        if expansion.depths.get(concept_id) == depth and concept_id in expansion.labels
+    }
+    for label in _LABEL_PRIORITY:
+        if label in candidates:
+            return label
+    return _RELATION_HAS_PART
 
 
 def _row_strings(row: Mapping[str, Any], key: str) -> tuple[str, ...]:
