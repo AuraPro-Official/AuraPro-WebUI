@@ -257,6 +257,62 @@ class SQLiteEpubStoreTest(unittest.TestCase):
                 ],
             )
 
+    def test_relation_neighbors_read_the_end_of_the_edge_they_were_asked_for(self) -> None:
+        """A direction argument, because the predicates do not all read one way.
+
+        ``HAS_PART`` is containment and is walked downwards only: a part must
+        not bring back its whole and everything else that whole contains.  The
+        sequential and contrastive predicates are chains, and a chain is only
+        reachable at all if either link may name the other — which is what
+        ``incoming`` and ``both`` are for.
+
+        Rows are the stored subject/predicate/object whichever direction was
+        asked for.  Deciding which end is the *neighbour* needs to know which
+        concepts were queried, and the caller is the only party that does; a
+        repository that guessed would be wrong exactly when both ends were
+        queried.  Which is also why ``both`` returns such an edge once: it is
+        one edge, and counting it twice would double the fan-out that prices it.
+        """
+        self.store.add_passages('version-a', [self._passage()])
+        first = self.store.upsert_concept('第一闸门')
+        second = self.store.upsert_concept('第二闸门')
+        evidence = [{'passage_id': 'passage-a', 'start_codepoint': 0, 'end_codepoint': 2, 'evidence': '原文'}]
+        for concept_id, start in ((first, 0), (second, 4)):
+            self.store.add_concept_mention(concept_id, 'passage-a', start_codepoint=start, end_codepoint=start + 2)
+        relation_id = self.store.add_concept_relation('version-a', first, 'PRECEDES', second, evidence=evidence)
+
+        def neighbours(concept_id: str, direction: str) -> list[str]:
+            return [
+                row['relation_id']
+                for row in self.store.list_concept_relation_neighbors(
+                    [concept_id], predicates=['PRECEDES'], direction=direction
+                )
+            ]
+
+        self.assertEqual(neighbours(first, 'outgoing'), [relation_id])
+        self.assertEqual(neighbours(first, 'incoming'), [])
+        self.assertEqual(neighbours(second, 'outgoing'), [])
+        self.assertEqual(neighbours(second, 'incoming'), [relation_id])
+        self.assertEqual(neighbours(second, 'both'), [relation_id])
+        # Both ends queried at once is still one edge, not two rows.
+        self.assertEqual(
+            [
+                row['relation_id']
+                for row in self.store.list_concept_relation_neighbors(
+                    [first, second], predicates=['PRECEDES'], direction='both'
+                )
+            ],
+            [relation_id],
+        )
+        # ``outgoing`` remains the default, so a caller written before the
+        # argument existed still walks containment downwards and only that.
+        self.assertEqual(
+            [row['relation_id'] for row in self.store.list_concept_relation_neighbors([first], predicates=['PRECEDES'])],
+            [relation_id],
+        )
+        with self.assertRaisesRegex(IntegrityError, 'traversal direction'):
+            self.store.list_concept_relation_neighbors([first], predicates=['PRECEDES'], direction='sideways')
+
     def test_batch_item_cannot_cross_book_versions(self) -> None:
         self.store.add_passages('version-a', [self._passage()])
         job_id = self.store.create_batch_job('version-a', provider='provider', profile_name='concept-v1')
