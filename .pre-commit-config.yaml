@@ -1,6 +1,8 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.5
+    # Must match the ruff pin in pyproject.toml, .github/workflows/backend.yaml
+    # and scripts/epub_test_env.sh, or the hook reformats what CI rejects.
+    rev: v0.16.2
     hooks:
       - id: ruff
         args: [--fix, backend]

@@ -174,14 +174,16 @@
 					message,
 					step,
 					current,
-					total,
+					total
 				}
 			];
 			return;
 		}
 
 		logSequence += 1;
-		bilingualLogs = [...bilingualLogs, { id: logSequence, message, step, current, total }].slice(-60);
+		bilingualLogs = [...bilingualLogs, { id: logSequence, message, step, current, total }].slice(
+			-60
+		);
 	}
 
 	function handleBilingualSocketEvent(event: any) {
@@ -1171,24 +1173,37 @@
 						</div>
 
 						{#if isProcessing || bilingualLogs.length > 0}
-							<div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/70 p-3">
+							<div
+								class="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/70 p-3"
+							>
 								<div class="flex items-center justify-between mb-2">
-									<div class="text-xs font-medium text-gray-600 dark:text-gray-300">{$i18n?.t('Import Log') ?? '导入日志'}</div>
-									<div class="text-[11px] text-gray-400">{bilingualLogs.length} {$i18n?.t('entries') ?? '条记录'}</div>
+									<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+										{$i18n?.t('Import Log') ?? '导入日志'}
+									</div>
+									<div class="text-[11px] text-gray-400">
+										{bilingualLogs.length}
+										{$i18n?.t('entries') ?? '条记录'}
+									</div>
 								</div>
 								<div class="max-h-40 overflow-y-auto space-y-1 pr-1">
 									{#each bilingualLogs as log}
-										<div class="rounded bg-white/70 dark:bg-gray-900/60 px-2 py-1 text-xs text-gray-600 dark:text-gray-300">
+										<div
+											class="rounded bg-white/70 dark:bg-gray-900/60 px-2 py-1 text-xs text-gray-600 dark:text-gray-300"
+										>
 											<div class="flex items-start justify-between gap-2">
 												<span>• {log.message}</span>
 												{#if typeof log.current === 'number' && typeof log.total === 'number' && log.total > 0}
-													<span class="shrink-0 text-[11px] text-gray-400 dark:text-gray-500">{log.current}/{log.total}</span>
+													<span class="shrink-0 text-[11px] text-gray-400 dark:text-gray-500"
+														>{log.current}/{log.total}</span
+													>
 												{/if}
 											</div>
 										</div>
 									{/each}
 									{#if bilingualLogs.length === 0}
-										<div class="text-xs text-gray-400 italic">{$i18n?.t('Waiting for server progress…') ?? '等待服务端进度…'}</div>
+										<div class="text-xs text-gray-400 italic">
+											{$i18n?.t('Waiting for server progress…') ?? '等待服务端进度…'}
+										</div>
 									{/if}
 								</div>
 							</div>

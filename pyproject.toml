@@ -253,7 +253,13 @@ ignore-words-list = 'ans'
 [dependency-groups]
 dev = [
     "pytest-asyncio>=1.0.0",
-    "ruff>=0.15.5",
+    # Exact pin, not a range.  `ruff format` output is version-dependent, so a
+    # range makes the CI format check float to whatever ruff released most
+    # recently and its verdict depend on release timing rather than on the code.
+    # Bump this deliberately, together with .github/workflows/backend.yaml,
+    # .pre-commit-config.yaml and scripts/epub_test_env.sh (which reads it from
+    # here), and reformat the tree in the same change.
+    "ruff==0.16.2",
 ]
 
 [tool.black]
