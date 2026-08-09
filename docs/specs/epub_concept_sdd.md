@@ -287,29 +287,69 @@ second, relation layer before its full-version offline Batch is accepted.
    permits the same grounded relationship to accumulate support across books
    without turning it into an unproven universal fact. Assertions are
    `PROVISIONAL` until reviewed.
-6. **Output that cannot be grounded against the immutable source fails the whole
-   Batch item, with no partial graph mutation. Output that *is* grounded, but
-   which a decision on our side has made unusable, has that element skipped and
-   counted while the rest of the item ingests.**
+6. **The unit of a rejection is the claim, not the Batch item. An element whose
+   own citation is unusable — because it cannot be verified against the
+   immutable source, or because a decision on our side made it unusable — is
+   dropped from the payload and counted, and the rest of the item ingests. A
+   Batch item fails whole, with no partial graph mutation, only where the defect
+   cannot be localized to one claim at all. Nothing is ever written that was not
+   located byte-exactly in the immutable source; that invariant is untouched by
+   any of this and is what the rule is protecting.**
 
-   This replaces an earlier rule — "ambiguous or invalid output is a failed
-   Batch item" — that drew its line in the wrong place. It read every rejection
-   as a defect in the response, and three separate conditions then had to be
-   exempted from it one at a time. All three share a shape the original rule did
-   not anticipate: the model answered correctly and something *we* decided
-   afterwards is what made one element unusable. A rule that has to be exempted
-   three times is stating its principle wrongly, so the principle is restated
-   here rather than carrying a fourth exemption later.
+   This is the third statement of this rule and the reason for each revision is
+   worth keeping, because the pattern is the same each time. The original —
+   "ambiguous or invalid output is a failed Batch item" — read every rejection
+   as a defect in the response, and three conditions had to be exempted from it
+   one at a time; all three were cases where the model answered correctly and
+   something *we* decided afterwards made one element unusable. The second
+   statement (6a–6c below) named that cause and folded the three exemptions in,
+   and explicitly held that `EVIDENCE_ABSENT` and `EVIDENCE_AMBIGUOUS` stayed
+   hard failures because "a grounding failure means no verified citation can be
+   produced at all". That reasoning was sound and its conclusion was still
+   wrong, for a reason it could not have known: nobody had looked inside a
+   failed packet.
 
-   Hard failure keeps everything that is genuinely ungrounded: evidence absent
-   from the immutable source, evidence whose occurrence cannot be resolved to
-   one span, a relation endpoint naming a `local_id` the response never
-   declared, a response that is not valid JSON for its schema. None of these
-   becomes lenient, and none of them is recoverable by any decision of ours.
+   **The measurement that changed it.** All ten failed section-graph packets of
+   job `31efbf3b` were re-fetched free and classified by the production
+   grounding pass. They hold **183 evidence spans, of which only 17 are
+   ungrounded**, and failing whole over those 17 was discarding **78 concepts,
+   78 mentions and 51 relations** — including every relation in two chapters
+   (`全域潮汐枢纽自己 七` and `八`) that consequently held none at all. The
+   classification also showed `EVIDENCE_ABSENT` to be a misnomer. **None of its
+   six spans was invented text.** Three were verbatim book text filed against a
+   neighbouring passage the same packet had shown the model — one named a
+   3-code-point heading as the source of an 82-code-point quote; one differed by
+   a single punctuation mark (`，` for `。`); one by a single deleted character;
+   exactly one was a genuine paraphrase, and 62 of its 70 characters were still
+   exact. The seven `EVIDENCE_AMBIGUOUS` packets fail for one uniform mechanical
+   reason: the model returns a context window *centred on and containing* its
+   own quote instead of the strictly preceding text, so exact-equality anchoring
+   can never match at any occurrence. Both classes are one phenomenon — **the
+   model reproduces real text reliably and is unreliable about the bookkeeping
+   around it** — and the old rule was spending twenty-five passages of correct
+   work to punish a filing error.
 
-   The skip applies where our own state is the obstacle. Three conditions
-   qualify today; the wording is deliberately general, since the property that
-   matters is the *cause*, not the enumeration.
+   Two alternatives were declined in favour of the simplest remedy:
+   packet-scoped passage resolution, which would locate a span against any
+   passage the packet showed the model rather than only the one it named, and a
+   prompt fix plus a new Batch run. The first is a change to what grounding
+   *means* and would need its own measurement; the second costs a run and fixes
+   nothing already returned.
+
+   **What still fails the item whole**, because it names no single claim to
+   drop: a response that is not valid JSON for its schema, a concept whose
+   `local_id` is missing, blank or reused, a relation endpoint naming a
+   `local_id` the response never declared, and any grounding rejection outside
+   the two classes named in 6d. An undeclared endpoint in particular is not an
+   ingest-side removal and must never be confused with one — the model described
+   an edge to a concept it did not define, and there is no claim of ours to
+   localize that to.
+
+   The skip therefore has two independent justifications, and they are kept
+   apart because they are different arguments about different failures.
+
+   6a–6c: **our own state is the obstacle.** The model answered correctly and a
+   decision of ours made one grounded element unusable.
 
    a. **A relation whose two endpoints resolve to the same concept.** An
       administrator merged the endpoints after the response was produced: the
@@ -341,6 +381,38 @@ second, relation layer before its full-version offline Batch is accepted.
       exchange is real and is not hidden: a skipped concept's mentions link to
       neither concept, and that silence is the cost of not failing the item.
 
+   6d: **the citation itself does not verify.** This one is not an instance of
+   the idea above and must not be read as a fourth exemption from it. Nothing we
+   decided is the obstacle; the model's citation is simply wrong, and the claim
+   resting on it is therefore unsupported.
+
+   d. **An evidence span that cannot be located in the passage it names**, in
+      either of the two measured forms: the literal does not occur there
+      (`EVIDENCE_ABSENT`), or it occurs more than once and no supplied anchor
+      selects one occurrence (`EVIDENCE_AMBIGUOUS`). The span is dropped during
+      grounding and the claim it was supporting goes with it — which is exactly
+      what "no verified citation" has always required. What changes is only the
+      *unit*: the claim rather than the item. Nothing unverified enters the
+      graph, because a dropped span is removed before anything is written; the
+      earlier rule was not protecting the invariant, it was additionally
+      destroying the verified work standing beside the failure.
+
+      **Scope, stated narrowly on purpose.** This applies to section-graph
+      packets, which are what it was measured on, and to those two classes and
+      no others. A `CONCEPT_MENTIONS` response still fails whole on an
+      ungrounded span. So do the other grounding rejections — a missing,
+      mismatched or over-long anchor, invalid offsets, an unreadable or
+      unknown passage, and evidence quoted from a `toc_path` field we sent
+      (`EVIDENCE_FROM_TOC_PATH`, a strict subset of "absent" that
+      `zh-section-graph-v3` already took to zero by removing the field). Some of
+      those are as localized as the two above; a span quoting a repeated literal
+      with a *wrong* anchor is now dropped while the same literal with *no*
+      anchor still fails its packet. That line is admittedly not "is this one
+      claim" — it is "has this class been measured". Two previous statements of
+      this rule went wrong by generalizing past their evidence, so widening it
+      is a decision for a future measurement rather than for the argument that
+      the cases look alike.
+
    In every case the skip cascades only to what the contract can no longer
    express, and never further: a concept left with no mentions is dropped, a
    relation left with no evidence spans is dropped, and a relation whose
@@ -351,18 +423,35 @@ second, relation layer before its full-version offline Batch is accepted.
    nothing to report.
 
    Every skip is counted in the item's durable result, per condition, so the
-   count is visible rather than silent. Each count is the only record of what
-   the *write* decided, but the three differ in whether the element itself
-   survives in the stored response, and the difference is a consequence of when
-   it is detected. (b) is detected by the read-only grounding pass, which
-   removes the span before anything is stored, so the count is the only record
-   the span existed at all. (a) and (c) are detected at write time — a
-   `local_id` becomes a concept only through resolution, which is a write — so
-   the relation and the concept are both still in the stored response verbatim.
-   That is deliberate and load-bearing: the stored response is the payload as
-   written, it must serialize byte-identically on replay for ingest to stay
-   idempotent, and a write that edited it to reflect its own skips would destroy
-   that guarantee.
+   count is visible rather than silent — four counters, never summed into one.
+   (b) and (d) in particular stay apart although the grounding pass drops both
+   and the cascade treats them identically: a sub-floor span is *our* threshold
+   and that number moves when we move the floor, while an unverifiable citation
+   is the model's bookkeeping and moves only with a different prompt or model.
+   In one column a floor change and a model regression would be
+   indistinguishable, and either could mask the other.
+
+   Each count is the only record of what the write decided, but the conditions
+   differ in whether the element itself survives in the stored response, and the
+   difference is a consequence of when it is detected. (b) and (d) are detected
+   by the read-only grounding pass, which removes the span before anything is
+   stored, so the count is the only record the span existed at all, and
+   re-ingesting the same provider output re-derives an identical serialization.
+   (a) and (c) are detected at write time — a `local_id` becomes a concept only
+   through resolution, which is a write — so the relation and the concept are
+   both still in the stored response verbatim. That is deliberate and
+   load-bearing: the stored response is the payload as written, it must
+   serialize byte-identically on replay for ingest to stay idempotent, and a
+   write that edited it to reflect its own skips would destroy that guarantee.
+
+   Measurement and ingest share one code path, and this is a design constraint
+   rather than an implementation detail. The diagnostic that produced the 17-of-183
+   figure runs the production grounding pass with a probe that records a
+   rejection instead of raising it; making that same drop the ingest behaviour
+   means a re-ingest cannot recover more or less than the measurement predicted.
+   A second implementation, however carefully written, could disagree — and a
+   measurement that disagrees with the write is worse than no measurement,
+   because it is the one that gets quoted in a decision.
 7. The evidence floor named in 6b, and why it is a number rather than a
    judgement. Failing an item over a sub-floor span discards everything valid
    that arrived beside it: on the full-book section-graph run that cost 13 of 43
