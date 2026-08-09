@@ -25,13 +25,38 @@ class SearchError(ValueError):
     """The caller supplied an invalid search request or source invariant failed."""
 
 
+# A concept matched only by a short, very common, or model-invented surface
+# form still resolves and still contributes its own spans; it just does not get
+# to seed expansion.  See :meth:`EpubSearchService._expansion_seed_ids` for why
+# each of these is where it is.
+_MIN_SEED_TERM_LENGTH = 2
+_MAX_SEED_MENTION_COUNT = 40
+
+
 @dataclass(frozen=True, slots=True)
 class ConceptTerm:
-    """One canonical concept/alias term available to the Tier-1 matcher."""
+    """One canonical concept/alias term available to the Tier-1 matcher.
+
+    The first three fields are all the matcher itself ever reads.  The last
+    three are *specificity*: they say nothing about where a term matches, only
+    how much the concept behind it is worth expanding out of, and they exist
+    because a concept resolved through a short generic surface form should
+    still contribute its own spans while not being allowed to drag the graph
+    behind it into the result (see
+    :meth:`EpubSearchService._expansion_seed_ids`).
+
+    All three default to ``None``, meaning "this repository did not say".  A
+    repository that supplies none of them — a test double, a future PostgreSQL
+    read model that has not caught up — gets exactly today's behaviour instead
+    of an error, because every guard reads them only when present.
+    """
 
     concept_id: str
     canonical_name: str
     term: str
+    term_source: str | None = None
+    mention_count: int | None = None
+    has_part_fanout: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,12 +383,17 @@ class EpubSearchService:
         degraded: list[ModelAvailability] = []
         matcher = self._concept_matcher()
         segmenter = self._query_segmenter(degraded)
-        matched = matcher.match(query, boundaries=_boundaries(segmenter, query))
-        if not matched:
-            matched = self._resolve_tier_two(query, matcher, segmenter, degraded)
-        concept_ids = tuple(term.concept_id for term in matched)
+        matches = matcher.match_spans(query, boundaries=_boundaries(segmenter, query))
+        if not matches:
+            matches = self._resolve_tier_two(query, matcher, segmenter, degraded)
+        matched = tuple(hit.term for hit in matches)
+        concept_ids = tuple(dict.fromkeys(term.concept_id for term in matched))
         resolved_names = tuple(dict.fromkeys(term.canonical_name for term in matched))
-        expansion = self._expand_relation_concepts(concept_ids)
+        # Resolution and expansion are two different questions.  Every matched
+        # concept is resolved and contributes its own spans; only the subset
+        # that names something specific gets to pull the graph behind it.
+        seed_ids = self._expansion_seed_ids(matches)
+        expansion = self._expand_relation_concepts(concept_ids, seed_ids)
         graph_concept_ids = expansion.concept_ids
 
         graph_total = self._source.count_concept_occurrences(graph_concept_ids) if graph_concept_ids else 0
@@ -417,8 +447,64 @@ class EpubSearchService:
             degraded=tuple(degraded),
         )
 
+    def _expansion_seed_ids(self, matches: Sequence[_TermMatch]) -> tuple[str, ...]:
+        """Which resolved concepts are allowed to *seed* expansion.
+
+        A concept the query genuinely named should bring its neighbourhood with
+        it.  A concept the query only brushed — because one of its aliases is a
+        single very common character, or because it is a concept the whole book
+        is about — should not: expanding out of it returns spans about
+        something else entirely, which is how the query about one thing came
+        back with ``神对亚当的嘱咐``, a hub *child* reached by walking out of a
+        concept the reader never mentioned.
+
+        This is a **resolution** rule, not a ranking one, and it is the only
+        place the two could be confused.  Ranking still down-weights a
+        high-degree concept and never caps it: everything a seed reaches is
+        still counted and still pageable.  What changes here is which concepts
+        are seeds at all.  The concept itself stays resolved either way and
+        contributes every one of its own spans — that is what makes this safe.
+
+        Three conditions, all of which must hold:
+
+        1. **The winning matched term is at least two code points.**  Measured
+           on the query, not on the vocabulary: ``match_spans`` keeps the
+           longest surviving span per concept, so a concept whose full name the
+           query spelled out is judged on that name even if a one-character
+           alias also matched somewhere.
+        2. **The concept has at most 40 mentions.**  The acceptance book
+           separates cleanly at this line — 撒但 179, 独一无二的神 175, 约伯 160,
+           主耶稣 75, 权柄 43, 圣经 41 above it, and the long tail of things a
+           reader actually asks about below.  A concept the book discusses
+           everywhere is not evidence that *this* query is about its children.
+        3. **Not a one-character alias a model invented.**  Implied by (1)
+           today, and stated anyway: (1) is about how much of the query the
+           term covered, this is about how much the term is worth, and a future
+           relaxation of the first must not silently readmit the second.
+
+        Deliberately *not* a condition: what fraction of the query the term
+        covered.  That number moves with phrasing rather than with meaning, and
+        longest-match suppression already discards the short alias that sits
+        inside a longer one.
+
+        A repository that declares no mention count is not overruled by a guess:
+        the count condition is skipped, and the concept seeds expansion exactly
+        as it does today.
+        """
+        seeds: list[str] = []
+        for hit in matches:
+            term = hit.term
+            if (hit.end - hit.start) < _MIN_SEED_TERM_LENGTH:
+                continue
+            if term.term_source == "MODEL" and len(term.term) < _MIN_SEED_TERM_LENGTH:
+                continue
+            if term.mention_count is not None and term.mention_count > _MAX_SEED_MENTION_COUNT:
+                continue
+            seeds.append(term.concept_id)
+        return tuple(dict.fromkeys(seeds))
+
     def _expand_relation_concepts(
-        self, concept_ids: Sequence[str], *, max_depth: int = 2
+        self, concept_ids: Sequence[str], seed_ids: Sequence[str] | None = None, *, max_depth: int = 2
     ) -> _RelationExpansion:
         """Follow a bounded containment graph without turning relations into citations.
 
@@ -438,10 +524,17 @@ class EpubSearchService:
         deserve.  Because a hub can make a one-hop path dearer than a two-hop
         one, cost takes the cheapest path found while ``depths`` keeps the hop
         count, which is what provenance reports.
+
+        ``seed_ids`` is which of the matched concepts may *start* a walk, and
+        defaults to all of them.  It changes only the frontier: ``depths`` and
+        ``costs`` still open at zero for every directly matched concept, and
+        ``concept_ids`` still contains every one of them, so a concept that
+        cannot seed expansion is in no way less resolved than before and
+        ``resolved_concepts`` is untouched.
         """
         depths = {concept_id: 0 for concept_id in concept_ids}
         costs: dict[str, float] = {concept_id: 0.0 for concept_id in concept_ids}
-        frontier = list(concept_ids)
+        frontier = list(concept_ids if seed_ids is None else seed_ids)
         for depth in range(1, max_depth + 1):
             if not frontier:
                 break
@@ -488,7 +581,7 @@ class EpubSearchService:
             limit=limit,
             concept_costs=expansion.costs,
         )
-        return tuple(self._graph_hit(row, resolved_names, expansion.depths) for row in rows)
+        return tuple(self._graph_hit(row, resolved_names, expansion) for row in rows)
 
     def _concept_matcher(self) -> ConceptTermMatcher:
         """Return the Tier-1 matcher, rebuilding it only when the vocabulary moved.
@@ -543,13 +636,30 @@ class EpubSearchService:
         return self._segmenter
 
     def _concept_terms(self) -> list[ConceptTerm]:
+        """Read the vocabulary, keeping the specificity columns when offered.
+
+        The three identity columns are required; the three specificity columns
+        are read only if the repository supplied them, and a value of the wrong
+        type is treated as absent rather than as an error.  That is what lets
+        one search service run against both the SQLite store and a repository
+        that answers the older three-column shape.
+        """
         terms: list[ConceptTerm] = []
         for row in self._source.list_concept_terms():
             concept_id = row.get("concept_id")
             canonical = row.get("canonical_name")
             term = row.get("term")
             if all(isinstance(value, str) and value for value in (concept_id, canonical, term)):
-                terms.append(ConceptTerm(concept_id, canonical, term))
+                terms.append(
+                    ConceptTerm(
+                        concept_id,
+                        canonical,
+                        term,
+                        term_source=_optional_string(row.get("term_source")),
+                        mention_count=_optional_int(row.get("mention_count")),
+                        has_part_fanout=_optional_int(row.get("has_part_fanout")),
+                    )
+                )
         return terms
 
     def _resolve_tier_two(
@@ -558,7 +668,7 @@ class EpubSearchService:
         matcher: ConceptTermMatcher,
         segmenter: QuerySegmenter | None,
         degraded: list[ModelAvailability],
-    ) -> tuple[ConceptTerm, ...]:
+    ) -> tuple[_TermMatch, ...]:
         if self._concept_resolver is None:
             degraded.append(ModelAvailability.degraded("local-concept-resolver", "not configured"))
             return ()
@@ -582,7 +692,10 @@ class EpubSearchService:
         # query's: the offsets being validated are offsets into ``resolved``.
         # A bare canonical name is one span from 0 to its length, and those two
         # endpoints are always boundaries, so re-validation still accepts it.
-        accepted = matcher.match(resolved, boundaries=_boundaries(segmenter, resolved))
+        # Spans, not bare terms, because the expansion guard measures how much
+        # of the *answer* each winning term covered, exactly as it does for a
+        # Tier-1 match.
+        accepted = matcher.match_spans(resolved, boundaries=_boundaries(segmenter, resolved))
         if not accepted:
             degraded.append(
                 ModelAvailability.degraded("local-concept-resolver", "returned an unknown concept")
@@ -590,7 +703,7 @@ class EpubSearchService:
         return accepted
 
     def _graph_hit(
-        self, row: Mapping[str, Any], resolved_names: Sequence[str], relation_depths: Mapping[str, int]
+        self, row: Mapping[str, Any], resolved_names: Sequence[str], expansion: _RelationExpansion
     ) -> SearchHit:
         passage = self._passage_from_row(row)
         start = row.get("start_codepoint")
@@ -606,7 +719,7 @@ class EpubSearchService:
         # when it also absorbed a relation-derived concept, so the shallowest
         # depth wins.  A span reached only through HAS_PART keeps its relation
         # provenance.
-        depths = [relation_depths.get(concept_id, 0) for concept_id in concept_ids]
+        depths = [expansion.depths.get(concept_id, 0) for concept_id in concept_ids]
         relation_depth = min(depths) if depths else 0
         provenance = ("graph",) if not relation_depth else ("graph", f"relation:HAS_PART:{relation_depth}")
         return SearchHit(
@@ -1054,6 +1167,20 @@ def _validated_scores(scores: Sequence[float], *, expected: int) -> tuple[float,
             raise SearchError("local reranker returned a non-finite score")
         result.append(float(score))
     return tuple(result)
+
+
+def _optional_string(value: Any) -> str | None:
+    """A repository column that is text when present and absent otherwise."""
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_int(value: Any) -> int | None:
+    """A repository column that is a count when present and absent otherwise.
+
+    ``bool`` is excluded on purpose: it is an ``int`` in Python, and a
+    repository answering ``True`` for a count has answered nothing.
+    """
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _row_strings(row: Mapping[str, Any], key: str) -> tuple[str, ...]:
