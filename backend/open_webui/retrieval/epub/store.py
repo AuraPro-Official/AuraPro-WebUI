@@ -34,7 +34,7 @@ from .overlay import (
 )
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class IntegrityError(ValueError):
@@ -579,6 +579,46 @@ _MIGRATION_10: tuple[str, ...] = (
 )
 
 
+_MIGRATION_11: tuple[str, ...] = (
+    # An evidence span that could not be verified against the passage it named
+    # used to fail its whole Batch item.  It is now dropped from the payload
+    # during grounding and counted here, and the rest of the item ingests
+    # (SDD 4.2.2 point 6d).  Measured on the ten failed section-graph packets of
+    # job 31efbf3b: they hold 183 evidence spans of which only 17 are
+    # ungrounded, and failing whole over those 17 was discarding 78 concepts,
+    # 78 mentions and 51 relations -- including every relation in two chapters
+    # that consequently held none at all.
+    #
+    # Counted apart from ``skipped_short_evidence`` rather than added to it,
+    # even though the grounding pass drops both and the cascade treats them
+    # identically.  A sub-floor span is *our* threshold refusing a citation too
+    # small to be useful, and that number falls when we lower the floor.  An
+    # unverifiable citation is the model's bookkeeping, and that number falls
+    # only with a different prompt or a different model.  Summed into one
+    # column, a floor change and a model regression would be indistinguishable,
+    # and each could mask the other's movement.
+    #
+    # It cannot live in ``response_json`` for the reason ``skipped_short_evidence``
+    # cannot: that column stores the grounded payload, from which a dropped span
+    # is by definition absent, and it must serialize byte-identically on replay
+    # for ingest to stay idempotent.  A count of what the read-only pass removed
+    # is a fact about that pass, so it belongs on the item row.  Integer or
+    # nothing, enforced by the schema rather than by a validator, so the column
+    # cannot carry an evidence string even in a hand-edited or restored database.
+    #
+    # NULL means the rule did not run: a row predating this migration, an item
+    # that never succeeded, or a CONCEPT_MENTIONS item -- point 6d is scoped to
+    # section-graph packets, which are what it was measured on, so a 0 there
+    # would claim a measurement nobody made.
+    """
+    ALTER TABLE batch_items ADD COLUMN skipped_ungrounded_evidence INTEGER
+        CHECK (skipped_ungrounded_evidence IS NULL
+               OR (typeof(skipped_ungrounded_evidence) = 'integer'
+                   AND skipped_ungrounded_evidence >= 0))
+    """,
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
@@ -676,6 +716,7 @@ class SQLiteEpubStore:
                 (8, _MIGRATION_8),
                 (9, _MIGRATION_9),
                 (10, _MIGRATION_10),
+                (11, _MIGRATION_11),
             )
             try:
                 connection.execute("BEGIN")
