@@ -419,6 +419,10 @@ class BatchRepository(Protocol):
 
     def ingest_success(self, batch_job_id: str, custom_id: str, payload: Mapping[str, Any]) -> bool: ...
 
+    def dry_run_section_graph_packet(
+        self, batch_job_id: str, custom_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]: ...
+
     def record_item_failure(
         self,
         batch_job_id: str,
@@ -652,6 +656,78 @@ class _SectionGraphWrite(NamedTuple):
 
     skipped_self_relations: int
     skipped_ambiguous_concepts: int
+
+
+class _PacketProbe:
+    """Turns one read-only grounding pass into a measurement of a failed packet.
+
+    ``_ground_section_graph_payload`` normally stops at the first ungrounded
+    span, because that is the ingest contract: an item that cannot be grounded
+    fails, whole.  That is also why a failed item stores no ``response_json`` -
+    ``ingest_success`` is that column's only writer - and therefore why nobody
+    can say, from the durable store alone, how many spans in a failed packet
+    were ungrounded and how much valid work sat beside them.
+
+    A probe answers exactly that question without asking a second
+    implementation to answer it.  Passing one to the grounding pass makes the
+    pass record an ungrounded span and carry on, the way it already carries on
+    past a sub-floor one, instead of raising on the first.  Everything else -
+    the resolver, the anchors, the cascade - is the production code path,
+    untouched, so a measurement cannot disagree with what ingest would do.  With
+    no probe the pass behaves exactly as before, which is what every ingest
+    caller gets.
+
+    A probe never *decides* anything.  It is deliberately write-free and
+    content-free: reason slugs already whitelisted by
+    :data:`_GROUNDING_FAILURE_REASONS`, and counts.  No evidence string, no
+    passage, no local_id and no model output is admissible here, for the same
+    reason ``_grounding_diagnostics`` refuses them.
+
+    Mention failures and relation-evidence failures are counted apart because
+    they cost different things.  A failed mention can take its concept, and then
+    every relation that named it; a failed relation-evidence span can at worst
+    take its own relation.
+    """
+
+    def __init__(self) -> None:
+        self.mention_failures: dict[str, int] = {}
+        self.relation_evidence_failures: dict[str, int] = {}
+        # A relation the cascade removed, by cause.  These two are mutually
+        # exclusive and are counted where the pass makes the decision, because
+        # neither is recoverable from the grounded payload afterwards: the
+        # relation is simply not in it.
+        self.relations_dropped_endpoint = 0
+        self.relations_dropped_without_evidence = 0
+
+    def record_span_failure(self, kind: str, error: BatchPayloadError) -> None:
+        """Record one ungrounded span by its reason slug, and nothing else.
+
+        The slug is re-validated rather than trusted: a rejection raised without
+        diagnostics, or carrying an unknown reason, is counted as
+        ``UNDIAGNOSED`` instead of widening what a probe can hold.
+        """
+        diagnostics = error.diagnostics or {}
+        reason = diagnostics.get("reason")
+        if reason not in _GROUNDING_FAILURE_REASONS:
+            reason = _UNDIAGNOSED_FAILURE_REASON
+        bucket = (
+            self.mention_failures if kind == "MENTION" else self.relation_evidence_failures
+        )
+        bucket[str(reason)] = bucket.get(str(reason), 0) + 1
+
+    @property
+    def failed_spans(self) -> int:
+        return sum(self.mention_failures.values()) + sum(
+            self.relation_evidence_failures.values()
+        )
+
+    def failures_by_reason(self) -> dict[str, int]:
+        """Both span kinds folded into one slug histogram, for an aggregate."""
+        totals: dict[str, int] = {}
+        for bucket in (self.mention_failures, self.relation_evidence_failures):
+            for reason, count in bucket.items():
+                totals[reason] = totals.get(reason, 0) + count
+        return totals
 
 
 def _grounding_diagnostics(reason: str, **fields: Any) -> dict[str, Any]:
@@ -2171,6 +2247,7 @@ class SQLiteBatchRepository:
         payload: Mapping[str, Any],
         toc_titles: frozenset[str] = frozenset(),
         evidence_floor: int = 0,
+        probe: _PacketProbe | None = None,
     ) -> _GroundedPayload:
         """Validate and ground a whole packet without writing anything.
 
@@ -2215,6 +2292,18 @@ class SQLiteBatchRepository:
         every rejection before the first insert makes atomicity structural: an
         unresolvable relation endpoint discovered after nine concepts were
         written can never depend on the rollback to undo them.
+
+        ``probe`` is how a diagnostic measures a packet that ingest rejects, and
+        it is ``None`` for every ingest caller, which is every caller in
+        production.  Supplying one changes nothing about *grounding* - the
+        resolver, the anchors, the floor and the cascade are the same code
+        deciding the same way - it changes only what happens to a rejection:
+        instead of leaving this function, an ungrounded span is recorded by slug
+        and dropped, so the walk reaches the spans behind it and the caller
+        learns how much of the packet is grounded rather than only that some of
+        it is not.  See :class:`_PacketProbe`.  Nothing is written either way;
+        this pass could not write if it wanted to, which is what makes measuring
+        a failed packet safe to do before any rule about it has been decided.
         """
         if set(payload) != {"concepts", "relations"}:
             raise BatchPayloadError(
@@ -2274,18 +2363,26 @@ class SQLiteBatchRepository:
                 )
             grounded_mentions: list[dict[str, Any]] = []
             for mention_index, mention in enumerate(mentions):
-                grounded_mention = self._ground_section_graph_span(
-                    connection,
-                    version_id=version_id,
-                    span=mention,
-                    position={
-                        **position,
-                        "mention_index": mention_index,
-                        "mention_count": len(mentions),
-                    },
-                    toc_titles=toc_titles,
-                    evidence_floor=evidence_floor,
-                )
+                try:
+                    grounded_mention = self._ground_section_graph_span(
+                        connection,
+                        version_id=version_id,
+                        span=mention,
+                        position={
+                            **position,
+                            "mention_index": mention_index,
+                            "mention_count": len(mentions),
+                        },
+                        toc_titles=toc_titles,
+                        evidence_floor=evidence_floor,
+                    )
+                except BatchPayloadError as exc:
+                    # Ingest, and therefore every caller that is not measuring,
+                    # re-raises here and the packet fails whole.
+                    if probe is None:
+                        raise
+                    probe.record_span_failure("MENTION", exc)
+                    continue
                 if grounded_mention is None:
                     skipped_short_evidence += 1
                     continue
@@ -2339,18 +2436,24 @@ class SQLiteBatchRepository:
                 )
             grounded_evidence: list[dict[str, Any]] = []
             for evidence_index, span in enumerate(evidence):
-                grounded_span = self._ground_section_graph_span(
-                    connection,
-                    version_id=version_id,
-                    span=span,
-                    position={
-                        **position,
-                        "evidence_index": evidence_index,
-                        "evidence_count": len(evidence),
-                    },
-                    toc_titles=toc_titles,
-                    evidence_floor=evidence_floor,
-                )
+                try:
+                    grounded_span = self._ground_section_graph_span(
+                        connection,
+                        version_id=version_id,
+                        span=span,
+                        position={
+                            **position,
+                            "evidence_index": evidence_index,
+                            "evidence_count": len(evidence),
+                        },
+                        toc_titles=toc_titles,
+                        evidence_floor=evidence_floor,
+                    )
+                except BatchPayloadError as exc:
+                    if probe is None:
+                        raise
+                    probe.record_span_failure("RELATION_EVIDENCE", exc)
+                    continue
                 if grounded_span is None:
                     skipped_short_evidence += 1
                     continue
@@ -2359,14 +2462,125 @@ class SQLiteBatchRepository:
             # floor removed is still checked for ungrounded evidence, so
             # leniency stays confined to the floor.
             if subject in dropped_local_ids or object_ in dropped_local_ids:
+                if probe is not None:
+                    probe.relations_dropped_endpoint += 1
                 continue
             if not grounded_evidence:
+                if probe is not None:
+                    probe.relations_dropped_without_evidence += 1
                 continue
             grounded_relations.append({**relation, "evidence": grounded_evidence})
         return _GroundedPayload(
             {"concepts": grounded_concepts, "relations": grounded_relations},
             skipped_short_evidence,
         )
+
+    def dry_run_section_graph_packet(
+        self, batch_job_id: str, custom_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Measure what one section-graph packet contains.  Writes nothing.
+
+        This is the read-only half of :meth:`ingest_success`, and deliberately
+        only that half.  It resolves the same job, reads back the same stored
+        request, takes the floor from the same recorded prompt profile, and runs
+        the same ``_ground_section_graph_payload`` over the same read
+        connection - then stops, before the line where ingest would have
+        written.  There is no ``_write()`` here and no UPDATE: the item's status,
+        its ``response_json``, its diagnostics and the graph are all exactly as
+        they were.  That is the point of the method rather than an incidental
+        property of it.  A rule that would skip an ungrounded span and keep the
+        rest of a packet has not been decided; this exists so the decision can
+        be made against a measurement instead of an extrapolation, and it must
+        be safe to run while the rule is still open.
+
+        Why it takes ``payload`` rather than reading one: a FAILED item stores
+        no response at all, because ``ingest_success`` is the only writer of
+        that column.  The packet has to come back from the provider's durable
+        output, which is free to re-fetch.  See
+        :meth:`BatchJobService.dry_run_failed_packets`.
+
+        The returned record is counts and whitelisted reason slugs only - the
+        same discipline ``_grounding_diagnostics`` enforces on what is
+        persisted.  It never carries evidence, passage text, a concept name, a
+        ``local_id`` or anything else the model or the source supplied, so it is
+        safe to print, log and paste into a decision record.
+
+        ``grounded`` is false for a packet the grounding pass rejected
+        *structurally* - a malformed relation, a duplicate ``local_id``, an
+        endpoint no concept declared.  Those are not per-span groundability and
+        a probe does not make them lenient, so such a packet is reported by its
+        reason slug rather than measured, and never estimated.
+        """
+        connection = self._store._connection()
+        job = self._require_job(connection, batch_job_id)
+        if job["job_kind"] != "SECTION_GRAPH":
+            raise BatchServiceError("only a SECTION_GRAPH item can be measured as a packet")
+        item = self._item_for_update(connection, batch_job_id, custom_id)
+        probe = _PacketProbe()
+        measurement: dict[str, Any] = {
+            "custom_id": custom_id,
+            "status": str(item["status"]),
+            "stored_reason": (
+                _safe_failure_diagnostics(item["failure_diagnostics_json"]) or {}
+            ).get("reason"),
+        }
+        try:
+            grounded, skipped_short_evidence = self._ground_section_graph_payload(
+                connection,
+                version_id=job["version_id"],
+                payload=payload,
+                toc_titles=_packet_toc_titles(item["request_json"]),
+                evidence_floor=self._evidence_floor(job["prompt_profile"]),
+                probe=probe,
+            )
+        except BatchPayloadError as exc:
+            reason = (exc.diagnostics or {}).get("reason")
+            return {
+                **measurement,
+                "grounded": False,
+                "unmeasurable_reason": (
+                    str(reason)
+                    if reason in _GROUNDING_FAILURE_REASONS
+                    else _UNDIAGNOSED_FAILURE_REASON
+                ),
+            }
+        # Totals come from the packet the provider returned, and are only read
+        # once the walk above has validated every list they count.
+        concepts = payload["concepts"]
+        relations = payload["relations"]
+        mention_spans = sum(len(concept["mentions"]) for concept in concepts)
+        relation_evidence_spans = sum(len(relation["evidence"]) for relation in relations)
+        grounded_mentions = sum(len(concept["mentions"]) for concept in grounded["concepts"])
+        return {
+            **measurement,
+            "grounded": True,
+            "unmeasurable_reason": None,
+            # Every span the packet asked to be located, mentions and relation
+            # evidence alike, because both are grounded by the same resolver.
+            "evidence_spans": mention_spans + relation_evidence_spans,
+            "mention_spans": mention_spans,
+            "relation_evidence_spans": relation_evidence_spans,
+            "spans_failed": probe.failed_spans,
+            # The split the decision turns on.  ABSENT means the model quoted
+            # text that is not in the book; AMBIGUOUS means the text is there
+            # verbatim and only the occurrence is unresolved.
+            "spans_failed_by_reason": probe.failures_by_reason(),
+            "mention_spans_failed_by_reason": dict(probe.mention_failures),
+            "relation_evidence_spans_failed_by_reason": dict(probe.relation_evidence_failures),
+            # Dropped for being below the enforced floor rather than ungrounded;
+            # reported apart because that skip is already the decided rule.
+            "spans_below_floor": skipped_short_evidence,
+            "concepts": len(concepts),
+            "concepts_grounded": len(grounded["concepts"]),
+            "mentions_grounded": grounded_mentions,
+            "relations": len(relations),
+            "relations_grounded": len(grounded["relations"]),
+            # What the cascade costs, by cause, because the two are different
+            # arguments: an endpoint lost its every mention, or the relation
+            # itself lost its every citation.
+            "relations_lost_to_dropped_endpoint": probe.relations_dropped_endpoint,
+            "relations_lost_without_evidence": probe.relations_dropped_without_evidence,
+        }
 
     def _write_section_graph(
         self, connection: Any, *, version_id: str, item: Any, payload: Mapping[str, Any]
@@ -2938,6 +3152,112 @@ class BatchJobService:
             # different from one that had nothing to do.
             "retained": retained,
         }
+
+    def dry_run_failed_packets(
+        self, batch_job_id: str, provider: BatchProvider
+    ) -> dict[str, Any]:
+        """Measure every failed section-graph packet.  Submits nothing, writes nothing.
+
+        This mirrors :meth:`poll_and_ingest`'s fetch path deliberately and then
+        diverges from it deliberately, and both halves matter.
+
+        The fetch is the same because there is no other source.  A FAILED item
+        stores no ``response_json`` - ``ingest_success`` is that column's only
+        writer - so the packets these ten items were rejected for exist nowhere
+        locally.  ``batches.retrieve`` plus an output-file download brings back
+        the provider's durable output for a terminal job, and both calls are
+        free: no submission, no new spend, no new remote job.  Re-fetching is
+        the whole reason this diagnostic can exist before anyone has agreed what
+        to do with the answer.
+
+        The divergence is everything after the fetch.  ``poll_and_ingest``
+        records the provider state, ingests, records failures and reconciles
+        missing results; this method does none of those.  It never calls
+        ``set_provider_state``, ``ingest_success``, ``record_item_failure``,
+        ``mark_results_pending_retrieval`` or
+        ``reconcile_terminal_missing_results``, so a provider snapshot cannot
+        move a durable job, a re-measurement cannot re-record a failure, and a
+        download that dies halfway cannot fail an item for being absent.  A
+        partial fetch is reported as such and measures whatever did arrive: this
+        is a measurement, so an incomplete one must read as incomplete rather
+        than as a conclusion.
+
+        ``provider.poll`` is still called, because the job's state decides
+        whether an output file exists to download at all, and the result is
+        reported rather than persisted.
+
+        Items are reported individually, and an item with no usable provider
+        output is reported by cause - ``PROVIDER_ITEM_ERROR`` where the provider
+        rejected the packet itself, ``TERMINAL_WITHOUT_RESULT`` where the output
+        stream carried no line for it - rather than estimated or omitted.
+        """
+        job = self._repository.get_job(batch_job_id)
+        if job["provider"] != provider.name:
+            raise BatchServiceError("provider implementation does not match durable Batch job provider")
+        if job["job_kind"] != "SECTION_GRAPH":
+            raise BatchServiceError("only a SECTION_GRAPH job has packets to measure")
+        provider_job_id = job["provider_job_id"]
+        if not provider_job_id:
+            raise BatchServiceError("cannot measure an unsubmitted Batch job")
+        snapshot = provider.poll(str(provider_job_id))
+        state = _PROVIDER_TO_JOB_STATE.get(snapshot.state)
+        if state is None:
+            raise BatchServiceError(f"provider returned unknown Batch state: {snapshot.state}")
+        failed_items = [
+            item
+            for item in self._repository.list_items(batch_job_id)
+            if item["status"] == "FAILED"
+        ]
+        report: dict[str, Any] = {
+            "job_id": batch_job_id,
+            "state": state,
+            "failed_item_count": len(failed_items),
+            "results_pending_retrieval": False,
+            "packets": [],
+        }
+        if state not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+            # Nothing durable to download yet.  Reported, not guessed at.
+            report["results_pending_retrieval"] = True
+            return report
+        try:
+            results = {
+                result.custom_id: result
+                for result in provider.fetch_results(str(provider_job_id))
+                if result.custom_id
+            }
+        except Exception:
+            # Unlike the poll path this records nothing: an unreadable download
+            # is a fact about this measurement, never about the durable job.
+            report["results_pending_retrieval"] = True
+            return report
+        packets: list[dict[str, Any]] = []
+        for item in failed_items:
+            custom_id = str(item["custom_id"])
+            result = results.get(custom_id)
+            if result is None or result.payload is None:
+                packets.append(
+                    {
+                        "custom_id": custom_id,
+                        "status": str(item["status"]),
+                        "stored_reason": (
+                            _safe_failure_diagnostics(item["failure_diagnostics_json"]) or {}
+                        ).get("reason"),
+                        "grounded": False,
+                        "unmeasurable_reason": (
+                            "TERMINAL_WITHOUT_RESULT"
+                            if result is None
+                            else "PROVIDER_ITEM_ERROR"
+                        ),
+                    }
+                )
+                continue
+            packets.append(
+                self._repository.dry_run_section_graph_packet(
+                    batch_job_id, custom_id, result.payload
+                )
+            )
+        report["packets"] = packets
+        return report
 
     def recover(self, provider: BatchProvider) -> list[dict[str, int | str | bool]]:
         """Poll all non-terminal work after a process restart; safe to repeat."""

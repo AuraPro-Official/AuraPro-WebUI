@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -3488,6 +3489,547 @@ class EpubBatchEvidenceFloorTest(unittest.TestCase):
         self.assertEqual(
             self.service.get_job_summary("floor-unmeasured")["item_skipped_short_evidence"], 0
         )
+
+
+class EpubBatchFailedPacketDryRunTest(unittest.TestCase):
+    """Measuring a failed packet: what is inside it, at no cost and no risk.
+
+    Ingest is atomic per item, so one ungrounded span discards a whole packet.
+    On the full section-graph run that cost 10 of 43 packets, and because
+    ``ingest_success`` is the only writer of ``batch_items.response_json`` a
+    FAILED item stores *nothing* - not the packet, not how many of its spans
+    were ungrounded, not what valid concepts and relations arrived beside them.
+    Every recovery estimate has therefore been an extrapolation from the
+    packets that succeeded.
+
+    The dry run replaces the extrapolation with a count, and this class pins the
+    three properties that make it worth having.
+
+    **It measures the real thing.**  A classifier that disagreed with ingest
+    would be worse than none, so there is no second implementation to disagree:
+    the same ``_ground_section_graph_payload`` walks the packet, over the same
+    read connection, with the same floor from the same recorded prompt profile,
+    and the same resolver locates every span.  A probe changes only what happens
+    to a rejection - recorded instead of raised - so that the walk reaches the
+    spans behind the first failure.  ``test_a_clean_packet_measures_exactly_what
+    _ingest_wrote`` is the guard: on a packet ingest accepted, the measurement's
+    grounded counts must equal the rows ingest actually wrote.
+
+    **It writes nothing.**  Asserted, not claimed: the Batch ledger is
+    checksummed byte-for-byte and every graph table row-counted before and
+    after.  The rule that might one day skip an ungrounded span and keep the
+    rest of its packet has not been decided, and a measurement taken to inform
+    that decision must be safe to take while it is still open.
+
+    **It costs nothing.**  Only ``poll`` and ``fetch_results`` are called -
+    ``batches.retrieve`` plus an output-file download - and ``submit`` is never
+    reached, which is asserted directly because the difference between a free
+    re-fetch and a paid re-run is one method call.
+
+    The two failure classes are reported apart throughout, because they are
+    different findings.  ``EVIDENCE_ABSENT`` means the model quoted text that is
+    not in the book; ``EVIDENCE_AMBIGUOUS`` means the text is there, verbatim,
+    more than once, and only the occurrence is unresolved.
+    """
+
+    # "TCP" occurs twice in p1, so it is locatable-but-ambiguous; nothing in
+    # either passage contains "QUIC", so a span quoting it is absent.  Both
+    # defects come from the source text rather than from a flag, exactly as they
+    # do on the real run.
+    _P1 = "TCP connects TCP endpoints."
+    _P2 = "UDP is datagram based."
+    _ABSENT = "QUIC"
+    _ABSENT_LONGER = "QUIC handshake"
+    _REPEATED = "TCP"
+    _UNIQUE_P1 = "connects TCP endpoints"
+    _UNIQUE_P2 = "UDP is datagram based"
+
+    _GRAPH_TABLES = (
+        "concepts",
+        "concept_aliases",
+        "concept_mentions",
+        "concept_relations",
+        "concept_relation_assertions",
+        "concept_relation_evidence",
+    )
+
+    def setUp(self) -> None:
+        self.assertEqual(self._P1.count(self._REPEATED), 2)
+        self.assertNotIn(self._ABSENT, self._P1 + self._P2)
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.store = SQLiteEpubStore(os.path.join(self.tempdir.name, "epub.db"))
+        self.addCleanup(self.store.close)
+        book_id = self.store.create_book("Packet book", book_id="book")
+        self.store.create_book_version(book_id, epub_bytes=b"packet epub", version_id="version")
+        self.store.add_passages(
+            "version",
+            [
+                {
+                    "passage_id": "p1",
+                    "source_href": "chapter.xhtml",
+                    "spine_index": 0,
+                    "ordinal": 0,
+                    "content_kind": "paragraph",
+                    "content": self._P1,
+                },
+                {
+                    "passage_id": "p2",
+                    "source_href": "chapter.xhtml",
+                    "spine_index": 0,
+                    "ordinal": 1,
+                    "content_kind": "paragraph",
+                    "content": self._P2,
+                },
+            ],
+        )
+        self.store.set_version_status("version", "READY")
+        self.repository = SQLiteBatchRepository(self.store)
+        self.service = BatchJobService(self.repository)
+        self.provider = FakeProvider()
+
+    # -- packet construction -------------------------------------------
+
+    @staticmethod
+    def _span(passage_id: str, evidence: str, *, before: str = "", after: str = "") -> dict:
+        """One zh-section-graph-v2/v3 span: a literal, anchors, and no offsets."""
+        return {
+            "passage_id": passage_id,
+            "evidence": evidence,
+            "context_before": before,
+            "context_after": after,
+        }
+
+    @staticmethod
+    def _concept(local_id: str, name: str, mentions: list[dict]) -> dict:
+        return {
+            "local_id": local_id,
+            "name": name,
+            "aliases": [],
+            "definition": "A protocol",
+            "mentions": mentions,
+        }
+
+    @staticmethod
+    def _relation(subject: str, object_: str, evidence: list[dict]) -> dict:
+        return {
+            "subject_local_id": subject,
+            "predicate": "HAS_PART",
+            "object_local_id": object_,
+            "evidence": evidence,
+        }
+
+    def _mixed_packet(self) -> dict:
+        """One packet carrying every outcome the measurement has to tell apart.
+
+        Deliberately not a minimal fixture.  The whole question the owner is
+        asking is what sits *beside* an ungrounded span, so a packet that
+        contained only the defect would answer nothing:
+
+        * ``absent`` quotes text no passage contains -> ``EVIDENCE_ABSENT``;
+        * ``ambiguous`` quotes a literal that occurs twice, with an anchor that
+          selects neither -> ``EVIDENCE_AMBIGUOUS``, which is the shape all
+          seven live ambiguous failures have (``anchored_candidate_count`` 0);
+        * ``tcp`` and ``udp`` are ordinary, uniquely locatable, and must survive;
+        * one relation between the two survivors must survive with them;
+        * one relation points at the concept the absent span removed -> lost to
+          the endpoint cascade;
+        * one relation's only evidence is itself absent -> lost for having no
+          citation left.
+
+        The two cascades are separated on purpose: "the model named a concept it
+        could not evidence" and "the model asserted an edge it could not
+        evidence" are different findings with different remedies.
+        """
+        return {
+            "concepts": [
+                self._concept("absent", "QUIC", [self._span("p1", self._ABSENT_LONGER)]),
+                self._concept(
+                    "ambiguous",
+                    "Segment",
+                    [self._span("p1", self._REPEATED, before="Zz")],
+                ),
+                self._concept("tcp", "TCP", [self._span("p1", self._UNIQUE_P1)]),
+                self._concept("udp", "UDP", [self._span("p2", self._UNIQUE_P2)]),
+            ],
+            "relations": [
+                self._relation("tcp", "udp", [self._span("p1", self._UNIQUE_P1)]),
+                self._relation("tcp", "absent", [self._span("p2", "datagram")]),
+                self._relation("udp", "tcp", [self._span("p1", self._ABSENT)]),
+            ],
+        }
+
+    def _clean_packet(self) -> dict:
+        """A packet with no ungrounded span, so ingest accepts it whole."""
+        return {
+            "concepts": [
+                self._concept("tcp", "TCP", [self._span("p1", self._UNIQUE_P1)]),
+                self._concept("udp", "UDP", [self._span("p2", self._UNIQUE_P2)]),
+            ],
+            "relations": [
+                self._relation("tcp", "udp", [self._span("p2", "datagram")]),
+            ],
+        }
+
+    # -- job plumbing ---------------------------------------------------
+
+    def _run_job(self, payloads: dict[str, dict], *, job_id: str = "packets") -> dict:
+        """Create, submit and poll one SECTION_GRAPH job; return the poll result."""
+        self.service.create_draft(
+            version_id="version",
+            provider="fake-batch",
+            profile_name="cloud-model-snapshot",
+            prompt_profile="zh-section-graph-v3",
+            job_kind="SECTION_GRAPH",
+            items=[
+                BatchItemInput(passage_id, custom_id, {"body": {"packet": True}})
+                for custom_id, passage_id in zip(payloads, ("p1", "p2", "p1", "p2"))
+            ],
+            batch_job_id=job_id,
+        )
+        remote_id = self.service.submit(job_id, self.provider)
+        self.provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        self.provider.results[remote_id] = [
+            ProviderItemResult(custom_id, payload=payload)
+            for custom_id, payload in payloads.items()
+        ]
+        return self.service.poll_and_ingest(job_id, self.provider)
+
+    def _ledger(self) -> list[tuple]:
+        """Every ``batch_items`` row, whole, so an in-place UPDATE cannot hide.
+
+        Row counts alone would miss the failure mode that actually matters here
+        - a status flipped, a ``response_json`` written, a diagnostic replaced -
+        so the comparison is over the rows themselves.
+        """
+        return [
+            tuple(row)
+            for row in self.store._connection().execute(
+                "SELECT * FROM batch_items ORDER BY batch_item_id"
+            )
+        ]
+
+    def _ledger_checksum(self) -> str:
+        return hashlib.sha256(repr(self._ledger()).encode("utf-8")).hexdigest()
+
+    def _graph_row_counts(self) -> dict[str, int]:
+        connection = self.store._connection()
+        return {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in self._GRAPH_TABLES
+        }
+
+    def _packet(self, report: dict, custom_id: str) -> dict:
+        matches = [item for item in report["packets"] if item["custom_id"] == custom_id]
+        self.assertEqual(len(matches), 1)
+        return matches[0]
+
+    # -- the measurement -------------------------------------------------
+
+    def test_a_failed_packet_is_measured_span_by_span_rather_than_estimated(self) -> None:
+        # The headline. The item fails on its first ungrounded span, exactly as
+        # before - that contract is untouched - and stores no response, so the
+        # numbers below exist nowhere in the database. The dry run re-fetches
+        # the provider's durable output and reports what the packet held.
+        result = self._run_job({"packet-1": self._mixed_packet()})
+        self.assertEqual((result["ingested"], result["failed"]), (0, 1))
+        item = self.repository.list_items("packets")[0]
+        self.assertEqual(item["status"], "FAILED")
+        self.assertIsNone(item["response_json"])
+
+        report = self.service.dry_run_failed_packets("packets", self.provider)
+        packet = self._packet(report, "packet-1")
+
+        self.assertTrue(packet["grounded"])
+        self.assertIsNone(packet["unmeasurable_reason"])
+        # Four mention spans and three relation-evidence spans; both kinds are
+        # grounded by the same resolver and both are counted.
+        self.assertEqual(packet["evidence_spans"], 7)
+        self.assertEqual((packet["mention_spans"], packet["relation_evidence_spans"]), (4, 3))
+        # Three ungrounded spans, split by the classes the owner will treat
+        # differently rather than lumped into one "failed" number.
+        self.assertEqual(packet["spans_failed"], 3)
+        self.assertEqual(
+            packet["spans_failed_by_reason"],
+            {"EVIDENCE_ABSENT": 2, "EVIDENCE_AMBIGUOUS": 1},
+        )
+        self.assertEqual(
+            packet["mention_spans_failed_by_reason"],
+            {"EVIDENCE_ABSENT": 1, "EVIDENCE_AMBIGUOUS": 1},
+        )
+        self.assertEqual(
+            packet["relation_evidence_spans_failed_by_reason"], {"EVIDENCE_ABSENT": 1}
+        )
+        # And this is the answer the extrapolation could not give: what would
+        # still be there if the ungrounded spans were skipped.
+        self.assertEqual((packet["concepts"], packet["concepts_grounded"]), (4, 2))
+        self.assertEqual(packet["mentions_grounded"], 2)
+        self.assertEqual((packet["relations"], packet["relations_grounded"]), (3, 1))
+        # The stored failure class comes from the durable item, not from the
+        # measurement, so a packet can be grouped by how it actually failed.
+        self.assertEqual(packet["stored_reason"], "EVIDENCE_ABSENT")
+        self.assertEqual(packet["status"], "FAILED")
+
+    def test_the_cascade_is_reported_by_cause_and_not_as_one_number(self) -> None:
+        # A relation can be lost two ways and the difference is the argument.
+        # ``tcp -> absent`` is lost because the concept it points at lost its
+        # only mention: the model named the concept correctly and grounding is
+        # what removed it. ``udp -> tcp`` is lost because its own only citation
+        # was absent: both endpoints survive and the edge still cannot be
+        # asserted. Folding them together would hide which fix each needs.
+        self._run_job({"packet-1": self._mixed_packet()})
+        packet = self._packet(
+            self.service.dry_run_failed_packets("packets", self.provider), "packet-1"
+        )
+
+        self.assertEqual(packet["relations_lost_to_dropped_endpoint"], 1)
+        self.assertEqual(packet["relations_lost_without_evidence"], 1)
+        # The three relations are exactly accounted for: one kept, two lost, by
+        # named cause, with nothing unexplained.
+        self.assertEqual(
+            packet["relations_grounded"]
+            + packet["relations_lost_to_dropped_endpoint"]
+            + packet["relations_lost_without_evidence"],
+            packet["relations"],
+        )
+
+    def test_a_clean_packet_measures_exactly_what_ingest_wrote(self) -> None:
+        # The guard against the failure mode that would make this whole exercise
+        # worthless: a classifier that quietly disagrees with production. On a
+        # packet ingest accepted, the measurement's grounded counts must equal
+        # the rows the write actually produced - not approximately, exactly.
+        result = self._run_job({"packet-1": self._clean_packet()})
+        self.assertEqual((result["ingested"], result["failed"]), (1, 0))
+        written = self._graph_row_counts()
+
+        measurement = self.repository.dry_run_section_graph_packet(
+            "packets", "packet-1", self._clean_packet()
+        )
+
+        self.assertTrue(measurement["grounded"])
+        self.assertEqual(measurement["spans_failed"], 0)
+        self.assertEqual(measurement["spans_failed_by_reason"], {})
+        self.assertEqual(measurement["concepts_grounded"], written["concepts"])
+        self.assertEqual(measurement["mentions_grounded"], written["concept_mentions"])
+        self.assertEqual(measurement["relations_grounded"], written["concept_relations"])
+        # Measuring a succeeded item is allowed and reports it as succeeded; the
+        # dry run is about packets, not about a status it is entitled to read.
+        self.assertEqual(measurement["status"], "SUCCEEDED")
+
+    # -- the safety properties -------------------------------------------
+
+    def test_the_dry_run_leaves_the_ledger_and_the_graph_untouched(self) -> None:
+        # The property that makes this safe to run before the rule is decided.
+        # A mixed job so there is something of every kind to disturb: one
+        # succeeded item with a stored response and a written graph, one failed
+        # item with a stored failure class and diagnostics.
+        self._run_job({"packet-1": self._mixed_packet(), "packet-2": self._clean_packet()})
+        ledger_before = self._ledger()
+        checksum_before = self._ledger_checksum()
+        graph_before = self._graph_row_counts()
+        jobs_before = [
+            tuple(row) for row in self.store._connection().execute("SELECT * FROM batch_jobs")
+        ]
+        self.assertNotEqual(graph_before, dict.fromkeys(self._GRAPH_TABLES, 0))
+
+        report = self.service.dry_run_failed_packets("packets", self.provider)
+
+        # It really did measure something; an inert no-op would pass the
+        # assertions below for the wrong reason.
+        self.assertEqual(report["failed_item_count"], 1)
+        self.assertEqual(self._packet(report, "packet-1")["spans_failed"], 3)
+
+        self.assertEqual(self._ledger(), ledger_before)
+        self.assertEqual(self._ledger_checksum(), checksum_before)
+        self.assertEqual(self._graph_row_counts(), graph_before)
+        # The job row too: a dry run polls the provider but must never let a
+        # provider snapshot move a durable job, so ``set_provider_state`` is not
+        # on this path at all.
+        self.assertEqual(
+            [tuple(row) for row in self.store._connection().execute("SELECT * FROM batch_jobs")],
+            jobs_before,
+        )
+
+    def test_measuring_never_submits_and_therefore_never_spends(self) -> None:
+        # One method call is the whole difference between a free re-fetch of
+        # durable output and paying for the batch again, so it is asserted
+        # rather than reasoned about.
+        self._run_job({"packet-1": self._mixed_packet()})
+        submits_before = self.provider.submit_calls
+
+        self.service.dry_run_failed_packets("packets", self.provider)
+        self.service.dry_run_failed_packets("packets", self.provider)
+
+        self.assertEqual(self.provider.submit_calls, submits_before)
+
+    def test_repeating_the_measurement_returns_the_identical_numbers(self) -> None:
+        # Grounding is deterministic over an immutable source, and the dry run
+        # changes nothing that could feed back into it, so a second run must be
+        # indistinguishable from the first. If it were not, one of those two
+        # properties would be false.
+        self._run_job({"packet-1": self._mixed_packet()})
+
+        first = self.service.dry_run_failed_packets("packets", self.provider)
+        second = self.service.dry_run_failed_packets("packets", self.provider)
+
+        self.assertEqual(first, second)
+
+    def test_a_measurement_carries_counts_and_slugs_and_never_packet_text(self) -> None:
+        # Same discipline as the persisted diagnostics, for the same reason:
+        # this record is printed, pasted into a decision note, and kept. It has
+        # to be impossible for a passage, an evidence string, a concept name or
+        # a local_id to be sitting in it.
+        self._run_job({"packet-1": self._mixed_packet()})
+        report = self.service.dry_run_failed_packets("packets", self.provider)
+        packet = self._packet(report, "packet-1")
+
+        serialized = json.dumps(report, ensure_ascii=False)
+        for secret in (
+            self._P1,
+            self._P2,
+            self._ABSENT_LONGER,
+            self._UNIQUE_P1,
+            self._UNIQUE_P2,
+            "Segment",
+            "ambiguous",
+        ):
+            self.assertNotIn(secret, serialized)
+        # Structurally, not only by inspection: every value is a count, a flag,
+        # a whitelisted reason slug, or the durable custom_id.
+        for name, value in packet.items():
+            if name in {"custom_id", "status"}:
+                continue
+            if isinstance(value, dict):
+                self.assertTrue(
+                    all(key in BATCH._GROUNDING_FAILURE_REASONS for key in value),
+                    f"{name} carries an unknown reason slug",
+                )
+                self.assertTrue(all(isinstance(count, int) for count in value.values()))
+                continue
+            if isinstance(value, str):
+                self.assertIn(value, BATCH._GROUNDING_FAILURE_REASONS)
+                continue
+            self.assertTrue(
+                value is None or isinstance(value, (bool, int)),
+                f"{name} is neither a count, a flag, nor a slug",
+            )
+
+    # -- what cannot be measured is named, never estimated -----------------
+
+    def test_an_item_the_provider_itself_rejected_is_named_rather_than_counted(self) -> None:
+        # No packet came back for this item, so there is nothing to ground. The
+        # honest report is the cause; an estimate here would be exactly the
+        # extrapolation this tool exists to replace.
+        self.service.create_draft(
+            version_id="version",
+            provider="fake-batch",
+            profile_name="cloud-model-snapshot",
+            prompt_profile="zh-section-graph-v3",
+            job_kind="SECTION_GRAPH",
+            items=[
+                BatchItemInput("p1", "packet-1", {"body": {"packet": True}}),
+                BatchItemInput("p2", "packet-2", {"body": {"packet": True}}),
+            ],
+            batch_job_id="packets",
+        )
+        remote_id = self.service.submit("packets", self.provider)
+        self.provider.snapshots[remote_id] = ProviderSnapshot("succeeded")
+        # One item the provider rejected outright, one absent from a complete
+        # output stream: two different causes, both reportable, neither guessed.
+        self.provider.results[remote_id] = [
+            ProviderItemResult("packet-1", error="model refused")
+        ]
+        self.service.poll_and_ingest("packets", self.provider)
+
+        report = self.service.dry_run_failed_packets("packets", self.provider)
+
+        self.assertEqual(report["failed_item_count"], 2)
+        rejected = self._packet(report, "packet-1")
+        self.assertFalse(rejected["grounded"])
+        self.assertEqual(rejected["unmeasurable_reason"], "PROVIDER_ITEM_ERROR")
+        self.assertNotIn("relations_grounded", rejected)
+        missing = self._packet(report, "packet-2")
+        self.assertFalse(missing["grounded"])
+        self.assertEqual(missing["unmeasurable_reason"], "TERMINAL_WITHOUT_RESULT")
+
+    def test_a_structurally_invalid_packet_is_reported_rather_than_measured(self) -> None:
+        # A probe makes an *ungrounded span* recoverable, not a malformed
+        # packet. An endpoint naming a local_id the response never defined is
+        # not a groundability question at all, so the walk still rejects it and
+        # the packet is reported by its slug with no counts attached.
+        packet = self._clean_packet()
+        packet["relations"] = [
+            self._relation("tcp", "nowhere", [self._span("p1", self._UNIQUE_P1)])
+        ]
+        self._run_job({"packet-1": packet})
+
+        report = self.service.dry_run_failed_packets("packets", self.provider)
+        measured = self._packet(report, "packet-1")
+
+        self.assertFalse(measured["grounded"])
+        self.assertEqual(measured["unmeasurable_reason"], "RELATION_ENDPOINT_UNRESOLVED")
+        self.assertEqual(measured["stored_reason"], "RELATION_ENDPOINT_UNRESOLVED")
+
+    def test_a_job_whose_output_cannot_be_downloaded_measures_nothing_and_records_nothing(
+        self,
+    ) -> None:
+        # A half-finished download must read as "not measured", never as "this
+        # packet held nothing". Unlike the ingest path, which marks the job for
+        # a safe re-poll, this records nothing at all: an unreadable download is
+        # a fact about the measurement, not about the durable job.
+        self._run_job({"packet-1": self._mixed_packet()})
+        ledger_before = self._ledger()
+        jobs_before = [
+            tuple(row) for row in self.store._connection().execute("SELECT * FROM batch_jobs")
+        ]
+        self.provider.fetch_error = RuntimeError("connection reset")
+
+        report = self.service.dry_run_failed_packets("packets", self.provider)
+
+        self.assertTrue(report["results_pending_retrieval"])
+        self.assertEqual(report["packets"], [])
+        self.assertEqual(self._ledger(), ledger_before)
+        self.assertEqual(
+            [tuple(row) for row in self.store._connection().execute("SELECT * FROM batch_jobs")],
+            jobs_before,
+        )
+
+    def test_only_a_section_graph_job_has_packets_to_measure(self) -> None:
+        # The measurement is defined in terms of concepts, mentions, relations
+        # and the cascade between them; a CONCEPT_MENTIONS item has no relations
+        # and no packet, so asking is a caller error rather than an empty answer.
+        self.service.create_draft(
+            version_id="version",
+            provider="fake-batch",
+            profile_name="cloud-model-snapshot",
+            items=[BatchItemInput("p1", "mention-1", {"body": {"passage": "p1"}})],
+            batch_job_id="mentions",
+        )
+        self.service.submit("mentions", self.provider)
+
+        with self.assertRaises(BatchServiceError):
+            self.service.dry_run_failed_packets("mentions", self.provider)
+
+    def test_the_probe_never_leaks_into_the_ingest_path(self) -> None:
+        # The one behavioural risk of measuring through the production pass: a
+        # probe that survived into ingest would silently turn a hard grounding
+        # failure into a partial write. Measuring first and re-polling after
+        # must leave the item failed on the identical class, with no graph rows
+        # and no stored response - which is also what makes the measurement
+        # repeatable at will.
+        self._run_job({"packet-1": self._mixed_packet()})
+        self.service.dry_run_failed_packets("packets", self.provider)
+
+        result = self.service.poll_and_ingest("packets", self.provider)
+
+        self.assertEqual(result["ingested"], 0)
+        item = self.repository.list_items("packets")[0]
+        self.assertEqual(item["status"], "FAILED")
+        self.assertIsNone(item["response_json"])
+        self.assertEqual(
+            item["error_text"], "OpenAI evidence is absent from the immutable source"
+        )
+        self.assertEqual(self._graph_row_counts(), dict.fromkeys(self._GRAPH_TABLES, 0))
 
 
 class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
