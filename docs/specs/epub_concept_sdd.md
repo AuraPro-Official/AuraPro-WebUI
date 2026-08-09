@@ -286,40 +286,88 @@ second, relation layer before its full-version offline Batch is accepted.
    version and names one or more exact immutable-source evidence spans. This
    permits the same grounded relationship to accumulate support across books
    without turning it into an unproven universal fact. Assertions are
-   `PROVISIONAL` until reviewed; ambiguous or invalid output is a failed Batch
-   item with no partial graph mutation.
-6. One exception to point 5, because it is not a defect in the output. A
-   relation whose two endpoints resolve to the *same* concept is skipped and
-   counted, and the rest of its packet still ingests. This arises when an
-   administrator has merged the endpoints since the response was produced — the
-   model named two distinct concepts, and a later, correct administrative act
-   made them one. Failing the whole item would discard valid concepts and
-   mentions because of an edge the administrator themselves collapsed.
-   `merge_concepts` already resolves the identical condition this way, dropping
-   a relation that a merge turns into a self-loop rather than refusing the
-   merge, so this makes ingest consistent with it. The skip is reported in the
-   item's durable result so the count is visible rather than silent. An
-   endpoint that names a `local_id` the response never defined remains a hard
-   failure: that is genuinely ungrounded output, not a merge artefact.
-7. A second exception to point 5, of the same shape. An evidence span shorter
-   than the floor its prompt profile enforces is dropped from the payload during
-   grounding and counted, and the rest of its item still ingests. Such a span is
-   real source text; it is simply too small to locate anything for a reader, and
-   failing the item over it discards everything valid that arrived beside it —
-   on the full-book section-graph run that cost 13 of 43 packets, 140 concepts,
-   140 mentions and 105 relations, against 184 relations actually ingested. The
-   drop cascades only to what the contract can no longer express: a concept left
-   with no mentions is dropped, a relation left with no evidence spans is
-   dropped, and a relation whose endpoint was one of those dropped concepts is
-   dropped — the last of these is not an unresolved endpoint, because the model
-   declared that concept correctly and ingest is what removed it. A payload
-   reduced to nothing is still a success contributing nothing; an empty result
-   is what the instruction itself asks for when there is nothing to report. The
-   count is reported in the item's durable result, and is the only record the
-   dropped spans existed, since the stored response is the payload as written.
-   Nothing else becomes lenient: evidence absent from the immutable source, an
-   undeclared relation endpoint, and every other rejection in point 5 still fail
-   the whole item.
+   `PROVISIONAL` until reviewed.
+6. **Output that cannot be grounded against the immutable source fails the whole
+   Batch item, with no partial graph mutation. Output that *is* grounded, but
+   which a decision on our side has made unusable, has that element skipped and
+   counted while the rest of the item ingests.**
+
+   This replaces an earlier rule — "ambiguous or invalid output is a failed
+   Batch item" — that drew its line in the wrong place. It read every rejection
+   as a defect in the response, and three separate conditions then had to be
+   exempted from it one at a time. All three share a shape the original rule did
+   not anticipate: the model answered correctly and something *we* decided
+   afterwards is what made one element unusable. A rule that has to be exempted
+   three times is stating its principle wrongly, so the principle is restated
+   here rather than carrying a fourth exemption later.
+
+   Hard failure keeps everything that is genuinely ungrounded: evidence absent
+   from the immutable source, evidence whose occurrence cannot be resolved to
+   one span, a relation endpoint naming a `local_id` the response never
+   declared, a response that is not valid JSON for its schema. None of these
+   becomes lenient, and none of them is recoverable by any decision of ours.
+
+   The skip applies where our own state is the obstacle. Three conditions
+   qualify today; the wording is deliberately general, since the property that
+   matters is the *cause*, not the enumeration.
+
+   a. **A relation whose two endpoints resolve to the same concept.** An
+      administrator merged the endpoints after the response was produced: the
+      model named two distinct concepts and a later, correct administrative act
+      made them one. `merge_concepts` already drops a relation a merge turns
+      into a self-loop rather than refusing the merge, so this keeps ingest
+      consistent with it.
+   b. **An evidence span below the floor its prompt profile enforces**, dropped
+      during grounding. Such a span is real source text, correctly quoted; it is
+      simply too small to locate anything for a reader, and the floor is our
+      threshold, not a property of the response.
+   c. **A concept whose name and aliases match more than one existing concept.**
+      Ingest cannot link it without asserting a merge no administrator decided,
+      and SDD 4.2 forbids a model performing a semantic merge — so the concept
+      and its mentions are skipped, and the rest of the item ingests. This is
+      the case that most clearly belongs on this side of the line: the response
+      is accurate, the passage genuinely contains both spellings, and the
+      collision exists only because an administrator adjudicated those concepts
+      as distinct. It differs from (a) and (b) in one respect worth stating
+      plainly — a human *could* resolve it, by merging. Measured against the
+      full-book runs, that remedy is mostly unavailable: of 33 held items, 32
+      collided on pairs already adjudicated as distinct (13 on
+      `全域潮汐枢纽`｜`潮汐源` alone), which no merge can resolve without
+      reversing the adjudication, and a model will keep proposing them on every
+      future book because the text genuinely uses both. Exactly one was a
+      reviewable merge candidate. So the choice was never "skip versus review by
+      hand"; it was skip versus permanently discarding 32 items and every valid
+      concept and mention that arrived beside the collision. The trade taken in
+      exchange is real and is not hidden: a skipped concept's mentions link to
+      neither concept, and that silence is the cost of not failing the item.
+
+   In every case the skip cascades only to what the contract can no longer
+   express, and never further: a concept left with no mentions is dropped, a
+   relation left with no evidence spans is dropped, and a relation whose
+   endpoint was a dropped or skipped concept is dropped. That last one is not an
+   unresolved endpoint — the model declared the concept correctly and ingest is
+   what removed it. A payload reduced to nothing is still a success contributing
+   nothing; an empty result is what the instruction itself asks for when there is
+   nothing to report.
+
+   Every skip is counted in the item's durable result, per condition, so the
+   count is visible rather than silent. Each count is the only record of what
+   the *write* decided, but the three differ in whether the element itself
+   survives in the stored response, and the difference is a consequence of when
+   it is detected. (b) is detected by the read-only grounding pass, which
+   removes the span before anything is stored, so the count is the only record
+   the span existed at all. (a) and (c) are detected at write time — a
+   `local_id` becomes a concept only through resolution, which is a write — so
+   the relation and the concept are both still in the stored response verbatim.
+   That is deliberate and load-bearing: the stored response is the payload as
+   written, it must serialize byte-identically on replay for ingest to stay
+   idempotent, and a write that edited it to reflect its own skips would destroy
+   that guarantee.
+7. The evidence floor named in 6b, and why it is a number rather than a
+   judgement. Failing an item over a sub-floor span discards everything valid
+   that arrived beside it: on the full-book section-graph run that cost 13 of 43
+   packets, 140 concepts, 140 mentions and 105 relations, against 184 relations
+   actually ingested.
 
    The enforced floor is deliberately lower than the minimum the same profile's
    instruction requests. The request encourages a substantive, distinctive

@@ -153,6 +153,19 @@ export type EpubBatchItemSummary = {
 	 * pass, or a row written before the column existed.
 	 */
 	skipped_short_evidence: number | null;
+	/**
+	 * Concepts this item skipped because their name and aliases matched more than
+	 * one existing concept — linking one would assert a merge no administrator
+	 * decided. The concept's mentions are skipped with it, and a relation naming
+	 * it is dropped. A count only, for the same schema reason as above. Unlike
+	 * `skipped_short_evidence`, the skipped concept is still in the stored
+	 * response verbatim: it is discovered at write time, not by the read-only
+	 * grounding pass, so this column records what the write did rather than what
+	 * the response omits. `null` only means the row was written before the column
+	 * existed — every succeeded item resolves concepts, so a `0` is a real zero on
+	 * both job kinds.
+	 */
+	skipped_ambiguous_concepts: number | null;
 	updated_at: string | null;
 };
 
@@ -194,6 +207,12 @@ export type EpubBatchSummary = {
 	 * aggregated here for the same reason as the count above.
 	 */
 	item_skipped_short_evidence: number;
+	/**
+	 * Ambiguous concepts skipped across this job's succeeded items, aggregated
+	 * here for the same reason as the counts above. Counts concepts, not the
+	 * relations that cascaded off them.
+	 */
+	item_skipped_ambiguous_concepts: number;
 	items?: EpubBatchItemSummary[];
 };
 
