@@ -1015,22 +1015,27 @@ class SQLiteEpubStore:
         """Return the Tier-1 vocabulary together with how specific each concept is.
 
         The first three columns are the matcher's own: a concept, its display
-        name, and one surface form to scan for.  The remaining three exist so
-        that *resolution* can tell a specific concept from a generic one before
-        it decides what to expand out of, and none of them is source text:
+        name, and one surface form to scan for.  The remaining three describe
+        the concept rather than the match, so that *resolution* can decide what
+        to expand out of without a second query per matched concept.  None of
+        them is source text:
 
         * ``term_source`` — whether a model, a seed list or an administrator
           supplied this surface form.  A one-character alias a model proposed
           is the weakest kind of evidence in the whole vocabulary.
-        * ``mention_count`` — how much of the book the concept touches, by the
-          same correlated subquery :meth:`list_concepts` already reports to an
-          administrator.  On the acceptance book it separates cleanly: 扰动源 179,
-          全域潮汐枢纽 175, 锚站 160, 观测手册 41, against a long tail in single
-          digits.
         * ``has_part_fanout`` — how many distinct ``HAS_PART`` children the
           concept has under exactly the predicate
           :meth:`list_concept_relation_neighbors` walks, so the two can never
           disagree about whether a concept has a semantic decomposition.
+        * ``mention_count`` — how much of the book the concept touches, by the
+          same correlated subquery :meth:`list_concepts` already reports to an
+          administrator.  Nothing in search gates on it today: it was tried as
+          a proxy for a generic term and withdrawn, because how often a book
+          discusses something is a fact about the book rather than about what
+          the reader asked for.  It is reported anyway — it is 0.5 ms of the
+          1.1 ms these three columns add, the administrator surface already
+          computes the identical number, and a later specificity signal will
+          want it rather than a column deleted and re-added.
 
         Measured cost on the full acceptance book: 1.9 ms for the three-column
         form, 3.0 ms for this one, for 1,293 rows.  That is paid once per

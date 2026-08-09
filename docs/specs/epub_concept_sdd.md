@@ -396,19 +396,30 @@ relationship affects retrieval provenance and ranking, never citation text.
 - The preceding clause scopes to **ranking**, and it is not contradicted by the
   **resolution-stage** rule that follows, which decides a different question:
   not how a reached span is ordered, but which matched concepts are allowed to
-  reach anything at all. A concept matched only by a short or very common term
-  still resolves, still appears in `resolved_concepts`, and still contributes
-  every one of its own spans; it simply does not *seed* expansion. A concept is
-  expansion-eligible only when all of: its winning matched term is at least two
-  code points; the concept has at most 40 mentions in the book; and the winning
-  term is not a one-character model-proposed alias. Nothing a seed reaches is
-  capped or truncated — the down-weighting rule above still governs everything
-  that is reached. Term length is measured on the winning match, since the
-  matcher already keeps the longest surviving span per concept; the fraction of
-  the query a term covered is deliberately not a signal, being unstable across
-  phrasings and already handled by longest-match suppression. A repository that
-  does not report a concept's mention count or `HAS_PART` out-degree is not
-  second-guessed: the condition it cannot answer does not apply.
+  reach anything at all. A concept matched only by a short surface form still
+  resolves, still appears in `resolved_concepts`, and still contributes every
+  one of its own spans; it simply does not *seed* expansion. The test is about
+  the **matched term**, never about the concept behind it: a concept is
+  expansion-eligible when its winning matched term is at least two code points
+  and is not a one-character model-proposed alias. Term length is measured on
+  the winning match, since the matcher already keeps the longest surviving span
+  per concept, so a concept whose full name the query spelled out is judged on
+  that name. Nothing a seed reaches is capped or truncated — the down-weighting
+  rule above still governs everything that is reached.
+- Two properties of the *concept* are deliberately excluded from that rule.
+  **Mention count is not a signal.** How often a book discusses something is a
+  fact about the book, not about what the reader asked for: `枢纽的权重` is matched
+  by its full five-code-point name and is a specific topic that a acceptance corpus
+  naturally mentions often, so a frequency ceiling refuses exactly the reader who
+  asked for it by name. The accepted consequence is that naming a high-degree
+  concept in full expands to its subtree — that is the correct answer to having
+  asked for it — while its one-character alias remains blocked by the term-length
+  rule, so an incidental occurrence inside an unrelated query still drags nothing
+  in. **The fraction of the query a term covered is not a signal** either, being
+  unstable across phrasings and already handled by longest-match suppression. A
+  repository that does not report a concept's alias source or `HAS_PART`
+  out-degree is not second-guessed: the condition it cannot answer does not
+  apply.
 - Channel A additionally expands along **deterministic TOC parent/child edges**,
   which are structurally distinct from model-suggested semantic edges and are
   labelled as such: a hit reached this way carries `structure:TOC_CHILD:<depth>`
