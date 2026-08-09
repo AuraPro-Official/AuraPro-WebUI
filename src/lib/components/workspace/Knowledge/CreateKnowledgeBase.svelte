@@ -2,7 +2,7 @@
 	import { toast } from 'svelte-sonner';
 
 	import { goto } from '$app/navigation';
-	import { getContext } from 'svelte';
+	import { getContext, onDestroy } from 'svelte';
 	const i18n = getContext('i18n');
 
 	import { user } from '$lib/stores';
@@ -12,6 +12,27 @@
 	import Spinner from '$lib/components/common/Spinner.svelte';
 
 	let loading = false;
+	let createElapsedSeconds = 0;
+	let createStartedAt = 0;
+	let createTimer;
+
+	const startCreating = () => {
+		startCreating();
+		createElapsedSeconds = 0;
+		createStartedAt = Date.now();
+		if (createTimer) clearInterval(createTimer);
+		createTimer = setInterval(() => {
+			createElapsedSeconds = Math.floor((Date.now() - createStartedAt) / 1000);
+		}, 1000);
+	};
+
+	const stopCreating = () => {
+		loading = false;
+		if (createTimer) clearInterval(createTimer);
+		createTimer = undefined;
+	};
+
+	onDestroy(stopCreating);
 
 	let name = '';
 	let description = '';
@@ -25,7 +46,7 @@
 			toast.error($i18n.t('Please fill in all fields.'));
 			name = '';
 			description = '';
-			loading = false;
+			stopCreating();
 			return;
 		}
 
@@ -40,7 +61,7 @@
 			goto(`/workspace/knowledge/${res.id}`);
 		}
 
-		loading = false;
+		stopCreating();
 	};
 </script>
 
@@ -150,6 +171,20 @@
 					$user?.role === 'admin'}
 			/>
 		</div>
+
+		{#if loading}
+			<div class="mt-3 text-xs text-gray-500 dark:text-gray-400" aria-live="polite">
+				<div class="font-medium text-gray-700 dark:text-gray-200">
+					{$i18n.t('Creating the knowledge base...')}
+				</div>
+				<div class="mt-1">
+					{$i18n.t('Elapsed: {{time}}', {
+						time: $i18n.t('{{count}} sec', { count: createElapsedSeconds })
+					})}
+					· {$i18n.t('This usually takes only a few seconds.')}
+				</div>
+			</div>
+		{/if}
 
 		<div class="flex justify-end mt-2">
 			<div>

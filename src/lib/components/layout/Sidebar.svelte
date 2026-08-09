@@ -117,7 +117,9 @@
 
 	let sharedFolders: any[] = [];
 
-	$: pinnedItems = Array.from(new Set([ ...($settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS), 'epub' ]));
+	$: pinnedItems = Array.from(
+		new Set([...($settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS), 'epub'])
+	);
 
 	const isMenuItemVisible = (id) => {
 		switch (id) {
@@ -157,7 +159,7 @@
 	};
 
 	const getMenuItemMeta = (id) => {
-		const items = {
+		const items: Record<string, { label: string; href: string; iconType: string }> = {
 			epub: { label: 'EPUB Library', href: '/epub', iconType: 'epub' },
 			glossary: { label: 'Glossary', href: '/glossary', iconType: 'glossary' },
 			notes: { label: 'Notes', href: '/notes', iconType: 'note' },

@@ -5,9 +5,15 @@ node_modules
 /build
 /.svelte-kit
 /package
+.env*
+test*.py
+
+backend/tests/*
+launch.json
+*.json
+.gitignore
 
 
-!.env.example
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 # Byte-compiled / optimized / DLL files

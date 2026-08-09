@@ -46,6 +46,7 @@
 ## 一、 详细模块规范 (Detailed Component Specifications)
 
 ### 1. 离线解析与段落切片模块 (`epub_parser`)
+
 - **输入**：`.epub` 电子书文件。
 - **解析策略**：
   - 深度遍历 EPUB 标准目录结构（`NCX` / `NAV` 表）。
@@ -59,6 +60,7 @@
   - `parent_context`: 包含前后段落或小节标题的父上下文
 
 ### 2. Batch 批处理概念抽取与 Wiki 融合引擎 (`batch_concept_pipeline`)
+
 为了实现海量书籍（数千万字）的高效离线建库，并最大程度降低 LLM Token 成本（享受 50% 折扣与超高并发额度），离线建库采用 **Batch API 异步流水线**：
 
 - **阶段一：样本采样与 Prompt 调试 (Sample Prompt Tuning)**
@@ -82,6 +84,7 @@
   - `occurrences`: 出现的段落集合与关联权重 `[{"passage_id": "...", "book_title": "..."}]`
 
 ### 3. 存储层设计 (`storage_layer`) — 已实现
+
 - **独立 SQLite 数据库**：创建单独的 `epub_concept_v1.db` 文件（默认位于 `DATA_DIR/epub_concept_v1.db`，可由 `EPUB_CONCEPT_DB_PATH` 覆盖），与主 `webui.db` 完全解耦，便于独立导入/导出/分享概念图谱数据。
 - **实现模块**：[store.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/retrieval/epub/store.py)（`SQLiteEpubStore`）
 - **表结构**：
@@ -110,6 +113,7 @@
 - 保留 100% 原文，不存储任何篡改或加工后的段落内容。
 
 ### 4. 在线混合查询与重排流水线 (`query_pipeline`)
+
 - **Step 1: 极速概念定位 (Tiered Concept Lookup)**
   - **Tier 1 (0ms 判定)**：在内存 Trie/Automaton 匹配用户提问。若精准包含词条或别名，直接定位目标 `concept_id`。
   - **Tier 2 (本地轻量 LLM Fallback)**：未能在字典中精准命中时，调用**本地轻量开源模型**（如 `Qwen2.5-1.5B` / `Qwen2.5-3B` / `Llama-3.2-1B`，通过 AuraPro Desktop 现有的 `llama.cpp` 或 `Ollama` 本地推理引擎运行）。秒级（1s~2s）延迟完全可接受，保证客户端查询**完全免费、离线可用且零隐私泄露**。
@@ -135,52 +139,59 @@
 > 本节从属于 [epub_concept_sdd.md](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/docs/specs/epub_concept_sdd.md)；如有冲突，以 SDD 为准。
 
 ### 解析层 (`backend/open_webui/retrieval/parsers/epub/`)
+
 纯解析、无持久化，按格式版本演进（`PARSER_FORMAT_VERSION`）。
 
-| 模块 | 职责 |
-|------|------|
-| `archive.py` | ZIP 归档安全校验（zip-bomb / 路径穿越 / 体积上限） |
-| `package.py` | `container.xml`、OPF 清单与 spine 解析，`href` 归一 |
-| `toc.py` | NAV (EPUB3) 与 NCX (EPUB2) 目录解析 |
-| `toc_mapping.py` | 段落 → 目录节点（面包屑）映射 |
-| `xhtml.py` | XHTML 可见正文抽取与锚点收集 |
-| `model.py` | `EpubParseResult` / `ParsedPassage` / `TocEntry` / `ParserWarning` 等值对象 |
-| `parser.py` | `EPUBParser.parse_book()` 与模块级 `parse_epub()` 入口 |
+| 模块             | 职责                                                                        |
+| ---------------- | --------------------------------------------------------------------------- |
+| `archive.py`     | ZIP 归档安全校验（zip-bomb / 路径穿越 / 体积上限）                          |
+| `package.py`     | `container.xml`、OPF 清单与 spine 解析，`href` 归一                         |
+| `toc.py`         | NAV (EPUB3) 与 NCX (EPUB2) 目录解析                                         |
+| `toc_mapping.py` | 段落 → 目录节点（面包屑）映射                                               |
+| `xhtml.py`       | XHTML 可见正文抽取与锚点收集                                                |
+| `model.py`       | `EpubParseResult` / `ParsedPassage` / `TocEntry` / `ParserWarning` 等值对象 |
+| `parser.py`      | `EPUBParser.parse_book()` 与模块级 `parse_epub()` 入口                      |
 
 ### 领域层 (`backend/open_webui/retrieval/epub/`)
 
-| 模块 | 职责 |
-|------|------|
-| `store.py` | 独立 SQLite 持久化层 `SQLiteEpubStore` 与版本化迁移执行器 |
-| `batch.py` | Batch 作业编排：JSONL 生成、提交、轮询与结果回收落库 |
-| `search.py` | 混合多路召回与重排的在线查询流水线 |
-| `section_graph.py` | 章节/目录图谱与邻近段落合并 |
-| `retrieval_units.py` | 段落切分为检索单元 |
-| `vector_index.py` / `sqlite_vec.py` / `sqlite_vec_backend.py` | 向量索引抽象与 `sqlite-vec` 后端实现 |
-| `inference.py` / `prompt_profiles.py` / `calibration.py` | Tier-2 本地推理调用、提示词配置与校准 |
-| `desktop_runtime.py` | 读取 Desktop 下发的本地运行时描述符 |
+| 模块                                                          | 职责                                                      |
+| ------------------------------------------------------------- | --------------------------------------------------------- |
+| `store.py`                                                    | 独立 SQLite 持久化层 `SQLiteEpubStore` 与版本化迁移执行器 |
+| `batch.py`                                                    | Batch 作业编排：JSONL 生成、提交、轮询与结果回收落库      |
+| `search.py`                                                   | 混合多路召回与重排的在线查询流水线                        |
+| `section_graph.py`                                            | 章节/目录图谱与邻近段落合并                               |
+| `retrieval_units.py`                                          | 段落切分为检索单元                                        |
+| `vector_index.py` / `sqlite_vec.py` / `sqlite_vec_backend.py` | 向量索引抽象与 `sqlite-vec` 后端实现                      |
+| `inference.py` / `prompt_profiles.py` / `calibration.py`      | Tier-2 本地推理调用、提示词配置与校准                     |
+| `desktop_runtime.py`                                          | 读取 Desktop 下发的本地运行时描述符                       |
 
 ### 服务层 (`backend/open_webui/services/`)
+
 1. [epub_concept.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/services/epub_concept.py): EPUB 概念检索领域服务（导入、索引、查询用例编排）
 2. [epub_runtime.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/services/epub_runtime.py): 生命周期装配（建库、启停、RAG 推理策略配置）
 
 ### HTTP 层 (`backend/open_webui/routers/`)
+
 1. [epub.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/routers/epub.py): 唯一的 EPUB 路由（前缀 `/api/v1/epub`）。**所有路由均鉴权**：只读接口要求 `get_verified_user`，导入、销毁、词表、索引与 Batch 等写操作要求 `get_admin_user`。
 2. [main.py](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/backend/open_webui/main.py): 路由注册与 `epub_runtime` 生命周期挂载
 
 ### Frontend Components (`AuraPro-WebUI`)
+
 1. [src/lib/apis/epub/index.ts](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/src/lib/apis/epub/index.ts): `/api/v1/epub` 前端 API 客户端
-2. [src/routes/(app)/epub/+page.svelte](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/src/routes/(app)/epub/+page.svelte): 用户侧概念检索与阅读界面
-3. [src/routes/(app)/admin/epub/+page.svelte](file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/src/routes/(app)/admin/epub/+page.svelte): 管理员侧导入、索引与 Batch 管理界面
+2. [src/routes/(app)/epub/+page.svelte](<file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/src/routes/(app)/epub/+page.svelte>): 用户侧概念检索与阅读界面
+3. [src/routes/(app)/admin/epub/+page.svelte](<file:///Volumes/codes/workspace/aurapro_new/AuraPro-WebUI/src/routes/(app)/admin/epub/+page.svelte>): 管理员侧导入、索引与 Batch 管理界面
 
 ### Desktop Client Components (`AuraPro-Desktop`)
+
 Desktop **不是独立的功能客户端**，不承载任何 EPUB 功能 UI，也不接收 EPUB 专用 IPC、凭据或写权限。其唯一职责是**本地运行时供给**：
+
 1. `src/main/utils/llamacpp.ts` / `src/main/utils/index.ts`: llama.cpp 运行时与模型的下载、校验与生命周期管理
 2. 运行时描述符落盘（`AURAPRO_DESKTOP_LLM_RUNTIME_FILE`），供 WebUI 后端的 `retrieval/epub/desktop_runtime.py` 读取以启用 Tier-2 本地推理
 
 ---
 
 ## 三、 验证与测试计划 (Verification Plan)
+
 1. EPUB 目录树解析单元测试。
 2. Batch JSONL 异步提交与回收落库测试。
 3. 本地轻量模型 NER 识别与延迟测试。

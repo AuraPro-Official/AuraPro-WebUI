@@ -65,10 +65,10 @@ immutable parent passage in every case.
 
 ## 3. Deployment model
 
-| Profile | Canonical store | Derived vector index | Inference |
-|---|---|---|---|
-| Desktop / local server | Independent SQLite database | `sqlite-vec` in that database | Desktop-managed llama.cpp/Ollama or local model runtime |
-| Private remote server | Independent PostgreSQL database | `pgvector` plus `pg_trgm` | Model service on the server/private network |
+| Profile                | Canonical store                 | Derived vector index          | Inference                                               |
+| ---------------------- | ------------------------------- | ----------------------------- | ------------------------------------------------------- |
+| Desktop / local server | Independent SQLite database     | `sqlite-vec` in that database | Desktop-managed llama.cpp/Ollama or local model runtime |
+| Private remote server  | Independent PostgreSQL database | `pgvector` plus `pg_trgm`     | Model service on the server/private network             |
 
 The EPUB store must not use the main `webui.db` or the generic OpenWebUI RAG
 collection as its source of truth. Existing OpenWebUI model adapters may be
@@ -90,18 +90,18 @@ Offline OpenAI Batch is enabled only by the server-side
 `EPUB_CONCEPT_BATCH_OPENAI_COMPLETION_WINDOW`). It deliberately does not reuse
 generic OpenAI/RAG credentials and no browser request can set it.
 
-The online EPUB inference policy is stricter than generic RAG.  The built-in
+The online EPUB inference policy is stricter than generic RAG. The built-in
 AuraPro embedding and Cross-Encoder engines are accepted as in-process local
-execution.  An AuraPro Ollama embedding configuration is accepted only when
+execution. An AuraPro Ollama embedding configuration is accepted only when
 its actual URL is loopback/private, or its private DNS hostname is explicitly
 listed in the server-only comma-separated
 `EPUB_CONCEPT_TRUSTED_MODEL_HOSTNAMES`; OpenAI, Azure, and external reranker
-engines are disabled for EPUB rather than falling back.  Tier-2 concept
-resolution is optional only while it is unconfigured.  Administrator-managed
+engines are disabled for EPUB rather than falling back. Tier-2 concept
+resolution is optional only while it is unconfigured. Administrator-managed
 or development deployments may configure `EPUB_CONCEPT_LOCAL_LLM_ENDPOINT`
 and `EPUB_CONCEPT_LOCAL_LLM_MODEL`; the endpoint is validated with the same
 private-address policy and accepts an explicit private-DNS allowlist through
-`EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`.  In a Desktop-managed local
+`EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`. In a Desktop-managed local
 deployment, WebUI instead receives an absolute
 `AURAPRO_DESKTOP_LLM_RUNTIME_FILE` path. Desktop atomically writes the
 versioned, credential-free JSON descriptor containing its current loopback
@@ -113,15 +113,15 @@ llama.cpp timeout and output limit settings are
 `EPUB_CONCEPT_LOCAL_LLM_MAX_TOKENS`.
 
 Startup and the administrator runtime-status endpoint report the independent
-vector extension, embedding, reranker, and resolver separately.  The response
-contains no model URL, database path, or credentials.  A failed sqlite-vec SQL
+vector extension, embedding, reranker, and resolver separately. The response
+contains no model URL, database path, or credentials. A failed sqlite-vec SQL
 health check or model policy validation remains degraded/fail-closed and never
 substitutes a cloud service.
 
 ### 3.2 End-user local packaging requirement (D-010)
 
 The development and acceptance-test path may run a separately installed
-Homebrew `llama-server`, but this is not an end-user prerequisite.  For the
+Homebrew `llama-server`, but this is not an end-user prerequisite. For the
 desktop/local-server profile, a user must be able to install only AuraPro
 Desktop and AuraPro-WebUI, then use the EPUB feature without manually
 installing Homebrew, llama.cpp, Python model tooling, or a separate model
@@ -136,14 +136,14 @@ path through `AURAPRO_DESKTOP_LLM_RUNTIME_FILE`, and remove or invalidate the
 descriptor when the runtime stops. WebUI must not require an end user to edit
 `EPUB_CONCEPT_LOCAL_LLM_*` variables.
 The first-run UI must show model download progress, disk requirements, and a
-recoverable failure state.  This requirement does not mean models are embedded
-in the application installer: initial online model download is acceptable.  A
+recoverable failure state. This requirement does not mean models are embedded
+in the application installer: initial online model download is acceptable. A
 fully offline first run requires a separately distributed, versioned model
 bundle.
 
 For a shared remote WebUI server, user Desktop runtimes cannot execute
-server-side EPUB retrieval.  That deployment instead requires an
-administrator-owned private model runtime on the server/network.  Validate the
+server-side EPUB retrieval. That deployment instead requires an
+administrator-owned private model runtime on the server/network. Validate the
 current Homebrew acceptance path first, then validate the Desktop-managed path
 with no external user installation.
 
@@ -250,7 +250,7 @@ alone says nothing about the extraction instruction that was sent: reviewed
 quality belongs to one specific instruction, so promoting a new default prompt
 profile must not ride an older profile's approval. The column is nullable only
 because jobs predating it cannot gain a value inside a SQL migration. A null
-is read as *unknown* and never satisfies the gate from either side—an
+is read as _unknown_ and never satisfies the gate from either side—an
 unbackfilled approved sample unlocks nothing, and a full run that names no
 prompt profile is refused. An administrator-only backfill recovers the value
 for such jobs by matching the system instruction in the job's own stored
@@ -301,7 +301,7 @@ second, relation layer before its full-version offline Batch is accepted.
    "ambiguous or invalid output is a failed Batch item" — read every rejection
    as a defect in the response, and three conditions had to be exempted from it
    one at a time; all three were cases where the model answered correctly and
-   something *we* decided afterwards made one element unusable. The second
+   something _we_ decided afterwards made one element unusable. The second
    statement (6a–6c below) named that cause and folded the three exemptions in,
    and explicitly held that `EVIDENCE_ABSENT` and `EVIDENCE_AMBIGUOUS` stayed
    hard failures because "a grounding failure means no verified citation can be
@@ -322,7 +322,7 @@ second, relation layer before its full-version offline Batch is accepted.
    a single punctuation mark (`，` for `。`); one by a single deleted character;
    exactly one was a genuine paraphrase, and 62 of its 70 characters were still
    exact. The seven `EVIDENCE_AMBIGUOUS` packets fail for one uniform mechanical
-   reason: the model returns a context window *centred on and containing* its
+   reason: the model returns a context window _centred on and containing_ its
    own quote instead of the strictly preceding text, so exact-equality anchoring
    can never match at any occurrence. Both classes are one phenomenon — **the
    model reproduces real text reliably and is unreliable about the bookkeeping
@@ -333,7 +333,7 @@ second, relation layer before its full-version offline Batch is accepted.
    packet-scoped passage resolution, which would locate a span against any
    passage the packet showed the model rather than only the one it named, and a
    prompt fix plus a new Batch run. The first is a change to what grounding
-   *means* and would need its own measurement; the second costs a run and fixes
+   _means_ and would need its own measurement; the second costs a run and fixes
    nothing already returned.
 
    **What still fails the item whole**, because it names no single claim to
@@ -352,34 +352,34 @@ second, relation layer before its full-version offline Batch is accepted.
    decision of ours made one grounded element unusable.
 
    a. **A relation whose two endpoints resolve to the same concept.** An
-      administrator merged the endpoints after the response was produced: the
-      model named two distinct concepts and a later, correct administrative act
-      made them one. `merge_concepts` already drops a relation a merge turns
-      into a self-loop rather than refusing the merge, so this keeps ingest
-      consistent with it.
+   administrator merged the endpoints after the response was produced: the
+   model named two distinct concepts and a later, correct administrative act
+   made them one. `merge_concepts` already drops a relation a merge turns
+   into a self-loop rather than refusing the merge, so this keeps ingest
+   consistent with it.
    b. **An evidence span below the floor its prompt profile enforces**, dropped
-      during grounding. Such a span is real source text, correctly quoted; it is
-      simply too small to locate anything for a reader, and the floor is our
-      threshold, not a property of the response.
+   during grounding. Such a span is real source text, correctly quoted; it is
+   simply too small to locate anything for a reader, and the floor is our
+   threshold, not a property of the response.
    c. **A concept whose name and aliases match more than one existing concept.**
-      Ingest cannot link it without asserting a merge no administrator decided,
-      and SDD 4.2 forbids a model performing a semantic merge — so the concept
-      and its mentions are skipped, and the rest of the item ingests. This is
-      the case that most clearly belongs on this side of the line: the response
-      is accurate, the passage genuinely contains both spellings, and the
-      collision exists only because an administrator adjudicated those concepts
-      as distinct. It differs from (a) and (b) in one respect worth stating
-      plainly — a human *could* resolve it, by merging. Measured against the
-      full-book runs, that remedy is mostly unavailable: of 33 held items, 32
-      collided on pairs already adjudicated as distinct (13 on
-      `全域潮汐枢纽`｜`潮汐源` alone), which no merge can resolve without
-      reversing the adjudication, and a model will keep proposing them on every
-      future book because the text genuinely uses both. Exactly one was a
-      reviewable merge candidate. So the choice was never "skip versus review by
-      hand"; it was skip versus permanently discarding 32 items and every valid
-      concept and mention that arrived beside the collision. The trade taken in
-      exchange is real and is not hidden: a skipped concept's mentions link to
-      neither concept, and that silence is the cost of not failing the item.
+   Ingest cannot link it without asserting a merge no administrator decided,
+   and SDD 4.2 forbids a model performing a semantic merge — so the concept
+   and its mentions are skipped, and the rest of the item ingests. This is
+   the case that most clearly belongs on this side of the line: the response
+   is accurate, the passage genuinely contains both spellings, and the
+   collision exists only because an administrator adjudicated those concepts
+   as distinct. It differs from (a) and (b) in one respect worth stating
+   plainly — a human _could_ resolve it, by merging. Measured against the
+   full-book runs, that remedy is mostly unavailable: of 33 held items, 32
+   collided on pairs already adjudicated as distinct (13 on
+   `全域潮汐枢纽`｜`潮汐源` alone), which no merge can resolve without
+   reversing the adjudication, and a model will keep proposing them on every
+   future book because the text genuinely uses both. Exactly one was a
+   reviewable merge candidate. So the choice was never "skip versus review by
+   hand"; it was skip versus permanently discarding 32 items and every valid
+   concept and mention that arrived beside the collision. The trade taken in
+   exchange is real and is not hidden: a skipped concept's mentions link to
+   neither concept, and that silence is the cost of not failing the item.
 
    6d: **the citation itself does not verify.** This one is not an instance of
    the idea above and must not be read as a fourth exemption from it. Nothing we
@@ -387,31 +387,31 @@ second, relation layer before its full-version offline Batch is accepted.
    resting on it is therefore unsupported.
 
    d. **An evidence span that cannot be located in the passage it names**, in
-      either of the two measured forms: the literal does not occur there
-      (`EVIDENCE_ABSENT`), or it occurs more than once and no supplied anchor
-      selects one occurrence (`EVIDENCE_AMBIGUOUS`). The span is dropped during
-      grounding and the claim it was supporting goes with it — which is exactly
-      what "no verified citation" has always required. What changes is only the
-      *unit*: the claim rather than the item. Nothing unverified enters the
-      graph, because a dropped span is removed before anything is written; the
-      earlier rule was not protecting the invariant, it was additionally
-      destroying the verified work standing beside the failure.
+   either of the two measured forms: the literal does not occur there
+   (`EVIDENCE_ABSENT`), or it occurs more than once and no supplied anchor
+   selects one occurrence (`EVIDENCE_AMBIGUOUS`). The span is dropped during
+   grounding and the claim it was supporting goes with it — which is exactly
+   what "no verified citation" has always required. What changes is only the
+   _unit_: the claim rather than the item. Nothing unverified enters the
+   graph, because a dropped span is removed before anything is written; the
+   earlier rule was not protecting the invariant, it was additionally
+   destroying the verified work standing beside the failure.
 
-      **Scope, stated narrowly on purpose.** This applies to section-graph
-      packets, which are what it was measured on, and to those two classes and
-      no others. A `CONCEPT_MENTIONS` response still fails whole on an
-      ungrounded span. So do the other grounding rejections — a missing,
-      mismatched or over-long anchor, invalid offsets, an unreadable or
-      unknown passage, and evidence quoted from a `toc_path` field we sent
-      (`EVIDENCE_FROM_TOC_PATH`, a strict subset of "absent" that
-      `zh-section-graph-v3` already took to zero by removing the field). Some of
-      those are as localized as the two above; a span quoting a repeated literal
-      with a *wrong* anchor is now dropped while the same literal with *no*
-      anchor still fails its packet. That line is admittedly not "is this one
-      claim" — it is "has this class been measured". Two previous statements of
-      this rule went wrong by generalizing past their evidence, so widening it
-      is a decision for a future measurement rather than for the argument that
-      the cases look alike.
+   **Scope, stated narrowly on purpose.** This applies to section-graph
+   packets, which are what it was measured on, and to those two classes and
+   no others. A `CONCEPT_MENTIONS` response still fails whole on an
+   ungrounded span. So do the other grounding rejections — a missing,
+   mismatched or over-long anchor, invalid offsets, an unreadable or
+   unknown passage, and evidence quoted from a `toc_path` field we sent
+   (`EVIDENCE_FROM_TOC_PATH`, a strict subset of "absent" that
+   `zh-section-graph-v3` already took to zero by removing the field). Some of
+   those are as localized as the two above; a span quoting a repeated literal
+   with a _wrong_ anchor is now dropped while the same literal with _no_
+   anchor still fails its packet. That line is admittedly not "is this one
+   claim" — it is "has this class been measured". Two previous statements of
+   this rule went wrong by generalizing past their evidence, so widening it
+   is a decision for a future measurement rather than for the argument that
+   the cases look alike.
 
    In every case the skip cascades only to what the contract can no longer
    express, and never further: a concept left with no mentions is dropped, a
@@ -425,7 +425,7 @@ second, relation layer before its full-version offline Batch is accepted.
    Every skip is counted in the item's durable result, per condition, so the
    count is visible rather than silent — four counters, never summed into one.
    (b) and (d) in particular stay apart although the grounding pass drops both
-   and the cascade treats them identically: a sub-floor span is *our* threshold
+   and the cascade treats them identically: a sub-floor span is _our_ threshold
    and that number moves when we move the floor, while an unverifiable citation
    is the model's bookkeeping and moves only with a different prompt or model.
    In one column a floor change and a model regression would be
@@ -452,6 +452,7 @@ second, relation layer before its full-version offline Batch is accepted.
    A second implementation, however carefully written, could disagree — and a
    measurement that disagrees with the write is worse than no measurement,
    because it is the one that gets quoted in a decision.
+
 7. The evidence floor named in 6b, and why it is a number rather than a
    judgement. Failing an item over a sub-floor span discards everything valid
    that arrived beside it: on the full-book section-graph run that cost 13 of 43
@@ -535,7 +536,7 @@ relationship affects retrieval provenance and ranking, never citation text.
   not how a reached span is ordered, but which matched concepts are allowed to
   reach anything at all. A concept matched only by a short surface form still
   resolves, still appears in `resolved_concepts`, and still contributes every
-  one of its own spans; it simply does not *seed* expansion. The test is about
+  one of its own spans; it simply does not _seed_ expansion. The test is about
   the **matched term**, never about the concept behind it: a concept is
   expansion-eligible when its winning matched term is at least two code points
   and is not a one-character model-proposed alias. Term length is measured on
@@ -543,7 +544,7 @@ relationship affects retrieval provenance and ranking, never citation text.
   per concept, so a concept whose full name the query spelled out is judged on
   that name. Nothing a seed reaches is capped or truncated — the down-weighting
   rule above still governs everything that is reached.
-- Two properties of the *concept* are deliberately excluded from that rule.
+- Two properties of the _concept_ are deliberately excluded from that rule.
   **Mention count is not a signal.** How often a book discusses something is a
   fact about the book, not about what the reader asked for: `枢纽的权重` is matched
   by its full five-code-point name and is a specific topic that a book about God
@@ -567,7 +568,7 @@ relationship affects retrieval provenance and ranking, never citation text.
   real passage and a structural edge has no prose evidence — the only way to
   satisfy that constraint would be to anchor structural edges on heading
   passages, which is the very failure this expansion exists to route around.
-  Four rules bound it. A concept **binds** to a TOC node only when *every* one of
+  Four rules bound it. A concept **binds** to a TOC node only when _every_ one of
   its mentions falls in a passage under that node, so a concept the book
   discusses throughout binds to nothing and can neither seed this expansion nor
   be admitted by it. A seed expands this way only when it is expansion-eligible
@@ -601,11 +602,11 @@ object:
 
 ```json
 {
-  "excerpt": {
-    "content": "a continuous source substring",
-    "start_codepoint": 42,
-    "end_codepoint": 86
-  }
+	"excerpt": {
+		"content": "a continuous source substring",
+		"start_codepoint": 42,
+		"end_codepoint": 86
+	}
 }
 ```
 

@@ -743,7 +743,7 @@
 			</div>{/if}
 		<div class="mt-4 flex items-center justify-between gap-2">
 			<p class="text-xs text-gray-500">
-					已审核样本仅保存任务标识、prompt profile 标识、审核状态和时间，不复制原文、prompt
+				已审核样本仅保存任务标识、prompt profile 标识、审核状态和时间，不复制原文、prompt
 				正文或云端输出。批准只对同一 prompt profile 生效。
 			</p>
 			<button
