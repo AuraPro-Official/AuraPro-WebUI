@@ -408,6 +408,17 @@ class LlamaCppConceptResolver:
             decoded = json.loads(message['content'])
         except (TypeError, json.JSONDecodeError) as error:
             raise LocalInferenceUnavailable('llama.cpp returned invalid concept JSON') from error
+        # A bare JSON ``null`` is the abstention, spelled the shortest way the
+        # model can spell it.  Measured against a local Qwen2.5-3B on the
+        # acceptance store, it is what the model returns for *every* query it
+        # declines — including all three out-of-domain controls — so reading it
+        # as a malformed response reported the tier's single most valuable
+        # behaviour as an unavailable resolver, and made a clean abstention
+        # indistinguishable from a broken runtime in the degraded list.  The
+        # schema stays strict everywhere it can carry a concept: only the
+        # no-answer case has a second spelling, and it cannot smuggle one in.
+        if decoded is None:
+            return None
         if not isinstance(decoded, Mapping) or set(decoded) != {'concept'}:
             raise LocalInferenceUnavailable('llama.cpp concept JSON has an invalid schema')
         resolved = decoded.get('concept')
