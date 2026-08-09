@@ -15,6 +15,7 @@ logger = logging.getLogger('bilingual_align')
 
 try:
     from icu4py.breakers import WordBreaker
+
     _ICU_AVAILABLE = True
 except ImportError:
     _ICU_AVAILABLE = False
@@ -226,14 +227,13 @@ class Tokenizer:
         except LookupError:
             return lang_name.casefold()
 
-
     @classmethod
     def _tokenize_icu(cls, text: str, lang: str) -> list[str]:
         lang_key = cls._normalize_lang_key(lang)
         try:
             breaker = WordBreaker(text, lang_key)
         except Exception:
-            breaker = WordBreaker(text, "en")
+            breaker = WordBreaker(text, 'en')
         return [w.strip() for w in breaker if w.strip() and not re.fullmatch(r'[\s]+', w.strip())]
 
     # @classmethod
@@ -493,7 +493,9 @@ class GlossaryBuilder:
             return
 
         all_alignments = self._aligner.align_batch(filtered_pairs)
-        for idx, ((src_words, tgt_words), alignments, (src_pos, tgt_pos)) in enumerate(zip(filtered_pairs, all_alignments, filtered_pos)):
+        for idx, ((src_words, tgt_words), alignments, (src_pos, tgt_pos)) in enumerate(
+            zip(filtered_pairs, all_alignments, filtered_pos)
+        ):
             self._emit_progress(
                 f'正在进行词库词对齐：{idx + 1}/{len(filtered_pairs)}',
                 step='wordalign',
@@ -504,7 +506,9 @@ class GlossaryBuilder:
             for src_p, tgt_p in phrase_pairs:
                 self._phrase_pairs[src_p][tgt_p] += 1
 
-        self._emit_progress('词库词对齐完成', step='wordalign', current=max(1, len(filtered_pairs)), total=max(1, len(filtered_pairs)))
+        self._emit_progress(
+            '词库词对齐完成', step='wordalign', current=max(1, len(filtered_pairs)), total=max(1, len(filtered_pairs))
+        )
 
     def build(
         self,
