@@ -1795,6 +1795,7 @@ async def chat_completion(
 
         # Release the session slot once every spawned fan-out task has finished.
         if session_slot_held and session_semaphore is not None and spawned_tasks:
+
             async def release_session_slot_after_tasks():
                 try:
                     await asyncio.gather(*spawned_tasks, return_exceptions=True)
