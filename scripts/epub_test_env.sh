@@ -93,8 +93,12 @@ RUFF_PIN="ruff>=0.15.5"
 #                       clauses are invisible to a passing test suite
 REQUIREMENTS=(typer uvicorn fastapi httpx "${MULTIPART_PIN}" "${SQLITE_VEC_PIN}" "${JIEBA_PIN}" "${RUFF_PIN}")
 
-# Pyflakes-only. The repo-wide ruff style rules (single quotes, line length) do
-# not yet apply to the EPUB modules and would bury the finding that matters.
+# Pyflakes-only, and deliberately so. The repo-wide ruff style rules (single
+# quotes, line length) now DO apply to the EPUB modules and are enforced on
+# their own by `ruff format --check` in CI, so there is nothing left for this
+# invocation to add there. Narrowing it to F keeps the finding that matters --
+# a name reachable only from an `except` clause and therefore invisible to a
+# passing test suite -- from being buried in style output.
 RUFF_PATHS=(
 	backend/open_webui/retrieval/epub
 	backend/open_webui/retrieval/parsers/epub
