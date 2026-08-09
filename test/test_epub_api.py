@@ -263,6 +263,17 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(wrong_kind.status_code, 400)
         self.assertIn("same version and job kind", wrong_kind.json()["detail"])
 
+        wrong_profile = self.client.post(
+            "/api/v1/epub/admin/batches",
+            json={
+                "version_id": "version-1",
+                "profile_name": "other-cloud-model-snapshot",
+                "is_sample": False,
+            },
+        )
+        self.assertEqual(wrong_profile.status_code, 400)
+        self.assertIn("same model profile", wrong_profile.json()["detail"])
+
         full = self.client.post(
             "/api/v1/epub/admin/batches",
             json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": False},
