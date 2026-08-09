@@ -17,6 +17,20 @@ here.  It exists to answer one question the durable store cannot:
   beside them.  Every recovery figure so far has been extrapolated from the
   succeeded packets' average.  This replaces the extrapolation with a count.
 
+The count it produced -- 183 evidence spans across job 31efbf3b's ten failed
+packets, of which 17 were ungrounded, discarding 78 concepts, 78 mentions and
+51 relations -- is what SDD 4.2.2 point 6d was decided from.  That rule then
+absorbed this harness's central behaviour: dropping a claim-level rejection and
+carrying on is now what *ingest* does.  So this remains useful as a preview of
+what a re-ingest will write, and as the only place a packet's losses are broken
+down by reason slug, which an item row deliberately does not keep.
+
+Read ``spans_skipped_by_ingest`` beside ``spans_failed``.  A probe also
+classifies the rejections ingest still refuses to drop -- an unavailable
+passage, an anchor defect -- so where the two numbers differ, the grounded
+counts on that row are what the packet *contains*, not what a re-ingest would
+recover.
+
 --------------------------------------------------------------------------
 WHAT IT COSTS, AND WHAT IT CHANGES
 --------------------------------------------------------------------------
@@ -27,9 +41,9 @@ Nothing, and nothing.
     this script ever appears about to call ``submit``, that is a bug: it would
     cost money and is not what this is for.
   * It writes nothing.  ``dry_run_failed_packets`` never records a provider
-    state, never ingests, never records or reconciles a failure.  The rule that
-    might one day skip an ungrounded span and keep the rest of its packet has
-    not been decided; this has to be safe to run while it is still open.
+    state, never ingests, never records or reconciles a failure.  That mattered
+    when the rule it informed was still open; it matters now because a preview
+    of a write must never be able to perform one.
 
 For the second guarantee to be checkable rather than merely asserted, the
 harness never opens the nominated store at all.  It takes a ``VACUUM INTO``
@@ -84,9 +98,9 @@ from open_webui.services.epub_concept import evidence_floors  # noqa: E402
 DEFAULT_DB = "/private/tmp/aurapro-epub-e2e/epub_concept_v1.db"
 API_KEY_VARIABLE = "EPUB_CONCEPT_BATCH_OPENAI_API_KEY"
 
-# The two classes the owner is likely to treat differently, and the reason they
-# have to be aggregated apart.  EVIDENCE_ABSENT means the model quoted text that
-# is not in the book at all; EVIDENCE_AMBIGUOUS means the text *is* there,
+# The two claim-level classes (SDD 4.2.2 point 6d), aggregated apart because
+# they are different findings.  EVIDENCE_ABSENT means the model quoted text that
+# is not in the passage it named; EVIDENCE_AMBIGUOUS means the text *is* there,
 # verbatim, more than once, and only the occurrence could not be resolved.
 REPORTED_CLASSES = ("EVIDENCE_AMBIGUOUS", "EVIDENCE_ABSENT")
 
@@ -179,6 +193,10 @@ COLUMNS = (
     ("spans", "evidence_spans"),
     ("absent", None),
     ("ambig", None),
+    # Of the failed spans, the ones ingest would itself drop.  Where this is
+    # lower than absent+ambig the packet still fails whole, so the grounded
+    # columns to its right are what the packet holds, not what a re-ingest gets.
+    ("skipped", "spans_skipped_by_ingest"),
     ("floor", "spans_below_floor"),
     ("concepts", "concepts_grounded"),
     ("mentions", "mentions_grounded"),
@@ -241,6 +259,7 @@ def print_report(report: dict[str, Any]) -> None:
         print(f"    evidence spans          {totals['spans']}")
         print(f"    spans EVIDENCE_ABSENT   {totals['absent']}")
         print(f"    spans EVIDENCE_AMBIG.   {totals['ambig']}")
+        print(f"    spans ingest would skip {totals['skipped']}")
         print(f"    spans below the floor   {totals['floor']}")
         print(c(f"    concepts recoverable    {totals['concepts']}", BOLD))
         print(c(f"    mentions recoverable    {totals['mentions']}", BOLD))
@@ -310,6 +329,13 @@ def main(argv: Sequence[str]) -> int:
     # ``SQLiteEpubStore`` migrates on construction, so a genuinely untouched
     # file is not the guarantee available here; an unchanged Batch ledger and an
     # unchanged graph is, and it is the guarantee that matters.
+    #
+    # One expected exception, and only one: a snapshot taken from a store older
+    # than the current SCHEMA_VERSION is migrated on open, and an ALTER TABLE
+    # that adds a column changes that table's ``SELECT *`` shape and therefore
+    # its checksum with no row having been written.  ``batch_items`` alone,
+    # with its row count unchanged, on a store that was behind - that is the
+    # migration.  Any other table, or any changed row count, is a real write.
     changed = [table for table in before if before[table] != after[table]]
     print(c(f"  write check: {len(before)} tables, "
             f"{'UNCHANGED' if not changed else 'CHANGED ' + ', '.join(changed)}",
