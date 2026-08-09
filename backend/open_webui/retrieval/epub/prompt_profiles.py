@@ -24,6 +24,61 @@ class ConceptPromptProfile:
     system_instruction: str
     max_tokens: int = 1_200
     temperature: float = 0.0
+    # Whether the instruction asks for adjacent evidence context anchors, and
+    # therefore which strict schema a remote Structured Outputs request uses.
+    # This is a property of the profile rather than of "whichever profile is
+    # currently the default": a superseded anchored profile must keep sending
+    # the anchored schema so an existing sample stays replayable.
+    uses_context_anchors: bool = False
+    # Whether the instruction asks the model for code-point offsets.  Same
+    # reasoning as the flag above, and the same name the section graph path
+    # already uses for the same decision.  Ingest never reads it: it recognises
+    # the shape per mention, from the field set the model actually returned, so
+    # a stored request built from any registered profile still replays.
+    asks_for_offsets: bool = True
+    # Two different numbers, deliberately, and the distinction is the whole
+    # point of naming them separately.
+    #
+    # ``requested_min_evidence_codepoints`` is what this profile's instruction
+    # *asks* the model for, in Unicode code points.  It is a transcription of
+    # the text and nothing else: the instruction is digest-pinned and immutable,
+    # so this field must always state the number that text says, and a test
+    # asserts exactly that.  Same per-profile reasoning as the two flags above -
+    # v1-v5 never asked for a minimum, so ``0`` is the only honest value for
+    # them.
+    #
+    # ``enforced_min_evidence_codepoints`` is what cloud ingest actually applies
+    # to a returned span.  A span below it is dropped from the payload during
+    # grounding; the rest of the item still ingests.  ``batch.py`` must not
+    # import this module - cloud ingest recognises a payload shape without
+    # importing an extraction-policy module - so this is the value the service
+    # layer injects into the batch repository.
+    #
+    # Why they differ.  A floor that is only ever asked for is silently
+    # optional: measured on the completed full-book v6 run, 345 of 2,619 stored
+    # mentions (13.2%) came in below it, 45 of them 1-3 code points.  But the
+    # requested number is also the wrong number to enforce.  The pathology it
+    # was aimed at is the one-to-four-character bare term - ``神``, ``撒但``,
+    # ``耶和华神`` - which is ubiquitous and therefore unlocatable and useless as
+    # a citation.  Length was a proxy for "distinctive and locatable", and in
+    # Chinese 10 code points overshoots that proxy badly: ``神对亚当的嘱咐`` (7)
+    # and ``万口在称独一真神`` (8) are complete, distinctive citations, and
+    # enforcing 10 on the section-graph run discarded them along with 140
+    # concepts, 140 mentions and 105 relations across 13 of 43 packets.
+    #
+    # So the request stays high and the enforcement sits at 6: asking for more
+    # than is enforced encourages a substantive citation while rejecting only
+    # what is genuinely unusable, and the margin between the two numbers is
+    # exactly the population that would otherwise be thrown away.  Raising
+    # enforcement to meet the request is never the fix here; a new profile whose
+    # instruction asks for something different is.
+    #
+    # The escape hatch belongs to the requested clause and is enforced with the
+    # floor: the instruction says that a passage shorter than the minimum is
+    # quoted whole, so evidence equal to the entire passage is compliant however
+    # short it is.
+    requested_min_evidence_codepoints: int = 0
+    enforced_min_evidence_codepoints: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +91,7 @@ class ConceptPayloadValidation:
     reason: str | None = None
 
 
-DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v4"
+DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v7"
 
 # Bounded, adjacent literal context distinguishes repeated evidence without
 # putting another copy of a passage into a provider response.
@@ -47,87 +102,127 @@ MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
 # supports Structured Outputs. Local llama.cpp still uses json_object plus the
 # same textual contract because smaller GGUF models and server builds do not
 # reliably implement the complete json_schema surface.
-_LEGACY_CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = {
+#
+# Three mention shapes are registered, and all three stay live: a durable Batch
+# request is built once and replayed from its stored row, so a superseded shape
+# has to keep being buildable byte for byte.
+_LEGACY_MENTION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["concepts"],
+    "required": ["start_codepoint", "end_codepoint", "evidence"],
     "properties": {
-        "concepts": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["name", "aliases", "definition", "mentions"],
-                "properties": {
-                    "name": {"type": "string", "minLength": 1},
-                    "aliases": {"type": "array", "items": {"type": "string"}},
-                    "definition": {"type": "string"},
-                    "mentions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["start_codepoint", "end_codepoint", "evidence"],
-                            "properties": {
-                                "start_codepoint": {"type": "integer", "minimum": 0},
-                                "end_codepoint": {"type": "integer", "minimum": 1},
-                                "evidence": {"type": "string", "minLength": 1},
-                            },
-                        },
-                    },
-                },
-            },
-        }
+        "start_codepoint": {"type": "integer", "minimum": 0},
+        "end_codepoint": {"type": "integer", "minimum": 1},
+        "evidence": {"type": "string", "minLength": 1},
+    },
+}
+
+_ANCHORED_MENTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "start_codepoint", "end_codepoint", "evidence",
+        "context_before", "context_after",
+    ],
+    "properties": {
+        "start_codepoint": {"type": "integer", "minimum": 0},
+        "end_codepoint": {"type": "integer", "minimum": 1},
+        "evidence": {"type": "string", "minLength": 1},
+        "context_before": {
+            "type": "string",
+            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        },
+        "context_after": {
+            "type": "string",
+            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        },
+    },
+}
+
+# ``zh-glossary-v7`` asks for no offsets at all.  The measurement that justifies
+# this came from these very concept samples: across four of them a model
+# supplies a correct ``start_codepoint``/``end_codepoint`` pair about one time
+# in thirty-seven while naming the right evidence text almost every time, and
+# every stored citation is byte-exact only because grounding re-derives the
+# offset from the literal.  ``zh-section-graph-v2`` acted on that evidence and
+# the concept path did not; this is that correction.  The adjacent context
+# anchor is what remains: it is the only thing a model has to supply for the
+# server to choose between repeated literals.
+_ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["evidence", "context_before", "context_after"],
+    "properties": {
+        "evidence": {"type": "string", "minLength": 1},
+        "context_before": {
+            "type": "string",
+            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        },
+        "context_after": {
+            "type": "string",
+            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        },
     },
 }
 
 
-CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["concepts"],
-    "properties": {
-        "concepts": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["name", "aliases", "definition", "mentions"],
-                "properties": {
-                    "name": {"type": "string", "minLength": 1},
-                    "aliases": {"type": "array", "items": {"type": "string"}},
-                    "definition": {"type": "string"},
-                    "mentions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": [
-                                "start_codepoint", "end_codepoint", "evidence",
-                                "context_before", "context_after",
-                            ],
-                            "properties": {
-                                "start_codepoint": {"type": "integer", "minimum": 0},
-                                "end_codepoint": {"type": "integer", "minimum": 1},
-                                "evidence": {"type": "string", "minLength": 1},
-                                "context_before": {
-                                    "type": "string",
-                                    "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
-                                },
-                                "context_after": {
-                                    "type": "string",
-                                    "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
-                                },
-                            },
-                        },
+def _concept_output_schema(mention_schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the concept output schema around one mention shape.
+
+    Only the mention differs between the registered contracts, so the concept
+    envelope is written once here rather than copied per shape - the same
+    reason :func:`section_graph._output_schema` exists.
+    """
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["concepts"],
+        "properties": {
+            "concepts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["name", "aliases", "definition", "mentions"],
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1},
+                        "aliases": {"type": "array", "items": {"type": "string"}},
+                        "definition": {"type": "string"},
+                        "mentions": {"type": "array", "items": dict(mention_schema)},
                     },
                 },
-            },
-        }
-    },
-}
+            }
+        },
+    }
 
 
+# The same three shapes as field sets, for validating a payload that has
+# already been decoded.  Cloud ingest keeps its own copies in ``batch.py``: it
+# must recognise a shape without importing an extraction-policy module, and the
+# durable store is the only place where a mismatch could corrupt a citation.
+_LEGACY_MENTION_FIELDS = set(_LEGACY_MENTION_SCHEMA["required"])
+_ANCHORED_MENTION_FIELDS = set(_ANCHORED_MENTION_SCHEMA["required"])
+_ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS = set(
+    _ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS["required"]
+)
+
+
+_LEGACY_CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = _concept_output_schema(_LEGACY_MENTION_SCHEMA)
+
+CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = _concept_output_schema(_ANCHORED_MENTION_SCHEMA)
+
+CONCEPT_OUTPUT_SCHEMA_WITHOUT_OFFSETS: dict[str, Any] = _concept_output_schema(
+    _ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS
+)
+
+
+# A registered profile is immutable.  Durable cloud sample approvals key on the
+# profile ID, so editing v1-v6 in place would silently re-point an existing
+# approval at an instruction that was never sampled.  A change is always a new
+# entry, and the superseded entries stay exactly as they were submitted.  v6 in
+# particular now carries the one approved sample and the full-book job that
+# approval unlocked, so it is digest-pinned in test_epub_prompt_profiles.py
+# exactly as v1-v5 are.
 _PROFILES: dict[str, ConceptPromptProfile] = {
     "zh-glossary-v1": ConceptPromptProfile(
         profile_id="zh-glossary-v1",
@@ -178,9 +273,10 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
         ),
     ),
-    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
-        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+    "zh-glossary-v4": ConceptPromptProfile(
+        profile_id="zh-glossary-v4",
         max_tokens=512,
+        uses_context_anchors=True,
         system_instruction=(
             "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
             "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
@@ -200,7 +296,194 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
         ),
-    )
+    ),
+    "zh-glossary-v5": ConceptPromptProfile(
+        profile_id="zh-glossary-v5",
+        # v4's 512-token budget was the direct cause of a third of its sample
+        # failures: the provider returned no JSON payload at all on the longest
+        # passages (1174, 1040 and 692 code points).  The worst case this
+        # contract permits is 6 concepts, each carrying a name, up to 2 aliases,
+        # a definition of at most 30 characters, and one mention holding
+        # evidence plus two anchors of at most 48 code points.  Budgeting 20
+        # code points per name and per alias and 40 for evidence, that is
+        # 20 + 2*20 + 30 + 40 + 2*48 = 226 code points of content per concept,
+        # which for CJK text costs roughly one token per code point, plus about
+        # 70 tokens of JSON field names, digits and punctuation: ~296 tokens per
+        # concept, ~1_780 for six, plus the wrapper object.  2_048 clears that
+        # ceiling with margin.  Typical responses are far smaller, because the
+        # anchors below are now empty unless the evidence actually repeats.
+        max_tokens=2_048,
+        uses_context_anchors=True,
+        system_instruction=(
+            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
+            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
+            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
+            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
+            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
+            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
+            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、"
+            "end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，"
+            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
+            "包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、"
+            "全角与半角标点、空格和大小写。evidence 在本段只出现一次时，"
+            "context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，"
+            "两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，"
+            "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
+            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
+            "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":1,\"evidence\":\"…\","
+            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
+            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
+            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+        ),
+    ),
+    "zh-glossary-v6": ConceptPromptProfile(
+        profile_id="zh-glossary-v6",
+        # v6 is v5 plus one clause: a minimum evidence span.  Everything else --
+        # the 2_048-token budget, the conditional anchors, the verbatim-copy
+        # rule, the object shape, the leading-"{" rule and the six-concept cap --
+        # is v5's text byte for byte, so running v6 beside the two in-flight v5
+        # samples isolates exactly this variable.
+        #
+        # Why a minimum at all: every v3/gpt-4.1 EVIDENCE_AMBIGUOUS failure cited
+        # a span of 1, 2, 3, 3, 3, 3 and 6 code points, occurring 38, 4, 3, 3, 7,
+        # 10 and 2 times in its passage; the pre-grounding-fix v4 failures had the
+        # same 1-2 code-point shape.  A one-character citation is both useless to
+        # a reader and almost certain to repeat, and repetition is what drives the
+        # ambiguity.  Requiring the span to be a phrase *containing* the term,
+        # rather than the bare term, keeps it a byte-exact source substring -- so
+        # source fidelity is untouched -- while making it far likelier to be
+        # unique.
+        #
+        # Why 10: it sits strictly above the whole observed failure distribution
+        # (max 6) with margin, and it is about the length of a short Chinese
+        # clause, so it asks for a real citation rather than padding.  It stays
+        # well below MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48, the only
+        # length bound the code path imposes and one that applies to the anchors
+        # rather than to the evidence, so the two cannot collide; nothing caps
+        # evidence length anywhere.  It also stays inside the 40 code points the
+        # v5 token budget above already reserves per evidence string.
+        #
+        # Why the passage-length escape hatch: 10 code points is unreachable in
+        # eight of the twenty sampled passages.  Measured over the sample, the
+        # lengths are 9, 9, 10, 10, 10, 10, 10, 10, 12, 17, 18, 28, 87, 105, 166,
+        # 270, 406, 692, 1_040 and 1_174 code points -- mostly headings at the
+        # short end, two of them shorter than the minimum itself.  Without the
+        # escape hatch those passages would put the model in an impossible bind
+        # and invite it to invent text, which strict validation would then reject.
+        #
+        # ``requested_min_evidence_codepoints`` states the same 10 as a
+        # machine-readable fact.  It is not a new requirement on v6 and does not
+        # change a byte of the instruction: it is the number that instruction
+        # has always named.  What ingest applies is
+        # ``enforced_min_evidence_codepoints``, which is lower on purpose; see
+        # the field definitions on ``ConceptPromptProfile``.
+        max_tokens=2_048,
+        requested_min_evidence_codepoints=10,
+        enforced_min_evidence_codepoints=6,
+        uses_context_anchors=True,
+        system_instruction=(
+            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
+            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
+            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
+            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
+            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
+            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
+            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、"
+            "end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，"
+            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
+            "包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、"
+            "全角与半角标点、空格和大小写。evidence 至少 10 个 Unicode 字符，"
+            "且必须是包含该概念的完整、有意义的短语或分句，不得只给出概念本身，"
+            "也不得截取无意义的字符片段；本段总长不足 10 个 Unicode 字符时，evidence 取本段全文。"
+            "evidence 在本段只出现一次时，"
+            "context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，"
+            "两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，"
+            "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
+            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
+            "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":10,\"evidence\":\"…\","
+            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
+            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
+            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+        ),
+    ),
+    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
+        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+        # v7 is v6 minus the offsets, and nothing else.  Every lever v6 earned
+        # its 20/20 with survives byte for byte: the >=10 code-point minimum
+        # evidence span with its short-passage escape hatch, the conditional
+        # anchors, the verbatim-copy clause naming the normalizations to avoid,
+        # the six-concept cap, the strict object shape, the leading-"{" rule and
+        # the no-Markdown rule.
+        #
+        # Why drop them: the measurement that justified dropping offsets from
+        # ``zh-section-graph-v2`` was taken on *these* samples.  Across four
+        # cloud concept samples the model supplies a correct
+        # ``start_codepoint``/``end_codepoint`` pair about one time in
+        # thirty-seven, while naming the right evidence text almost every time;
+        # every stored citation is byte-exact only because
+        # ``_resolve_evidence_span`` re-derives the offset from the literal.
+        # The conclusion was applied to the section graph path and not to this
+        # one.  Asking for a number that is wrong 97% of the time and then
+        # thrown away costs output tokens on every span, and sustains the
+        # ``ANCHOR_MISMATCH`` failure class, which exists only on the
+        # ``direct_is_exact`` branch that fires ~3% of the time.  Under this
+        # contract that branch is unreachable, so the class cannot occur.
+        #
+        # This is a cost and cleanliness change, not a correctness fix: v6
+        # scored 20/20 and grounding repairs its offsets, so nothing about the
+        # in-flight v6 full-book job needs revisiting.  That job replays from
+        # its persisted ``request_json``, and ingest recognises a mention shape
+        # from the fields the model returned rather than from whichever profile
+        # is currently the default, so promoting v7 cannot reach it.
+        #
+        # max_tokens stays at v6's 2_048 deliberately, for two reasons.  First,
+        # it is a ceiling on generation, not a spend: a response is billed for
+        # the tokens it actually emits, and v7 emits fewer by construction -
+        # roughly 20 per span for two field names, their digits and two commas,
+        # about 120 over the six mentions this contract permits.  Lowering the
+        # ceiling would bank no saving; it would only move the worst case closer
+        # to truncation, and a truncated response is not JSON at all - the
+        # single most expensive failure mode there is, paid for and unusable,
+        # and the exact one that forced v4's 512 up to v5's 2_048.  Second, v7
+        # exists to isolate one variable against the approved v6 sample; a
+        # different decoding budget would confound that comparison, which is why
+        # v6 kept v5's budget and ``zh-section-graph-v3`` kept v2's.  The v5
+        # arithmetic still bounds this contract, and now over-bounds it: the
+        # worst case shrinks from ~1_780 tokens to ~1_660.
+        max_tokens=2_048,
+        # v7's instruction carries v6's minimum evidence clause verbatim,
+        # including the short-passage escape hatch, so it requests v6's number
+        # and is enforced at v6's floor.
+        requested_min_evidence_codepoints=10,
+        enforced_min_evidence_codepoints=6,
+        uses_context_anchors=True,
+        asks_for_offsets=False,
+        system_instruction=(
+            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
+            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
+            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
+            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
+            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
+            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
+            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 evidence、"
+            "context_before、context_after 三个字段；不要输出任何字符位置，"
+            "字符位置由程序依据 evidence 在本段中重新推导。"
+            "evidence 必须与本段中的一段原文完全一致，"
+            "包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、"
+            "全角与半角标点、空格和大小写。evidence 至少 10 个 Unicode 字符，"
+            "且必须是包含该概念的完整、有意义的短语或分句，不得只给出概念本身，"
+            "也不得截取无意义的字符片段；本段总长不足 10 个 Unicode 字符时，evidence 取本段全文。"
+            "evidence 在本段只出现一次时，"
+            "context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，"
+            "两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，"
+            "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
+            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
+            "\"mentions\":[{\"evidence\":\"…\","
+            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
+            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
+            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+        ),
+    ),
 }
 
 
@@ -213,6 +496,18 @@ def get_prompt_profile(profile_id: str) -> ConceptPromptProfile:
     if profile is None:
         raise PromptProfileError(f"unknown EPUB concept prompt profile: {profile_id}")
     return profile
+
+
+def _strict_schema_for(profile: ConceptPromptProfile) -> dict[str, Any]:
+    """Pick the Structured Outputs schema one profile's instruction asks for."""
+    if not profile.uses_context_anchors:
+        # v1-v3: offsets, no anchors.  No registered profile asks for neither,
+        # because a payload with no offsets and no anchors could not resolve a
+        # repeated literal at all.
+        return _LEGACY_CONCEPT_OUTPUT_SCHEMA
+    if profile.asks_for_offsets:
+        return CONCEPT_OUTPUT_SCHEMA
+    return CONCEPT_OUTPUT_SCHEMA_WITHOUT_OFFSETS
 
 
 def build_concept_completion_request(
@@ -235,11 +530,10 @@ def build_concept_completion_request(
             "json_schema": {
                 "name": "epub_concepts",
                 "strict": True,
-                "schema": (
-                    CONCEPT_OUTPUT_SCHEMA
-                    if profile_id == DEFAULT_CONCEPT_PROMPT_PROFILE
-                    else _LEGACY_CONCEPT_OUTPUT_SCHEMA
-                ),
+                # Both flags come from the profile, never from the current
+                # default, so a superseded profile keeps sending the exact
+                # schema it was sampled with.
+                "schema": _strict_schema_for(profile),
             },
         }
     else:
@@ -315,18 +609,33 @@ def validate_concept_payload(payload: Any, *, passage: str) -> ConceptPayloadVal
         if not isinstance(concept_mentions, list) or not concept_mentions:
             return ConceptPayloadValidation(False, 0, mentions, "each concept needs a visible mention")
         for mention in concept_mentions:
-            if not isinstance(mention, Mapping) or (
-                set(mention) != {"start_codepoint", "end_codepoint", "evidence"}
-                and set(mention)
-                != {
-                    "start_codepoint", "end_codepoint", "evidence",
-                    "context_before", "context_after",
-                }
+            if not isinstance(mention, Mapping) or set(mention) not in (
+                _LEGACY_MENTION_FIELDS,
+                _ANCHORED_MENTION_FIELDS,
+                _ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS,
             ):
                 return ConceptPayloadValidation(False, 0, mentions, "each mention has an invalid schema")
-            start = mention["start_codepoint"]
-            end = mention["end_codepoint"]
             evidence = mention["evidence"]
+            if set(mention) == _ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS:
+                # A v7 payload carries no offsets at all, so this validator
+                # derives them from the literal exactly as cloud ingest does.
+                # The checks below are then run unchanged against the derived
+                # span, which keeps one definition of "valid mention" rather
+                # than a second, looser one for the newer shape.
+                located = _locate_evidence(
+                    passage,
+                    evidence if isinstance(evidence, str) else "",
+                    mention["context_before"],
+                    mention["context_after"],
+                )
+                if located is None:
+                    return ConceptPayloadValidation(
+                        False, 0, mentions, "mention evidence cannot be uniquely located"
+                    )
+                start, end = located
+            else:
+                start = mention["start_codepoint"]
+                end = mention["end_codepoint"]
             if (
                 isinstance(start, bool)
                 or isinstance(end, bool)
@@ -399,6 +708,45 @@ def normalize_local_payload_offsets(payload: Any, *, passage: str) -> Any:
         normalized_concept["mentions"] = normalized_mentions
         normalized_concepts.append(normalized_concept)
     return {**payload, "concepts": normalized_concepts}
+
+
+def _locate_evidence(
+    passage: str, evidence: str, before: Any, after: Any
+) -> tuple[int, int] | None:
+    """Derive the span of an offsets-free mention, or ``None`` if it is unsafe.
+
+    This is the read-only twin of the no-offsets branch of
+    ``batch._resolve_evidence_span`` and follows the same rule: a literal that
+    occurs once is self-verifying, a literal that repeats must be selected by a
+    non-empty adjacent anchor, and anything else is not a located mention.  The
+    durable path deliberately stays in ``batch.py`` with its diagnostics; this
+    one exists because a local calibration run has to be able to score the
+    default profile, and it writes nothing.
+    """
+    if not evidence or not isinstance(before, str) or not isinstance(after, str):
+        return None
+    occurrences: list[int] = []
+    cursor = passage.find(evidence)
+    while cursor >= 0:
+        occurrences.append(cursor)
+        cursor = passage.find(evidence, cursor + 1)
+    if not occurrences:
+        return None
+    candidates = occurrences
+    if len(occurrences) > 1:
+        if not (before or after):
+            return None
+        candidates = [
+            occurrence
+            for occurrence in occurrences
+            if passage[max(0, occurrence - len(before)):occurrence] == before
+            and passage[
+                occurrence + len(evidence):occurrence + len(evidence) + len(after)
+            ] == after
+        ]
+    if len(candidates) != 1:
+        return None
+    return candidates[0], candidates[0] + len(evidence)
 
 
 def _evenly_spaced(values: Sequence[Any], count: int) -> list[Any]:
