@@ -231,6 +231,41 @@ class LocalOnlyInferenceTest(unittest.TestCase):
         self.assertEqual(payload['response_format'], {'type': 'json_object'})
         self.assertEqual(payload['temperature'], 0)
 
+    def test_llama_cpp_resolver_reads_a_bare_null_as_the_abstention_it_is(self) -> None:
+        """Declining to answer is a result, not a malformed response.
+
+        A local Qwen2.5-3B answers a query it cannot place with the bare JSON
+        document ``null`` rather than with ``{"concept": null}``.  Both are the
+        model saying "none of these", and only the second used to be understood:
+        the first raised, so search reported ``local-concept-resolver`` degraded
+        and a clean abstention became indistinguishable from a stopped runtime.
+        Abstaining well is the behaviour that makes this tier safe to enable at
+        all, so it is pinned here rather than left to the object form.
+
+        Strictness is unchanged wherever an answer can actually arrive: an
+        object that is not exactly ``{"concept": ...}`` is still refused, so the
+        second spelling admits no concept the first would not have.
+        """
+        abstained = LlamaCppConceptResolver(
+            endpoint=PrivateModelEndpoint('http://127.0.0.1:18881'),
+            transport=FakeLlamaCppTransport(
+                health={'status': 'ok'}, completions=[{'choices': [{'message': {'content': 'null'}}]}]
+            ),
+            profile='qwen-local.gguf',
+        )
+        self.assertIsNone(abstained.resolve('这本书跟潮汐完全无关的一个问题', ['已有概念']))
+
+        chatty = LlamaCppConceptResolver(
+            endpoint=PrivateModelEndpoint('http://127.0.0.1:18881'),
+            transport=FakeLlamaCppTransport(
+                health={'status': 'ok'},
+                completions=[{'choices': [{'message': {'content': '{"concept":"已有概念","why":"因为"}'}}]}],
+            ),
+            profile='qwen-local.gguf',
+        )
+        with self.assertRaisesRegex(LocalInferenceUnavailable, 'invalid schema'):
+            chatty.resolve('查询', ['已有概念'])
+
     def test_llama_cpp_resolver_fails_closed_for_bad_json_unknown_concept_and_transport_error(self) -> None:
         invalid = LlamaCppConceptResolver(
             endpoint=PrivateModelEndpoint('http://127.0.0.1:18881'),
