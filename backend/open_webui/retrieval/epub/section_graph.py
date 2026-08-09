@@ -7,7 +7,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 
-DEFAULT_SECTION_GRAPH_PROFILE = "zh-section-graph-v3"
+DEFAULT_SECTION_GRAPH_PROFILE = 'zh-section-graph-v3'
 SECTION_GRAPH_MAX_CHARACTERS = 12_000
 
 # Bounded, adjacent literal context distinguishes repeated evidence without
@@ -17,12 +17,12 @@ SECTION_GRAPH_MAX_CHARACTERS = 12_000
 MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
 
 RELATION_PREDICATES = (
-    "HAS_PART",
-    "PRECEDES",
-    "PREREQUISITE",
-    "CAUSES",
-    "CONTRASTS",
-    "ELABORATES",
+    'HAS_PART',
+    'PRECEDES',
+    'PREREQUISITE',
+    'CAUSES',
+    'CONTRASTS',
+    'ELABORATES',
 )
 
 
@@ -41,14 +41,14 @@ class SectionGraphPacket:
 
 
 _MENTION_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["passage_id", "start_codepoint", "end_codepoint", "evidence"],
-    "properties": {
-        "passage_id": {"type": "string", "minLength": 1},
-        "start_codepoint": {"type": "integer", "minimum": 0},
-        "end_codepoint": {"type": "integer", "minimum": 1},
-        "evidence": {"type": "string", "minLength": 1},
+    'type': 'object',
+    'additionalProperties': False,
+    'required': ['passage_id', 'start_codepoint', 'end_codepoint', 'evidence'],
+    'properties': {
+        'passage_id': {'type': 'string', 'minLength': 1},
+        'start_codepoint': {'type': 'integer', 'minimum': 0},
+        'end_codepoint': {'type': 'integer', 'minimum': 1},
+        'evidence': {'type': 'string', 'minLength': 1},
     },
 }
 
@@ -62,19 +62,19 @@ _MENTION_SCHEMA: dict[str, Any] = {
 # adjacent context anchor is what remains: it is the only thing a model has to
 # supply for the server to choose between repeated literals.
 _MENTION_SCHEMA_V2: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["passage_id", "evidence", "context_before", "context_after"],
-    "properties": {
-        "passage_id": {"type": "string", "minLength": 1},
-        "evidence": {"type": "string", "minLength": 1},
-        "context_before": {
-            "type": "string",
-            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+    'type': 'object',
+    'additionalProperties': False,
+    'required': ['passage_id', 'evidence', 'context_before', 'context_after'],
+    'properties': {
+        'passage_id': {'type': 'string', 'minLength': 1},
+        'evidence': {'type': 'string', 'minLength': 1},
+        'context_before': {
+            'type': 'string',
+            'maxLength': MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
         },
-        "context_after": {
-            "type": "string",
-            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        'context_after': {
+            'type': 'string',
+            'maxLength': MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
         },
     },
 }
@@ -88,40 +88,41 @@ def _output_schema(mention_schema: Mapping[str, Any]) -> dict[str, Any]:
     so a shape difference between them could only ever be an accident.
     """
     return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["concepts", "relations"],
-        "properties": {
-            "concepts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["local_id", "name", "aliases", "definition", "mentions"],
-                    "properties": {
-                        "local_id": {"type": "string", "minLength": 1},
-                        "name": {"type": "string", "minLength": 1},
-                        "aliases": {"type": "array", "items": {"type": "string"}},
-                        "definition": {"type": "string"},
-                        "mentions": {"type": "array", "items": dict(mention_schema)},
+        'type': 'object',
+        'additionalProperties': False,
+        'required': ['concepts', 'relations'],
+        'properties': {
+            'concepts': {
+                'type': 'array',
+                'items': {
+                    'type': 'object',
+                    'additionalProperties': False,
+                    'required': ['local_id', 'name', 'aliases', 'definition', 'mentions'],
+                    'properties': {
+                        'local_id': {'type': 'string', 'minLength': 1},
+                        'name': {'type': 'string', 'minLength': 1},
+                        'aliases': {'type': 'array', 'items': {'type': 'string'}},
+                        'definition': {'type': 'string'},
+                        'mentions': {'type': 'array', 'items': dict(mention_schema)},
                     },
                 },
             },
-            "relations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": [
-                        "subject_local_id", "predicate", "object_local_id", "evidence",
+            'relations': {
+                'type': 'array',
+                'items': {
+                    'type': 'object',
+                    'additionalProperties': False,
+                    'required': [
+                        'subject_local_id',
+                        'predicate',
+                        'object_local_id',
+                        'evidence',
                     ],
-                    "properties": {
-                        "subject_local_id": {"type": "string", "minLength": 1},
-                        "predicate": {"type": "string", "enum": list(RELATION_PREDICATES)},
-                        "object_local_id": {"type": "string", "minLength": 1},
-                        "evidence": {
-                            "type": "array", "minItems": 1, "items": dict(mention_schema)
-                        },
+                    'properties': {
+                        'subject_local_id': {'type': 'string', 'minLength': 1},
+                        'predicate': {'type': 'string', 'enum': list(RELATION_PREDICATES)},
+                        'object_local_id': {'type': 'string', 'minLength': 1},
+                        'evidence': {'type': 'array', 'minItems': 1, 'items': dict(mention_schema)},
                     },
                 },
             },
@@ -270,15 +271,15 @@ class SectionGraphProfile:
 # so editing v1 in place would silently re-point a stored request at an
 # instruction that was never submitted.  A change is always a new entry.
 _SECTION_GRAPH_PROFILES: dict[str, SectionGraphProfile] = {
-    "zh-section-graph-v1": SectionGraphProfile(
-        profile_id="zh-section-graph-v1",
+    'zh-section-graph-v1': SectionGraphProfile(
+        profile_id='zh-section-graph-v1',
         system_instruction=_SYSTEM_INSTRUCTION,
         output_schema=SECTION_GRAPH_OUTPUT_SCHEMA,
         max_tokens=1_800,
         asks_for_offsets=True,
     ),
-    "zh-section-graph-v2": SectionGraphProfile(
-        profile_id="zh-section-graph-v2",
+    'zh-section-graph-v2': SectionGraphProfile(
+        profile_id='zh-section-graph-v2',
         system_instruction=_SYSTEM_INSTRUCTION_V2,
         output_schema=SECTION_GRAPH_OUTPUT_SCHEMA_V2,
         asks_for_offsets=False,
@@ -346,7 +347,7 @@ def available_section_graph_profiles() -> tuple[str, ...]:
 def get_section_graph_profile(profile_id: str) -> SectionGraphProfile:
     profile = _SECTION_GRAPH_PROFILES.get(profile_id)
     if profile is None:
-        raise SectionGraphError(f"unknown EPUB section graph profile: {profile_id}")
+        raise SectionGraphError(f'unknown EPUB section graph profile: {profile_id}')
     return profile
 
 
@@ -355,17 +356,15 @@ def build_section_graph_packets(
 ) -> list[SectionGraphPacket]:
     """Partition visible source passages into deterministic bounded TOC packets."""
     if max_characters < 1:
-        raise SectionGraphError("section graph packet size must be positive")
-    ordered = sorted(
-        passages, key=lambda row: (int(row.get("ordinal", 0)), str(row.get("passage_id", "")))
-    )
+        raise SectionGraphError('section graph packet size must be positive')
+    ordered = sorted(passages, key=lambda row: (int(row.get('ordinal', 0)), str(row.get('passage_id', ''))))
     groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = {}
     for passage in ordered:
-        passage_id = passage.get("passage_id")
-        content = passage.get("content")
+        passage_id = passage.get('passage_id')
+        content = passage.get('content')
         if not isinstance(passage_id, str) or not passage_id or not isinstance(content, str) or not content:
-            raise SectionGraphError("section graph packets require stored passage IDs and visible text")
-        raw_path = passage.get("toc_path")
+            raise SectionGraphError('section graph packets require stored passage IDs and visible text')
+        raw_path = passage.get('toc_path')
         path = tuple(str(part) for part in raw_path) if isinstance(raw_path, (list, tuple)) else ()
         groups.setdefault(path[:1], []).append(passage)
 
@@ -375,7 +374,7 @@ def build_section_graph_packets(
         size = 0
         index = 0
         for passage in group:
-            content = str(passage["content"])
+            content = str(passage['content'])
             if chunk and size + len(content) > max_characters:
                 packets.append(_packet(root_path, index, chunk))
                 index += 1
@@ -409,36 +408,36 @@ def build_section_graph_completion_request(
     written server-side per SDD 4.2.2 point 1 - so it is not sent.
     """
     if not model.strip():
-        raise SectionGraphError("section graph model cannot be empty")
+        raise SectionGraphError('section graph model cannot be empty')
     profile = get_section_graph_profile(profile_id)
     visible_passages = [
         {
-            "passage_id": str(passage["passage_id"]),
-            "content": str(passage["content"]),
+            'passage_id': str(passage['passage_id']),
+            'content': str(passage['content']),
         }
         for passage in packet.passages
     ]
     return {
-        "model": model.strip(),
-        "temperature": profile.temperature,
-        "seed": 0,
-        "max_tokens": profile.max_tokens,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "epub_section_graph",
-                "strict": True,
-                "schema": profile.output_schema,
+        'model': model.strip(),
+        'temperature': profile.temperature,
+        'seed': 0,
+        'max_tokens': profile.max_tokens,
+        'response_format': {
+            'type': 'json_schema',
+            'json_schema': {
+                'name': 'epub_section_graph',
+                'strict': True,
+                'schema': profile.output_schema,
             },
         },
-        "messages": [
-            {"role": "system", "content": profile.system_instruction},
+        'messages': [
+            {'role': 'system', 'content': profile.system_instruction},
             {
-                "role": "user",
-                "content": json.dumps(
-                    {"packet_id": packet.packet_id, "toc_path": list(packet.toc_path), "passages": visible_passages},
+                'role': 'user',
+                'content': json.dumps(
+                    {'packet_id': packet.packet_id, 'toc_path': list(packet.toc_path), 'passages': visible_passages},
                     ensure_ascii=False,
-                    separators=(",", ":"),
+                    separators=(',', ':'),
                 ),
             },
         ],
@@ -446,10 +445,10 @@ def build_section_graph_completion_request(
 
 
 def _packet(path: tuple[str, ...], index: int, passages: Sequence[Mapping[str, Any]]) -> SectionGraphPacket:
-    anchor = str(passages[0]["passage_id"])
-    root = path[0] if path else "root"
+    anchor = str(passages[0]['passage_id'])
+    root = path[0] if path else 'root'
     return SectionGraphPacket(
-        packet_id=f"{root}:{index}:{anchor}",
+        packet_id=f'{root}:{index}:{anchor}',
         anchor_passage_id=anchor,
         toc_path=path,
         passages=tuple(passages),

@@ -16,17 +16,17 @@ from fastapi.testclient import TestClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT / 'backend'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # The router needs only these two dependency identities.  Importing the full
 # application auth module also bootstraps its database models, which is outside
 # this isolated route/service acceptance test.  FastAPI still executes the
 # router's real dependency wiring below via these overridden identities.
-auth_dependencies = ModuleType("open_webui.utils.auth")
+auth_dependencies = ModuleType('open_webui.utils.auth')
 auth_dependencies.get_admin_user = lambda: None
 auth_dependencies.get_verified_user = lambda: None
-sys.modules.setdefault("open_webui.utils.auth", auth_dependencies)
+sys.modules.setdefault('open_webui.utils.auth', auth_dependencies)
 
 from open_webui.retrieval.epub.batch import BatchPayloadError, BatchServiceError  # noqa: E402
 from open_webui.retrieval.epub.prompt_profiles import (  # noqa: E402
@@ -55,15 +55,15 @@ from test_epub_parser_sdd import build_fixture_epub  # noqa: E402
 
 
 def _ordinary_user():
-    return SimpleNamespace(id="ordinary", role="user")
+    return SimpleNamespace(id='ordinary', role='user')
 
 
 def _admin_user():
-    return SimpleNamespace(id="administrator", role="admin")
+    return SimpleNamespace(id='administrator', role='admin')
 
 
 def _ordinary_user_cannot_administer():
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="access prohibited")
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='access prohibited')
 
 
 class FailingBatchJobService:
@@ -98,47 +98,47 @@ class FailingBatchJobService:
 class EpubAuthenticatedApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
-        store = SQLiteEpubStore(str(Path(self.temporary.name) / "epub.db"))
-        book_id = store.create_book("共享图书", book_id="book-1")
-        store.create_book_version(book_id, epub_bytes=b"api-test-epub", version_id="version-1")
+        store = SQLiteEpubStore(str(Path(self.temporary.name) / 'epub.db'))
+        book_id = store.create_book('共享图书', book_id='book-1')
+        store.create_book_version(book_id, epub_bytes=b'api-test-epub', version_id='version-1')
         store.add_passages(
-            "version-1",
+            'version-1',
             [
                 {
-                    "passage_id": "passage-1",
-                    "source_href": "chapter.xhtml",
-                    "spine_index": 0,
-                    "ordinal": 0,
-                    "content_kind": "paragraph",
-                    "content": "TCP 是传输控制协议。原文必须完整返回。",
+                    'passage_id': 'passage-1',
+                    'source_href': 'chapter.xhtml',
+                    'spine_index': 0,
+                    'ordinal': 0,
+                    'content_kind': 'paragraph',
+                    'content': 'TCP 是传输控制协议。原文必须完整返回。',
                 }
             ],
         )
-        store.set_version_status("version-1", "READY")
-        concept_id = store.upsert_concept("TCP", aliases=["Transmission Control Protocol"], status="APPROVED")
+        store.set_version_status('version-1', 'READY')
+        concept_id = store.upsert_concept('TCP', aliases=['Transmission Control Protocol'], status='APPROVED')
         store.add_concept_mention(
-            concept_id, "passage-1", start_codepoint=0, end_codepoint=3, evidence="TCP", source="ADMIN"
+            concept_id, 'passage-1', start_codepoint=0, end_codepoint=3, evidence='TCP', source='ADMIN'
         )
-        related_concept_id = store.upsert_concept("传输控制协议", status="APPROVED")
+        related_concept_id = store.upsert_concept('传输控制协议', status='APPROVED')
         store.add_concept_mention(
             related_concept_id,
-            "passage-1",
+            'passage-1',
             start_codepoint=5,
             end_codepoint=11,
-            evidence="传输控制协议",
-            source="ADMIN",
+            evidence='传输控制协议',
+            source='ADMIN',
         )
         store.add_concept_relation(
-            "version-1",
+            'version-1',
             concept_id,
-            "ELABORATES",
+            'ELABORATES',
             related_concept_id,
             evidence=[
                 {
-                    "passage_id": "passage-1",
-                    "start_codepoint": 0,
-                    "end_codepoint": 3,
-                    "evidence": "TCP",
+                    'passage_id': 'passage-1',
+                    'start_codepoint': 0,
+                    'end_codepoint': 3,
+                    'evidence': 'TCP',
                 }
             ],
         )
@@ -155,86 +155,86 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_ordinary_verified_user_can_browse_and_search_shared_content(self) -> None:
-        books = self.client.get("/api/v1/epub/books")
+        books = self.client.get('/api/v1/epub/books')
         self.assertEqual(books.status_code, 200)
-        self.assertEqual(books.json()[0]["book_id"], "book-1")
+        self.assertEqual(books.json()[0]['book_id'], 'book-1')
 
-        book = self.client.get("/api/v1/epub/books/book-1")
+        book = self.client.get('/api/v1/epub/books/book-1')
         self.assertEqual(book.status_code, 200)
-        self.assertEqual(book.json()["versions"][0]["version_id"], "version-1")
+        self.assertEqual(book.json()['versions'][0]['version_id'], 'version-1')
 
-        passages = self.client.get("/api/v1/epub/versions/version-1/passages")
+        passages = self.client.get('/api/v1/epub/versions/version-1/passages')
         self.assertEqual(passages.status_code, 200)
-        self.assertEqual(passages.json()["items"][0]["content"], "TCP 是传输控制协议。原文必须完整返回。")
+        self.assertEqual(passages.json()['items'][0]['content'], 'TCP 是传输控制协议。原文必须完整返回。')
 
-        result = self.client.post("/api/v1/epub/search", json={"query": "TCP"})
+        result = self.client.post('/api/v1/epub/search', json={'query': 'TCP'})
         self.assertEqual(result.status_code, 200)
-        hit = result.json()["graph_results"][0]
-        self.assertEqual(hit["content"], "TCP 是传输控制协议。原文必须完整返回。")
-        self.assertEqual(hit["excerpt"], {"content": "TCP", "start_codepoint": 0, "end_codepoint": 3})
+        hit = result.json()['graph_results'][0]
+        self.assertEqual(hit['content'], 'TCP 是传输控制协议。原文必须完整返回。')
+        self.assertEqual(hit['excerpt'], {'content': 'TCP', 'start_codepoint': 0, 'end_codepoint': 3})
         # The added unified rank channel is API-compatible with the existing
         # graph/vector fields and is empty when no local vector runtime exists.
-        self.assertEqual(result.json()["fused_results"], [])
+        self.assertEqual(result.json()['fused_results'], [])
 
     def test_ordinary_user_cannot_mutate_epub_domain(self) -> None:
         mutations = [
-            ("put", "/api/v1/epub/admin/concepts", {"canonical_name": "HTTP"}),
+            ('put', '/api/v1/epub/admin/concepts', {'canonical_name': 'HTTP'}),
             (
-                "post",
-                "/api/v1/epub/admin/batches",
-                {"version_id": "version-1", "profile_name": "server-batch-profile"},
+                'post',
+                '/api/v1/epub/admin/batches',
+                {'version_id': 'version-1', 'profile_name': 'server-batch-profile'},
             ),
             (
-                "post",
-                "/api/v1/epub/admin/section-graph-batches",
-                {"version_id": "version-1", "profile_name": "server-batch-profile"},
+                'post',
+                '/api/v1/epub/admin/section-graph-batches',
+                {'version_id': 'version-1', 'profile_name': 'server-batch-profile'},
             ),
             (
-                "post",
-                "/api/v1/epub/admin/calibrations/local",
-                {"version_id": "version-1"},
+                'post',
+                '/api/v1/epub/admin/calibrations/local',
+                {'version_id': 'version-1'},
             ),
-            ("post", "/api/v1/epub/admin/batches/missing/submit", None),
-            ("post", "/api/v1/epub/admin/batches/missing/poll", None),
-            ("post", "/api/v1/epub/admin/batches/missing/retry", None),
-            ("get", "/api/v1/epub/admin/prompt-profiles", None),
-            ("get", "/api/v1/epub/admin/batches", None),
-            ("get", "/api/v1/epub/admin/batches/missing", None),
-            ("post", "/api/v1/epub/admin/batches/recover", None),
-			("get", "/api/v1/epub/admin/sample-batch-reviews", None),
-			("put", "/api/v1/epub/admin/sample-batches/missing/review", {"status": "APPROVED"}),
-            ("get", "/api/v1/epub/admin/concepts", None),
+            ('post', '/api/v1/epub/admin/batches/missing/submit', None),
+            ('post', '/api/v1/epub/admin/batches/missing/poll', None),
+            ('post', '/api/v1/epub/admin/batches/missing/retry', None),
+            ('get', '/api/v1/epub/admin/prompt-profiles', None),
+            ('get', '/api/v1/epub/admin/batches', None),
+            ('get', '/api/v1/epub/admin/batches/missing', None),
+            ('post', '/api/v1/epub/admin/batches/recover', None),
+            ('get', '/api/v1/epub/admin/sample-batch-reviews', None),
+            ('put', '/api/v1/epub/admin/sample-batches/missing/review', {'status': 'APPROVED'}),
+            ('get', '/api/v1/epub/admin/concepts', None),
             (
-                "post",
-                "/api/v1/epub/admin/concepts/merge",
-                {"target_concept_id": "one", "source_concept_id": "two"},
+                'post',
+                '/api/v1/epub/admin/concepts/merge',
+                {'target_concept_id': 'one', 'source_concept_id': 'two'},
             ),
             (
-                "post",
-                "/api/v1/epub/admin/concepts/split",
-                {"source_concept_id": "one", "canonical_name": "HTTP"},
+                'post',
+                '/api/v1/epub/admin/concepts/split',
+                {'source_concept_id': 'one', 'canonical_name': 'HTTP'},
             ),
-            ("get", "/api/v1/epub/admin/relation-assertions", None),
-            ("put", "/api/v1/epub/admin/relation-assertions/missing", {"status": "APPROVED"}),
-            ("post", "/api/v1/epub/admin/retrieval-units/missing/index", None),
-            ("post", "/api/v1/epub/admin/versions/version-1/index", {"rebuild": False}),
-            ("get", "/api/v1/epub/admin/versions/version-1/overlay", None),
+            ('get', '/api/v1/epub/admin/relation-assertions', None),
+            ('put', '/api/v1/epub/admin/relation-assertions/missing', {'status': 'APPROVED'}),
+            ('post', '/api/v1/epub/admin/retrieval-units/missing/index', None),
+            ('post', '/api/v1/epub/admin/versions/version-1/index', {'rebuild': False}),
+            ('get', '/api/v1/epub/admin/versions/version-1/overlay', None),
         ]
         for method, url, payload in mutations:
-            kwargs = {"json": payload} if payload is not None else {}
+            kwargs = {'json': payload} if payload is not None else {}
             response = getattr(self.client, method)(url, **kwargs)
             self.assertEqual(response.status_code, 401, url)
 
         upload = self.client.post(
-            "/api/v1/epub/admin/import",
-            files={"file": ("book.epub", b"not reached", "application/epub+zip")},
+            '/api/v1/epub/admin/import',
+            files={'file': ('book.epub', b'not reached', 'application/epub+zip')},
         )
         self.assertEqual(upload.status_code, 401)
-        self.assertIsNone(self.service.get_book("new-book"))
+        self.assertIsNone(self.service.get_book('new-book'))
 
         overlay_upload = self.client.post(
-            "/api/v1/epub/admin/overlays",
-            files={"file": ("overlay.json", b"{}", "application/json")},
+            '/api/v1/epub/admin/overlays',
+            files={'file': ('overlay.json', b'{}', 'application/json')},
         )
         self.assertEqual(overlay_upload.status_code, 401)
 
@@ -246,64 +246,64 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         output schemas stay server-owned and must not appear in the response.
         """
         self.app.dependency_overrides[get_admin_user] = _admin_user
-        response = self.client.get("/api/v1/epub/admin/prompt-profiles")
+        response = self.client.get('/api/v1/epub/admin/prompt-profiles')
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(set(payload), {"prompt_profiles", "default_prompt_profile"})
+        self.assertEqual(set(payload), {'prompt_profiles', 'default_prompt_profile'})
         self.assertEqual(
-            payload["prompt_profiles"],
+            payload['prompt_profiles'],
             list(available_prompt_profiles()),
         )
-        self.assertEqual(payload["default_prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE)
-        self.assertIn(DEFAULT_CONCEPT_PROMPT_PROFILE, payload["prompt_profiles"])
-        self.assertNotIn("抽取器", response.text)
-        self.assertNotIn("system_instruction", response.text)
+        self.assertEqual(payload['default_prompt_profile'], DEFAULT_CONCEPT_PROMPT_PROFILE)
+        self.assertIn(DEFAULT_CONCEPT_PROMPT_PROFILE, payload['prompt_profiles'])
+        self.assertNotIn('抽取器', response.text)
+        self.assertNotIn('system_instruction', response.text)
 
     def test_admin_can_create_a_concept_and_batch_draft(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
         concept = self.client.put(
-            "/api/v1/epub/admin/concepts",
-            json={"canonical_name": "HTTP", "aliases": ["Hypertext Transfer Protocol"]},
+            '/api/v1/epub/admin/concepts',
+            json={'canonical_name': 'HTTP', 'aliases': ['Hypertext Transfer Protocol']},
         )
         self.assertEqual(concept.status_code, 200)
-        self.assertTrue(concept.json()["concept_id"])
+        self.assertTrue(concept.json()['concept_id'])
 
         draft = self.client.post(
-            "/api/v1/epub/admin/batches",
-            json={"version_id": "version-1", "profile_name": "server-batch-profile", "is_sample": True},
+            '/api/v1/epub/admin/batches',
+            json={'version_id': 'version-1', 'profile_name': 'server-batch-profile', 'is_sample': True},
         )
         self.assertEqual(draft.status_code, 201)
-        self.assertEqual(draft.json()["item_count"], 1)
-        self.assertEqual(draft.json()["prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE)
+        self.assertEqual(draft.json()['item_count'], 1)
+        self.assertEqual(draft.json()['prompt_profile'], DEFAULT_CONCEPT_PROMPT_PROFILE)
 
         section_graph_draft = self.client.post(
-            "/api/v1/epub/admin/section-graph-batches",
-            json={"version_id": "version-1", "profile_name": "server-batch-profile", "is_sample": True},
+            '/api/v1/epub/admin/section-graph-batches',
+            json={'version_id': 'version-1', 'profile_name': 'server-batch-profile', 'is_sample': True},
         )
         self.assertEqual(section_graph_draft.status_code, 201)
-        self.assertEqual(section_graph_draft.json()["item_count"], 1)
-        self.assertEqual(section_graph_draft.json()["job_kind"], "SECTION_GRAPH")
+        self.assertEqual(section_graph_draft.json()['item_count'], 1)
+        self.assertEqual(section_graph_draft.json()['job_kind'], 'SECTION_GRAPH')
         # v2 is the default section-graph contract: v1 demands a code-point
         # offset on every span in a packet, and a packet holds many spans.
-        self.assertEqual(section_graph_draft.json()["prompt_profile"], "zh-section-graph-v3")
+        self.assertEqual(section_graph_draft.json()['prompt_profile'], 'zh-section-graph-v3')
 
-        history = self.client.get("/api/v1/epub/admin/batches?version_id=version-1")
+        history = self.client.get('/api/v1/epub/admin/batches?version_id=version-1')
         self.assertEqual(history.status_code, 200)
-        self.assertEqual(history.json()["total"], 2)
-        job = history.json()["items"][0]
-        self.assertNotIn("request_json", job)
-        self.assertNotIn("response_json", job)
-        self.assertNotIn("last_error", job)
+        self.assertEqual(history.json()['total'], 2)
+        job = history.json()['items'][0]
+        self.assertNotIn('request_json', job)
+        self.assertNotIn('response_json', job)
+        self.assertNotIn('last_error', job)
 
-        detail = self.client.get(f"/api/v1/epub/admin/batches/{job['batch_job_id']}")
+        detail = self.client.get(f'/api/v1/epub/admin/batches/{job["batch_job_id"]}')
         self.assertEqual(detail.status_code, 200)
-        self.assertTrue(detail.json()["items"])
-        self.assertNotIn("request_json", detail.json()["items"][0])
+        self.assertTrue(detail.json()['items'])
+        self.assertNotIn('request_json', detail.json()['items'][0])
 
-        recovery = self.client.post("/api/v1/epub/admin/batches/recover")
+        recovery = self.client.post('/api/v1/epub/admin/batches/recover')
         self.assertEqual(recovery.status_code, 200)
-        self.assertEqual(recovery.json(), {"recovered": [], "skipped": []})
+        self.assertEqual(recovery.json(), {'recovered': [], 'skipped': []})
 
     def test_admin_can_read_the_concept_graph_and_merge_a_duplicate(self) -> None:
         """Seeing the graph and merging a duplicate are one administrator workflow.
@@ -313,65 +313,61 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         Neither response may carry passage text, prompts or model output.
         """
         self.app.dependency_overrides[get_admin_user] = _admin_user
-        listed = self.client.get("/api/v1/epub/admin/concepts?limit=10")
+        listed = self.client.get('/api/v1/epub/admin/concepts?limit=10')
         self.assertEqual(listed.status_code, 200)
-        self.assertEqual(listed.json()["total"], 2)
-        self.assertEqual(listed.json()["offset"], 0)
-        by_name = {item["canonical_name"]: item for item in listed.json()["items"]}
-        self.assertEqual(by_name["TCP"]["aliases"], ["TCP", "Transmission Control Protocol"])
-        self.assertEqual(by_name["TCP"]["mention_count"], 1)
-        self.assertEqual(by_name["TCP"]["status"], "APPROVED")
-        self.assertNotIn("原文必须完整返回", listed.text)
+        self.assertEqual(listed.json()['total'], 2)
+        self.assertEqual(listed.json()['offset'], 0)
+        by_name = {item['canonical_name']: item for item in listed.json()['items']}
+        self.assertEqual(by_name['TCP']['aliases'], ['TCP', 'Transmission Control Protocol'])
+        self.assertEqual(by_name['TCP']['mention_count'], 1)
+        self.assertEqual(by_name['TCP']['status'], 'APPROVED')
+        self.assertNotIn('原文必须完整返回', listed.text)
 
         merged = self.client.post(
-            "/api/v1/epub/admin/concepts/merge",
+            '/api/v1/epub/admin/concepts/merge',
             json={
-                "target_concept_id": by_name["TCP"]["concept_id"],
-                "source_concept_id": by_name["传输控制协议"]["concept_id"],
-                "canonical_name": "传输控制协议",
+                'target_concept_id': by_name['TCP']['concept_id'],
+                'source_concept_id': by_name['传输控制协议']['concept_id'],
+                'canonical_name': '传输控制协议',
             },
         )
         self.assertEqual(merged.status_code, 200)
-        self.assertEqual(merged.json()["canonical_name"], "传输控制协议")
-        self.assertEqual(merged.json()["merged_by"], "administrator")
-        self.assertEqual(merged.json()["moved_mentions"], 1)
+        self.assertEqual(merged.json()['canonical_name'], '传输控制协议')
+        self.assertEqual(merged.json()['merged_by'], 'administrator')
+        self.assertEqual(merged.json()['moved_mentions'], 1)
         # The two concepts were related to each other, so that relation would
         # now point a concept at itself and is deliberately dropped.
-        self.assertEqual(merged.json()["dropped_self_relations"], 1)
-        self.assertNotIn("原文必须完整返回", merged.text)
+        self.assertEqual(merged.json()['dropped_self_relations'], 1)
+        self.assertNotIn('原文必须完整返回', merged.text)
 
-        after = self.client.get("/api/v1/epub/admin/concepts")
-        self.assertEqual(after.json()["total"], 1)
-        surviving = after.json()["items"][0]
-        self.assertEqual(surviving["canonical_name"], "传输控制协议")
-        self.assertEqual(surviving["mention_count"], 2)
-        self.assertEqual(
-            surviving["aliases"], ["TCP", "Transmission Control Protocol", "传输控制协议"]
-        )
-        self.assertEqual(
-            self.client.get("/api/v1/epub/admin/relation-assertions").json()["items"], []
-        )
+        after = self.client.get('/api/v1/epub/admin/concepts')
+        self.assertEqual(after.json()['total'], 1)
+        surviving = after.json()['items'][0]
+        self.assertEqual(surviving['canonical_name'], '传输控制协议')
+        self.assertEqual(surviving['mention_count'], 2)
+        self.assertEqual(surviving['aliases'], ['TCP', 'Transmission Control Protocol', '传输控制协议'])
+        self.assertEqual(self.client.get('/api/v1/epub/admin/relation-assertions').json()['items'], [])
 
     def test_merge_refuses_an_unknown_or_identical_concept_with_an_actionable_status(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
-        concept_id = self.client.get("/api/v1/epub/admin/concepts").json()["items"][0]["concept_id"]
+        concept_id = self.client.get('/api/v1/epub/admin/concepts').json()['items'][0]['concept_id']
 
         same = self.client.post(
-            "/api/v1/epub/admin/concepts/merge",
-            json={"target_concept_id": concept_id, "source_concept_id": concept_id},
+            '/api/v1/epub/admin/concepts/merge',
+            json={'target_concept_id': concept_id, 'source_concept_id': concept_id},
         )
         self.assertEqual(same.status_code, 400)
-        self.assertIn("merged into itself", same.json()["detail"])
+        self.assertIn('merged into itself', same.json()['detail'])
 
         for payload in (
-            {"target_concept_id": concept_id, "source_concept_id": "missing"},
-            {"target_concept_id": "missing", "source_concept_id": concept_id},
+            {'target_concept_id': concept_id, 'source_concept_id': 'missing'},
+            {'target_concept_id': 'missing', 'source_concept_id': concept_id},
         ):
-            response = self.client.post("/api/v1/epub/admin/concepts/merge", json=payload)
+            response = self.client.post('/api/v1/epub/admin/concepts/merge', json=payload)
             self.assertEqual(response.status_code, 404, payload)
-            self.assertIn("unknown concept_id: missing", response.json()["detail"])
+            self.assertIn('unknown concept_id: missing', response.json()['detail'])
 
-        self.assertEqual(self.client.get("/api/v1/epub/admin/concepts").json()["total"], 2)
+        self.assertEqual(self.client.get('/api/v1/epub/admin/concepts').json()['total'], 2)
 
     def test_admin_can_split_a_merged_concept_back_out_through_its_own_route(self) -> None:
         """A merge is one-way, so the corrective route has to exist beside it.
@@ -383,214 +379,201 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         """
         self.app.dependency_overrides[get_admin_user] = _admin_user
         by_name = {
-            item["canonical_name"]: item
-            for item in self.client.get("/api/v1/epub/admin/concepts").json()["items"]
+            item['canonical_name']: item for item in self.client.get('/api/v1/epub/admin/concepts').json()['items']
         }
         merged = self.client.post(
-            "/api/v1/epub/admin/concepts/merge",
+            '/api/v1/epub/admin/concepts/merge',
             json={
-                "target_concept_id": by_name["TCP"]["concept_id"],
-                "source_concept_id": by_name["传输控制协议"]["concept_id"],
-                "canonical_name": "传输控制协议",
+                'target_concept_id': by_name['TCP']['concept_id'],
+                'source_concept_id': by_name['传输控制协议']['concept_id'],
+                'canonical_name': '传输控制协议',
             },
         )
         self.assertEqual(merged.status_code, 200)
-        surviving = merged.json()["target_concept_id"]
+        surviving = merged.json()['target_concept_id']
 
         split = self.client.post(
-            "/api/v1/epub/admin/concepts/split",
+            '/api/v1/epub/admin/concepts/split',
             json={
-                "source_concept_id": surviving,
-                "canonical_name": "TCP",
-                "aliases": ["TCP", "Transmission Control Protocol"],
-                "mentions": [
-                    {"passage_id": "passage-1", "start_codepoint": 0, "end_codepoint": 3}
-                ],
+                'source_concept_id': surviving,
+                'canonical_name': 'TCP',
+                'aliases': ['TCP', 'Transmission Control Protocol'],
+                'mentions': [{'passage_id': 'passage-1', 'start_codepoint': 0, 'end_codepoint': 3}],
             },
         )
         self.assertEqual(split.status_code, 200)
-        self.assertEqual(split.json()["canonical_name"], "TCP")
-        self.assertEqual(split.json()["split_by"], "administrator")
-        self.assertEqual(split.json()["moved_aliases"], 2)
-        self.assertEqual(split.json()["moved_mentions"], 1)
-        self.assertNotIn("原文必须完整返回", split.text)
+        self.assertEqual(split.json()['canonical_name'], 'TCP')
+        self.assertEqual(split.json()['split_by'], 'administrator')
+        self.assertEqual(split.json()['moved_aliases'], 2)
+        self.assertEqual(split.json()['moved_mentions'], 1)
+        self.assertNotIn('原文必须完整返回', split.text)
 
         after = {
-            item["canonical_name"]: item
-            for item in self.client.get("/api/v1/epub/admin/concepts").json()["items"]
+            item['canonical_name']: item for item in self.client.get('/api/v1/epub/admin/concepts').json()['items']
         }
-        self.assertEqual(set(after), {"TCP", "传输控制协议"})
-        self.assertEqual(after["TCP"]["aliases"], ["TCP", "Transmission Control Protocol"])
-        self.assertEqual(after["TCP"]["mention_count"], 1)
-        self.assertEqual(after["传输控制协议"]["aliases"], ["传输控制协议"])
-        self.assertEqual(after["传输控制协议"]["mention_count"], 1)
+        self.assertEqual(set(after), {'TCP', '传输控制协议'})
+        self.assertEqual(after['TCP']['aliases'], ['TCP', 'Transmission Control Protocol'])
+        self.assertEqual(after['TCP']['mention_count'], 1)
+        self.assertEqual(after['传输控制协议']['aliases'], ['传输控制协议'])
+        self.assertEqual(after['传输控制协议']['mention_count'], 1)
 
     def test_split_refuses_an_unknown_source_or_a_foreign_alias_with_an_actionable_status(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
         by_name = {
-            item["canonical_name"]: item
-            for item in self.client.get("/api/v1/epub/admin/concepts").json()["items"]
+            item['canonical_name']: item for item in self.client.get('/api/v1/epub/admin/concepts').json()['items']
         }
 
         missing = self.client.post(
-            "/api/v1/epub/admin/concepts/split",
-            json={"source_concept_id": "missing", "canonical_name": "HTTP"},
+            '/api/v1/epub/admin/concepts/split',
+            json={'source_concept_id': 'missing', 'canonical_name': 'HTTP'},
         )
         self.assertEqual(missing.status_code, 404)
-        self.assertIn("unknown concept_id: missing", missing.json()["detail"])
+        self.assertIn('unknown concept_id: missing', missing.json()['detail'])
 
         foreign = self.client.post(
-            "/api/v1/epub/admin/concepts/split",
+            '/api/v1/epub/admin/concepts/split',
             json={
-                "source_concept_id": by_name["TCP"]["concept_id"],
-                "canonical_name": "HTTP",
-                "aliases": ["传输控制协议"],
+                'source_concept_id': by_name['TCP']['concept_id'],
+                'canonical_name': 'HTTP',
+                'aliases': ['传输控制协议'],
             },
         )
         self.assertEqual(foreign.status_code, 400)
-        self.assertIn("does not own this alias", foreign.json()["detail"])
+        self.assertIn('does not own this alias', foreign.json()['detail'])
 
-        self.assertEqual(self.client.get("/api/v1/epub/admin/concepts").json()["total"], 2)
+        self.assertEqual(self.client.get('/api/v1/epub/admin/concepts').json()['total'], 2)
 
     def test_admin_can_review_version_scoped_relation_assertions(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
-        listed = self.client.get("/api/v1/epub/admin/relation-assertions?version_id=version-1")
+        listed = self.client.get('/api/v1/epub/admin/relation-assertions?version_id=version-1')
         self.assertEqual(listed.status_code, 200)
-        assertion = listed.json()["items"][0]
-        self.assertEqual(assertion["predicate"], "ELABORATES")
-        self.assertEqual(assertion["evidence"][0]["evidence"], "TCP")
+        assertion = listed.json()['items'][0]
+        self.assertEqual(assertion['predicate'], 'ELABORATES')
+        self.assertEqual(assertion['evidence'][0]['evidence'], 'TCP')
 
         reviewed = self.client.put(
-            f"/api/v1/epub/admin/relation-assertions/{assertion['assertion_id']}",
-            json={"status": "APPROVED"},
+            f'/api/v1/epub/admin/relation-assertions/{assertion["assertion_id"]}',
+            json={'status': 'APPROVED'},
         )
         self.assertEqual(reviewed.status_code, 200)
-        self.assertEqual(reviewed.json()["status"], "APPROVED")
+        self.assertEqual(reviewed.json()['status'], 'APPROVED')
 
     def test_admin_must_approve_a_fully_ingested_matching_sample_before_full_openai_batch(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
         sample = self.client.post(
-            "/api/v1/epub/admin/batches",
-            json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": True},
+            '/api/v1/epub/admin/batches',
+            json={'version_id': 'version-1', 'profile_name': 'cloud-model-snapshot', 'is_sample': True},
         )
         self.assertEqual(sample.status_code, 201)
-        sample_id = sample.json()["batch_job_id"]
+        sample_id = sample.json()['batch_job_id']
 
         blocked = self.client.post(
-            "/api/v1/epub/admin/batches",
-            json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": False},
+            '/api/v1/epub/admin/batches',
+            json={'version_id': 'version-1', 'profile_name': 'cloud-model-snapshot', 'is_sample': False},
         )
         self.assertEqual(blocked.status_code, 400)
-        self.assertIn("administrator-approved sample", blocked.json()["detail"])
+        self.assertIn('administrator-approved sample', blocked.json()['detail'])
 
         repository = self.service._batch._repository
-        repository.mark_submitted(sample_id, "remote-sample")
-        repository.set_provider_state(sample_id, "SUCCEEDED", None)
+        repository.mark_submitted(sample_id, 'remote-sample')
+        repository.set_provider_state(sample_id, 'SUCCEEDED', None)
         for item in repository.list_items(sample_id):
-            self.assertTrue(repository.ingest_success(sample_id, item["custom_id"], {"concepts": []}))
+            self.assertTrue(repository.ingest_success(sample_id, item['custom_id'], {'concepts': []}))
 
-        review = self.client.put(
-            f"/api/v1/epub/admin/sample-batches/{sample_id}/review", json={"status": "APPROVED"}
-        )
+        review = self.client.put(f'/api/v1/epub/admin/sample-batches/{sample_id}/review', json={'status': 'APPROVED'})
         self.assertEqual(review.status_code, 200)
-        self.assertEqual(review.json()["version_id"], "version-1")
-        self.assertEqual(review.json()["job_kind"], "CONCEPT_MENTIONS")
-        self.assertEqual(review.json()["status"], "APPROVED")
-        self.assertEqual(review.json()["reviewed_by"], "administrator")
+        self.assertEqual(review.json()['version_id'], 'version-1')
+        self.assertEqual(review.json()['job_kind'], 'CONCEPT_MENTIONS')
+        self.assertEqual(review.json()['status'], 'APPROVED')
+        self.assertEqual(review.json()['reviewed_by'], 'administrator')
         # The approval names the extraction instruction it approved.  The
         # identifier travels; the instruction text never does.
-        self.assertEqual(review.json()["prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE)
-        self.assertNotIn("TCP", review.text)
-        self.assertNotIn("抽取器", review.text)
+        self.assertEqual(review.json()['prompt_profile'], DEFAULT_CONCEPT_PROMPT_PROFILE)
+        self.assertNotIn('TCP', review.text)
+        self.assertNotIn('抽取器', review.text)
 
         wrong_kind = self.client.post(
-            "/api/v1/epub/admin/section-graph-batches",
-            json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": False},
+            '/api/v1/epub/admin/section-graph-batches',
+            json={'version_id': 'version-1', 'profile_name': 'cloud-model-snapshot', 'is_sample': False},
         )
         self.assertEqual(wrong_kind.status_code, 400)
-        self.assertIn("same version and job kind", wrong_kind.json()["detail"])
+        self.assertIn('same version and job kind', wrong_kind.json()['detail'])
 
         wrong_profile = self.client.post(
-            "/api/v1/epub/admin/batches",
+            '/api/v1/epub/admin/batches',
             json={
-                "version_id": "version-1",
-                "profile_name": "other-cloud-model-snapshot",
-                "is_sample": False,
+                'version_id': 'version-1',
+                'profile_name': 'other-cloud-model-snapshot',
+                'is_sample': False,
             },
         )
         self.assertEqual(wrong_profile.status_code, 400)
-        self.assertIn("same model profile", wrong_profile.json()["detail"])
+        self.assertIn('same model profile', wrong_profile.json()['detail'])
 
         # Same version, same job kind, same model snapshot, superseded prompt
         # profile.  The sample says nothing about that instruction's quality,
         # so it cannot be sent as a full book on this approval.
         other_prompt_profile = next(
-            profile
-            for profile in available_prompt_profiles()
-            if profile != DEFAULT_CONCEPT_PROMPT_PROFILE
+            profile for profile in available_prompt_profiles() if profile != DEFAULT_CONCEPT_PROMPT_PROFILE
         )
         wrong_prompt_profile = self.client.post(
-            "/api/v1/epub/admin/batches",
+            '/api/v1/epub/admin/batches',
             json={
-                "version_id": "version-1",
-                "profile_name": "cloud-model-snapshot",
-                "prompt_profile": other_prompt_profile,
-                "is_sample": False,
+                'version_id': 'version-1',
+                'profile_name': 'cloud-model-snapshot',
+                'prompt_profile': other_prompt_profile,
+                'is_sample': False,
             },
         )
         self.assertEqual(wrong_prompt_profile.status_code, 400)
-        self.assertIn("same prompt profile", wrong_prompt_profile.json()["detail"])
+        self.assertIn('same prompt profile', wrong_prompt_profile.json()['detail'])
 
         full = self.client.post(
-            "/api/v1/epub/admin/batches",
-            json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": False},
+            '/api/v1/epub/admin/batches',
+            json={'version_id': 'version-1', 'profile_name': 'cloud-model-snapshot', 'is_sample': False},
         )
         self.assertEqual(full.status_code, 201)
-        self.assertFalse(full.json()["is_sample"])
-        self.assertEqual(full.json()["prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE)
+        self.assertFalse(full.json()['is_sample'])
+        self.assertEqual(full.json()['prompt_profile'], DEFAULT_CONCEPT_PROMPT_PROFILE)
 
-        reviews = self.client.get("/api/v1/epub/admin/sample-batch-reviews?version_id=version-1")
+        reviews = self.client.get('/api/v1/epub/admin/sample-batch-reviews?version_id=version-1')
         self.assertEqual(reviews.status_code, 200)
-        self.assertEqual(reviews.json()["items"][0]["sample_batch_job_id"], sample_id)
-        self.assertEqual(
-            reviews.json()["items"][0]["prompt_profile"], DEFAULT_CONCEPT_PROMPT_PROFILE
-        )
+        self.assertEqual(reviews.json()['items'][0]['sample_batch_job_id'], sample_id)
+        self.assertEqual(reviews.json()['items'][0]['prompt_profile'], DEFAULT_CONCEPT_PROMPT_PROFILE)
 
     def test_batch_history_reports_the_prompt_profile_each_job_recorded(self) -> None:
         """Both job kinds persist the instruction identifier they requested."""
         self.app.dependency_overrides[get_admin_user] = _admin_user
         concept = self.client.post(
-            "/api/v1/epub/admin/batches",
+            '/api/v1/epub/admin/batches',
             json={
-                "version_id": "version-1",
-                "profile_name": "cloud-model-snapshot",
-                "prompt_profile": "zh-glossary-v6",
-                "is_sample": True,
+                'version_id': 'version-1',
+                'profile_name': 'cloud-model-snapshot',
+                'prompt_profile': 'zh-glossary-v6',
+                'is_sample': True,
             },
         )
         self.assertEqual(concept.status_code, 201)
         section_graph = self.client.post(
-            "/api/v1/epub/admin/section-graph-batches",
+            '/api/v1/epub/admin/section-graph-batches',
             json={
-                "version_id": "version-1",
-                "profile_name": "cloud-model-snapshot",
-                "is_sample": True,
+                'version_id': 'version-1',
+                'profile_name': 'cloud-model-snapshot',
+                'is_sample': True,
             },
         )
         self.assertEqual(section_graph.status_code, 201)
 
-        history = self.client.get("/api/v1/epub/admin/batches?version_id=version-1")
+        history = self.client.get('/api/v1/epub/admin/batches?version_id=version-1')
         self.assertEqual(history.status_code, 200)
-        recorded = {
-            job["batch_job_id"]: job["prompt_profile"] for job in history.json()["items"]
-        }
-        self.assertEqual(recorded[concept.json()["batch_job_id"]], "zh-glossary-v6")
+        recorded = {job['batch_job_id']: job['prompt_profile'] for job in history.json()['items']}
+        self.assertEqual(recorded[concept.json()['batch_job_id']], 'zh-glossary-v6')
         self.assertEqual(
-            recorded[section_graph.json()["batch_job_id"]],
-            section_graph.json()["prompt_profile"],
+            recorded[section_graph.json()['batch_job_id']],
+            section_graph.json()['prompt_profile'],
         )
         # The identifier is exposed; no instruction text ever is.
-        self.assertNotIn("抽取器", history.text)
+        self.assertNotIn('抽取器', history.text)
 
     def test_the_service_hands_cloud_ingest_every_registered_evidence_floor(self) -> None:
         """The seam that lets ingest enforce a floor it is not allowed to look up.
@@ -624,9 +607,7 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             with self.subTest(profile=profile_id):
                 self.assertEqual(
                     floors[profile_id],
-                    get_section_graph_profile(
-                        profile_id
-                    ).enforced_min_evidence_codepoints,
+                    get_section_graph_profile(profile_id).enforced_min_evidence_codepoints,
                 )
         # The four profiles whose instructions name a minimum, and the legacy
         # ones whose instructions do not and whose samples must stay replayable.
@@ -634,23 +615,19 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(
             {profile_id: floor for profile_id, floor in floors.items() if floor},
             {
-                "zh-glossary-v6": 6,
-                "zh-glossary-v7": 6,
-                "zh-section-graph-v2": 6,
-                "zh-section-graph-v3": 6,
+                'zh-glossary-v6': 6,
+                'zh-glossary-v7': 6,
+                'zh-section-graph-v2': 6,
+                'zh-section-graph-v3': 6,
             },
         )
-        for profile_id in ("zh-glossary-v6", "zh-glossary-v7"):
-            with self.subTest(profile=profile_id, field="requested"):
+        for profile_id in ('zh-glossary-v6', 'zh-glossary-v7'):
+            with self.subTest(profile=profile_id, field='requested'):
+                self.assertEqual(get_prompt_profile(profile_id).requested_min_evidence_codepoints, 10)
+        for profile_id in ('zh-section-graph-v2', 'zh-section-graph-v3'):
+            with self.subTest(profile=profile_id, field='requested'):
                 self.assertEqual(
-                    get_prompt_profile(profile_id).requested_min_evidence_codepoints, 10
-                )
-        for profile_id in ("zh-section-graph-v2", "zh-section-graph-v3"):
-            with self.subTest(profile=profile_id, field="requested"):
-                self.assertEqual(
-                    get_section_graph_profile(
-                        profile_id
-                    ).requested_min_evidence_codepoints,
+                    get_section_graph_profile(profile_id).requested_min_evidence_codepoints,
                     10,
                 )
 
@@ -658,12 +635,12 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         # being computed and dropped.
         repository = self.service._batch._repository
         self.assertEqual(repository._evidence_floors, floors)
-        self.assertEqual(repository._evidence_floor("zh-glossary-v7"), 6)
-        self.assertEqual(repository._evidence_floor("zh-glossary-v1"), 0)
+        self.assertEqual(repository._evidence_floor('zh-glossary-v7'), 6)
+        self.assertEqual(repository._evidence_floor('zh-glossary-v1'), 0)
         # A job predating ``batch_jobs.prompt_profile`` has NULL there and must
         # stay ingestable on the contract it was actually given.
         self.assertEqual(repository._evidence_floor(None), 0)
-        self.assertEqual(repository._evidence_floor("zh-glossary-v99"), 0)
+        self.assertEqual(repository._evidence_floor('zh-glossary-v99'), 0)
 
     def test_admin_backfill_derives_a_missing_prompt_profile_from_what_was_sent(self) -> None:
         """A job predating the column is recovered from its own request.
@@ -675,25 +652,25 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         """
         self.app.dependency_overrides[get_admin_user] = _admin_user
         sample = self.client.post(
-            "/api/v1/epub/admin/batches",
+            '/api/v1/epub/admin/batches',
             json={
-                "version_id": "version-1",
-                "profile_name": "cloud-model-snapshot",
-                "prompt_profile": "zh-glossary-v6",
-                "is_sample": True,
+                'version_id': 'version-1',
+                'profile_name': 'cloud-model-snapshot',
+                'prompt_profile': 'zh-glossary-v6',
+                'is_sample': True,
             },
         )
         self.assertEqual(sample.status_code, 201)
-        sample_id = sample.json()["batch_job_id"]
+        sample_id = sample.json()['batch_job_id']
 
         repository = self.service._batch._repository
-        repository.mark_submitted(sample_id, "remote-sample")
-        repository.set_provider_state(sample_id, "SUCCEEDED", None)
+        repository.mark_submitted(sample_id, 'remote-sample')
+        repository.set_provider_state(sample_id, 'SUCCEEDED', None)
         for item in repository.list_items(sample_id):
-            self.assertTrue(repository.ingest_success(sample_id, item["custom_id"], {"concepts": []}))
+            self.assertTrue(repository.ingest_success(sample_id, item['custom_id'], {'concepts': []}))
         self.assertEqual(
             self.client.put(
-                f"/api/v1/epub/admin/sample-batches/{sample_id}/review", json={"status": "APPROVED"}
+                f'/api/v1/epub/admin/sample-batches/{sample_id}/review', json={'status': 'APPROVED'}
             ).status_code,
             200,
         )
@@ -701,81 +678,81 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         # A job whose stored request this server did not build cannot be
         # attributed to any registered profile, and must stay unknown.
         unknown_id = self.store.create_batch_job(
-            "version-1", provider="openai-batch", profile_name="cloud-model-snapshot", is_sample=True
+            'version-1', provider='openai-batch', profile_name='cloud-model-snapshot', is_sample=True
         )
         self.store.add_batch_item(
             unknown_id,
-            "passage-1",
-            custom_id="foreign",
-            request={"body": {"messages": [{"role": "system", "content": "some other instruction"}]}},
+            'passage-1',
+            custom_id='foreign',
+            request={'body': {'messages': [{'role': 'system', 'content': 'some other instruction'}]}},
         )
 
         # Simulate the pre-migration state: the profile was never recorded.
         connection = self.store._connection()
-        connection.execute("UPDATE batch_jobs SET prompt_profile = NULL")
-        connection.execute("UPDATE epub_batch_sample_reviews SET prompt_profile = NULL")
+        connection.execute('UPDATE batch_jobs SET prompt_profile = NULL')
+        connection.execute('UPDATE epub_batch_sample_reviews SET prompt_profile = NULL')
         connection.commit()
 
         blocked = self.client.post(
-            "/api/v1/epub/admin/batches",
+            '/api/v1/epub/admin/batches',
             json={
-                "version_id": "version-1",
-                "profile_name": "cloud-model-snapshot",
-                "prompt_profile": "zh-glossary-v6",
-                "is_sample": False,
+                'version_id': 'version-1',
+                'profile_name': 'cloud-model-snapshot',
+                'prompt_profile': 'zh-glossary-v6',
+                'is_sample': False,
             },
         )
         self.assertEqual(blocked.status_code, 400)
 
-        backfill = self.client.post("/api/v1/epub/admin/batches/backfill-prompt-profiles")
+        backfill = self.client.post('/api/v1/epub/admin/batches/backfill-prompt-profiles')
         self.assertEqual(backfill.status_code, 200)
         report = backfill.json()
-        self.assertEqual(report["examined"], 2)
+        self.assertEqual(report['examined'], 2)
         self.assertEqual(
-            report["resolved"],
+            report['resolved'],
             [
                 {
-                    "batch_job_id": sample_id,
-                    "job_kind": "CONCEPT_MENTIONS",
-                    "prompt_profile": "zh-glossary-v6",
+                    'batch_job_id': sample_id,
+                    'job_kind': 'CONCEPT_MENTIONS',
+                    'prompt_profile': 'zh-glossary-v6',
                 }
             ],
         )
         self.assertEqual(
-            report["unresolved"],
+            report['unresolved'],
             [
                 {
-                    "batch_job_id": unknown_id,
-                    "job_kind": "CONCEPT_MENTIONS",
-                    "reason": "NO_REGISTERED_PROFILE_MATCHES",
+                    'batch_job_id': unknown_id,
+                    'job_kind': 'CONCEPT_MENTIONS',
+                    'reason': 'NO_REGISTERED_PROFILE_MATCHES',
                 }
             ],
         )
         # A report is an operator surface: identifiers and reason classes only.
-        self.assertNotIn("抽取器", backfill.text)
-        self.assertNotIn("TCP", backfill.text)
+        self.assertNotIn('抽取器', backfill.text)
+        self.assertNotIn('TCP', backfill.text)
 
         # The recovered approval unlocks its own prompt profile again, and
         # still unlocks nothing else.
         self.assertEqual(
             self.client.post(
-                "/api/v1/epub/admin/batches",
+                '/api/v1/epub/admin/batches',
                 json={
-                    "version_id": "version-1",
-                    "profile_name": "cloud-model-snapshot",
-                    "prompt_profile": "zh-glossary-v6",
-                    "is_sample": False,
+                    'version_id': 'version-1',
+                    'profile_name': 'cloud-model-snapshot',
+                    'prompt_profile': 'zh-glossary-v6',
+                    'is_sample': False,
                 },
             ).status_code,
             201,
         )
         self.assertEqual(
             self.client.post(
-                "/api/v1/epub/admin/batches",
+                '/api/v1/epub/admin/batches',
                 json={
-                    "version_id": "version-1",
-                    "profile_name": "cloud-model-snapshot",
-                    "is_sample": False,
+                    'version_id': 'version-1',
+                    'profile_name': 'cloud-model-snapshot',
+                    'is_sample': False,
                 },
             ).status_code,
             400,
@@ -783,14 +760,12 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
 
         # The unmatched job is still unknown, and a repeated backfill neither
         # resolves it by a second attempt nor disturbs what it already fixed.
-        again = self.client.post("/api/v1/epub/admin/batches/backfill-prompt-profiles")
+        again = self.client.post('/api/v1/epub/admin/batches/backfill-prompt-profiles')
         self.assertEqual(again.status_code, 200)
-        self.assertEqual(again.json()["resolved"], [])
-        self.assertEqual(
-            [job["batch_job_id"] for job in again.json()["unresolved"]], [unknown_id]
-        )
-        reviews = self.client.get("/api/v1/epub/admin/sample-batch-reviews?version_id=version-1")
-        self.assertEqual(reviews.json()["items"][0]["prompt_profile"], "zh-glossary-v6")
+        self.assertEqual(again.json()['resolved'], [])
+        self.assertEqual([job['batch_job_id'] for job in again.json()['unresolved']], [unknown_id])
+        reviews = self.client.get('/api/v1/epub/admin/sample-batch-reviews?version_id=version-1')
+        self.assertEqual(reviews.json()['items'][0]['prompt_profile'], 'zh-glossary-v6')
 
     def test_admin_can_run_local_calibration_without_exposing_source_text(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
@@ -802,59 +777,53 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
                 test_case.assertEqual(prompt_profile, DEFAULT_CONCEPT_PROMPT_PROFILE)
                 test_case.assertEqual(sample_limit, 20)
                 return {
-                    "mode": "LOCAL_QWEN",
-                    "prompt_profile": prompt_profile,
-                    "model": "test-local-model",
-                    "sample_count": 1,
-                    "chapter_count": 1,
-                    "valid_items": 1,
-                    "invalid_items": 0,
-                    "schema_valid_rate": 1.0,
-                    "concept_count": 1,
-                    "mention_count": 1,
-                    "items": [
+                    'mode': 'LOCAL_QWEN',
+                    'prompt_profile': prompt_profile,
+                    'model': 'test-local-model',
+                    'sample_count': 1,
+                    'chapter_count': 1,
+                    'valid_items': 1,
+                    'invalid_items': 0,
+                    'schema_valid_rate': 1.0,
+                    'concept_count': 1,
+                    'mention_count': 1,
+                    'items': [
                         {
-                            "passage_id": "passage-1",
-                            "ordinal": 0,
-                            "toc_path": [],
-                            "valid": True,
-                            "concept_count": 1,
-                            "mention_count": 1,
-                            "reason": None,
+                            'passage_id': 'passage-1',
+                            'ordinal': 0,
+                            'toc_path': [],
+                            'valid': True,
+                            'concept_count': 1,
+                            'mention_count': 1,
+                            'reason': None,
                         }
                     ],
                 }
 
         self.service._calibration_runner = FakeCalibrationRunner()
-        response = self.client.post(
-            "/api/v1/epub/admin/calibrations/local", json={"version_id": "version-1"}
-        )
+        response = self.client.post('/api/v1/epub/admin/calibrations/local', json={'version_id': 'version-1'})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["valid_items"], 1)
-        self.assertNotIn("完整返回", response.text)
+        self.assertEqual(response.json()['valid_items'], 1)
+        self.assertNotIn('完整返回', response.text)
 
     def test_admin_can_bulk_index_a_version_without_exposing_unit_ids(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
-        unit_id = self.service._store.add_retrieval_unit(
-            "passage-1", 0, len("TCP 是传输控制协议。原文必须完整返回。")
-        )
+        unit_id = self.service._store.add_retrieval_unit('passage-1', 0, len('TCP 是传输控制协议。原文必须完整返回。'))
         indexed: list[str] = []
 
         class ReadyIndexer:
             def index(self, retrieval_unit_id: str):
                 indexed.append(retrieval_unit_id)
-                return SimpleNamespace(state="READY", reason=None)
+                return SimpleNamespace(state='READY', reason=None)
 
         self.service._vector_indexer = ReadyIndexer()
 
-        response = self.client.post(
-            "/api/v1/epub/admin/versions/version-1/index", json={"rebuild": False}
-        )
+        response = self.client.post('/api/v1/epub/admin/versions/version-1/index', json={'rebuild': False})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["ready"], 1)
+        self.assertEqual(response.json()['ready'], 1)
         self.assertEqual(indexed, [unit_id])
-        self.assertEqual(self.service._store.get_retrieval_unit(unit_id)["vector_state"], "READY")
+        self.assertEqual(self.service._store.get_retrieval_unit(unit_id)['vector_state'], 'READY')
 
     def test_batch_lifecycle_failures_reach_the_administrator_as_actionable_errors(self) -> None:
         """Every Batch read path must degrade to 400/404, never to an opaque 500.
@@ -869,37 +838,35 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.app.dependency_overrides[get_epub_concept_service] = lambda: service
 
         service_calls = (
-            lambda: service.list_batch_jobs(version_id="version-1"),
-            lambda: service.get_batch_job("missing"),
-            lambda: service.review_sample_batch(
-                batch_job_id="missing", status="APPROVED", reviewed_by="administrator"
-            ),
-            lambda: service.list_sample_batch_reviews(version_id="version-1", job_kind=None),
+            lambda: service.list_batch_jobs(version_id='version-1'),
+            lambda: service.get_batch_job('missing'),
+            lambda: service.review_sample_batch(batch_job_id='missing', status='APPROVED', reviewed_by='administrator'),
+            lambda: service.list_sample_batch_reviews(version_id='version-1', job_kind=None),
             lambda: service.recover_batches(),
         )
         for call in service_calls:
             with self.assertRaises(EpubServiceError) as raised:
                 call()
-            self.assertIn("does not exist", str(raised.exception))
+            self.assertIn('does not exist', str(raised.exception))
 
         requests = [
-            ("get", "/api/v1/epub/admin/batches?version_id=version-1", None, 400),
-            ("get", "/api/v1/epub/admin/batches/missing", None, 404),
-            ("get", "/api/v1/epub/admin/sample-batch-reviews?version_id=version-1", None, 400),
-            ("put", "/api/v1/epub/admin/sample-batches/missing/review", {"status": "APPROVED"}, 400),
-            ("post", "/api/v1/epub/admin/batches/recover", None, 400),
+            ('get', '/api/v1/epub/admin/batches?version_id=version-1', None, 400),
+            ('get', '/api/v1/epub/admin/batches/missing', None, 404),
+            ('get', '/api/v1/epub/admin/sample-batch-reviews?version_id=version-1', None, 400),
+            ('put', '/api/v1/epub/admin/sample-batches/missing/review', {'status': 'APPROVED'}, 400),
+            ('post', '/api/v1/epub/admin/batches/recover', None, 400),
         ]
         for method, url, payload, expected_status in requests:
-            kwargs = {"json": payload} if payload is not None else {}
+            kwargs = {'json': payload} if payload is not None else {}
             response = getattr(self.client, method)(url, **kwargs)
             self.assertEqual(response.status_code, expected_status, url)
-            self.assertEqual(response.json()["detail"], FailingBatchJobService.failure, url)
+            self.assertEqual(response.json()['detail'], FailingBatchJobService.failure, url)
 
     def test_service_is_fail_closed_when_startup_did_not_configure_it(self) -> None:
         app = FastAPI()
         app.include_router(router)
         app.dependency_overrides[get_verified_user] = _ordinary_user
-        response = TestClient(app).get("/api/v1/epub/books")
+        response = TestClient(app).get('/api/v1/epub/books')
         self.assertEqual(response.status_code, 503)
 
     def test_initialized_runtime_makes_the_real_router_available(self) -> None:
@@ -907,7 +874,7 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         app.include_router(router)
         initialize_epub_concept_service(app, data_dir=self.temporary.name, environment={})
         app.dependency_overrides[get_verified_user] = _ordinary_user
-        response = TestClient(app).get("/api/v1/epub/books")
+        response = TestClient(app).get('/api/v1/epub/books')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
         app.state.EPUB_CONCEPT_STORE.close()
@@ -924,12 +891,12 @@ class PortableAnalysisOverlayApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         directory = Path(self.temporary.name)
-        archive = directory / "fixture.epub"
+        archive = directory / 'fixture.epub'
         build_fixture_epub(archive)
         self.epub_bytes = archive.read_bytes()
 
-        self.publisher_path = directory / "publisher.db"
-        self.reader_path = directory / "reader.db"
+        self.publisher_path = directory / 'publisher.db'
+        self.reader_path = directory / 'reader.db'
         self.publisher_store = SQLiteEpubStore(str(self.publisher_path))
         self.reader_store = SQLiteEpubStore(str(self.reader_path))
         self.publisher = EpubConceptService(store=self.publisher_store)
@@ -947,9 +914,9 @@ class PortableAnalysisOverlayApiTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def _import(self, service: EpubConceptService) -> str:
-        result = service.import_epub(filename="fixture.epub", epub_bytes=self.epub_bytes)
-        self.assertTrue(result["created"])
-        return str(result["version_id"])
+        result = service.import_epub(filename='fixture.epub', epub_bytes=self.epub_bytes)
+        self.assertTrue(result['created'])
+        return str(result['version_id'])
 
     def _client(self, service: EpubConceptService) -> TestClient:
         app = FastAPI()
@@ -962,39 +929,37 @@ class PortableAnalysisOverlayApiTest(unittest.TestCase):
     def _publish_analysis(self) -> None:
         """Build the graph the publisher paid a cloud Batch run to produce."""
         passages = self.publisher_store.list_passages(self.published_version)
-        self.english = next(item for item in passages if item["content"].startswith("Hello"))
-        self.quote = next(item for item in passages if item["content"].startswith("引用"))
+        self.english = next(item for item in passages if item['content'].startswith('Hello'))
+        self.quote = next(item for item in passages if item['content'].startswith('引用'))
         hello = self.publisher_store.upsert_concept(
-            "Hello", aliases=["招呼语"], definition="示例问候", status="APPROVED"
+            'Hello', aliases=['招呼语'], definition='示例问候', status='APPROVED'
         )
-        quotation = self.publisher_store.upsert_concept("引用文本", status="PROVISIONAL")
+        quotation = self.publisher_store.upsert_concept('引用文本', status='PROVISIONAL')
         self.publisher_store.add_concept_mention(
-            hello, self.english["passage_id"], start_codepoint=0, end_codepoint=5, source="ADMIN"
+            hello, self.english['passage_id'], start_codepoint=0, end_codepoint=5, source='ADMIN'
         )
         self.publisher_store.add_concept_mention(
-            quotation, self.quote["passage_id"], start_codepoint=0, end_codepoint=4
+            quotation, self.quote['passage_id'], start_codepoint=0, end_codepoint=4
         )
         self.publisher_store.add_concept_relation(
             self.published_version,
             hello,
-            "CONTRASTS",
+            'CONTRASTS',
             quotation,
             evidence=[
                 {
-                    "passage_id": self.english["passage_id"],
-                    "start_codepoint": 0,
-                    "end_codepoint": 11,
-                    "evidence": self.english["content"][0:11],
+                    'passage_id': self.english['passage_id'],
+                    'start_codepoint': 0,
+                    'end_codepoint': 11,
+                    'evidence': self.english['content'][0:11],
                 }
             ],
         )
 
     def _download(self) -> tuple[bytes, str]:
-        response = self.publisher_client.get(
-            f"/api/v1/epub/admin/versions/{self.published_version}/overlay"
-        )
+        response = self.publisher_client.get(f'/api/v1/epub/admin/versions/{self.published_version}/overlay')
         self.assertEqual(response.status_code, 200)
-        return response.content, response.headers["x-overlay-sha256"]
+        return response.content, response.headers['x-overlay-sha256']
 
     def _spans(self, path: Path) -> list[tuple[str, int, int, str]]:
         connection = sqlite3.connect(str(path))
@@ -1018,47 +983,47 @@ class PortableAnalysisOverlayApiTest(unittest.TestCase):
         body, digest = self._download()
 
         self.assertEqual(sha256(body).hexdigest(), digest)
-        text = body.decode("utf-8")
+        text = body.decode('utf-8')
         # Not one character of the book may leave the publisher's server.
         for passage in self.publisher_store.list_passages(self.published_version):
-            self.assertNotIn(passage["content"], text)
-        self.assertNotIn("Hello world", text)
-        self.assertNotIn("引用文本。", text)
+            self.assertNotIn(passage['content'], text)
+        self.assertNotIn('Hello world', text)
+        self.assertNotIn('引用文本。', text)
         # Concept labels and definitions are the analysis product and do ship.
         payload = json.loads(text)
-        self.assertEqual([concept["key"] for concept in payload["concepts"]], ["hello", "引用文本"])
-        self.assertEqual(payload["parser_version"], "1")
-        self.assertEqual(payload["passage_fingerprint"]["count"], 6)
-        self.assertEqual(payload["overlay_format_version"], 1)
+        self.assertEqual([concept['key'] for concept in payload['concepts']], ['hello', '引用文本'])
+        self.assertEqual(payload['parser_version'], '1')
+        self.assertEqual(payload['passage_fingerprint']['count'], 6)
+        self.assertEqual(payload['overlay_format_version'], 1)
 
     def test_a_second_installation_applies_the_overlay_to_its_own_book(self) -> None:
         body, digest = self._download()
 
         applied = self.client.post(
-            "/api/v1/epub/admin/overlays",
-            files={"file": ("overlay.json", body, "application/json")},
+            '/api/v1/epub/admin/overlays',
+            files={'file': ('overlay.json', body, 'application/json')},
         )
 
         self.assertEqual(applied.status_code, 200)
         summary = applied.json()
-        self.assertEqual(summary["version_id"], self.reader_version)
+        self.assertEqual(summary['version_id'], self.reader_version)
         self.assertNotEqual(self.reader_version, self.published_version)
-        self.assertEqual(summary["uploaded_overlay_sha256"], digest)
-        self.assertEqual(summary["canonical_overlay_sha256"], digest)
-        self.assertEqual(summary["applied_detail"]["concepts_created"], 2)
-        self.assertEqual(summary["applied_detail"]["mentions_created"], 2)
-        self.assertEqual(summary["applied_detail"]["relations_created"], 1)
-        self.assertEqual(summary["rejected"], 0)
-        self.assertEqual(summary["rejection_reasons"], {})
-        self.assertTrue(summary["vectors_require_reindex"])
+        self.assertEqual(summary['uploaded_overlay_sha256'], digest)
+        self.assertEqual(summary['canonical_overlay_sha256'], digest)
+        self.assertEqual(summary['applied_detail']['concepts_created'], 2)
+        self.assertEqual(summary['applied_detail']['mentions_created'], 2)
+        self.assertEqual(summary['applied_detail']['relations_created'], 1)
+        self.assertEqual(summary['rejected'], 0)
+        self.assertEqual(summary['rejection_reasons'], {})
+        self.assertTrue(summary['vectors_require_reindex'])
         # A content-free summary: no passage text, no evidence, no labels.
-        self.assertNotIn("Hello", applied.text)
-        self.assertNotIn("引用", applied.text)
+        self.assertNotIn('Hello', applied.text)
+        self.assertNotIn('引用', applied.text)
 
         # The reader's graph is the publisher's graph, re-derived locally.
         self.assertEqual(
-            self.reader.export_concept_overlay(self.reader_version)["overlay_json"],
-            body.decode("utf-8"),
+            self.reader.export_concept_overlay(self.reader_version)['overlay_json'],
+            body.decode('utf-8'),
         )
         spans = self._spans(self.reader_path)
         self.assertEqual(len(spans), 3)
@@ -1067,85 +1032,85 @@ class PortableAnalysisOverlayApiTest(unittest.TestCase):
         # An imported overlay has no vectors; the derived index is still empty.
         self.assertEqual(
             [
-                unit["vector_state"]
+                unit['vector_state']
                 for unit in self.reader_store.list_retrieval_units_for_version(self.reader_version)
-                if unit["vector_state"] == "READY"
+                if unit['vector_state'] == 'READY'
             ],
             [],
         )
 
     def test_applying_the_same_artifact_twice_is_a_no_op(self) -> None:
         body, _ = self._download()
-        files = {"file": ("overlay.json", body, "application/json")}
+        files = {'file': ('overlay.json', body, 'application/json')}
 
-        self.client.post("/api/v1/epub/admin/overlays", files=files)
+        self.client.post('/api/v1/epub/admin/overlays', files=files)
         second = self.client.post(
-            "/api/v1/epub/admin/overlays",
-            files={"file": ("overlay.json", body, "application/json")},
+            '/api/v1/epub/admin/overlays',
+            files={'file': ('overlay.json', body, 'application/json')},
         )
 
         self.assertEqual(second.status_code, 200)
-        self.assertEqual(second.json()["applied"], 0)
-        self.assertEqual(second.json()["skipped_detail"]["mentions_existing"], 2)
+        self.assertEqual(second.json()['applied'], 0)
+        self.assertEqual(second.json()['skipped_detail']['mentions_existing'], 2)
 
     def test_an_overlay_for_a_book_this_library_lacks_is_a_404(self) -> None:
         body, _ = self._download()
         payload = json.loads(body)
-        payload["epub_sha256"] = "a" * 64
+        payload['epub_sha256'] = 'a' * 64
 
         response = self.client.post(
-            "/api/v1/epub/admin/overlays",
-            files={"file": ("overlay.json", json.dumps(payload).encode(), "application/json")},
+            '/api/v1/epub/admin/overlays',
+            files={'file': ('overlay.json', json.dumps(payload).encode(), 'application/json')},
         )
 
         self.assertEqual(response.status_code, 404)
-        self.assertIn("matches the overlay", response.json()["detail"])
+        self.assertIn('matches the overlay', response.json()['detail'])
         self.assertEqual(self.reader_store.count_concepts(), 0)
 
     def test_a_failed_fidelity_gate_reports_its_class_and_stores_nothing(self) -> None:
         body, _ = self._download()
         payload = json.loads(body)
-        payload["passage_fingerprint"]["digest"] = "b" * 64
+        payload['passage_fingerprint']['digest'] = 'b' * 64
 
         response = self.client.post(
-            "/api/v1/epub/admin/overlays",
-            files={"file": ("overlay.json", json.dumps(payload).encode(), "application/json")},
+            '/api/v1/epub/admin/overlays',
+            files={'file': ('overlay.json', json.dumps(payload).encode(), 'application/json')},
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("passage_fingerprint_mismatch", response.json()["detail"])
+        self.assertIn('passage_fingerprint_mismatch', response.json()['detail'])
         self.assertEqual(self.reader_store.count_concepts(), 0)
         self.assertEqual(self._spans(self.reader_path), [])
 
     def test_a_malformed_or_wrongly_named_upload_is_refused(self) -> None:
         wrong_extension = self.client.post(
-            "/api/v1/epub/admin/overlays",
-            files={"file": ("overlay.epub", b"{}", "application/epub+zip")},
+            '/api/v1/epub/admin/overlays',
+            files={'file': ('overlay.epub', b'{}', 'application/epub+zip')},
         )
         self.assertEqual(wrong_extension.status_code, 400)
-        self.assertIn(".json overlay", wrong_extension.json()["detail"])
+        self.assertIn('.json overlay', wrong_extension.json()['detail'])
 
         not_json = self.client.post(
-            "/api/v1/epub/admin/overlays",
-            files={"file": ("overlay.json", b"not json at all", "application/json")},
+            '/api/v1/epub/admin/overlays',
+            files={'file': ('overlay.json', b'not json at all', 'application/json')},
         )
         self.assertEqual(not_json.status_code, 400)
-        self.assertIn("UTF-8 JSON", not_json.json()["detail"])
+        self.assertIn('UTF-8 JSON', not_json.json()['detail'])
 
         smuggled = json.loads(self._download()[0])
-        smuggled["mentions"][0]["evidence"] = "Hello"
+        smuggled['mentions'][0]['evidence'] = 'Hello'
         refused = self.client.post(
-            "/api/v1/epub/admin/overlays",
-            files={"file": ("overlay.json", json.dumps(smuggled).encode(), "application/json")},
+            '/api/v1/epub/admin/overlays',
+            files={'file': ('overlay.json', json.dumps(smuggled).encode(), 'application/json')},
         )
         self.assertEqual(refused.status_code, 400)
-        self.assertIn("unsupported fields", refused.json()["detail"])
+        self.assertIn('unsupported fields', refused.json()['detail'])
         self.assertEqual(self.reader_store.count_concepts(), 0)
 
     def test_exporting_an_unknown_version_is_a_404(self) -> None:
-        response = self.publisher_client.get("/api/v1/epub/admin/versions/missing/overlay")
+        response = self.publisher_client.get('/api/v1/epub/admin/versions/missing/overlay')
         self.assertEqual(response.status_code, 404)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
