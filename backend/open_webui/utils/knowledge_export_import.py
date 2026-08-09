@@ -179,9 +179,7 @@ async def create_knowledge_export_zip(
         if progress_callback:
             await progress_callback(45, f'正在编码 {count} 条向量...')
 
-        embeddings_array = (
-            np.asarray(embeddings, dtype=np.float32) if count else np.zeros((0, 0), dtype=np.float32)
-        )
+        embeddings_array = np.asarray(embeddings, dtype=np.float32) if count else np.zeros((0, 0), dtype=np.float32)
         if embeddings_array.ndim != 2:
             raise ValueError(
                 f'Fetched embeddings for collection {knowledge_id} do not form a 2D array '
@@ -235,9 +233,11 @@ async def create_knowledge_export_zip(
         await progress_callback(100, '导出完成')
     return zip_buffer
 
+
 # --------------------------------------------------------------------------
 # Import
 # --------------------------------------------------------------------------
+
 
 def _validate_legacy_vectors(vectors_data: Any) -> tuple[list, list, list, list] | None:
     # The legacy exporter (create_knowledge_export_zip, v1) wrote FLAT lists
@@ -394,7 +394,6 @@ async def import_knowledge_from_zip(
                 if not isinstance(manifest, dict) or manifest.get('format') != _EXPORT_FORMAT:
                     raise KnowledgeImportError('Unrecognized knowledge archive format.')
                 await _import_v2_vectors(knowledge_id, zf, manifest, progress_callback)
-
 
         if progress_callback:
             await progress_callback(100, '导入完成')
