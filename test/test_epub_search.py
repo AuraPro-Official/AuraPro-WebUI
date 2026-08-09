@@ -841,6 +841,152 @@ class PredicateGraphFakeSource(FakeSource):
         return {name for hit in response.graph_results for name in hit.matched_concepts}
 
 
+class TierTwoFakeSource(FakeSource):
+    """A store whose Tier-1 answers are weak in three structurally different ways.
+
+    Names are invented (see the substitution note at the top of this module).
+    Tier 2 exists for the reader whose wording the vocabulary does not contain,
+    so every fixture here is about a *quality* of a Tier-1 answer rather than
+    about a particular word, and each one isolates exactly one of the three
+    conditions the weak-match gate tests:
+
+    * ``锚站`` — the **strong** case, and the control.  Named in full, so it
+      seeds expansion; three of its own spans plus its ``HAS_PART`` child clear
+      the ``graph_total`` floor comfortably.  A query naming it must never reach
+      the resolver at all.
+    * ``全域潮汐枢纽`` reached by its one-code-point alias ``枢`` — a match that
+      **survives suppression and may not seed**.  The old one-character-alias
+      defect fired inside a longer word and token-aligned matching has removed
+      that; a query that *is* the single character is still boundary-valid, so
+      the weak match is reproduced without depending on the behaviour that was
+      fixed.  Three front-matter spans deliberately clear the ``graph_total``
+      floor, so this fixture can only trip the seed condition.
+    * ``巡检记录`` — a match that is **strong in every way except the answer**.
+      Its full four-code-point name, so it seeds; no relation of any predicate
+      and one appendix mention, so the whole graph channel is one span.  Only
+      the floor condition can see this one.
+    * ``漂移改正`` — the concept nothing in the fixture's queries spells, living
+      in a passage the vector channel finds.  It is what a working Tier 2
+      resolves *to*.
+    * ``细目``-style fillers, 80 of them in one passage — more concepts under one
+      vector hit than the candidate budget allows, so the shortlist has to be
+      bounded rather than merely smaller, and the whole vocabulary is over
+      budget, so a store with no vector channel has to refuse rather than fall
+      back to sending all of it.
+    """
+
+    FILLERS = 80
+
+    STATION_A = '锚站的布放先要确认底质与水深。'
+    STATION_B = '锚站在汛期前后各校验一次。'
+    STATION_C = '锚站与浮标阵列一同构成前端。'
+    PREFACE_A = '枢的运行记录选编，供人查阅。'
+    PREFACE_B = '枢所辖各站的沿革附于卷末。'
+    PREFACE_C = '枢历年调度的时刻表另行刊印。'
+    DRIFT = '漂移改正把缆索走位带来的偏差从读数里扣除。'
+    LOG = '巡检记录只在附录里出现过一次。'
+    BULK = '细目一二三四五六七八九十。'
+
+    @staticmethod
+    def _passage(passage_id: str, chapter: str, content: str) -> dict[str, object]:
+        return {
+            'passage_id': passage_id,
+            'book_title': '潮汐观测总志',
+            'toc_path': (chapter,),
+            'content': content,
+            'content_sha256': _hash(content),
+        }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.passages = {
+            'station-a': self._passage('station-a', '第二章', self.STATION_A),
+            'station-b': self._passage('station-b', '第二章', self.STATION_B),
+            'station-c': self._passage('station-c', '第二章', self.STATION_C),
+            'preface-a': self._passage('preface-a', '前言', self.PREFACE_A),
+            'preface-b': self._passage('preface-b', '前言', self.PREFACE_B),
+            'preface-c': self._passage('preface-c', '前言', self.PREFACE_C),
+            'drift': self._passage('drift', '第五章', self.DRIFT),
+            'log': self._passage('log', '附录', self.LOG),
+            'bulk': self._passage('bulk', '附录', self.BULK),
+        }
+        self.terms = [
+            self._term('station', '锚站', '锚站', fanout=1),
+            self._term('hub', '全域潮汐枢纽', '全域潮汐枢纽', fanout=1),
+            self._term('hub', '全域潮汐枢纽', '枢', fanout=1),
+            self._term('drift', '漂移改正', '漂移改正', fanout=0),
+            self._term('log', '巡检记录', '巡检记录', fanout=0),
+            self._term('array', '浮标阵列', '浮标阵列', fanout=0),
+        ] + [self._term(f'filler-{index}', f'细目{index}', f'细目{index}', fanout=0) for index in range(self.FILLERS)]
+        self.occurrences = [
+            self._occurrence('station', '锚站', 'station-a', 0, 2),
+            self._occurrence('station', '锚站', 'station-b', 0, 2),
+            self._occurrence('station', '锚站', 'station-c', 0, 2),
+            self._occurrence('array', '浮标阵列', 'station-c', 3, 7),
+            self._occurrence('hub', '全域潮汐枢纽', 'preface-a', 0, 1),
+            self._occurrence('hub', '全域潮汐枢纽', 'preface-b', 0, 1),
+            self._occurrence('hub', '全域潮汐枢纽', 'preface-c', 0, 1),
+            self._occurrence('baseline', '枢纽的基准线', 'preface-c', 4, 9),
+            self._occurrence('drift', '漂移改正', 'drift', 0, 4),
+            self._occurrence('log', '巡检记录', 'log', 0, 4),
+        ] + [self._occurrence(f'filler-{index}', f'细目{index}', 'bulk', 0, 2) for index in range(self.FILLERS)]
+        self.relations = [
+            {'subject_concept_id': 'station', 'predicate': 'HAS_PART', 'object_concept_id': 'array'},
+            {'subject_concept_id': 'hub', 'predicate': 'HAS_PART', 'object_concept_id': 'baseline'},
+        ]
+        self.units = {
+            'u-drift': self._unit('u-drift', 'drift', 0, 10),
+            'u-bulk': self._unit('u-bulk', 'bulk', 0, 6),
+            'u-station': self._unit('u-station', 'station-c', 0, 7),
+        }
+
+    @staticmethod
+    def _term(concept_id: str, canonical: str, term: str, *, fanout: int) -> dict:
+        return {
+            'concept_id': concept_id,
+            'canonical_name': canonical,
+            'term': term,
+            'term_source': 'MODEL',
+            'mention_count': 1,
+            'has_part_fanout': fanout,
+        }
+
+    def _occurrence(self, concept_id: str, canonical: str, passage_id: str, start: int, end: int) -> dict:
+        return {
+            **self.passages[passage_id],
+            'concept_id': concept_id,
+            'canonical_name': canonical,
+            'start_codepoint': start,
+            'end_codepoint': end,
+        }
+
+    def matched_concept_names(self, passage_id, concept_ids):
+        return sorted(
+            {
+                row['canonical_name']
+                for row in self.occurrences
+                if row['passage_id'] == passage_id and row['concept_id'] in concept_ids
+            }
+        )
+
+    def list_passage_concept_names(self, passage_ids):
+        """The store's read, written out: which concepts these passages mention.
+
+        Deliberately unfiltered by concept, which is the whole difference from
+        ``matched_concept_names``: the Tier-2 shortlist starts from passages the
+        vector channel returned and asks what lives in them, not from concepts a
+        query already resolved.
+        """
+        wanted = set(passage_ids)
+        rows = []
+        for passage_id, name in sorted(
+            {(str(row['passage_id']), str(row['canonical_name'])) for row in self.occurrences}
+        ):
+            if passage_id in wanted:
+                rows.append({'passage_id': passage_id, 'canonical_name': name})
+        return rows
+
+
 class FakeEmbeddings:
     profile = 'private-embed-v1'
 
@@ -1110,12 +1256,219 @@ class EpubSearchTest(unittest.TestCase):
         response = EpubSearchService(source=source, concept_resolver=resolver).search('传输层连接')
         self.assertEqual(response.resolved_concepts, ('TCP',))
         self.assertEqual(len(resolver.calls), 1)
+        # A five-concept vocabulary is already under the candidate budget, so it
+        # is sent whole: shortlisting is a ceiling, not a requirement to own a
+        # vector index.  See the shortlist tests for the store that is over it.
+        self.assertEqual(resolver.calls[0][1], ['TCP', '检索', '父主题', '子主题'])
 
         unavailable = FakeResolver('TCP', available=False)
         response = EpubSearchService(source=source, concept_resolver=unavailable).search('传输层连接')
         self.assertEqual(response.resolved_concepts, ())
         self.assertEqual(unavailable.calls, [])
-        self.assertIn('runtime stopped', response.degraded[0].reason or '')
+        # Asserted by component rather than by position: Channel B is now read
+        # before Tier 2, so an unconfigured vector channel reports first.
+        reported = [item for item in response.degraded if item.component == 'local-concept-resolver']
+        self.assertEqual(len(reported), 1)
+        self.assertIn('runtime stopped', reported[0].reason or '')
+
+    def test_tier_two_fires_when_tier_one_is_weak_and_not_merely_when_it_is_empty(self) -> None:
+        """The gate is weakness, which the SDD calls "no useful match".
+
+        Tier 2 used to be consulted only when Tier 1 returned literally nothing,
+        so one spurious match made the tuple truthy and the resolver was never
+        asked on exactly the queries whose Tier-1 answer was worthless.  Three
+        structurally different weak answers are pinned here, one per condition,
+        each isolated so that a change to one condition cannot be masked by
+        another:
+
+        * ``锚站的布放`` names a concept in full — three of its own spans and a
+          ``HAS_PART`` child — and is the control: strong, so the resolver is
+          never reached and a configured local model costs this query nothing.
+        * ``枢`` resolves ``全域潮汐枢纽`` through its one-code-point alias.  The
+          match survives suppression and the concept has three front-matter
+          spans, so only the *seed* condition can fire: the query brushed the
+          concept without naming it.
+        * ``巡检记录`` is named in full and does seed, so only the *floor*
+          condition can fire: one appendix mention and no relation of any
+          predicate means paging the whole graph channel shows one span.
+        * A query containing no concept at all keeps the original condition.
+        """
+        source = TierTwoFakeSource()
+
+        strong = FakeResolver('漂移改正')
+        response = self._tier_two_service(source, strong).search('锚站的布放', graph_limit=10)
+        self.assertEqual(response.resolved_concepts, ('锚站',))
+        self.assertEqual(response.graph_total, 4)
+        self.assertEqual(strong.calls, [])
+
+        unseeded = FakeResolver(None)
+        response = self._tier_two_service(source, unseeded).search('枢', graph_limit=10)
+        self.assertEqual(response.resolved_concepts, ('全域潮汐枢纽',))
+        # The weak match still resolves and still contributes every one of its
+        # own spans; what the floor cannot see is that it reached nothing else.
+        self.assertEqual(response.graph_total, 3)
+        self.assertEqual(len(unseeded.calls), 1)
+
+        thin = FakeResolver(None)
+        response = self._tier_two_service(source, thin).search('巡检记录', graph_limit=10)
+        self.assertEqual(response.resolved_concepts, ('巡检记录',))
+        self.assertEqual(response.graph_total, 1)
+        self.assertEqual(len(thin.calls), 1)
+
+        empty = FakeResolver(None)
+        response = self._tier_two_service(source, empty).search('缆索走位造成的偏差', graph_limit=10)
+        self.assertEqual(response.resolved_concepts, ())
+        self.assertEqual(len(empty.calls), 1)
+
+    def test_tier_two_candidates_are_bounded_and_scoped_to_the_vector_channel(self) -> None:
+        """The resolver is asked about a neighbourhood, never about the whole graph.
+
+        The old payload was every distinct canonical name in the store — 1,113
+        of them on the acceptance corpus, roughly 9k tokens, in front of a 3B
+        model capped at 96 output tokens, which is why the tier was dead even
+        where a model was running.  The shortlist is instead the concepts
+        mentioned by the parent passages of Channel B's top vector candidates:
+        work the request has already done, no new index, and the part of the
+        system that already found where the answer lives.
+
+        Two claims, and the fixture is built so that neither can pass by
+        accident.  It is **scoped**: ``漂移改正`` comes first because the nearest
+        vector candidate's passage mentions it, and ``巡检记录`` — a real concept
+        in the vocabulary, in no returned passage — is absent.  And it is
+        **bounded**: one of the returned passages alone mentions 80 concepts, so
+        a shortlist that were merely smaller than the vocabulary would still be
+        over budget.
+        """
+        source = TierTwoFakeSource()
+        resolver = FakeResolver('漂移改正')
+        backend = FakeVectorBackend([_record(source, 'u-drift', (1.0, 0.0)), _record(source, 'u-bulk', (0.9, 0.1))])
+        response = EpubSearchService(
+            source=source,
+            vector_backend=backend,
+            embeddings=FakeEmbeddings(),
+            reranker=FakeReranker(),
+            concept_resolver=resolver,
+        ).search('缆索走位造成的偏差', graph_limit=10, vector_limit=1, vector_candidate_limit=2)
+
+        self.assertEqual(len(resolver.calls), 1)
+        candidates = resolver.calls[0][1]
+        self.assertEqual(len(candidates), SEARCH._TIER_TWO_MAX_CANDIDATES)
+        self.assertLess(len(candidates), len({term['canonical_name'] for term in source.terms}))
+        self.assertEqual(candidates[0], '漂移改正')
+        self.assertNotIn('巡检记录', candidates)
+        self.assertEqual(response.resolved_concepts, ('漂移改正',))
+
+    def test_tier_two_refuses_an_unbounded_candidate_list_rather_than_sending_it(self) -> None:
+        """No vector channel and an over-budget vocabulary is a refusal, not a dump.
+
+        The ceiling is the invariant here, not the vector channel.  A store
+        whose whole vocabulary already fits under the budget is sent whole — the
+        first Tier-2 test pins that — but a store over it has no shortlist to
+        offer, and sending everything anyway is precisely the defect this
+        removes.  The refusal is reported as a degraded component, because a
+        tier that quietly declines to run is indistinguishable from one that ran
+        and found nothing.
+        """
+        source = TierTwoFakeSource()
+        resolver = FakeResolver('漂移改正')
+        response = EpubSearchService(source=source, concept_resolver=resolver).search('缆索走位造成的偏差')
+
+        self.assertEqual(resolver.calls, [])
+        self.assertEqual(response.resolved_concepts, ())
+        reported = [item for item in response.degraded if item.component == 'local-concept-resolver']
+        self.assertEqual(len(reported), 1)
+        self.assertFalse(reported[0].available)
+        self.assertIn('no bounded candidate shortlist', reported[0].reason or '')
+
+    def test_a_tier_two_answer_outside_the_vocabulary_is_rejected_by_re_validation(self) -> None:
+        """The model may select an existing concept; it may never invent one.
+
+        The answer is fed back through the same matcher that failed on the
+        query, so a name the store does not hold resolves nothing and cannot
+        reach the graph.  A model that answers with a concept plus commentary is
+        also handled by the same pass — the matcher finds the concept inside the
+        reply — which is why the re-validation is a match rather than an
+        equality test.
+        """
+        source = TierTwoFakeSource()
+        invented = FakeResolver('潮汐相位反演')
+        response = self._tier_two_service(source, invented).search('缆索走位造成的偏差')
+        self.assertEqual(response.resolved_concepts, ())
+        reported = [item for item in response.degraded if item.component == 'local-concept-resolver']
+        self.assertEqual([item.reason for item in reported], ['returned an unknown concept'])
+
+        wordy = FakeResolver('这个问题问的应该是漂移改正。')
+        response = self._tier_two_service(source, wordy).search('缆索走位造成的偏差')
+        self.assertEqual(response.resolved_concepts, ('漂移改正',))
+
+    def test_an_unavailable_tier_two_resolver_degrades_explicitly_on_a_weak_match(self) -> None:
+        """Silence is not an acceptable answer, and neither is a cloud retry.
+
+        The weak-match gate widens how often Tier 2 is consulted, so it also
+        widens how often an unconfigured or stopped resolver is the reason a
+        weak answer stayed weak.  Both states are reported on the response that
+        ran without one — the reader is told the tier could have helped and did
+        not run, rather than being shown one thin span with no explanation.
+        """
+        source = TierTwoFakeSource()
+
+        response = EpubSearchService(source=source).search('巡检记录')
+        self.assertEqual(response.resolved_concepts, ('巡检记录',))
+        reported = [item for item in response.degraded if item.component == 'local-concept-resolver']
+        self.assertEqual([item.reason for item in reported], ['not configured'])
+
+        stopped = FakeResolver('漂移改正', available=False)
+        response = self._tier_two_service(source, stopped).search('巡检记录')
+        self.assertEqual(stopped.calls, [])
+        reported = [item for item in response.degraded if item.component == 'local-concept-resolver']
+        self.assertEqual([item.reason for item in reported], ['runtime stopped'])
+
+    def test_tier_two_adds_to_a_weak_tier_one_match_and_never_replaces_it(self) -> None:
+        """``resolved_concepts`` stays one coherent set across both tiers.
+
+        A weak Tier-1 match is still a match: the SDD says a concept matched
+        only by a short surface form still resolves and still contributes every
+        one of its own spans, and the gate decides whether to *also* ask the
+        resolver.  So ``枢`` keeps ``全域潮汐枢纽`` and gains whatever the model
+        names, in that order.
+
+        Deduplication is by concept and Tier 1 wins it, which is what keeps the
+        expansion guard honest: a model naming the concept the query had already
+        brushed does not turn a one-code-point span into a two-code-point one,
+        so the hub still does not seed and its subtree stays out.  Whether a
+        Tier-2 concept should be allowed to seed expansion at all is a separate
+        question owned elsewhere; nothing here decides it.
+        """
+        source = TierTwoFakeSource()
+
+        added = FakeResolver('漂移改正')
+        response = self._tier_two_service(source, added).search('枢', graph_limit=10)
+        self.assertEqual(response.resolved_concepts, ('全域潮汐枢纽', '漂移改正'))
+        self.assertEqual(response.graph_total, 4)
+
+        confirmed = FakeResolver('全域潮汐枢纽')
+        response = self._tier_two_service(source, confirmed).search('枢', graph_limit=10)
+        self.assertEqual(response.resolved_concepts, ('全域潮汐枢纽',))
+        # Still the alias's span, so still not a seed: 枢纽的基准线 stays out.
+        self.assertEqual(response.graph_total, 3)
+
+    @staticmethod
+    def _tier_two_service(source, resolver):
+        """A service whose vector channel returns the passages Tier 2 is scoped to.
+
+        ``TierTwoFakeSource`` deliberately holds more concepts than the candidate
+        budget, so a Tier-2 test that wants the resolver called at all has to
+        supply the vector channel the shortlist is derived from — which is the
+        point of the design and not a fixture inconvenience.
+        """
+        backend = FakeVectorBackend([_record(source, 'u-drift', (1.0, 0.0)), _record(source, 'u-station', (0.9, 0.1))])
+        return EpubSearchService(
+            source=source,
+            vector_backend=backend,
+            embeddings=FakeEmbeddings(),
+            reranker=FakeReranker(),
+            concept_resolver=resolver,
+        )
 
     def test_graph_expands_grounded_has_part_children_with_relation_provenance(self) -> None:
         """Containment still reads exactly as it did, and still says so.

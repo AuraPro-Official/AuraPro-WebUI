@@ -128,6 +128,27 @@ _MIN_SEED_TERM_LENGTH = 2
 # ``graph_total`` a number with no explanation of what was left out.
 _MAX_TOC_CHILD_CONCEPTS = 64
 
+# Tier 2 is consulted when Tier 1 has **no useful match**, which the SDD says
+# and which is not the same thing as no match at all.  A resolved set that can
+# page to fewer than this many distinct source spans has told the reader
+# essentially nothing — one heading, or one incidental sentence — so it is worth
+# asking the local resolver whether the reader meant something the vocabulary
+# actually spells differently.  The number is small on purpose: this is a floor
+# under "answered nothing", not a relevance threshold, and a real topic in a
+# real book clears it immediately.  It is deliberately not a *score*: nothing in
+# this module scores a Tier-1 match, and inventing a score here would be a
+# second ranking to keep in step with the one in
+# :meth:`EpubSearchService._expand_relation_concepts`.
+_TIER_TWO_MIN_GRAPH_TOTAL = 3
+
+# How many of Channel B's top vector candidates' parent passages contribute
+# concepts to the Tier-2 shortlist, and the hard ceiling on how many names may
+# be put in front of the local model at once.  See
+# :meth:`EpubSearchService._tier_two_candidates` for why the shortlist is
+# derived from the vector channel and why the ceiling is the invariant.
+_TIER_TWO_VECTOR_PASSAGES = 12
+_TIER_TWO_MAX_CANDIDATES = 64
+
 
 @dataclass(frozen=True, slots=True)
 class ConceptTerm:
@@ -227,6 +248,32 @@ class _RelationExpansion:
 
 
 @dataclass(frozen=True, slots=True)
+class _Resolution:
+    """Everything one set of matched terms decides, computed together.
+
+    Resolution used to be a straight line through :meth:`EpubSearchService.search`
+    because it only ever ran once.  It now runs twice on the queries Tier 2
+    fires on — once for what Tier 1 found, once for what Tier 1 and Tier 2 found
+    between them — so the whole of it is one value that can be recomputed and
+    compared rather than a sequence of locals that have to be re-derived in the
+    right order.
+
+    ``degraded`` is carried rather than appended to the response's list as it
+    accrues, because a discarded first resolution must not leave its degraded
+    components behind: only the resolution the response is actually built from
+    reports anything.
+    """
+
+    matches: tuple[_TermMatch, ...]
+    concept_ids: tuple[str, ...]
+    resolved_names: tuple[str, ...]
+    seed_ids: tuple[str, ...]
+    expansion: _RelationExpansion
+    graph_total: int
+    degraded: tuple[ModelAvailability, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _FusedCandidate:
     """A locally-rankable, source-verified candidate from either channel.
 
@@ -293,6 +340,13 @@ class EpubSearchRepository(Protocol):
     # when the repository actually has it, so a read model that cannot answer
     # the question is served today's behaviour rather than an AttributeError.
     def list_toc_child_concepts(self, concept_ids: Sequence[str]) -> list[Mapping[str, Any]]: ...
+
+    # Which concepts a handful of already-retrieved passages mention, which is
+    # how the Tier-2 shortlist is scoped to the neighbourhood the query landed
+    # in instead of to the entire vocabulary.  It is a read over the mentions
+    # the store already holds — no new index, no derived data — and search calls
+    # it only when the repository has it.
+    def list_passage_concept_names(self, passage_ids: Sequence[str]) -> list[Mapping[str, Any]]: ...
 
 
 class VectorCandidateBackend(Protocol):
@@ -508,20 +562,28 @@ class EpubSearchService:
         matcher = self._concept_matcher()
         segmenter = self._query_segmenter(degraded)
         matches = matcher.match_spans(query, boundaries=_boundaries(segmenter, query))
-        if not matches:
-            matches = self._resolve_tier_two(query, matcher, segmenter, degraded)
-        matched = tuple(hit.term for hit in matches)
-        concept_ids = tuple(dict.fromkeys(term.concept_id for term in matched))
-        resolved_names = tuple(dict.fromkeys(term.canonical_name for term in matched))
-        # Resolution and expansion are two different questions.  Every matched
-        # concept is resolved and contributes its own spans; only the subset
-        # that names something specific gets to pull the graph behind it.
-        seed_ids = self._expansion_seed_ids(matches)
-        expansion = self._expand_relation_concepts(concept_ids, seed_ids)
-        expansion = self._expand_toc_child_concepts(expansion, matches, seed_ids, degraded)
-        graph_concept_ids = expansion.concept_ids
+        # Channel B is read before Tier 2 rather than after it.  Nothing about
+        # the vector channel depends on which concepts resolved — it embeds the
+        # query and asks the local index — and reading it first is what lets the
+        # Tier-2 shortlist be scoped to the passages this query actually landed
+        # near.  It is still read exactly once per request.
+        vector_candidates = self._vector_candidates(
+            query,
+            candidate_limit=vector_candidate_limit,
+            degraded=degraded,
+        )
+        resolution = self._resolve(matches)
+        if self._tier_one_is_weak(resolution):
+            tier_two = self._resolve_tier_two(query, matcher, segmenter, degraded, vector_candidates)
+            combined = _merged_matches(resolution.matches, tier_two)
+            if len(combined) != len(resolution.matches):
+                resolution = self._resolve(combined)
+        degraded.extend(resolution.degraded)
 
-        graph_total = self._source.count_concept_occurrences(graph_concept_ids) if graph_concept_ids else 0
+        resolved_names = resolution.resolved_names
+        expansion = resolution.expansion
+        graph_concept_ids = expansion.concept_ids
+        graph_total = resolution.graph_total
         graph_results = self._graph_page(expansion, resolved_names, offset=graph_offset, limit=graph_limit)
         # The fused channel reads the *top* of the ranked graph channel, never
         # the page the panel happens to be showing.  Feeding it the display
@@ -534,11 +596,6 @@ class EpubSearchService:
             graph_results[:graph_fusion_limit]
             if graph_offset == 0 and graph_limit >= graph_fusion_limit
             else self._graph_page(expansion, resolved_names, offset=0, limit=graph_fusion_limit)
-        )
-        vector_candidates = self._vector_candidates(
-            query,
-            candidate_limit=vector_candidate_limit,
-            degraded=degraded,
         )
         vector_results = self._vector_hits(
             query,
@@ -569,6 +626,76 @@ class EpubSearchService:
             fused_results=fused_results,
             degraded=tuple(degraded),
         )
+
+    def _resolve(self, matches: Sequence[_TermMatch]) -> _Resolution:
+        """Everything one set of matched terms decides about the graph channel.
+
+        This is the body that used to be inline in :meth:`search`, moved out
+        unchanged so it can run a second time on the queries Tier 2 fires on.
+        Nothing about what it computes has changed: resolution and expansion are
+        still two different questions, every matched concept is still resolved
+        and still contributes its own spans, and only the subset that names
+        something specific still gets to pull the graph behind it.
+        """
+        matched = tuple(hit.term for hit in matches)
+        concept_ids = tuple(dict.fromkeys(term.concept_id for term in matched))
+        resolved_names = tuple(dict.fromkeys(term.canonical_name for term in matched))
+        seed_ids = self._expansion_seed_ids(matches)
+        degraded: list[ModelAvailability] = []
+        expansion = self._expand_relation_concepts(concept_ids, seed_ids)
+        expansion = self._expand_toc_child_concepts(expansion, matches, seed_ids, degraded)
+        graph_total = self._source.count_concept_occurrences(expansion.concept_ids) if expansion.concept_ids else 0
+        return _Resolution(
+            matches=tuple(matches),
+            concept_ids=concept_ids,
+            resolved_names=resolved_names,
+            seed_ids=seed_ids,
+            expansion=expansion,
+            graph_total=graph_total,
+            degraded=tuple(degraded),
+        )
+
+    @staticmethod
+    def _tier_one_is_weak(resolution: _Resolution) -> bool:
+        """Whether Tier 1 produced **no useful match**, in the SDD's words.
+
+        Tier 2 used to be consulted only when Tier 1 returned literally nothing.
+        That is a stricter test than the specification asks for and it fails in
+        the one direction that matters: a single spurious match makes the tuple
+        truthy, so the resolver is never consulted on exactly the queries whose
+        Tier-1 answer is worthless.  Historically that was a one-character alias
+        firing inside a longer word; token-aligned matching has removed *that*
+        trigger, and the gate is still wrong, because emptiness was never the
+        property being tested for.
+
+        Weakness is defined structurally rather than by a score.  Nothing else
+        in this module scores a Tier-1 match, and a score invented here would be
+        a second ordering to keep in step with the relation cost in
+        :meth:`_expand_relation_concepts`.  Three conditions, any one of which
+        is enough:
+
+        1. **Nothing survived longest-match suppression.**  The old gate, kept
+           whole: no concept in the vocabulary appears in the query at all.
+        2. **Nothing that survived may seed expansion.**  Every match is
+           expansion-ineligible under the guard in :meth:`_expansion_seed_ids`,
+           so the query brushed some concepts without naming any of them.  Those
+           concepts stay resolved and keep contributing their own spans — this
+           decides only whether it is worth *also* asking the resolver.
+        3. **The resolved set reaches almost no source.**  ``graph_total`` is
+           below ``_TIER_TWO_MIN_GRAPH_TOTAL``, so paging the whole graph
+           channel would show the reader a heading and little else.  This is the
+           condition the first two cannot see: a full canonical name that
+           matched cleanly and seeds expansion, on a concept the book barely
+           discusses, is a strong *match* and a useless *answer*.
+
+        A strong match satisfies none of them and never reaches the resolver, so
+        a configured local model costs a well-answered query nothing.
+        """
+        if not resolution.matches:
+            return True
+        if not resolution.seed_ids:
+            return True
+        return resolution.graph_total < _TIER_TWO_MIN_GRAPH_TOTAL
 
     def _expansion_seed_ids(self, matches: Sequence[_TermMatch]) -> tuple[str, ...]:
         """Which resolved concepts are allowed to *seed* expansion.
@@ -976,12 +1103,96 @@ class EpubSearchService:
                 )
         return terms
 
+    def _tier_two_candidates(
+        self,
+        matcher: ConceptTermMatcher,
+        vector_candidates: tuple[DerivedVectorRecord, ...] | None,
+    ) -> tuple[tuple[str, ...], str | None]:
+        """The concepts the local resolver is allowed to choose between.
+
+        This used to be every distinct canonical name in the graph.  On the
+        acceptance store that is 1,113 names, about 10,829 JSON code points and
+        roughly 9k tokens, put in front of a 3B model whose reply is capped at
+        96 tokens — which is why the tier was dead even where a model was
+        running.  The fix is not a bigger budget, it is asking a smaller
+        question.
+
+        The shortlist is **the concepts mentioned by the parent passages of
+        Channel B's top vector candidates**.  Three reasons, in order of weight:
+
+        * It reuses work the request has already done.  The query is embedded
+          and the local index queried once per request either way, so scoping
+          costs one indexed read over ``concept_mentions`` and no model call.
+        * It needs no new index and no new derived data.  The mentions are the
+          store's own; nothing here is materialised, and nothing has to be
+          rebuilt when the vocabulary changes.
+        * It is the right *kind* of shortlist.  A reader whose wording the
+          vocabulary does not contain is asking about something the book does
+          discuss, and the vector channel is the part of this system that
+          already found where.  Tier 2 then decides which of the concepts
+          living in that neighbourhood the wording meant — a selection problem
+          a small model can do — instead of a whole-vocabulary lookup, which it
+          cannot.
+
+        Two alternatives were considered and rejected.  **Token overlap between
+        the query's segmented tokens and concept names** needs no model at all
+        and is cheaper still, but it is a lexical test, and a query Tier 1
+        already failed on is precisely a query whose wording does not overlap
+        the vocabulary — it would shortlist nothing exactly when it is needed.
+        **A concept-name vector index** would answer the question directly and
+        is the better long-term shape, but it is new derived data with its own
+        indexing job, staleness, and profile-compatibility rules; that is a
+        change of its own and not a bug fix to this one.
+
+        Ordering is by the best (nearest) vector rank among the passages that
+        mention a concept, so the ceiling truncates the least related names
+        rather than an arbitrary suffix.  Candidates are taken in the vector
+        backend's own distance order rather than the Cross-Encoder's: the
+        reranker reorders that set but cannot add to it, so it decides nothing
+        about *membership* here, and a second rerank before Tier 2 would cost a
+        model pass to change only which names fall off the end.
+
+        The ceiling is the invariant, not the vector channel.  Where the vector
+        channel is unavailable, a vocabulary that already fits under the ceiling
+        is sent whole — a small library needs no shortlisting and refusing it
+        would disable Tier 2 for a one-book store.  A vocabulary that does not
+        fit is **refused**, with a reason, because sending it is the defect this
+        method exists to remove.
+        """
+        names_of = getattr(self._source, 'list_passage_concept_names', None)
+        if vector_candidates and names_of is not None:
+            passage_ids = tuple(dict.fromkeys(candidate.passage_id for candidate in vector_candidates))[
+                :_TIER_TWO_VECTOR_PASSAGES
+            ]
+            rank = {passage_id: index for index, passage_id in enumerate(passage_ids)}
+            best: dict[str, int] = {}
+            for row in names_of(passage_ids):
+                passage_id, name = row.get('passage_id'), row.get('canonical_name')
+                if not isinstance(passage_id, str) or not isinstance(name, str) or not name:
+                    continue
+                position = rank.get(passage_id)
+                if position is not None and position < best.get(name, len(rank)):
+                    best[name] = position
+            if best:
+                ordered = sorted(best.items(), key=lambda item: (item[1], item[0]))
+                return tuple(name for name, _ in ordered[:_TIER_TWO_MAX_CANDIDATES]), None
+        whole_vocabulary = tuple(dict.fromkeys(term.canonical_name for term in matcher.terms))
+        if not whole_vocabulary:
+            return (), None
+        if len(whole_vocabulary) <= _TIER_TWO_MAX_CANDIDATES:
+            return whole_vocabulary, None
+        return (), (
+            f'no bounded candidate shortlist: the local vector channel produced none and the '
+            f'{len(whole_vocabulary)}-concept vocabulary exceeds the {_TIER_TWO_MAX_CANDIDATES} candidate budget'
+        )
+
     def _resolve_tier_two(
         self,
         query: str,
         matcher: ConceptTermMatcher,
         segmenter: QuerySegmenter | None,
         degraded: list[ModelAvailability],
+        vector_candidates: tuple[DerivedVectorRecord, ...] | None = None,
     ) -> tuple[_TermMatch, ...]:
         if self._concept_resolver is None:
             degraded.append(ModelAvailability.degraded('local-concept-resolver', 'not configured'))
@@ -990,7 +1201,10 @@ class EpubSearchService:
         if not availability.available:
             degraded.append(availability)
             return ()
-        candidates = tuple(dict.fromkeys(term.canonical_name for term in matcher.terms))
+        candidates, refusal = self._tier_two_candidates(matcher, vector_candidates)
+        if refusal is not None:
+            degraded.append(ModelAvailability.degraded('local-concept-resolver', refusal))
+            return ()
         if not candidates:
             return ()
         try:
@@ -1443,6 +1657,27 @@ def _is_cjk(character: str) -> bool:
         or 0xF900 <= code <= 0xFAFF  # CJK Compatibility Ideographs
         or 0x20000 <= code <= 0x3134F  # Extensions B onwards
     )
+
+
+def _merged_matches(tier_one: Sequence[_TermMatch], tier_two: Sequence[_TermMatch]) -> tuple[_TermMatch, ...]:
+    """Tier 2's concepts **added to** Tier 1's, never substituted for them.
+
+    Where Tier 1 returned nothing this is exactly Tier 2's answer, which is what
+    the old empty-only gate produced.  Where Tier 1 returned something weak, that
+    weak match keeps its place: the SDD is explicit that a concept matched only
+    by a short surface form still resolves and still contributes every one of
+    its own spans, and the weak-match gate decides whether to *also* ask the
+    resolver, not whether to discard what the query literally contained.
+
+    Deduplication is by concept, and Tier 1 wins it.  A concept the query spelled
+    out and the model also named is one resolved concept, described by the span
+    the query itself covered — the span the expansion guard is entitled to
+    measure — rather than by the offsets of a model's reply.
+    """
+    merged: dict[str, _TermMatch] = {hit.term.concept_id: hit for hit in tier_one}
+    for hit in tier_two:
+        merged.setdefault(hit.term.concept_id, hit)
+    return tuple(merged.values())
 
 
 def _strictly_contained(hit: _TermMatch, hits: Sequence[_TermMatch]) -> bool:

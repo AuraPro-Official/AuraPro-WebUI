@@ -1759,6 +1759,45 @@ class SQLiteEpubStore:
         )
         return [str(row['canonical_name']) for row in rows]
 
+    def list_passage_concept_names(self, passage_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """Which concepts a handful of already-retrieved passages mention.
+
+        This is the read the Tier-2 shortlist is built from, and it is
+        deliberately the narrowest one that answers the question: the mentions
+        table already carries ``(concept_id, passage_id)`` and already has an
+        index on ``passage_id``, so nothing here is derived, materialised, or
+        capable of going stale.
+
+        It differs from :meth:`matched_concept_names` in the direction it is
+        asked.  That method starts from concepts the query already resolved and
+        asks which of them a passage mentions; this one starts from passages the
+        vector channel already returned and asks which concepts they mention at
+        all.  Filtering by an ``IN`` list of every concept in the store would be
+        the same query written the expensive way round.
+
+        The caller bounds ``passage_ids`` to a handful of top vector candidates,
+        so the parameter list stays far below SQLite's variable limit; an empty
+        list is answered without touching the database.  ``passage_id`` is
+        returned alongside the name because the caller ranks a concept by the
+        nearest passage that mentions it.
+        """
+        if not passage_ids:
+            return []
+        placeholders = ', '.join('?' for _ in passage_ids)
+        rows = (
+            self._connection()
+            .execute(
+                f"""SELECT DISTINCT m.passage_id, c.canonical_name
+                FROM concept_mentions AS m
+                JOIN concepts AS c ON c.concept_id = m.concept_id
+                WHERE m.passage_id IN ({placeholders})
+                ORDER BY m.passage_id, c.canonical_name""",
+                tuple(passage_ids),
+            )
+            .fetchall()
+        )
+        return [{'passage_id': str(row['passage_id']), 'canonical_name': str(row['canonical_name'])} for row in rows]
+
     def _search_row_with_toc(self, row: dict[str, Any]) -> dict[str, Any]:
         row['toc_path'] = self._toc_path(row.pop('toc_node_id', None))
         return row
