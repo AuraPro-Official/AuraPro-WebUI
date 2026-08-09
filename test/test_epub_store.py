@@ -152,6 +152,41 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(mention["concept_id"], concept_id)
 
+    def test_the_concept_term_fingerprint_moves_whenever_the_vocabulary_does(self) -> None:
+        """Search caches its Tier-1 matcher on this value, so it must never miss a write.
+
+        A stale matcher is worse than a slow one: an administrator who adds an
+        alias would keep getting the old answer with nothing to indicate why.
+        Adding a concept, adding an alias to an existing concept, and merging
+        two concepts each have to move it — the last one changes no row count
+        at all, which is why ``MAX(updated_at)`` is in the value.
+        """
+        self.store.add_passages("version-a", [self._passage()])
+        seen = {self.store.concept_term_fingerprint()}
+
+        tcp = self.store.upsert_concept("TCP")
+        self.assertNotIn(self.store.concept_term_fingerprint(), seen)
+        seen.add(self.store.concept_term_fingerprint())
+
+        self.store.upsert_concept("TCP", aliases=["Transmission Control Protocol"])
+        self.assertNotIn(self.store.concept_term_fingerprint(), seen)
+        seen.add(self.store.concept_term_fingerprint())
+
+        udp = self.store.upsert_concept("UDP")
+        self.store.add_concept_mention(tcp, "passage-a", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(udp, "passage-a", start_codepoint=4, end_codepoint=6)
+        seen.add(self.store.concept_term_fingerprint())
+        self.store.merge_concepts(
+            target_concept_id=tcp, source_concept_id=udp, merged_by="admin"
+        )
+        self.assertNotIn(self.store.concept_term_fingerprint(), seen)
+
+        # Reading twice without writing must give the identical value, or the
+        # cache would rebuild on every request and buy nothing.
+        self.assertEqual(
+            self.store.concept_term_fingerprint(), self.store.concept_term_fingerprint()
+        )
+
     def test_canonical_name_cannot_capture_another_concepts_alias(self) -> None:
         self.store.upsert_concept("TCP", aliases=["Transmission Control Protocol"])
         with self.assertRaisesRegex(IntegrityError, "already an alias"):
@@ -266,11 +301,150 @@ class SQLiteEpubStoreTest(unittest.TestCase):
             {"TCP", "Transmission Control Protocol"},
         )
 
+    def test_concept_terms_carry_the_specificity_search_resolves_with(self) -> None:
+        """Every alias row states how broad, and how well-attested, its concept is.
+
+        Search cannot ask "is this concept specific enough to expand out of?"
+        without these three columns, and it must not have to run a second query
+        per matched concept to find out.  ``has_part_fanout`` in particular has
+        to agree with ``list_concept_relation_neighbors``: both count only
+        edges holding a non-rejected assertion, so a concept can never be
+        reported as decomposed while the walk finds nothing to walk.
+        """
+        self.store.add_passages("version-a", [self._passage()])
+        hub = self.store.upsert_concept("父概念", aliases=["父"])
+        part = self.store.upsert_concept("子概念")
+        rejected_part = self.store.upsert_concept("被否决的部分")
+        leaf = self.store.upsert_concept("独立概念")
+        self.store.upsert_concept("从未提及的概念")
+        self.store.add_concept_mention(hub, "passage-a", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(hub, "passage-a", start_codepoint=3, end_codepoint=5)
+        self.store.add_concept_mention(leaf, "passage-a", start_codepoint=5, end_codepoint=6)
+        self.store.add_concept_mention(part, "passage-a", start_codepoint=8, end_codepoint=9)
+        self.store.add_concept_mention(rejected_part, "passage-a", start_codepoint=9, end_codepoint=10)
+        self.store.add_concept_relation(
+            "version-a", hub, "HAS_PART", part,
+            evidence=[{"passage_id": "passage-a", "start_codepoint": 0,
+                       "end_codepoint": 2, "evidence": "原文"}],
+        )
+        # An edge whose only assertion is rejected is not a decomposition, and
+        # must not count towards the fan-out that keeps TOC structure out.
+        rejected_relation = self.store.add_concept_relation(
+            "version-a", hub, "HAS_PART", rejected_part,
+            evidence=[{"passage_id": "passage-a", "start_codepoint": 3,
+                       "end_codepoint": 5, "evidence": "含标"}],
+        )
+        for assertion in self.store.list_concept_relation_assertions():
+            if assertion["relation_id"] == rejected_relation:
+                self.store.set_concept_relation_assertion_status(
+                    assertion["assertion_id"], "REJECTED"
+                )
+
+        rows = {entry["term"]: entry for entry in self.store.list_concept_terms()}
+
+        # The alias and the canonical spelling describe the same concept, so
+        # they report the same specificity; only the surface form differs.
+        self.assertEqual(rows["父"]["mention_count"], 2)
+        self.assertEqual(rows["父概念"]["mention_count"], 2)
+        self.assertEqual(rows["父"]["has_part_fanout"], 1)
+        self.assertEqual(rows["独立概念"]["mention_count"], 1)
+        self.assertEqual(rows["独立概念"]["has_part_fanout"], 0)
+        # A concept with no mention at all is a real state, not a missing value.
+        self.assertEqual(rows["从未提及的概念"]["mention_count"], 0)
+        self.assertEqual(rows["父"]["term_source"], "MODEL")
+
+    def _toc_child_fixture(self) -> dict[str, str]:
+        """The acceptance book's shape: a section that lists its own subsections.
+
+        ``观测网所必经的六道闸门`` is one heading passage with one concept on
+        it and no relation of any predicate, while the sections that answer the
+        question are its TOC children.  The fixture reproduces exactly that,
+        plus the two things the binding rule has to reject:
+
+        * ``贯穿全书的概念`` is mentioned inside a child section *and* in an
+          unrelated chapter, so it is not bound to any single node and must not
+          be admitted from either.
+        * ``被否决的概念`` lives entirely inside a child section but is
+          ``REJECTED``, and a rejected concept is not retrievable by any route.
+        """
+        self.store.add_toc_nodes(
+            "version-a",
+            [
+                {"toc_node_id": "gates", "title": "观测网所必经的六道闸门",
+                 "href": "c1.xhtml", "spine_index": 0, "ordinal": 0},
+                {"toc_node_id": "gate-one", "parent_toc_node_id": "gates", "title": "第一闸门　流量校准",
+                 "href": "c1.xhtml", "spine_index": 0, "ordinal": 1},
+                {"toc_node_id": "gate-two", "parent_toc_node_id": "gates", "title": "第二闸门　基线复核",
+                 "href": "c1.xhtml", "spine_index": 0, "ordinal": 2},
+                {"toc_node_id": "elsewhere", "title": "另一章", "href": "c2.xhtml",
+                 "spine_index": 1, "ordinal": 3},
+            ],
+        )
+        self.store.add_passages(
+            "version-a",
+            [
+                self._passage(passage_id="p-gates", toc_node_id="gates", ordinal=0),
+                self._passage(passage_id="p-one", toc_node_id="gate-one", ordinal=1),
+                self._passage(passage_id="p-two", toc_node_id="gate-two", ordinal=2),
+                self._passage(passage_id="p-else", toc_node_id="elsewhere", spine_index=1, ordinal=3),
+            ],
+        )
+        concepts = {
+            "gates": self.store.upsert_concept("六道闸门"),
+            "birth": self.store.upsert_concept("流量校准"),
+            "growth": self.store.upsert_concept("基线复核"),
+            "everywhere": self.store.upsert_concept("贯穿全书的概念"),
+            "rejected": self.store.upsert_concept("被否决的概念", status="REJECTED"),
+        }
+        self.store.add_concept_mention(concepts["gates"], "p-gates", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(concepts["birth"], "p-one", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(concepts["growth"], "p-two", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(concepts["rejected"], "p-one", start_codepoint=3, end_codepoint=5)
+        self.store.add_concept_mention(concepts["everywhere"], "p-one", start_codepoint=6, end_codepoint=7)
+        self.store.add_concept_mention(concepts["everywhere"], "p-else", start_codepoint=0, end_codepoint=2)
+        return concepts
+
+    def test_toc_child_concepts_admit_only_concepts_bound_inside_the_children(self) -> None:
+        """The book's own hierarchy, read as structure and stored as nothing.
+
+        A concept binds to a TOC node only when *every* one of its mentions
+        lands under that node.  A majority rule would let a concept the book
+        discusses throughout attach itself to whichever section happens to hold
+        the most of it, and that concept would then drag its own neighbourhood
+        into every query that reached its parent — the exact failure the
+        relation walk already has to be defended against.
+        """
+        concepts = self._toc_child_fixture()
+
+        rows = self.store.list_toc_child_concepts([concepts["gates"]])
+
+        self.assertEqual(
+            [row["concept_id"] for row in rows], sorted({concepts["birth"], concepts["growth"]})
+        )
+        self.assertTrue(all(row["seed_concept_id"] == concepts["gates"] for row in rows))
+        self.assertTrue(all(row["seed_toc_node_id"] == "gates" for row in rows))
+
+    def test_toc_child_concepts_do_not_reach_siblings_or_unbound_seeds(self) -> None:
+        """Children only, and only from a seed the book itself localises.
+
+        ``流量校准`` is bound to a leaf node, so it has no children and returns
+        nothing — it must *not* pick up its sibling ``基线复核``, which is the
+        difference between a decomposition and an unbounded associative bag.
+        ``贯穿全书的概念`` is mentioned in two nodes, so it binds to neither and
+        cannot start a walk at all, however many children those nodes have.
+        """
+        concepts = self._toc_child_fixture()
+
+        self.assertEqual(self.store.list_toc_child_concepts([concepts["birth"]]), [])
+        self.assertEqual(self.store.list_toc_child_concepts([concepts["everywhere"]]), [])
+        self.assertEqual(self.store.list_toc_child_concepts([]), [])
+
     def _graph_span_fixture(self) -> list[str]:
         """Mentions that duplicate, nest and partially overlap in two passages.
 
         The passages are inserted out of book order so the graph read surface
-        has to sort by ``spine_index``/``ordinal`` rather than by insertion.
+        has to sort by ``spine_index``/``ordinal`` rather than by insertion,
+        which is the tie-break the ranking signals fall through to.
         """
         self.store.add_passages(
             "version-a",
@@ -304,19 +478,23 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         of ``[0,2)`` are the same characters, and ``[4,6)`` is already visible
         inside ``[3,7)``.  A reader wants each piece of source once, so the
         maximal span survives and carries the concepts it absorbed.
+
+        With every concept matched directly, the two two-concept spans lead and
+        the longer span of each pair leads its passage — book order only breaks
+        what the ranking signals leave tied.
         """
         concept_ids = self._graph_span_fixture()
         rows = self.store.list_concept_occurrences(concept_ids, offset=0, limit=20)
 
         self.assertEqual(
             self._span_keys(rows),
-            [("passage-a", 0, 2), ("passage-a", 3, 7), ("passage-b", 0, 4), ("passage-b", 2, 7)],
+            [("passage-a", 3, 7), ("passage-a", 0, 2), ("passage-b", 2, 7), ("passage-b", 0, 4)],
         )
-        # The exact duplicate collapses; neither concept is dropped.
-        self.assertEqual(rows[0]["canonical_names"], ("Alpha", "Beta"))
-        self.assertEqual(rows[0]["concept_ids"], tuple(sorted(concept_ids[:2])))
         # The nested span collapses into its container, which carries both.
-        self.assertEqual(rows[1]["canonical_names"], ("Alpha", "Gamma"))
+        self.assertEqual(rows[0]["canonical_names"], ("Alpha", "Gamma"))
+        # The exact duplicate collapses; neither concept is dropped.
+        self.assertEqual(rows[1]["canonical_names"], ("Alpha", "Beta"))
+        self.assertEqual(rows[1]["concept_ids"], tuple(sorted(concept_ids[:2])))
         # Every surviving span is still a byte-exact slice of its passage.
         for row in rows:
             start, end = row["start_codepoint"], row["end_codepoint"]
@@ -334,24 +512,31 @@ class SQLiteEpubStoreTest(unittest.TestCase):
             if row["passage_id"] == "passage-b"
         ]
 
-        self.assertEqual(self._span_keys(rows), [("passage-b", 0, 4), ("passage-b", 2, 7)])
-        self.assertEqual(rows[0]["canonical_names"], ("Alpha",))
-        self.assertEqual(rows[1]["canonical_names"], ("Gamma",))
+        self.assertEqual(self._span_keys(rows), [("passage-b", 2, 7), ("passage-b", 0, 4)])
+        self.assertEqual(rows[0]["canonical_names"], ("Gamma",))
+        self.assertEqual(rows[1]["canonical_names"], ("Alpha",))
 
     def test_graph_occurrence_total_equals_every_page_walked_one_by_one(self) -> None:
         """The count and the pages must apply the same de-duplication predicate.
 
         Filtering duplicates after ``LIMIT``/``OFFSET`` would give ragged pages
         and a total that disagrees with them, so this walks the pages instead
-        of recomputing the expectation.
+        of recomputing the expectation.  Ranking is deliberately expressed as
+        one total order in ``ORDER BY`` rather than as a per-page rerank, so it
+        cannot move a span across a page boundary: the walk is done with a
+        relation cost that reorders the result set, and it must still visit
+        every span exactly once and end at the count.
         """
         concept_ids = self._graph_span_fixture()
+        costs = {concept_ids[0]: 0.0, concept_ids[1]: 3.0, concept_ids[2]: 5.32}
         total = self.store.count_concept_occurrences(concept_ids)
 
         walked: list[dict[str, object]] = []
         offset = 0
         while True:
-            page = self.store.list_concept_occurrences(concept_ids, offset=offset, limit=1)
+            page = self.store.list_concept_occurrences(
+                concept_ids, offset=offset, limit=1, concept_costs=costs
+            )
             if not page:
                 break
             self.assertEqual(len(page), 1)
@@ -363,8 +548,51 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         keys = self._span_keys(walked)
         self.assertEqual(len(set(keys)), len(keys))
         self.assertEqual(
-            keys, self._span_keys(self.store.list_concept_occurrences(concept_ids, offset=0, limit=20))
+            keys,
+            self._span_keys(
+                self.store.list_concept_occurrences(
+                    concept_ids, offset=0, limit=20, concept_costs=costs
+                )
+            ),
         )
+        # The count is a function of the shared predicate alone, so declaring a
+        # cost must not add, drop, or duplicate a single span.
+        self.assertEqual(
+            set(keys), set(self._span_keys(self.store.list_concept_occurrences(concept_ids, offset=0, limit=20)))
+        )
+        self.assertEqual(self.store.count_concept_occurrences(concept_ids), total)
+
+    def test_a_directly_matched_span_is_paged_before_a_relation_expanded_one(self) -> None:
+        """The caller's per-concept cost, not book position, picks the first page.
+
+        ``Gamma`` here stands for a concept reached only by walking out of a
+        high-degree hub: its span sits earlier in the book and is longer, and
+        it must still sort behind every span a directly matched concept
+        anchored.  A span that merely *absorbed* a hub concept keeps its direct
+        rank, because that is what its attribution shows the reader.
+        """
+        concept_ids = self._graph_span_fixture()
+        alpha, beta, gamma = concept_ids
+        rows = self.store.list_concept_occurrences(
+            concept_ids,
+            offset=0,
+            limit=20,
+            concept_costs={alpha: 0.0, beta: 0.0, gamma: 5.32},
+        )
+
+        self.assertEqual(
+            self._span_keys(rows),
+            [("passage-a", 3, 7), ("passage-a", 0, 2), ("passage-b", 0, 4), ("passage-b", 2, 7)],
+        )
+        # passage-b[2,7) is Gamma alone: longer, earlier in the passage than
+        # nothing else, and still last because it cost 5.32 to reach.
+        self.assertEqual(rows[-1]["canonical_names"], ("Gamma",))
+        self.assertEqual(rows[-1]["rank_relation_cost"], 5.32)
+        # passage-a[3,7) is anchored by Gamma but absorbed Alpha's [4,6), so it
+        # is attributed to a direct match and ranks as one.
+        self.assertEqual(rows[0]["canonical_names"], ("Alpha", "Gamma"))
+        self.assertEqual(rows[0]["rank_relation_cost"], 0.0)
+        self.assertEqual(rows[0]["rank_concept_count"], 2)
 
 
 class SQLiteEpubConceptMergeTest(unittest.TestCase):
