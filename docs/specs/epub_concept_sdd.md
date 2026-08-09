@@ -441,6 +441,62 @@ relationship affects retrieval provenance and ranking, never citation text.
   show for it. Ranking uses no model at all — Channel A must keep working with
   no local model configured, and the local Cross-Encoder stays in the fused
   channel, which is allowed to fail closed.
+- The preceding clause scopes to **ranking**, and it is not contradicted by the
+  **resolution-stage** rule that follows, which decides a different question:
+  not how a reached span is ordered, but which matched concepts are allowed to
+  reach anything at all. A concept matched only by a short surface form still
+  resolves, still appears in `resolved_concepts`, and still contributes every
+  one of its own spans; it simply does not *seed* expansion. The test is about
+  the **matched term**, never about the concept behind it: a concept is
+  expansion-eligible when its winning matched term is at least two code points
+  and is not a one-character model-proposed alias. Term length is measured on
+  the winning match, since the matcher already keeps the longest surviving span
+  per concept, so a concept whose full name the query spelled out is judged on
+  that name. Nothing a seed reaches is capped or truncated — the down-weighting
+  rule above still governs everything that is reached.
+- Two properties of the *concept* are deliberately excluded from that rule.
+  **Mention count is not a signal.** How often a book discusses something is a
+  fact about the book, not about what the reader asked for: `枢纽的权重` is matched
+  by its full five-code-point name and is a specific topic that a acceptance corpus
+  naturally mentions often, so a frequency ceiling refuses exactly the reader who
+  asked for it by name. The accepted consequence is that naming a high-degree
+  concept in full expands to its subtree — that is the correct answer to having
+  asked for it — while its one-character alias remains blocked by the term-length
+  rule, so an incidental occurrence inside an unrelated query still drags nothing
+  in. **The fraction of the query a term covered is not a signal** either, being
+  unstable across phrasings and already handled by longest-match suppression. A
+  repository that does not report a concept's alias source or `HAS_PART`
+  out-degree is not second-guessed: the condition it cannot answer does not
+  apply.
+- Channel A additionally expands along **deterministic TOC parent/child edges**,
+  which are structurally distinct from model-suggested semantic edges and are
+  labelled as such: a hit reached this way carries `structure:TOC_CHILD:<depth>`
+  and never `relation:...`, so a reader can tell the book's own hierarchy from a
+  claim a model made. These edges are **computed per query and stored nowhere**;
+  materialising them into `concept_relations` is not permitted, because a
+  relation assertion requires an evidence span validated as an exact slice of a
+  real passage and a structural edge has no prose evidence — the only way to
+  satisfy that constraint would be to anchor structural edges on heading
+  passages, which is the very failure this expansion exists to route around.
+  Four rules bound it. A concept **binds** to a TOC node only when *every* one of
+  its mentions falls in a passage under that node, so a concept the book
+  discusses throughout binds to nothing and can neither seed this expansion nor
+  be admitted by it. A seed expands this way only when it is expansion-eligible
+  by the resolution rule above, is bound to exactly one node, and has
+  **`HAS_PART` out-degree 0** — wherever the model supplied a decomposition that
+  decomposition is authoritative and TOC structure stays out of the way, so this
+  is a fallback and never a competitor. Only **child** nodes are walked and only
+  concepts themselves fully bound inside those children are admitted; siblings
+  are not, being an unbounded associative bag rather than a decomposition. A
+  seed whose child set exceeds a fixed concept budget is **skipped whole and the
+  skip reported as a degraded component**, never truncated, since a silently
+  shortened set would leave `graph_total` a smaller number with nothing saying
+  what was dropped. The hop is priced on the same scale as a `HAS_PART` hop —
+  `parent_cost + 1 + log2(children reached)` — so it enters the one existing
+  ranking with no second ordering. Expansion is to **concepts**, never to
+  passages: the store's occurrence queries receive only a longer concept tuple,
+  so the count and the pages keep their one shared predicate and a page walk
+  over a TOC-expanded set still ends exactly at `graph_total`.
 - The fused channel reads the top of the ranked Channel A from offset 0, bounded
   by its own limit, never the page the UI is displaying. `graph_limit` sizes a
   display page; it must not act as a recall ceiling on ranked fusion, and paging
