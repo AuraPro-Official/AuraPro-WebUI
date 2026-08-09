@@ -144,6 +144,11 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
             ("post", "/api/v1/epub/admin/batches/missing/submit", None),
             ("post", "/api/v1/epub/admin/batches/missing/poll", None),
             ("post", "/api/v1/epub/admin/batches/missing/retry", None),
+            ("get", "/api/v1/epub/admin/batches", None),
+            ("get", "/api/v1/epub/admin/batches/missing", None),
+            ("post", "/api/v1/epub/admin/batches/recover", None),
+			("get", "/api/v1/epub/admin/sample-batch-reviews", None),
+			("put", "/api/v1/epub/admin/sample-batches/missing/review", {"status": "APPROVED"}),
             ("get", "/api/v1/epub/admin/relation-assertions", None),
             ("put", "/api/v1/epub/admin/relation-assertions/missing", {"status": "APPROVED"}),
             ("post", "/api/v1/epub/admin/retrieval-units/missing/index", None),
@@ -187,6 +192,23 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         self.assertEqual(section_graph_draft.json()["job_kind"], "SECTION_GRAPH")
         self.assertEqual(section_graph_draft.json()["prompt_profile"], "zh-section-graph-v1")
 
+        history = self.client.get("/api/v1/epub/admin/batches?version_id=version-1")
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(history.json()["total"], 2)
+        job = history.json()["items"][0]
+        self.assertNotIn("request_json", job)
+        self.assertNotIn("response_json", job)
+        self.assertNotIn("last_error", job)
+
+        detail = self.client.get(f"/api/v1/epub/admin/batches/{job['batch_job_id']}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertTrue(detail.json()["items"])
+        self.assertNotIn("request_json", detail.json()["items"][0])
+
+        recovery = self.client.post("/api/v1/epub/admin/batches/recover")
+        self.assertEqual(recovery.status_code, 200)
+        self.assertEqual(recovery.json(), {"recovered": [], "skipped": []})
+
     def test_admin_can_review_version_scoped_relation_assertions(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
         listed = self.client.get("/api/v1/epub/admin/relation-assertions?version_id=version-1")
@@ -201,6 +223,56 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
         )
         self.assertEqual(reviewed.status_code, 200)
         self.assertEqual(reviewed.json()["status"], "APPROVED")
+
+    def test_admin_must_approve_a_fully_ingested_matching_sample_before_full_openai_batch(self) -> None:
+        self.app.dependency_overrides[get_admin_user] = _admin_user
+        sample = self.client.post(
+            "/api/v1/epub/admin/batches",
+            json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": True},
+        )
+        self.assertEqual(sample.status_code, 201)
+        sample_id = sample.json()["batch_job_id"]
+
+        blocked = self.client.post(
+            "/api/v1/epub/admin/batches",
+            json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": False},
+        )
+        self.assertEqual(blocked.status_code, 400)
+        self.assertIn("administrator-approved sample", blocked.json()["detail"])
+
+        repository = self.service._batch._repository
+        repository.mark_submitted(sample_id, "remote-sample")
+        repository.set_provider_state(sample_id, "SUCCEEDED", None)
+        for item in repository.list_items(sample_id):
+            self.assertTrue(repository.ingest_success(sample_id, item["custom_id"], {"concepts": []}))
+
+        review = self.client.put(
+            f"/api/v1/epub/admin/sample-batches/{sample_id}/review", json={"status": "APPROVED"}
+        )
+        self.assertEqual(review.status_code, 200)
+        self.assertEqual(review.json()["version_id"], "version-1")
+        self.assertEqual(review.json()["job_kind"], "CONCEPT_MENTIONS")
+        self.assertEqual(review.json()["status"], "APPROVED")
+        self.assertEqual(review.json()["reviewed_by"], "administrator")
+        self.assertNotIn("TCP", review.text)
+
+        wrong_kind = self.client.post(
+            "/api/v1/epub/admin/section-graph-batches",
+            json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": False},
+        )
+        self.assertEqual(wrong_kind.status_code, 400)
+        self.assertIn("same version and job kind", wrong_kind.json()["detail"])
+
+        full = self.client.post(
+            "/api/v1/epub/admin/batches",
+            json={"version_id": "version-1", "profile_name": "cloud-model-snapshot", "is_sample": False},
+        )
+        self.assertEqual(full.status_code, 201)
+        self.assertFalse(full.json()["is_sample"])
+
+        reviews = self.client.get("/api/v1/epub/admin/sample-batch-reviews?version_id=version-1")
+        self.assertEqual(reviews.status_code, 200)
+        self.assertEqual(reviews.json()["items"][0]["sample_batch_job_id"], sample_id)
 
     def test_admin_can_run_local_calibration_without_exposing_source_text(self) -> None:
         self.app.dependency_overrides[get_admin_user] = _admin_user
