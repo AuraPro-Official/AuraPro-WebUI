@@ -36,14 +36,18 @@ class ConceptPayloadValidation:
     reason: str | None = None
 
 
-DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v3"
+DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v4"
+
+# Bounded, adjacent literal context distinguishes repeated evidence without
+# putting another copy of a passage into a provider response.
+MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
 
 
 # The strict schema is suitable for a remote Chat Completions model that
 # supports Structured Outputs. Local llama.cpp still uses json_object plus the
 # same textual contract because smaller GGUF models and server builds do not
 # reliably implement the complete json_schema surface.
-CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = {
+_LEGACY_CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["concepts"],
@@ -68,6 +72,52 @@ CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = {
                                 "start_codepoint": {"type": "integer", "minimum": 0},
                                 "end_codepoint": {"type": "integer", "minimum": 1},
                                 "evidence": {"type": "string", "minLength": 1},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    },
+}
+
+
+CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["concepts"],
+    "properties": {
+        "concepts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "aliases", "definition", "mentions"],
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
+                    "definition": {"type": "string"},
+                    "mentions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": [
+                                "start_codepoint", "end_codepoint", "evidence",
+                                "context_before", "context_after",
+                            ],
+                            "properties": {
+                                "start_codepoint": {"type": "integer", "minimum": 0},
+                                "end_codepoint": {"type": "integer", "minimum": 1},
+                                "evidence": {"type": "string", "minLength": 1},
+                                "context_before": {
+                                    "type": "string",
+                                    "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+                                },
+                                "context_after": {
+                                    "type": "string",
+                                    "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+                                },
                             },
                         },
                     },
@@ -108,8 +158,8 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
         ),
     ),
-    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
-        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+    "zh-glossary-v3": ConceptPromptProfile(
+        profile_id="zh-glossary-v3",
         max_tokens=512,
         system_instruction=(
             "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
@@ -124,6 +174,29 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
             "没有合格概念时返回 {\"concepts\":[]}。输出形状必须为"
             "{\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
             "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":1,\"evidence\":\"…\"}]}]}。"
+            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
+            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+        ),
+    ),
+    DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
+        profile_id=DEFAULT_CONCEPT_PROMPT_PROFILE,
+        max_tokens=512,
+        system_instruction=(
+            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
+            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
+            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
+            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
+            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
+            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
+            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、"
+            "end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，"
+            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
+            "包括标点和空格。context_before 和 context_after 分别是 evidence 紧邻前后各最多 48 个"
+            "Unicode 字符的原文；evidence 在本段重复时，至少提供一个非空上下文以唯一确定该出现位置。"
+            "evidence 唯一时两个上下文可为空字符串。没有合格概念时返回 {\"concepts\":[]}。"
+            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
+            "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":1,\"evidence\":\"…\","
+            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
             "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
             "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
         ),
@@ -162,7 +235,11 @@ def build_concept_completion_request(
             "json_schema": {
                 "name": "epub_concepts",
                 "strict": True,
-                "schema": CONCEPT_OUTPUT_SCHEMA,
+                "schema": (
+                    CONCEPT_OUTPUT_SCHEMA
+                    if profile_id == DEFAULT_CONCEPT_PROMPT_PROFILE
+                    else _LEGACY_CONCEPT_OUTPUT_SCHEMA
+                ),
             },
         }
     else:
@@ -238,7 +315,14 @@ def validate_concept_payload(payload: Any, *, passage: str) -> ConceptPayloadVal
         if not isinstance(concept_mentions, list) or not concept_mentions:
             return ConceptPayloadValidation(False, 0, mentions, "each concept needs a visible mention")
         for mention in concept_mentions:
-            if not isinstance(mention, Mapping) or set(mention) != {"start_codepoint", "end_codepoint", "evidence"}:
+            if not isinstance(mention, Mapping) or (
+                set(mention) != {"start_codepoint", "end_codepoint", "evidence"}
+                and set(mention)
+                != {
+                    "start_codepoint", "end_codepoint", "evidence",
+                    "context_before", "context_after",
+                }
+            ):
                 return ConceptPayloadValidation(False, 0, mentions, "each mention has an invalid schema")
             start = mention["start_codepoint"]
             end = mention["end_codepoint"]
@@ -255,6 +339,22 @@ def validate_concept_payload(payload: Any, *, passage: str) -> ConceptPayloadVal
                 or passage[start:end] != evidence
             ):
                 return ConceptPayloadValidation(False, 0, mentions, "mention evidence or codepoint offsets are invalid")
+            if "context_before" in mention:
+                before = mention["context_before"]
+                after = mention["context_after"]
+                if (
+                    not isinstance(before, str)
+                    or not isinstance(after, str)
+                    or len(before) > MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
+                    or len(after) > MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
+                    or passage[max(0, start - len(before)):start] != before
+                    or passage[end:end + len(after)] != after
+                    or (
+                        passage.find(evidence, passage.find(evidence) + 1) >= 0
+                        and not (before or after)
+                    )
+                ):
+                    return ConceptPayloadValidation(False, 0, mentions, "mention evidence context anchor is invalid")
             mentions += 1
     return ConceptPayloadValidation(True, len(concepts), mentions)
 
