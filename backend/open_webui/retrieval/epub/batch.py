@@ -39,9 +39,7 @@ class BatchPayloadError(BatchServiceError):
 
     def __init__(self, message: str, *, diagnostics: Mapping[str, Any] | None = None):
         super().__init__(message)
-        self.diagnostics: dict[str, Any] | None = (
-            dict(diagnostics) if diagnostics is not None else None
-        )
+        self.diagnostics: dict[str, Any] | None = dict(diagnostics) if diagnostics is not None else None
 
 
 class DurableSuccessRetained(BatchPayloadError):
@@ -60,14 +58,14 @@ class DurableSuccessRetained(BatchPayloadError):
     """
 
 
-_JOB_KINDS = {"CONCEPT_MENTIONS", "SECTION_GRAPH"}
+_JOB_KINDS = {'CONCEPT_MENTIONS', 'SECTION_GRAPH'}
 _RELATION_PREDICATES = {
-    "HAS_PART",
-    "PRECEDES",
-    "PREREQUISITE",
-    "CAUSES",
-    "CONTRASTS",
-    "ELABORATES",
+    'HAS_PART',
+    'PRECEDES',
+    'PREREQUISITE',
+    'CAUSES',
+    'CONTRASTS',
+    'ELABORATES',
 }
 
 
@@ -129,32 +127,32 @@ class OpenAIBatchProvider:
     the repository's existing secret scanner reject credentials before upload.
     """
 
-    name = "openai-batch"
-    _QUEUED_STATUSES = {"validating"}
-    _RUNNING_STATUSES = {"in_progress", "finalizing", "cancelling"}
-    _SUCCEEDED_STATUSES = {"completed"}
-    _FAILED_STATUSES = {"failed", "expired"}
-    _CANCELLED_STATUSES = {"cancelled"}
+    name = 'openai-batch'
+    _QUEUED_STATUSES = {'validating'}
+    _RUNNING_STATUSES = {'in_progress', 'finalizing', 'cancelling'}
+    _SUCCEEDED_STATUSES = {'completed'}
+    _FAILED_STATUSES = {'failed', 'expired'}
+    _CANCELLED_STATUSES = {'cancelled'}
 
     def __init__(
         self,
         *,
         api_key: str | None = None,
         client: Any | None = None,
-        endpoint: str = "/v1/chat/completions",
-        completion_window: str = "24h",
+        endpoint: str = '/v1/chat/completions',
+        completion_window: str = '24h',
     ):
-        if not endpoint.startswith("/v1/"):
-            raise BatchServiceError("OpenAI Batch endpoint must be an /v1/ endpoint")
+        if not endpoint.startswith('/v1/'):
+            raise BatchServiceError('OpenAI Batch endpoint must be an /v1/ endpoint')
         if not completion_window.strip():
-            raise BatchServiceError("OpenAI Batch completion_window cannot be empty")
+            raise BatchServiceError('OpenAI Batch completion_window cannot be empty')
         if client is None:
             if not api_key or not api_key.strip():
-                raise BatchServiceError("OpenAI Batch provider requires a server-side API key")
+                raise BatchServiceError('OpenAI Batch provider requires a server-side API key')
             try:
                 from openai import OpenAI
             except ImportError as exc:  # pragma: no cover - project dependency guards production
-                raise BatchServiceError("OpenAI SDK is not installed") from exc
+                raise BatchServiceError('OpenAI SDK is not installed') from exc
             client = OpenAI(api_key=api_key)
         self._client = client
         self._endpoint = endpoint
@@ -173,18 +171,18 @@ class OpenAIBatchProvider:
         if isinstance(value, str):
             return value or default
         if isinstance(value, (list, tuple)):
-            messages = [cls._error_text(item, "") for item in value]
-            return "; ".join(message for message in messages if message) or default
-        nested_error = cls._value(value, "error")
+            messages = [cls._error_text(item, '') for item in value]
+            return '; '.join(message for message in messages if message) or default
+        nested_error = cls._value(value, 'error')
         if nested_error is not None:
             return cls._error_text(nested_error, default)
-        nested_data = cls._value(value, "data")
+        nested_data = cls._value(value, 'data')
         if nested_data is not None:
             return cls._error_text(nested_data, default)
-        message = cls._value(value, "message")
+        message = cls._value(value, 'message')
         if isinstance(message, str) and message:
-            code = cls._value(value, "code")
-            return f"{code}: {message}" if isinstance(code, str) and code else message
+            code = cls._value(value, 'code')
+            return f'{code}: {message}' if isinstance(code, str) and code else message
         try:
             return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
         except (TypeError, ValueError):
@@ -192,53 +190,47 @@ class OpenAIBatchProvider:
 
     def _validate_jsonl(self, jsonl: str) -> None:
         if not jsonl.strip():
-            raise BatchServiceError("OpenAI Batch JSONL cannot be empty")
+            raise BatchServiceError('OpenAI Batch JSONL cannot be empty')
         for line_number, line in enumerate(jsonl.splitlines(), start=1):
             if not line.strip():
                 continue
             try:
                 request = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise BatchServiceError(
-                    f"OpenAI Batch JSONL line {line_number} is not valid JSON"
-                ) from exc
+                raise BatchServiceError(f'OpenAI Batch JSONL line {line_number} is not valid JSON') from exc
             if not isinstance(request, Mapping):
-                raise BatchServiceError(f"OpenAI Batch JSONL line {line_number} must be an object")
+                raise BatchServiceError(f'OpenAI Batch JSONL line {line_number} must be an object')
             _assert_no_secrets(request)
-            custom_id = request.get("custom_id")
+            custom_id = request.get('custom_id')
             if not isinstance(custom_id, str) or not custom_id.strip():
-                raise BatchServiceError(
-                    f"OpenAI Batch JSONL line {line_number} needs a non-empty custom_id"
-                )
-            if request.get("method") != "POST" or request.get("url") != self._endpoint:
-                raise BatchServiceError(
-                    f"OpenAI Batch JSONL line {line_number} must POST to {self._endpoint}"
-                )
-            if not isinstance(request.get("body"), Mapping):
-                raise BatchServiceError(f"OpenAI Batch JSONL line {line_number} needs an object body")
+                raise BatchServiceError(f'OpenAI Batch JSONL line {line_number} needs a non-empty custom_id')
+            if request.get('method') != 'POST' or request.get('url') != self._endpoint:
+                raise BatchServiceError(f'OpenAI Batch JSONL line {line_number} must POST to {self._endpoint}')
+            if not isinstance(request.get('body'), Mapping):
+                raise BatchServiceError(f'OpenAI Batch JSONL line {line_number} needs an object body')
 
     @classmethod
     def _jsonl_text(cls, response: Any) -> str:
-        text = cls._value(response, "text")
+        text = cls._value(response, 'text')
         if isinstance(text, str):
             return text
-        content = cls._value(response, "content")
+        content = cls._value(response, 'content')
         if isinstance(content, str):
             return content
         if isinstance(content, bytes):
-            return content.decode("utf-8")
-        read = getattr(response, "read", None)
+            return content.decode('utf-8')
+        read = getattr(response, 'read', None)
         if callable(read):
             content = read()
             if isinstance(content, bytes):
-                return content.decode("utf-8")
+                return content.decode('utf-8')
             if isinstance(content, str):
                 return content
         if isinstance(response, bytes):
-            return response.decode("utf-8")
+            return response.decode('utf-8')
         if isinstance(response, str):
             return response
-        raise BatchServiceError("OpenAI Batch file response did not contain UTF-8 JSONL")
+        raise BatchServiceError('OpenAI Batch file response did not contain UTF-8 JSONL')
 
     @staticmethod
     def _parse_jsonl(text: str, file_id: str) -> Iterable[Mapping[str, Any]]:
@@ -248,18 +240,14 @@ class OpenAIBatchProvider:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise BatchServiceError(
-                    f"OpenAI Batch result {file_id} line {line_number} is not valid JSON"
-                ) from exc
+                raise BatchServiceError(f'OpenAI Batch result {file_id} line {line_number} is not valid JSON') from exc
             if not isinstance(record, Mapping):
-                raise BatchServiceError(
-                    f"OpenAI Batch result {file_id} line {line_number} must be an object"
-                )
+                raise BatchServiceError(f'OpenAI Batch result {file_id} line {line_number} must be an object')
             yield record
 
     @classmethod
     def _success_payload(cls, response: Any) -> Mapping[str, Any] | None:
-        body = cls._value(response, "body")
+        body = cls._value(response, 'body')
         if isinstance(body, str):
             try:
                 body = json.loads(body)
@@ -269,13 +257,13 @@ class OpenAIBatchProvider:
             return None
         # This also supports a provider-side response adapter that directly
         # writes the expected concept payload into the OpenAI response body.
-        if isinstance(body.get("concepts"), list):
+        if isinstance(body.get('concepts'), list):
             return body
-        choices = body.get("choices")
+        choices = body.get('choices')
         if not isinstance(choices, list) or not choices:
             return None
-        message = cls._value(choices[0], "message")
-        content = cls._value(message, "content")
+        message = cls._value(choices[0], 'message')
+        content = cls._value(message, 'content')
         if not isinstance(content, str):
             return None
         try:
@@ -286,87 +274,87 @@ class OpenAIBatchProvider:
 
     @classmethod
     def _item_result(cls, record: Mapping[str, Any]) -> ProviderItemResult:
-        custom_id = record.get("custom_id")
+        custom_id = record.get('custom_id')
         if not isinstance(custom_id, str) or not custom_id.strip():
-            raise BatchServiceError("OpenAI Batch result is missing custom_id")
-        error = record.get("error")
+            raise BatchServiceError('OpenAI Batch result is missing custom_id')
+        error = record.get('error')
         if error is not None:
-            return ProviderItemResult(custom_id=custom_id, error=cls._error_text(error, "OpenAI Batch item failed"))
-        response = record.get("response")
+            return ProviderItemResult(custom_id=custom_id, error=cls._error_text(error, 'OpenAI Batch item failed'))
+        response = record.get('response')
         if response is None:
             return ProviderItemResult(
                 custom_id=custom_id,
-                error="OpenAI Batch item did not include a response or error",
+                error='OpenAI Batch item did not include a response or error',
             )
-        status_code = cls._value(response, "status_code")
+        status_code = cls._value(response, 'status_code')
         if not isinstance(status_code, int) or not 200 <= status_code < 300:
             return ProviderItemResult(
                 custom_id=custom_id,
                 error=cls._error_text(
-                    cls._value(response, "body"),
-                    f"OpenAI Batch item returned HTTP {status_code!r}",
+                    cls._value(response, 'body'),
+                    f'OpenAI Batch item returned HTTP {status_code!r}',
                 ),
             )
         payload = cls._success_payload(response)
         if payload is None:
             return ProviderItemResult(
                 custom_id=custom_id,
-                error="OpenAI Batch item did not return a JSON concept payload",
+                error='OpenAI Batch item did not return a JSON concept payload',
             )
         return ProviderItemResult(custom_id=custom_id, payload=payload)
 
     def submit(self, *, jsonl: str, idempotency_key: str) -> str:
         if not idempotency_key.strip():
-            raise BatchServiceError("OpenAI Batch idempotency key cannot be empty")
+            raise BatchServiceError('OpenAI Batch idempotency key cannot be empty')
         self._validate_jsonl(jsonl)
-        encoded = jsonl.encode("utf-8")
-        file_headers = {"Idempotency-Key": f"epub-input:{idempotency_key}"}
+        encoded = jsonl.encode('utf-8')
+        file_headers = {'Idempotency-Key': f'epub-input:{idempotency_key}'}
         uploaded = self._client.files.create(
-            file=(f"epub-concepts-{idempotency_key}.jsonl", encoded, "application/jsonl"),
-            purpose="batch",
+            file=(f'epub-concepts-{idempotency_key}.jsonl', encoded, 'application/jsonl'),
+            purpose='batch',
             extra_headers=file_headers,
         )
-        input_file_id = self._value(uploaded, "id")
+        input_file_id = self._value(uploaded, 'id')
         if not isinstance(input_file_id, str) or not input_file_id:
-            raise BatchServiceError("OpenAI Batch upload returned no input file ID")
+            raise BatchServiceError('OpenAI Batch upload returned no input file ID')
         created = self._client.batches.create(
             input_file_id=input_file_id,
             endpoint=self._endpoint,
             completion_window=self._completion_window,
-            metadata={"epub_batch_job_id": idempotency_key},
-            extra_headers={"Idempotency-Key": f"epub-batch:{idempotency_key}"},
+            metadata={'epub_batch_job_id': idempotency_key},
+            extra_headers={'Idempotency-Key': f'epub-batch:{idempotency_key}'},
         )
-        provider_job_id = self._value(created, "id")
+        provider_job_id = self._value(created, 'id')
         if not isinstance(provider_job_id, str) or not provider_job_id:
-            raise BatchServiceError("OpenAI Batch create returned no Batch job ID")
+            raise BatchServiceError('OpenAI Batch create returned no Batch job ID')
         return provider_job_id
 
     def poll(self, provider_job_id: str) -> ProviderSnapshot:
         batch = self._client.batches.retrieve(provider_job_id)
-        status = self._value(batch, "status")
+        status = self._value(batch, 'status')
         if not isinstance(status, str):
-            raise BatchServiceError("OpenAI Batch retrieve returned no status")
+            raise BatchServiceError('OpenAI Batch retrieve returned no status')
         if status in self._QUEUED_STATUSES:
-            state = "queued"
+            state = 'queued'
         elif status in self._RUNNING_STATUSES:
-            state = "running"
+            state = 'running'
         elif status in self._SUCCEEDED_STATUSES:
-            state = "succeeded"
+            state = 'succeeded'
         elif status in self._FAILED_STATUSES:
-            state = "failed"
+            state = 'failed'
         elif status in self._CANCELLED_STATUSES:
-            state = "cancelled"
+            state = 'cancelled'
         else:
-            raise BatchServiceError(f"OpenAI Batch returned unsupported status: {status}")
-        return ProviderSnapshot(state, self._error_text(self._value(batch, "errors"), "") or None)
+            raise BatchServiceError(f'OpenAI Batch returned unsupported status: {status}')
+        return ProviderSnapshot(state, self._error_text(self._value(batch, 'errors'), '') or None)
 
     def fetch_results(self, provider_job_id: str) -> Iterable[ProviderItemResult]:
         batch = self._client.batches.retrieve(provider_job_id)
         file_ids = [
             value
             for value in (
-                self._value(batch, "output_file_id"),
-                self._value(batch, "error_file_id"),
+                self._value(batch, 'output_file_id'),
+                self._value(batch, 'error_file_id'),
             )
             if isinstance(value, str) and value
         ]
@@ -377,9 +365,7 @@ class OpenAIBatchProvider:
             for record in self._parse_jsonl(self._jsonl_text(response), file_id):
                 item = self._item_result(record)
                 if item.custom_id in seen_custom_ids:
-                    raise BatchServiceError(
-                        f"OpenAI Batch returned duplicate output for custom_id: {item.custom_id}"
-                    )
+                    raise BatchServiceError(f'OpenAI Batch returned duplicate output for custom_id: {item.custom_id}')
                 seen_custom_ids.add(item.custom_id)
                 results.append(item)
         return results
@@ -439,9 +425,7 @@ class BatchRepository(Protocol):
 
     def list_recoverable_jobs(self, provider: str | None = None) -> list[str]: ...
 
-    def review_sample_job(
-        self, batch_job_id: str, *, status: str, reviewed_by: str
-    ) -> dict[str, Any]: ...
+    def review_sample_job(self, batch_job_id: str, *, status: str, reviewed_by: str) -> dict[str, Any]: ...
 
     def list_sample_reviews(
         self, *, version_id: str | None = None, job_kind: str | None = None
@@ -454,37 +438,37 @@ class BatchRepository(Protocol):
     def backfill_prompt_profile(self, batch_job_id: str, prompt_profile: str) -> bool: ...
 
 
-_ACTIVE_JOB_STATES = {"DRAFT", "SUBMITTED", "RUNNING"}
-_TERMINAL_JOB_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
+_ACTIVE_JOB_STATES = {'DRAFT', 'SUBMITTED', 'RUNNING'}
+_TERMINAL_JOB_STATES = {'SUCCEEDED', 'FAILED', 'CANCELLED'}
 _PROVIDER_TO_JOB_STATE = {
-    "queued": "SUBMITTED",
-    "running": "RUNNING",
-    "succeeded": "SUCCEEDED",
-    "failed": "FAILED",
-    "cancelled": "CANCELLED",
+    'queued': 'SUBMITTED',
+    'running': 'RUNNING',
+    'succeeded': 'SUCCEEDED',
+    'failed': 'FAILED',
+    'cancelled': 'CANCELLED',
 }
 _SENSITIVE_REQUEST_KEYS = {
-    "api_key",
-    "apikey",
-    "authorization",
-    "password",
-    "secret",
-    "token",
-    "x-api-key",
+    'api_key',
+    'apikey',
+    'authorization',
+    'password',
+    'secret',
+    'token',
+    'x-api-key',
 }
-_SAMPLE_REVIEW_STATUSES = {"APPROVED", "REJECTED"}
+_SAMPLE_REVIEW_STATUSES = {'APPROVED', 'REJECTED'}
 # One message for every way the gate can refuse, so a refusal never tells a
 # caller which of the four coordinates missed and therefore never becomes a
 # probe for what has already been approved on this server.
 _UNAPPROVED_SAMPLE_MESSAGE = (
-    "creating a full OpenAI EPUB Batch requires an administrator-approved sample "
-    "for the same version and job kind, with the same model profile and the same "
-    "prompt profile; the sample must be SUCCEEDED with every item ingested, and a "
-    "job whose prompt profile is unknown can neither be approved for nor created "
-    "as a full run"
+    'creating a full OpenAI EPUB Batch requires an administrator-approved sample '
+    'for the same version and job kind, with the same model profile and the same '
+    'prompt profile; the sample must be SUCCEEDED with every item ingested, and a '
+    'job whose prompt profile is unknown can neither be approved for nor created '
+    'as a full run'
 )
-_RESULTS_PENDING_RETRIEVAL = "RESULTS_PENDING_RETRIEVAL"
-_TERMINAL_MISSING_RESULT = "TERMINAL_WITHOUT_ITEM_RESULT"
+_RESULTS_PENDING_RETRIEVAL = 'RESULTS_PENDING_RETRIEVAL'
+_TERMINAL_MISSING_RESULT = 'TERMINAL_WITHOUT_ITEM_RESULT'
 # The three concept mention shapes, recognised per mention from the field set
 # the model actually returned rather than from the job's profile.  All three
 # stay live: v1-v6 requests replay from their persisted ``request_json``, and
@@ -493,23 +477,23 @@ _TERMINAL_MISSING_RESULT = "TERMINAL_WITHOUT_ITEM_RESULT"
 # ``-v7`` asks for anchors and no offsets, for the reason recorded on that
 # profile - a model gets the offset pair right about one time in thirty-seven,
 # and grounding re-derives it from the literal regardless.
-_LEGACY_CONCEPT_MENTION_FIELDS = {"start_codepoint", "end_codepoint", "evidence"}
+_LEGACY_CONCEPT_MENTION_FIELDS = {'start_codepoint', 'end_codepoint', 'evidence'}
 _GROUNDED_CONCEPT_MENTION_FIELDS = {
-    "start_codepoint",
-    "end_codepoint",
-    "evidence",
-    "context_before",
-    "context_after",
+    'start_codepoint',
+    'end_codepoint',
+    'evidence',
+    'context_before',
+    'context_after',
 }
-_OFFSETLESS_CONCEPT_MENTION_FIELDS = {"evidence", "context_before", "context_after"}
+_OFFSETLESS_CONCEPT_MENTION_FIELDS = {'evidence', 'context_before', 'context_after'}
 _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
 # A section graph span names its own passage.  ``zh-section-graph-v1`` asks for
 # offsets and no anchors; ``zh-section-graph-v2`` and ``-v3`` ask for anchors
 # and no offsets.  Ingest accepts both, per span rather than per payload, so a stored
 # v1 request still replays and a mixed response is not a special case.  Neither
 # shape's offsets are trusted: v1's are re-derived exactly like v2's.
-_SECTION_GRAPH_SPAN_FIELDS_V1 = {"passage_id", "start_codepoint", "end_codepoint", "evidence"}
-_SECTION_GRAPH_SPAN_FIELDS_V2 = {"passage_id", "evidence", "context_before", "context_after"}
+_SECTION_GRAPH_SPAN_FIELDS_V1 = {'passage_id', 'start_codepoint', 'end_codepoint', 'evidence'}
+_SECTION_GRAPH_SPAN_FIELDS_V2 = {'passage_id', 'evidence', 'context_before', 'context_after'}
 
 # Stable, machine-readable failure classes for prompt tuning.  The human
 # ``error_text`` strings stay exactly as they are: they are durable and
@@ -518,16 +502,16 @@ _SECTION_GRAPH_SPAN_FIELDS_V2 = {"passage_id", "evidence", "context_before", "co
 _GROUNDING_FAILURE_REASONS = frozenset(
     {
         # The response, a concept, or a mention did not have the constrained shape.
-        "INVALID_SCHEMA",
+        'INVALID_SCHEMA',
         # A concept carried no mention at all.
-        "MENTIONS_MISSING",
+        'MENTIONS_MISSING',
         # Offsets were not integers, or evidence was not a non-empty string.
-        "INVALID_OFFSETS",
+        'INVALID_OFFSETS',
         # A v4 context anchor was not a string, or exceeded the anchor budget.
-        "ANCHOR_INVALID",
+        'ANCHOR_INVALID',
         # The literal evidence does not occur in the immutable source at all:
         # the model paraphrased, normalized, or translated instead of copying.
-        "EVIDENCE_ABSENT",
+        'EVIDENCE_ABSENT',
         # Historical only, and deliberately still here.  A sub-floor span used
         # to fail its whole item; it is now dropped from the payload during
         # grounding and counted in ``batch_items.skipped_short_evidence``, so no
@@ -536,7 +520,7 @@ _GROUNDING_FAILURE_REASONS = frozenset(
         # persisted it in ``failure_diagnostics_json``, and removing it would
         # make ``_safe_failure_diagnostics`` re-read those rows as UNDIAGNOSED -
         # silently destroying the very measurement that justified this change.
-        "EVIDENCE_TOO_SHORT",
+        'EVIDENCE_TOO_SHORT',
         # Section graph only, and a strict subset of the case above: the
         # evidence is absent from the passage it names but is exactly a TOC
         # title this packet showed the model.  Conflating the two cost a whole
@@ -545,42 +529,42 @@ _GROUNDING_FAILURE_REASONS = frozenset(
         # model quoting a ``toc_path`` field the packet handed it and never
         # scoped.  The two need opposite fixes: this one is repaired by not
         # sending the field (and saying so), hallucination is not.
-        "EVIDENCE_FROM_TOC_PATH",
+        'EVIDENCE_FROM_TOC_PATH',
         # Repeated evidence arrived with both anchors empty, so nothing can
         # select an occurrence.
-        "ANCHOR_MISSING",
+        'ANCHOR_MISSING',
         # The model's own offsets sliced the evidence exactly, but the adjacent
         # source text is not what the model claimed surrounds it.
-        "ANCHOR_MISMATCH",
+        'ANCHOR_MISMATCH',
         # After anchor filtering the evidence still does not identify exactly
         # one occurrence.  ``occurrence_count`` and ``anchored_candidate_count``
         # separate "anchors selected nothing" from "anchors were not selective";
         # both need the same class of prompt fix, so they share one slug.
-        "EVIDENCE_AMBIGUOUS",
+        'EVIDENCE_AMBIGUOUS',
         # The item's immutable passage could not be read back.  For a section
         # graph packet this also covers a span naming a passage_id that is not
         # in this EPUB version at all.
-        "PASSAGE_UNAVAILABLE",
+        'PASSAGE_UNAVAILABLE',
         # Section graph only: a concept's packet-local ID is missing, blank, or
         # reused.  Distinct from INVALID_SCHEMA because the local_id mechanism
         # is what makes relations expressible within one packet, and a model
         # that cannot keep those IDs unique needs a different prompt fix from
         # one that returns the wrong field set.
-        "LOCAL_ID_INVALID",
+        'LOCAL_ID_INVALID',
         # Section graph only: a relation names a local_id that no concept in
         # this packet defined.  This is the interesting one - the model
         # described a real edge but hallucinated an endpoint, or dropped the
         # concept it was pointing at - and it costs the whole packet.
-        "RELATION_ENDPOINT_UNRESOLVED",
+        'RELATION_ENDPOINT_UNRESOLVED',
         # Section graph only: the canonical store refused a fully grounded
         # relation (an unsupported predicate, or an endpoint with no mention in
         # this EPUB version).
-        "RELATION_REJECTED",
+        'RELATION_REJECTED',
         # The provider itself reported this item as failed.  No grounding ran,
         # so nothing was measured; the raw provider error is never persisted.
-        "PROVIDER_ITEM_ERROR",
+        'PROVIDER_ITEM_ERROR',
         # A terminal provider job returned no result at all for this item.
-        "TERMINAL_WITHOUT_RESULT",
+        'TERMINAL_WITHOUT_RESULT',
     }
 )
 # Every diagnostic field is a count, a code point length, an index, or a flag.
@@ -588,30 +572,30 @@ _GROUNDING_FAILURE_REASONS = frozenset(
 # a prompt, or model output.
 _GROUNDING_DIAGNOSTIC_FIELDS = frozenset(
     {
-        "concept_index",
-        "concept_count",
-        "mention_index",
-        "mention_count",
-        "passage_codepoints",
-        "evidence_codepoints",
-        "occurrence_count",
-        "has_anchors",
-        "anchor_before_codepoints",
-        "anchor_after_codepoints",
-        "anchored_candidate_count",
-        "direct_offsets_in_range",
-        "direct_is_exact",
+        'concept_index',
+        'concept_count',
+        'mention_index',
+        'mention_count',
+        'passage_codepoints',
+        'evidence_codepoints',
+        'occurrence_count',
+        'has_anchors',
+        'anchor_before_codepoints',
+        'anchor_after_codepoints',
+        'anchored_candidate_count',
+        'direct_offsets_in_range',
+        'direct_is_exact',
         # Section graph packets carry many spans across many passages, so the
         # position of a rejection needs two more axes than a single-passage
         # concept result does.
-        "relation_index",
-        "relation_count",
-        "evidence_index",
-        "evidence_count",
-        "local_concept_count",
+        'relation_index',
+        'relation_count',
+        'evidence_index',
+        'evidence_count',
+        'local_concept_count',
     }
 )
-_UNDIAGNOSED_FAILURE_REASON = "UNDIAGNOSED"
+_UNDIAGNOSED_FAILURE_REASON = 'UNDIAGNOSED'
 # The rejections that name one citation and nothing else, and are therefore the
 # only ones a section-graph packet can localize to a single claim (SDD 4.2.2
 # point 6d).  Both say the same thing about the model: it reproduced real text
@@ -627,9 +611,9 @@ _UNDIAGNOSED_FAILURE_REASON = "UNDIAGNOSED"
 # of them has been measured against a real run under this rule, and the whole
 # reason this rule needed three revisions is that each earlier one generalized
 # past what it had actually measured.
-_CLAIM_LEVEL_GROUNDING_FAILURE_REASONS = frozenset({"EVIDENCE_ABSENT", "EVIDENCE_AMBIGUOUS"})
-_PROVIDER_ITEM_ERROR_DIAGNOSTICS: Mapping[str, Any] = {"reason": "PROVIDER_ITEM_ERROR"}
-_TERMINAL_WITHOUT_RESULT_DIAGNOSTICS: Mapping[str, Any] = {"reason": "TERMINAL_WITHOUT_RESULT"}
+_CLAIM_LEVEL_GROUNDING_FAILURE_REASONS = frozenset({'EVIDENCE_ABSENT', 'EVIDENCE_AMBIGUOUS'})
+_PROVIDER_ITEM_ERROR_DIAGNOSTICS: Mapping[str, Any] = {'reason': 'PROVIDER_ITEM_ERROR'}
+_TERMINAL_WITHOUT_RESULT_DIAGNOSTICS: Mapping[str, Any] = {'reason': 'TERMINAL_WITHOUT_RESULT'}
 
 
 def _is_claim_level_failure(error: BatchPayloadError) -> bool:
@@ -641,7 +625,7 @@ def _is_claim_level_failure(error: BatchPayloadError) -> bool:
     rejection raised without diagnostics is not claim-level, because a rule that
     drops output has to know what it is dropping.
     """
-    reason = (error.diagnostics or {}).get("reason")
+    reason = (error.diagnostics or {}).get('reason')
     return reason in _CLAIM_LEVEL_GROUNDING_FAILURE_REASONS
 
 
@@ -751,19 +735,15 @@ class _PacketProbe:
         ``UNDIAGNOSED`` instead of widening what a probe can hold.
         """
         diagnostics = error.diagnostics or {}
-        reason = diagnostics.get("reason")
+        reason = diagnostics.get('reason')
         if reason not in _GROUNDING_FAILURE_REASONS:
             reason = _UNDIAGNOSED_FAILURE_REASON
-        bucket = (
-            self.mention_failures if kind == "MENTION" else self.relation_evidence_failures
-        )
+        bucket = self.mention_failures if kind == 'MENTION' else self.relation_evidence_failures
         bucket[str(reason)] = bucket.get(str(reason), 0) + 1
 
     @property
     def failed_spans(self) -> int:
-        return sum(self.mention_failures.values()) + sum(
-            self.relation_evidence_failures.values()
-        )
+        return sum(self.mention_failures.values()) + sum(self.relation_evidence_failures.values())
 
     def failures_by_reason(self) -> dict[str, int]:
         """Both span kinds folded into one slug histogram, for an aggregate."""
@@ -786,15 +766,15 @@ def _grounding_diagnostics(reason: str, **fields: Any) -> dict[str, Any]:
     "not measurable at this raise site" from a genuine zero.
     """
     if reason not in _GROUNDING_FAILURE_REASONS:
-        raise BatchServiceError(f"unknown Batch failure reason: {reason}")
-    diagnostics: dict[str, Any] = {"reason": reason}
+        raise BatchServiceError(f'unknown Batch failure reason: {reason}')
+    diagnostics: dict[str, Any] = {'reason': reason}
     for name, value in fields.items():
         if value is None:
             continue
         if name not in _GROUNDING_DIAGNOSTIC_FIELDS:
-            raise BatchServiceError(f"unknown Batch failure diagnostic field: {name}")
+            raise BatchServiceError(f'unknown Batch failure diagnostic field: {name}')
         if not isinstance(value, (bool, int)):
-            raise BatchServiceError("Batch failure diagnostics accept only counts and flags")
+            raise BatchServiceError('Batch failure diagnostics accept only counts and flags')
         diagnostics[name] = value if isinstance(value, bool) else int(value)
     return diagnostics
 
@@ -815,10 +795,8 @@ def _safe_failure_diagnostics(serialized: Any) -> dict[str, Any] | None:
         return None
     if not isinstance(decoded, Mapping):
         return None
-    reason = decoded.get("reason")
-    safe: dict[str, Any] = {
-        "reason": reason if reason in _GROUNDING_FAILURE_REASONS else _UNDIAGNOSED_FAILURE_REASON
-    }
+    reason = decoded.get('reason')
+    safe: dict[str, Any] = {'reason': reason if reason in _GROUNDING_FAILURE_REASONS else _UNDIAGNOSED_FAILURE_REASON}
     for name in sorted(_GROUNDING_DIAGNOSTIC_FIELDS):
         value = decoded.get(name)
         if isinstance(value, (bool, int)):
@@ -846,15 +824,15 @@ def _packet_toc_titles(request_json: Any) -> frozenset[str]:
         request = json.loads(request_json)
     except ValueError:
         return frozenset()
-    body = request.get("body") if isinstance(request, Mapping) else None
-    messages = body.get("messages") if isinstance(body, Mapping) else None
+    body = request.get('body') if isinstance(request, Mapping) else None
+    messages = body.get('messages') if isinstance(body, Mapping) else None
     if not isinstance(messages, list):
         return frozenset()
     titles: set[str] = set()
     for message in messages:
-        if not isinstance(message, Mapping) or message.get("role") != "user":
+        if not isinstance(message, Mapping) or message.get('role') != 'user':
             continue
-        content = message.get("content")
+        content = message.get('content')
         if not isinstance(content, str):
             continue
         try:
@@ -867,7 +845,7 @@ def _packet_toc_titles(request_json: Any) -> frozenset[str]:
 def _collect_toc_titles(value: Any, titles: set[str]) -> None:
     """Gather every ``toc_path`` element in a decoded packet user message."""
     if isinstance(value, Mapping):
-        path = value.get("toc_path")
+        path = value.get('toc_path')
         if isinstance(path, (list, tuple)):
             titles.update(part.strip() for part in path if isinstance(part, str))
         for nested in value.values():
@@ -939,10 +917,10 @@ def _resolve_evidence_span(
     # rather than here, so a rejection raised before this helper runs still
     # reports it and no key is contributed twice.
     shape: dict[str, Any] = {
-        "has_anchors": has_anchors,
-        "evidence_codepoints": evidence_codepoints,
-        "anchor_before_codepoints": len(before),
-        "anchor_after_codepoints": len(after),
+        'has_anchors': has_anchors,
+        'evidence_codepoints': evidence_codepoints,
+        'anchor_before_codepoints': len(before),
+        'anchor_after_codepoints': len(after),
     }
 
     # Pure expressions over already-final values, evaluated before the scan so
@@ -957,8 +935,8 @@ def _resolve_evidence_span(
     # fleet-wide collapse in offset accuracy the moment such a profile is
     # promoted.  ``_grounding_diagnostics`` drops ``None`` for exactly this.
     direct: dict[str, Any] = {
-        "direct_offsets_in_range": direct_offsets_in_range if offsets_supplied else None,
-        "direct_is_exact": direct_is_exact if offsets_supplied else None,
+        'direct_offsets_in_range': direct_offsets_in_range if offsets_supplied else None,
+        'direct_is_exact': direct_is_exact if offsets_supplied else None,
     }
 
     # The evidence floor, applied before the source is scanned at all.
@@ -1003,11 +981,11 @@ def _resolve_evidence_span(
         # author to fix a field that was never quoted.
         from_toc_path = evidence.strip() in toc_titles
         raise BatchPayloadError(
-            "OpenAI evidence quotes a TOC title instead of the passage it names"
+            'OpenAI evidence quotes a TOC title instead of the passage it names'
             if from_toc_path
-            else "OpenAI evidence is absent from the immutable source",
+            else 'OpenAI evidence is absent from the immutable source',
             diagnostics=_grounding_diagnostics(
-                "EVIDENCE_FROM_TOC_PATH" if from_toc_path else "EVIDENCE_ABSENT",
+                'EVIDENCE_FROM_TOC_PATH' if from_toc_path else 'EVIDENCE_ABSENT',
                 occurrence_count=0,
                 **shape,
                 **direct,
@@ -1016,9 +994,9 @@ def _resolve_evidence_span(
         )
     if len(occurrences) > 1 and has_anchors and not (before or after):
         raise BatchPayloadError(
-            "repeated OpenAI evidence needs a non-empty context anchor",
+            'repeated OpenAI evidence needs a non-empty context anchor',
             diagnostics=_grounding_diagnostics(
-                "ANCHOR_MISSING",
+                'ANCHOR_MISSING',
                 occurrence_count=len(occurrences),
                 **shape,
                 **direct,
@@ -1042,14 +1020,11 @@ def _resolve_evidence_span(
     # contrast, the offsets are already known to be wrong or absent and the
     # anchors are only a disambiguation device.
     if direct_is_exact and has_anchors:
-        if (
-            content[max(0, start - len(before)):start] != before
-            or content[end:end + len(after)] != after
-        ):
+        if content[max(0, start - len(before)) : start] != before or content[end : end + len(after)] != after:
             raise BatchPayloadError(
-                "OpenAI evidence context anchor does not match the immutable source",
+                'OpenAI evidence context anchor does not match the immutable source',
                 diagnostics=_grounding_diagnostics(
-                    "ANCHOR_MISMATCH",
+                    'ANCHOR_MISMATCH',
                     occurrence_count=len(occurrences),
                     **shape,
                     **direct,
@@ -1074,16 +1049,14 @@ def _resolve_evidence_span(
         candidates = [
             occurrence
             for occurrence in occurrences
-            if content[max(0, occurrence - len(before)):occurrence] == before
-            and content[
-                occurrence + len(evidence):occurrence + len(evidence) + len(after)
-            ] == after
+            if content[max(0, occurrence - len(before)) : occurrence] == before
+            and content[occurrence + len(evidence) : occurrence + len(evidence) + len(after)] == after
         ]
     if len(candidates) != 1:
         raise BatchPayloadError(
-            "OpenAI evidence cannot be uniquely located in the immutable source",
+            'OpenAI evidence cannot be uniquely located in the immutable source',
             diagnostics=_grounding_diagnostics(
-                "EVIDENCE_AMBIGUOUS",
+                'EVIDENCE_AMBIGUOUS',
                 occurrence_count=len(occurrences),
                 anchored_candidate_count=len(candidates),
                 **shape,
@@ -1097,15 +1070,15 @@ def _resolve_evidence_span(
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
     try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     except (TypeError, ValueError) as exc:
-        raise BatchServiceError("Batch request/result must be JSON serializable") from exc
+        raise BatchServiceError('Batch request/result must be JSON serializable') from exc
 
 
 def _normalize_name(value: str) -> str:
-    normalized = " ".join(value.split()).casefold()
+    normalized = ' '.join(value.split()).casefold()
     if not normalized:
-        raise BatchPayloadError("concept names and aliases must not be empty")
+        raise BatchPayloadError('concept names and aliases must not be empty')
     return normalized
 
 
@@ -1114,7 +1087,7 @@ def _assert_no_secrets(value: Any) -> None:
     if isinstance(value, Mapping):
         for key, nested in value.items():
             if isinstance(key, str) and key.casefold() in _SENSITIVE_REQUEST_KEYS:
-                raise BatchServiceError("Batch request must not contain provider credentials")
+                raise BatchServiceError('Batch request must not contain provider credentials')
             _assert_no_secrets(nested)
     elif isinstance(value, (list, tuple)):
         for nested in value:
@@ -1149,12 +1122,11 @@ class SQLiteBatchRepository:
     """
 
     def __init__(self, store: Any, *, evidence_floors: Mapping[str, int] | None = None):
-        if not hasattr(store, "_connection") or not hasattr(store, "_write"):
-            raise TypeError("SQLiteBatchRepository requires the canonical SQLite EPUB store")
+        if not hasattr(store, '_connection') or not hasattr(store, '_write'):
+            raise TypeError('SQLiteBatchRepository requires the canonical SQLite EPUB store')
         self._store = store
         self._evidence_floors: dict[str, int] = {
-            str(profile_id): max(0, int(floor))
-            for profile_id, floor in dict(evidence_floors or {}).items()
+            str(profile_id): max(0, int(floor)) for profile_id, floor in dict(evidence_floors or {}).items()
         }
         self._migrate_service_tables()
 
@@ -1214,35 +1186,28 @@ class SQLiteBatchRepository:
             # ``batch_jobs.prompt_profile`` is: an approval recorded before
             # this change has no value, and the gate reads the job rather than
             # this audit copy, so a NULL here can never widen it.
-            columns = {
-                row[1]
-                for row in connection.execute("PRAGMA table_info(epub_batch_sample_reviews)")
-            }
-            if "prompt_profile" not in columns:
-                connection.execute(
-                    "ALTER TABLE epub_batch_sample_reviews ADD COLUMN prompt_profile TEXT"
-                )
+            columns = {row[1] for row in connection.execute('PRAGMA table_info(epub_batch_sample_reviews)')}
+            if 'prompt_profile' not in columns:
+                connection.execute('ALTER TABLE epub_batch_sample_reviews ADD COLUMN prompt_profile TEXT')
 
     @staticmethod
     def _require_job(connection: Any, batch_job_id: str) -> Any:
-        row = connection.execute(
-            "SELECT * FROM batch_jobs WHERE batch_job_id = ?", (batch_job_id,)
-        ).fetchone()
+        row = connection.execute('SELECT * FROM batch_jobs WHERE batch_job_id = ?', (batch_job_id,)).fetchone()
         if row is None:
-            raise BatchServiceError(f"unknown batch_job_id: {batch_job_id}")
+            raise BatchServiceError(f'unknown batch_job_id: {batch_job_id}')
         return row
 
     @staticmethod
     def _validate_items(items: Sequence[BatchItemInput]) -> None:
         if not items:
-            raise BatchServiceError("a Batch job must contain at least one item")
+            raise BatchServiceError('a Batch job must contain at least one item')
         custom_ids: set[str] = set()
         passage_ids: set[str] = set()
         for item in items:
             if not item.custom_id.strip() or not item.passage_id.strip():
-                raise BatchServiceError("Batch item custom_id and passage_id cannot be empty")
+                raise BatchServiceError('Batch item custom_id and passage_id cannot be empty')
             if item.custom_id in custom_ids or item.passage_id in passage_ids:
-                raise BatchServiceError("a Batch job cannot repeat a custom_id or passage")
+                raise BatchServiceError('a Batch job cannot repeat a custom_id or passage')
             _assert_no_secrets(item.request)
             custom_ids.add(item.custom_id)
             passage_ids.add(item.passage_id)
@@ -1253,71 +1218,65 @@ class SQLiteBatchRepository:
         version_id: str,
         provider: str,
         profile_name: str,
-        job_kind: str = "CONCEPT_MENTIONS",
+        job_kind: str = 'CONCEPT_MENTIONS',
         is_sample: bool = False,
         items: Sequence[BatchItemInput],
         batch_job_id: str | None = None,
         prompt_profile: str | None = None,
     ) -> str:
         if not provider.strip() or not profile_name.strip():
-            raise BatchServiceError("provider and profile_name cannot be empty")
+            raise BatchServiceError('provider and profile_name cannot be empty')
         if job_kind not in _JOB_KINDS:
-            raise BatchServiceError(f"unsupported EPUB Batch job kind: {job_kind}")
+            raise BatchServiceError(f'unsupported EPUB Batch job kind: {job_kind}')
         # A blank identifier is not "no profile": it would be a second value
         # that compares equal to itself and could quietly satisfy the gate.
         # Reject it, and keep exactly one representation of "unknown": NULL.
         if prompt_profile is not None:
             prompt_profile = prompt_profile.strip()
             if not prompt_profile:
-                raise BatchServiceError("Batch prompt_profile cannot be blank")
+                raise BatchServiceError('Batch prompt_profile cannot be blank')
             if len(prompt_profile) > 100:
-                raise BatchServiceError("Batch prompt_profile identifier is too long")
+                raise BatchServiceError('Batch prompt_profile identifier is too long')
         self._validate_items(items)
         job_id = batch_job_id or str(uuid4())
-        expected_items = {
-            item.custom_id: (item.passage_id, _canonical_json(item.request)) for item in items
-        }
+        expected_items = {item.custom_id: (item.passage_id, _canonical_json(item.request)) for item in items}
         with self._store._write() as connection:
-            existing = connection.execute(
-                "SELECT * FROM batch_jobs WHERE batch_job_id = ?", (job_id,)
-            ).fetchone()
+            existing = connection.execute('SELECT * FROM batch_jobs WHERE batch_job_id = ?', (job_id,)).fetchone()
             if existing is not None:
                 same_job = (
-                    existing["version_id"] == version_id
-                    and existing["provider"] == provider
-                    and existing["profile_name"] == profile_name
-                    and existing["job_kind"] == job_kind
-                    and existing["prompt_profile"] == prompt_profile
-                    and bool(existing["is_sample"]) == is_sample
+                    existing['version_id'] == version_id
+                    and existing['provider'] == provider
+                    and existing['profile_name'] == profile_name
+                    and existing['job_kind'] == job_kind
+                    and existing['prompt_profile'] == prompt_profile
+                    and bool(existing['is_sample']) == is_sample
                 )
                 actual_items = {
-                    row["custom_id"]: (row["passage_id"], row["request_json"])
+                    row['custom_id']: (row['passage_id'], row['request_json'])
                     for row in connection.execute(
-                        "SELECT custom_id, passage_id, request_json FROM batch_items WHERE batch_job_id = ?",
+                        'SELECT custom_id, passage_id, request_json FROM batch_items WHERE batch_job_id = ?',
                         (job_id,),
                     )
                 }
                 if not same_job or actual_items != expected_items:
-                    raise BatchServiceError("idempotency key already belongs to different Batch input")
+                    raise BatchServiceError('idempotency key already belongs to different Batch input')
                 return job_id
 
             version = connection.execute(
-                "SELECT status FROM book_versions WHERE version_id = ?", (version_id,)
+                'SELECT status FROM book_versions WHERE version_id = ?', (version_id,)
             ).fetchone()
             if version is None:
-                raise BatchServiceError(f"unknown version_id: {version_id}")
-            if version["status"] != "READY":
-                raise BatchServiceError("only a READY EPUB version may enter offline Batch processing")
+                raise BatchServiceError(f'unknown version_id: {version_id}')
+            if version['status'] != 'READY':
+                raise BatchServiceError('only a READY EPUB version may enter offline Batch processing')
             passages = {
-                row["passage_id"]
-                for row in connection.execute(
-                    "SELECT passage_id FROM passages WHERE version_id = ?", (version_id,)
-                )
+                row['passage_id']
+                for row in connection.execute('SELECT passage_id FROM passages WHERE version_id = ?', (version_id,))
             }
             unknown = [item.passage_id for item in items if item.passage_id not in passages]
             if unknown:
                 raise BatchServiceError("every Batch item must belong to the job's ready book version")
-            if provider == "openai-batch" and not is_sample:
+            if provider == 'openai-batch' and not is_sample:
                 self._require_approved_sample(
                     connection,
                     version_id=version_id,
@@ -1439,11 +1398,11 @@ class SQLiteBatchRepository:
         dropped span is not even in the stored result.
         """
         statuses = {
-            str(count["status"]): int(count["count"])
+            str(count['status']): int(count['count'])
             for count in connection.execute(
                 """SELECT status, COUNT(*) AS count FROM batch_items
                    WHERE batch_job_id = ? GROUP BY status""",
-                (row["batch_job_id"],),
+                (row['batch_job_id'],),
             )
         }
         # Grouping happens here rather than in SQL because the reason lives
@@ -1455,10 +1414,10 @@ class SQLiteBatchRepository:
         for failure in connection.execute(
             """SELECT failure_diagnostics_json FROM batch_items
                WHERE batch_job_id = ? AND status = 'FAILED'""",
-            (row["batch_job_id"],),
+            (row['batch_job_id'],),
         ):
-            diagnostics = _safe_failure_diagnostics(failure["failure_diagnostics_json"])
-            reason = str(diagnostics["reason"]) if diagnostics else _UNDIAGNOSED_FAILURE_REASON
+            diagnostics = _safe_failure_diagnostics(failure['failure_diagnostics_json'])
+            reason = str(diagnostics['reason']) if diagnostics else _UNDIAGNOSED_FAILURE_REASON
             reasons[reason] = reasons.get(reason, 0) + 1
         # SUM over four integer-or-NULL columns: four scalars, no JSON to
         # parse, and no response ever loaded to produce them.
@@ -1468,49 +1427,49 @@ class SQLiteBatchRepository:
                       COALESCE(SUM(skipped_ambiguous_concepts), 0),
                       COALESCE(SUM(skipped_ungrounded_evidence), 0)
                FROM batch_items WHERE batch_job_id = ?""",
-            (row["batch_job_id"],),
+            (row['batch_job_id'],),
         ).fetchone()
         skipped_self_relations = int(skips[0])
         skipped_short_evidence = int(skips[1])
         skipped_ambiguous_concepts = int(skips[2])
         skipped_ungrounded_evidence = int(skips[3])
         summary: dict[str, Any] = {
-            "batch_job_id": row["batch_job_id"],
-            "version_id": row["version_id"],
-            "provider": row["provider"],
-            "provider_job_id": row["provider_job_id"],
-            "profile_name": row["profile_name"],
+            'batch_job_id': row['batch_job_id'],
+            'version_id': row['version_id'],
+            'provider': row['provider'],
+            'provider_job_id': row['provider_job_id'],
+            'profile_name': row['profile_name'],
             # The extraction instruction identifier only, never its text.  An
             # administrator has to be able to see which prompt a job actually
             # used, because that is now what the approval gate binds to.
-            "prompt_profile": row["prompt_profile"],
-            "job_kind": row["job_kind"],
-            "status": row["status"],
-            "is_sample": bool(row["is_sample"]),
-            "submitted_at": row["submitted_at"],
-            "completed_at": row["completed_at"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "has_error": bool(row["last_error"]),
+            'prompt_profile': row['prompt_profile'],
+            'job_kind': row['job_kind'],
+            'status': row['status'],
+            'is_sample': bool(row['is_sample']),
+            'submitted_at': row['submitted_at'],
+            'completed_at': row['completed_at'],
+            'created_at': row['created_at'],
+            'updated_at': row['updated_at'],
+            'has_error': bool(row['last_error']),
             # This is deliberately a boolean rather than durable error text.
             # Provider errors and results can contain source material.
-            "results_pending_retrieval": row["last_error"] == _RESULTS_PENDING_RETRIEVAL,
-            "item_count": sum(statuses.values()),
-            "item_status_counts": statuses,
-            "item_failure_reason_counts": reasons,
+            'results_pending_retrieval': row['last_error'] == _RESULTS_PENDING_RETRIEVAL,
+            'item_count': sum(statuses.values()),
+            'item_status_counts': statuses,
+            'item_failure_reason_counts': reasons,
             # Relations this job's succeeded items ingested past because both
             # endpoints had been merged into one concept (SDD 4.2.2 point 6a).
-            "item_skipped_self_relations": skipped_self_relations,
+            'item_skipped_self_relations': skipped_self_relations,
             # Spans this job's succeeded items dropped for being below the
             # enforced evidence floor (SDD 4.2.2 point 6b).  Concept mentions and
             # relation evidence share one counter: same defect, same fix.
-            "item_skipped_short_evidence": skipped_short_evidence,
+            'item_skipped_short_evidence': skipped_short_evidence,
             # Concepts this job's succeeded items skipped because their
             # spellings matched several existing concepts (SDD 4.2.2 point 6c).
             # Counts the concepts, not the relations that cascaded off them, for
             # the same reason as the counter above: the cause is what is
             # unrecoverable, and a cascade is derivable from the stored payload.
-            "item_skipped_ambiguous_concepts": skipped_ambiguous_concepts,
+            'item_skipped_ambiguous_concepts': skipped_ambiguous_concepts,
             # Citations this job's succeeded items dropped because they could
             # not be verified against the passage they named (SDD 4.2.2 point
             # 6d).  Deliberately not folded into the counter above it: a
@@ -1518,54 +1477,46 @@ class SQLiteBatchRepository:
             # floor, while this one is the model's bookkeeping and settles only
             # with a prompt or a model.  Summed together, a rising floor would
             # hide a degrading model.
-            "item_skipped_ungrounded_evidence": skipped_ungrounded_evidence,
+            'item_skipped_ungrounded_evidence': skipped_ungrounded_evidence,
         }
         if include_items:
-            summary["items"] = [
+            summary['items'] = [
                 {
-                    "batch_item_id": item["batch_item_id"],
-                    "passage_id": item["passage_id"],
-                    "custom_id": item["custom_id"],
-                    "status": item["status"],
-                    "attempt_count": item["attempt_count"],
-                    "has_response": bool(item["response_json"]),
-                    "has_error": bool(item["error_text"]),
-                    "failure_diagnostics": _safe_failure_diagnostics(
-                        item["failure_diagnostics_json"]
-                    ),
+                    'batch_item_id': item['batch_item_id'],
+                    'passage_id': item['passage_id'],
+                    'custom_id': item['custom_id'],
+                    'status': item['status'],
+                    'attempt_count': item['attempt_count'],
+                    'has_response': bool(item['response_json']),
+                    'has_error': bool(item['error_text']),
+                    'failure_diagnostics': _safe_failure_diagnostics(item['failure_diagnostics_json']),
                     # None where nothing was measured: a CONCEPT_MENTIONS item,
                     # an item that has not succeeded, or a row that predates the
                     # column.
-                    "skipped_self_relations": (
-                        None
-                        if item["skipped_self_relations"] is None
-                        else int(item["skipped_self_relations"])
+                    'skipped_self_relations': (
+                        None if item['skipped_self_relations'] is None else int(item['skipped_self_relations'])
                     ),
                     # None where no grounding pass ran: an item that has not
                     # succeeded, one whose provider output is not grounded here,
                     # or a row that predates the column.
-                    "skipped_short_evidence": (
-                        None
-                        if item["skipped_short_evidence"] is None
-                        else int(item["skipped_short_evidence"])
+                    'skipped_short_evidence': (
+                        None if item['skipped_short_evidence'] is None else int(item['skipped_short_evidence'])
                     ),
                     # None only where the column predates the row: unlike the
                     # two above, every succeeded item resolves concepts, so a
                     # measured zero here is always a real zero.
-                    "skipped_ambiguous_concepts": (
-                        None
-                        if item["skipped_ambiguous_concepts"] is None
-                        else int(item["skipped_ambiguous_concepts"])
+                    'skipped_ambiguous_concepts': (
+                        None if item['skipped_ambiguous_concepts'] is None else int(item['skipped_ambiguous_concepts'])
                     ),
                     # None where the rule could not apply: a CONCEPT_MENTIONS
                     # item, whose ungrounded spans still fail it whole, an item
                     # that has not succeeded, or a row that predates the column.
-                    "skipped_ungrounded_evidence": (
+                    'skipped_ungrounded_evidence': (
                         None
-                        if item["skipped_ungrounded_evidence"] is None
-                        else int(item["skipped_ungrounded_evidence"])
+                        if item['skipped_ungrounded_evidence'] is None
+                        else int(item['skipped_ungrounded_evidence'])
                     ),
-                    "updated_at": item["updated_at"],
+                    'updated_at': item['updated_at'],
                 }
                 for item in connection.execute(
                     """SELECT batch_item_id, passage_id, custom_id, status, attempt_count,
@@ -1574,7 +1525,7 @@ class SQLiteBatchRepository:
                               skipped_ambiguous_concepts, skipped_ungrounded_evidence,
                               updated_at
                        FROM batch_items WHERE batch_job_id = ? ORDER BY custom_id""",
-                    (row["batch_job_id"],),
+                    (row['batch_job_id'],),
                 )
             ]
         return summary
@@ -1587,14 +1538,14 @@ class SQLiteBatchRepository:
         self, *, version_id: str | None, offset: int, limit: int
     ) -> tuple[int, list[dict[str, Any]]]:
         if offset < 0 or not 1 <= limit <= 200:
-            raise BatchServiceError("Batch history pagination values are invalid")
+            raise BatchServiceError('Batch history pagination values are invalid')
         connection = self._store._connection()
-        where = ""
+        where = ''
         parameters: tuple[Any, ...] = ()
         if version_id is not None:
-            where = " WHERE version_id = ?"
+            where = ' WHERE version_id = ?'
             parameters = (version_id,)
-        total = int(connection.execute(f"SELECT COUNT(*) FROM batch_jobs{where}", parameters).fetchone()[0])
+        total = int(connection.execute(f'SELECT COUNT(*) FROM batch_jobs{where}', parameters).fetchone()[0])
         rows = connection.execute(
             f"""SELECT * FROM batch_jobs{where}
                 ORDER BY created_at DESC, batch_job_id DESC LIMIT ? OFFSET ?""",
@@ -1602,9 +1553,7 @@ class SQLiteBatchRepository:
         ).fetchall()
         return total, [self._summary(connection, row, include_items=False) for row in rows]
 
-    def review_sample_job(
-        self, batch_job_id: str, *, status: str, reviewed_by: str
-    ) -> dict[str, Any]:
+    def review_sample_job(self, batch_job_id: str, *, status: str, reviewed_by: str) -> dict[str, Any]:
         """Persist an administrator review of a fully ingested cloud sample.
 
         The audit record intentionally contains only identifiers, decision,
@@ -1612,16 +1561,14 @@ class SQLiteBatchRepository:
         model output, request envelope, or server credential.
         """
         if status not in _SAMPLE_REVIEW_STATUSES:
-            raise BatchServiceError("sample review status must be APPROVED or REJECTED")
+            raise BatchServiceError('sample review status must be APPROVED or REJECTED')
         reviewer = reviewed_by.strip()
         if not reviewer or len(reviewer) > 200:
-            raise BatchServiceError(
-                "sample reviewer identity must be a non-empty value of at most 200 characters"
-            )
+            raise BatchServiceError('sample reviewer identity must be a non-empty value of at most 200 characters')
         with self._store._write() as connection:
             job = self._require_job(connection, batch_job_id)
-            if job["provider"] != "openai-batch" or not bool(job["is_sample"]):
-                raise BatchServiceError("only an OpenAI EPUB sample Batch can be reviewed")
+            if job['provider'] != 'openai-batch' or not bool(job['is_sample']):
+                raise BatchServiceError('only an OpenAI EPUB sample Batch can be reviewed')
             item_counts = connection.execute(
                 """SELECT COUNT(*) AS total,
                           SUM(CASE WHEN status = 'SUCCEEDED' THEN 1 ELSE 0 END) AS succeeded
@@ -1629,13 +1576,13 @@ class SQLiteBatchRepository:
                 (batch_job_id,),
             ).fetchone()
             if (
-                job["status"] != "SUCCEEDED"
+                job['status'] != 'SUCCEEDED'
                 or item_counts is None
-                or item_counts["total"] == 0
-                or item_counts["total"] != item_counts["succeeded"]
+                or item_counts['total'] == 0
+                or item_counts['total'] != item_counts['succeeded']
             ):
                 raise BatchServiceError(
-                    "a sample can be reviewed only after it is SUCCEEDED and every item was ingested"
+                    'a sample can be reviewed only after it is SUCCEEDED and every item was ingested'
                 )
             connection.execute(
                 """INSERT INTO epub_batch_sample_reviews(
@@ -1649,12 +1596,12 @@ class SQLiteBatchRepository:
                        reviewed_at = CURRENT_TIMESTAMP""",
                 (
                     batch_job_id,
-                    job["version_id"],
-                    job["job_kind"],
+                    job['version_id'],
+                    job['job_kind'],
                     # Identifier copied from the job under review, so the audit
                     # row states which extraction instruction was approved
                     # rather than only which model snapshot.
-                    job["prompt_profile"],
+                    job['prompt_profile'],
                     status,
                     reviewer,
                 ),
@@ -1672,26 +1619,30 @@ class SQLiteBatchRepository:
         self, *, version_id: str | None = None, job_kind: str | None = None
     ) -> list[dict[str, Any]]:
         if job_kind is not None and job_kind not in _JOB_KINDS:
-            raise BatchServiceError(f"unsupported EPUB Batch job kind: {job_kind}")
+            raise BatchServiceError(f'unsupported EPUB Batch job kind: {job_kind}')
         clauses: list[str] = []
         parameters: list[str] = []
         if version_id is not None:
-            clauses.append("review.version_id = ?")
+            clauses.append('review.version_id = ?')
             parameters.append(version_id)
         if job_kind is not None:
-            clauses.append("review.job_kind = ?")
+            clauses.append('review.job_kind = ?')
             parameters.append(job_kind)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._store._connection().execute(
-            f"""SELECT review.sample_batch_job_id, review.version_id, review.job_kind,
+        where = f'WHERE {" AND ".join(clauses)}' if clauses else ''
+        rows = (
+            self._store._connection()
+            .execute(
+                f"""SELECT review.sample_batch_job_id, review.version_id, review.job_kind,
                        review.prompt_profile, review.status, review.reviewed_by,
                        review.reviewed_at, job.status AS batch_status
                   FROM epub_batch_sample_reviews AS review
                   JOIN batch_jobs AS job ON job.batch_job_id = review.sample_batch_job_id
                   {where}
                  ORDER BY review.reviewed_at DESC, review.sample_batch_job_id DESC""",
-            parameters,
-        ).fetchall()
+                parameters,
+            )
+            .fetchall()
+        )
         return [dict(row) for row in rows]
 
     def list_jobs_without_prompt_profile(self) -> list[dict[str, Any]]:
@@ -1704,10 +1655,10 @@ class SQLiteBatchRepository:
         """
         return [
             {
-                "batch_job_id": row["batch_job_id"],
-                "version_id": row["version_id"],
-                "job_kind": row["job_kind"],
-                "is_sample": bool(row["is_sample"]),
+                'batch_job_id': row['batch_job_id'],
+                'version_id': row['version_id'],
+                'job_kind': row['job_kind'],
+                'is_sample': bool(row['is_sample']),
             }
             for row in self._store._connection().execute(
                 """SELECT batch_job_id, version_id, job_kind, is_sample FROM batch_jobs
@@ -1725,14 +1676,18 @@ class SQLiteBatchRepository:
         backfill, which reads the system instruction, matches it against the
         registered profiles, and keeps nothing but the resulting identifier.
         """
-        row = self._store._connection().execute(
-            """SELECT request_json FROM batch_items
+        row = (
+            self._store._connection()
+            .execute(
+                """SELECT request_json FROM batch_items
                WHERE batch_job_id = ? ORDER BY custom_id LIMIT 1""",
-            (batch_job_id,),
-        ).fetchone()
+                (batch_job_id,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
-        request = json.loads(row["request_json"])
+        request = json.loads(row['request_json'])
         return request if isinstance(request, dict) else None
 
     def backfill_prompt_profile(self, batch_job_id: str, prompt_profile: str) -> bool:
@@ -1748,7 +1703,7 @@ class SQLiteBatchRepository:
         copy of the same fact -- no decision, reviewer or timestamp changes.
         """
         if not prompt_profile.strip():
-            raise BatchServiceError("Batch prompt_profile cannot be blank")
+            raise BatchServiceError('Batch prompt_profile cannot be blank')
         with self._store._write() as connection:
             self._require_job(connection, batch_job_id)
             updated = connection.execute(
@@ -1768,33 +1723,31 @@ class SQLiteBatchRepository:
         return [
             dict(row)
             for row in self._store._connection()
-            .execute(
-                "SELECT * FROM batch_items WHERE batch_job_id = ? ORDER BY custom_id", (batch_job_id,)
-            )
+            .execute('SELECT * FROM batch_items WHERE batch_job_id = ? ORDER BY custom_id', (batch_job_id,))
             .fetchall()
         ]
 
     def jsonl_for_job(self, batch_job_id: str) -> str:
         payloads: list[str] = []
         for item in self.list_items(batch_job_id):
-            request = json.loads(item["request_json"])
+            request = json.loads(item['request_json'])
             _assert_no_secrets(request)
-            if "custom_id" in request and request["custom_id"] != item["custom_id"]:
-                raise BatchServiceError("request custom_id conflicts with its durable Batch item")
-            request["custom_id"] = item["custom_id"]
+            if 'custom_id' in request and request['custom_id'] != item['custom_id']:
+                raise BatchServiceError('request custom_id conflicts with its durable Batch item')
+            request['custom_id'] = item['custom_id']
             payloads.append(_canonical_json(request))
-        return "\n".join(payloads) + "\n"
+        return '\n'.join(payloads) + '\n'
 
     def mark_submitted(self, batch_job_id: str, provider_job_id: str) -> None:
         if not provider_job_id.strip():
-            raise BatchServiceError("provider returned an empty Batch job ID")
+            raise BatchServiceError('provider returned an empty Batch job ID')
         with self._store._write() as connection:
             job = self._require_job(connection, batch_job_id)
-            if job["status"] in _TERMINAL_JOB_STATES:
-                raise BatchServiceError("a terminal Batch job cannot be submitted again")
-            stored_provider_id = job["provider_job_id"]
+            if job['status'] in _TERMINAL_JOB_STATES:
+                raise BatchServiceError('a terminal Batch job cannot be submitted again')
+            stored_provider_id = job['provider_job_id']
             if stored_provider_id is not None and stored_provider_id != provider_job_id:
-                raise BatchServiceError("provider returned a different ID for an existing idempotency key")
+                raise BatchServiceError('provider returned a different ID for an existing idempotency key')
             connection.execute(
                 """UPDATE batch_jobs
                    SET provider_job_id = ?, status = 'SUBMITTED',
@@ -1811,17 +1764,17 @@ class SQLiteBatchRepository:
 
     def set_provider_state(self, batch_job_id: str, state: str, error: str | None) -> None:
         if state not in _ACTIVE_JOB_STATES | _TERMINAL_JOB_STATES:
-            raise BatchServiceError(f"invalid normalized Batch state: {state}")
+            raise BatchServiceError(f'invalid normalized Batch state: {state}')
         with self._store._write() as connection:
             job = self._require_job(connection, batch_job_id)
-            current = job["status"]
+            current = job['status']
             if current in _TERMINAL_JOB_STATES:
                 if current == state:
                     return
-                raise BatchServiceError(f"terminal Batch state cannot change from {current} to {state}")
-            if current == "DRAFT" and state not in {"DRAFT", "CANCELLED", "FAILED"}:
-                raise BatchServiceError("a provider state cannot advance an unsubmitted Batch job")
-            if current == "RUNNING" and state == "SUBMITTED":
+                raise BatchServiceError(f'terminal Batch state cannot change from {current} to {state}')
+            if current == 'DRAFT' and state not in {'DRAFT', 'CANCELLED', 'FAILED'}:
+                raise BatchServiceError('a provider state cannot advance an unsubmitted Batch job')
+            if current == 'RUNNING' and state == 'SUBMITTED':
                 return  # providers sometimes report a stale queued snapshot
             connection.execute(
                 """UPDATE batch_jobs
@@ -1837,11 +1790,11 @@ class SQLiteBatchRepository:
     @staticmethod
     def _item_for_update(connection: Any, batch_job_id: str, custom_id: str) -> Any:
         row = connection.execute(
-            "SELECT * FROM batch_items WHERE batch_job_id = ? AND custom_id = ?",
+            'SELECT * FROM batch_items WHERE batch_job_id = ? AND custom_id = ?',
             (batch_job_id, custom_id),
         ).fetchone()
         if row is None:
-            raise BatchPayloadError(f"provider result has unknown custom_id: {custom_id}")
+            raise BatchPayloadError(f'provider result has unknown custom_id: {custom_id}')
         return row
 
     @staticmethod
@@ -1867,14 +1820,16 @@ class SQLiteBatchRepository:
         resolved, and the count is the only durable record that the concept was
         ever proposed.
         """
-        name = suggestion.get("name")
-        aliases = suggestion.get("aliases", [])
-        if not isinstance(name, str) or not isinstance(aliases, list) or not all(
-            isinstance(alias, str) for alias in aliases
+        name = suggestion.get('name')
+        aliases = suggestion.get('aliases', [])
+        if (
+            not isinstance(name, str)
+            or not isinstance(aliases, list)
+            or not all(isinstance(alias, str) for alias in aliases)
         ):
-            raise BatchPayloadError("each concept needs string name and aliases")
+            raise BatchPayloadError('each concept needs string name and aliases')
         candidates = {_normalize_name(name), *(_normalize_name(alias) for alias in aliases)}
-        placeholders = ",".join("?" for _ in candidates)
+        placeholders = ','.join('?' for _ in candidates)
         matches = connection.execute(
             f"""SELECT concept_id, canonical_name FROM concepts WHERE normalized_name IN ({placeholders})
                 UNION
@@ -1883,7 +1838,7 @@ class SQLiteBatchRepository:
                 WHERE a.normalized_alias IN ({placeholders})""",
             tuple(candidates) + tuple(candidates),
         ).fetchall()
-        matched_ids = {row["concept_id"] for row in matches}
+        matched_ids = {row['concept_id'] for row in matches}
         if len(matched_ids) > 1:
             return None
         if matched_ids:
@@ -1892,9 +1847,9 @@ class SQLiteBatchRepository:
             # or create a speculative semantic merge.
             return next(iter(matched_ids))
 
-        definition = suggestion.get("definition", "")
+        definition = suggestion.get('definition', '')
         if not isinstance(definition, str):
-            raise BatchPayloadError("concept definition must be a string")
+            raise BatchPayloadError('concept definition must be a string')
         concept_id = str(uuid4())
         connection.execute(
             """INSERT INTO concepts(concept_id, canonical_name, normalized_name, definition, status)
@@ -1963,43 +1918,41 @@ class SQLiteBatchRepository:
         exists for a concept response, and this rule has already been restated
         twice for generalizing past its evidence.
         """
-        if set(payload) != {"concepts"} or not isinstance(payload.get("concepts"), list):
+        if set(payload) != {'concepts'} or not isinstance(payload.get('concepts'), list):
             raise BatchPayloadError(
-                "OpenAI concept output must contain only a concepts list",
-                diagnostics=_grounding_diagnostics("INVALID_SCHEMA"),
+                'OpenAI concept output must contain only a concepts list',
+                diagnostics=_grounding_diagnostics('INVALID_SCHEMA'),
             )
         passage = connection.execute(
-            "SELECT content FROM passages WHERE passage_id = ?", (item["passage_id"],)
+            'SELECT content FROM passages WHERE passage_id = ?', (item['passage_id'],)
         ).fetchone()
         if passage is None:
             raise BatchPayloadError(
-                "Batch item passage is unavailable",
-                diagnostics=_grounding_diagnostics("PASSAGE_UNAVAILABLE"),
+                'Batch item passage is unavailable',
+                diagnostics=_grounding_diagnostics('PASSAGE_UNAVAILABLE'),
             )
-        content = passage["content"]
+        content = passage['content']
         passage_codepoints = len(content)
-        concept_count = len(payload["concepts"])
+        concept_count = len(payload['concepts'])
         grounded_concepts: list[dict[str, Any]] = []
         skipped_short_evidence = 0
-        for concept_index, concept in enumerate(payload["concepts"]):
-            if not isinstance(concept, Mapping) or set(concept) != {
-                "name", "aliases", "definition", "mentions"
-            }:
+        for concept_index, concept in enumerate(payload['concepts']):
+            if not isinstance(concept, Mapping) or set(concept) != {'name', 'aliases', 'definition', 'mentions'}:
                 raise BatchPayloadError(
-                    "OpenAI concept has an invalid schema",
+                    'OpenAI concept has an invalid schema',
                     diagnostics=_grounding_diagnostics(
-                        "INVALID_SCHEMA",
+                        'INVALID_SCHEMA',
                         concept_index=concept_index,
                         concept_count=concept_count,
                         passage_codepoints=passage_codepoints,
                     ),
                 )
-            mentions = concept.get("mentions")
+            mentions = concept.get('mentions')
             if not isinstance(mentions, list) or not mentions:
                 raise BatchPayloadError(
-                    "OpenAI concept needs a visible mention",
+                    'OpenAI concept needs a visible mention',
                     diagnostics=_grounding_diagnostics(
-                        "MENTIONS_MISSING",
+                        'MENTIONS_MISSING',
                         concept_index=concept_index,
                         concept_count=concept_count,
                         mention_count=len(mentions) if isinstance(mentions, list) else None,
@@ -2012,16 +1965,16 @@ class SQLiteBatchRepository:
                 # degrades after the Nth concept needs a very different prompt
                 # fix from one that fails uniformly.
                 position: dict[str, Any] = {
-                    "concept_index": concept_index,
-                    "concept_count": concept_count,
-                    "mention_index": mention_index,
-                    "mention_count": len(mentions),
-                    "passage_codepoints": passage_codepoints,
+                    'concept_index': concept_index,
+                    'concept_count': concept_count,
+                    'mention_index': mention_index,
+                    'mention_count': len(mentions),
+                    'passage_codepoints': passage_codepoints,
                 }
                 if not isinstance(mention, Mapping):
                     raise BatchPayloadError(
-                        "OpenAI concept mention has an invalid schema",
-                        diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                        'OpenAI concept mention has an invalid schema',
+                        diagnostics=_grounding_diagnostics('INVALID_SCHEMA', **position),
                     )
                 fields = set(mention)
                 if fields not in (
@@ -2030,8 +1983,8 @@ class SQLiteBatchRepository:
                     _OFFSETLESS_CONCEPT_MENTION_FIELDS,
                 ):
                     raise BatchPayloadError(
-                        "OpenAI concept mention has an invalid schema",
-                        diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                        'OpenAI concept mention has an invalid schema',
+                        diagnostics=_grounding_diagnostics('INVALID_SCHEMA', **position),
                     )
                 has_anchors = fields != _LEGACY_CONCEPT_MENTION_FIELDS
                 supplies_offsets = fields != _OFFSETLESS_CONCEPT_MENTION_FIELDS
@@ -2039,32 +1992,36 @@ class SQLiteBatchRepository:
                 # ``_resolve_evidence_span`` treats absent offsets as "derive
                 # the span from the literal", which is what it does with a
                 # supplied offset 97% of the time anyway.
-                start = mention.get("start_codepoint")
-                end = mention.get("end_codepoint")
-                evidence = mention.get("evidence")
-                if not isinstance(evidence, str) or not evidence or (
-                    supplies_offsets
-                    and (
-                        isinstance(start, bool)
-                        or isinstance(end, bool)
-                        or not isinstance(start, int)
-                        or not isinstance(end, int)
+                start = mention.get('start_codepoint')
+                end = mention.get('end_codepoint')
+                evidence = mention.get('evidence')
+                if (
+                    not isinstance(evidence, str)
+                    or not evidence
+                    or (
+                        supplies_offsets
+                        and (
+                            isinstance(start, bool)
+                            or isinstance(end, bool)
+                            or not isinstance(start, int)
+                            or not isinstance(end, int)
+                        )
                     )
                 ):
                     raise BatchPayloadError(
-                        "OpenAI concept mention has invalid offsets or evidence",
+                        'OpenAI concept mention has invalid offsets or evidence',
                         diagnostics=_grounding_diagnostics(
-                            "INVALID_OFFSETS",
+                            'INVALID_OFFSETS',
                             has_anchors=has_anchors,
                             evidence_codepoints=len(evidence) if isinstance(evidence, str) else None,
                             **position,
                         ),
                     )
                 evidence_codepoints = len(evidence)
-                before = after = ""
+                before = after = ''
                 if has_anchors:
-                    before = mention["context_before"]
-                    after = mention["context_after"]
+                    before = mention['context_before']
+                    after = mention['context_after']
                     if (
                         not isinstance(before, str)
                         or not isinstance(after, str)
@@ -2072,17 +2029,13 @@ class SQLiteBatchRepository:
                         or len(after) > _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
                     ):
                         raise BatchPayloadError(
-                            "OpenAI evidence context anchor is invalid",
+                            'OpenAI evidence context anchor is invalid',
                             diagnostics=_grounding_diagnostics(
-                                "ANCHOR_INVALID",
+                                'ANCHOR_INVALID',
                                 has_anchors=True,
                                 evidence_codepoints=evidence_codepoints,
-                                anchor_before_codepoints=(
-                                    len(before) if isinstance(before, str) else None
-                                ),
-                                anchor_after_codepoints=(
-                                    len(after) if isinstance(after, str) else None
-                                ),
+                                anchor_before_codepoints=(len(before) if isinstance(before, str) else None),
+                                anchor_after_codepoints=(len(after) if isinstance(after, str) else None),
                                 **position,
                             ),
                         )
@@ -2104,8 +2057,8 @@ class SQLiteBatchRepository:
                     continue
                 start, end = resolved
                 normalized = dict(mention)
-                normalized["start_codepoint"] = start
-                normalized["end_codepoint"] = end
+                normalized['start_codepoint'] = start
+                normalized['end_codepoint'] = end
                 grounded_mentions.append(normalized)
             if not grounded_mentions:
                 # Every mention this concept had was sub-floor.  A concept with
@@ -2115,9 +2068,9 @@ class SQLiteBatchRepository:
                 # its citations rather than being stored unanchored.
                 continue
             grounded = dict(concept)
-            grounded["mentions"] = grounded_mentions
+            grounded['mentions'] = grounded_mentions
             grounded_concepts.append(grounded)
-        return _GroundedPayload({"concepts": grounded_concepts}, skipped_short_evidence, None)
+        return _GroundedPayload({'concepts': grounded_concepts}, skipped_short_evidence, None)
 
     @staticmethod
     def _add_mentions(
@@ -2132,39 +2085,45 @@ class SQLiteBatchRepository:
         if mentions is None:
             return
         if not isinstance(mentions, list):
-            raise BatchPayloadError("concept mentions must be a list")
+            raise BatchPayloadError('concept mentions must be a list')
         for mention in mentions:
             if not isinstance(mention, Mapping):
-                raise BatchPayloadError("each mention must be an object")
+                raise BatchPayloadError('each mention must be an object')
             if require_passage_ids and set(mention) != {
-                "passage_id",
-                "start_codepoint",
-                "end_codepoint",
-                "evidence",
+                'passage_id',
+                'start_codepoint',
+                'end_codepoint',
+                'evidence',
             }:
-                raise BatchPayloadError("section graph mention has an invalid schema")
-            passage_id = mention.get("passage_id", fallback_passage_id)
-            if require_passage_ids and "passage_id" not in mention:
-                raise BatchPayloadError("section graph mentions need a passage_id")
+                raise BatchPayloadError('section graph mention has an invalid schema')
+            passage_id = mention.get('passage_id', fallback_passage_id)
+            if require_passage_ids and 'passage_id' not in mention:
+                raise BatchPayloadError('section graph mentions need a passage_id')
             if not isinstance(passage_id, str) or not passage_id:
-                raise BatchPayloadError("concept mention passage_id must be a non-empty string")
-            query = "SELECT content FROM passages WHERE passage_id = ?"
+                raise BatchPayloadError('concept mention passage_id must be a non-empty string')
+            query = 'SELECT content FROM passages WHERE passage_id = ?'
             parameters: tuple[Any, ...] = (passage_id,)
             if version_id is not None:
-                query += " AND version_id = ?"
+                query += ' AND version_id = ?'
                 parameters = (passage_id, version_id)
             passage = connection.execute(query, parameters).fetchone()
             if passage is None:
-                raise BatchPayloadError("concept mention does not belong to this EPUB version")
-            content = passage["content"]
-            start = mention.get("start_codepoint")
-            end = mention.get("end_codepoint")
-            if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start or end > len(content):
-                raise BatchPayloadError("concept mention offsets must identify a non-empty source substring")
-            evidence = mention.get("evidence")
+                raise BatchPayloadError('concept mention does not belong to this EPUB version')
+            content = passage['content']
+            start = mention.get('start_codepoint')
+            end = mention.get('end_codepoint')
+            if (
+                not isinstance(start, int)
+                or not isinstance(end, int)
+                or start < 0
+                or end <= start
+                or end > len(content)
+            ):
+                raise BatchPayloadError('concept mention offsets must identify a non-empty source substring')
+            evidence = mention.get('evidence')
             expected = content[start:end]
             if evidence is not None and evidence != expected:
-                raise BatchPayloadError("concept mention evidence must equal the immutable source substring")
+                raise BatchPayloadError('concept mention evidence must equal the immutable source substring')
             exists = connection.execute(
                 """SELECT 1 FROM concept_mentions
                    WHERE concept_id = ? AND passage_id = ? AND start_codepoint = ? AND end_codepoint = ?""",
@@ -2205,26 +2164,20 @@ class SQLiteBatchRepository:
         byte-identical, and therefore idempotent.
         """
         if not isinstance(span, Mapping) or (
-            set(span) != _SECTION_GRAPH_SPAN_FIELDS_V1
-            and set(span) != _SECTION_GRAPH_SPAN_FIELDS_V2
+            set(span) != _SECTION_GRAPH_SPAN_FIELDS_V1 and set(span) != _SECTION_GRAPH_SPAN_FIELDS_V2
         ):
             raise BatchPayloadError(
-                "section graph evidence span has an invalid schema",
-                diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                'section graph evidence span has an invalid schema',
+                diagnostics=_grounding_diagnostics('INVALID_SCHEMA', **position),
             )
         has_anchors = set(span) == _SECTION_GRAPH_SPAN_FIELDS_V2
-        passage_id = span["passage_id"]
-        evidence = span["evidence"]
-        if (
-            not isinstance(passage_id, str)
-            or not passage_id
-            or not isinstance(evidence, str)
-            or not evidence
-        ):
+        passage_id = span['passage_id']
+        evidence = span['evidence']
+        if not isinstance(passage_id, str) or not passage_id or not isinstance(evidence, str) or not evidence:
             raise BatchPayloadError(
-                "section graph evidence span has invalid offsets or evidence",
+                'section graph evidence span has invalid offsets or evidence',
                 diagnostics=_grounding_diagnostics(
-                    "INVALID_OFFSETS",
+                    'INVALID_OFFSETS',
                     has_anchors=has_anchors,
                     evidence_codepoints=len(evidence) if isinstance(evidence, str) else None,
                     **position,
@@ -2233,27 +2186,27 @@ class SQLiteBatchRepository:
         # Version-scoped: a packet may name any passage it was shown, but never
         # a passage from another book or another version of this one.
         passage = connection.execute(
-            "SELECT content FROM passages WHERE passage_id = ? AND version_id = ?",
+            'SELECT content FROM passages WHERE passage_id = ? AND version_id = ?',
             (passage_id, version_id),
         ).fetchone()
         if passage is None:
             raise BatchPayloadError(
-                "section graph evidence does not belong to this EPUB version",
+                'section graph evidence does not belong to this EPUB version',
                 diagnostics=_grounding_diagnostics(
-                    "PASSAGE_UNAVAILABLE",
+                    'PASSAGE_UNAVAILABLE',
                     has_anchors=has_anchors,
                     evidence_codepoints=len(evidence),
                     **position,
                 ),
             )
-        content = passage["content"]
-        span_position = {**position, "passage_codepoints": len(content)}
+        content = passage['content']
+        span_position = {**position, 'passage_codepoints': len(content)}
         start: int | None = None
         end: int | None = None
-        before = after = ""
+        before = after = ''
         if has_anchors:
-            before = span["context_before"]
-            after = span["context_after"]
+            before = span['context_before']
+            after = span['context_after']
             if (
                 not isinstance(before, str)
                 or not isinstance(after, str)
@@ -2261,9 +2214,9 @@ class SQLiteBatchRepository:
                 or len(after) > _MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
             ):
                 raise BatchPayloadError(
-                    "section graph evidence context anchor is invalid",
+                    'section graph evidence context anchor is invalid',
                     diagnostics=_grounding_diagnostics(
-                        "ANCHOR_INVALID",
+                        'ANCHOR_INVALID',
                         has_anchors=True,
                         evidence_codepoints=len(evidence),
                         anchor_before_codepoints=len(before) if isinstance(before, str) else None,
@@ -2272,8 +2225,8 @@ class SQLiteBatchRepository:
                     ),
                 )
         else:
-            start = span["start_codepoint"]
-            end = span["end_codepoint"]
+            start = span['start_codepoint']
+            end = span['end_codepoint']
             if (
                 isinstance(start, bool)
                 or isinstance(end, bool)
@@ -2281,9 +2234,9 @@ class SQLiteBatchRepository:
                 or not isinstance(end, int)
             ):
                 raise BatchPayloadError(
-                    "section graph evidence span has invalid offsets or evidence",
+                    'section graph evidence span has invalid offsets or evidence',
                     diagnostics=_grounding_diagnostics(
-                        "INVALID_OFFSETS",
+                        'INVALID_OFFSETS',
                         has_anchors=False,
                         evidence_codepoints=len(evidence),
                         **span_position,
@@ -2305,10 +2258,10 @@ class SQLiteBatchRepository:
             return None
         start, end = resolved
         return {
-            "passage_id": passage_id,
-            "start_codepoint": start,
-            "end_codepoint": end,
-            "evidence": evidence,
+            'passage_id': passage_id,
+            'start_codepoint': start,
+            'end_codepoint': end,
+            'evidence': evidence,
         }
 
     def _ground_section_graph_payload(
@@ -2389,17 +2342,17 @@ class SQLiteBatchRepository:
         ``spans_failed`` and ``spans_skipped_by_ingest``.
         See :class:`_PacketProbe`.
         """
-        if set(payload) != {"concepts", "relations"}:
+        if set(payload) != {'concepts', 'relations'}:
             raise BatchPayloadError(
-                "section graph output must contain only concepts and relations",
-                diagnostics=_grounding_diagnostics("INVALID_SCHEMA"),
+                'section graph output must contain only concepts and relations',
+                diagnostics=_grounding_diagnostics('INVALID_SCHEMA'),
             )
-        concepts = payload["concepts"]
-        relations = payload["relations"]
+        concepts = payload['concepts']
+        relations = payload['relations']
         if not isinstance(concepts, list) or not isinstance(relations, list):
             raise BatchPayloadError(
-                "section graph output needs concepts and relations lists",
-                diagnostics=_grounding_diagnostics("INVALID_SCHEMA"),
+                'section graph output needs concepts and relations lists',
+                diagnostics=_grounding_diagnostics('INVALID_SCHEMA'),
             )
         concept_count = len(concepts)
         relation_count = len(relations)
@@ -2414,34 +2367,34 @@ class SQLiteBatchRepository:
         grounded_concepts: list[dict[str, Any]] = []
         for concept_index, suggestion in enumerate(concepts):
             position: dict[str, Any] = {
-                "concept_index": concept_index,
-                "concept_count": concept_count,
+                'concept_index': concept_index,
+                'concept_count': concept_count,
             }
             if not isinstance(suggestion, Mapping):
                 raise BatchPayloadError(
-                    "section graph concepts must contain objects",
-                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                    'section graph concepts must contain objects',
+                    diagnostics=_grounding_diagnostics('INVALID_SCHEMA', **position),
                 )
-            if set(suggestion) != {"local_id", "name", "aliases", "definition", "mentions"}:
+            if set(suggestion) != {'local_id', 'name', 'aliases', 'definition', 'mentions'}:
                 raise BatchPayloadError(
-                    "section graph concept has an invalid schema",
-                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                    'section graph concept has an invalid schema',
+                    diagnostics=_grounding_diagnostics('INVALID_SCHEMA', **position),
                 )
-            local_id = suggestion["local_id"]
+            local_id = suggestion['local_id']
             if not isinstance(local_id, str) or not local_id.strip() or local_id in local_ids:
                 raise BatchPayloadError(
-                    "section graph local_id must be unique and non-empty",
+                    'section graph local_id must be unique and non-empty',
                     diagnostics=_grounding_diagnostics(
-                        "LOCAL_ID_INVALID", local_concept_count=len(local_ids), **position
+                        'LOCAL_ID_INVALID', local_concept_count=len(local_ids), **position
                     ),
                 )
             local_ids.add(local_id)
-            mentions = suggestion["mentions"]
+            mentions = suggestion['mentions']
             if not isinstance(mentions, list) or not mentions:
                 raise BatchPayloadError(
-                    "section graph concept needs a visible mention",
+                    'section graph concept needs a visible mention',
                     diagnostics=_grounding_diagnostics(
-                        "MENTIONS_MISSING",
+                        'MENTIONS_MISSING',
                         mention_count=len(mentions) if isinstance(mentions, list) else None,
                         **position,
                     ),
@@ -2455,8 +2408,8 @@ class SQLiteBatchRepository:
                         span=mention,
                         position={
                             **position,
-                            "mention_index": mention_index,
-                            "mention_count": len(mentions),
+                            'mention_index': mention_index,
+                            'mention_count': len(mentions),
                         },
                         toc_titles=toc_titles,
                         evidence_floor=evidence_floor,
@@ -2472,7 +2425,7 @@ class SQLiteBatchRepository:
                     if not claim_level and probe is None:
                         raise
                     if probe is not None:
-                        probe.record_span_failure("MENTION", exc)
+                        probe.record_span_failure('MENTION', exc)
                     if claim_level:
                         skipped_ungrounded_evidence += 1
                     continue
@@ -2483,46 +2436,44 @@ class SQLiteBatchRepository:
             if not grounded_mentions:
                 dropped_local_ids.add(local_id)
                 continue
-            grounded_concepts.append({**suggestion, "mentions": grounded_mentions})
+            grounded_concepts.append({**suggestion, 'mentions': grounded_mentions})
 
         grounded_relations: list[dict[str, Any]] = []
         for relation_index, relation in enumerate(relations):
             position = {
-                "relation_index": relation_index,
-                "relation_count": relation_count,
-                "local_concept_count": len(local_ids),
+                'relation_index': relation_index,
+                'relation_count': relation_count,
+                'local_concept_count': len(local_ids),
             }
             if not isinstance(relation, Mapping):
                 raise BatchPayloadError(
-                    "section graph relations must contain objects",
-                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                    'section graph relations must contain objects',
+                    diagnostics=_grounding_diagnostics('INVALID_SCHEMA', **position),
                 )
-            if set(relation) != {"subject_local_id", "predicate", "object_local_id", "evidence"}:
+            if set(relation) != {'subject_local_id', 'predicate', 'object_local_id', 'evidence'}:
                 raise BatchPayloadError(
-                    "section graph relation has an invalid schema",
-                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                    'section graph relation has an invalid schema',
+                    diagnostics=_grounding_diagnostics('INVALID_SCHEMA', **position),
                 )
-            subject = relation["subject_local_id"]
-            predicate = relation["predicate"]
-            object_ = relation["object_local_id"]
-            evidence = relation["evidence"]
+            subject = relation['subject_local_id']
+            predicate = relation['predicate']
+            object_ = relation['object_local_id']
+            evidence = relation['evidence']
             if not isinstance(subject, str) or not isinstance(object_, str) or subject == object_:
                 raise BatchPayloadError(
-                    "section graph relation needs two distinct local concept IDs",
-                    diagnostics=_grounding_diagnostics("INVALID_SCHEMA", **position),
+                    'section graph relation needs two distinct local concept IDs',
+                    diagnostics=_grounding_diagnostics('INVALID_SCHEMA', **position),
                 )
             if subject not in local_ids or object_ not in local_ids:
                 raise BatchPayloadError(
-                    "section graph relation endpoint is not a packet concept",
-                    diagnostics=_grounding_diagnostics(
-                        "RELATION_ENDPOINT_UNRESOLVED", **position
-                    ),
+                    'section graph relation endpoint is not a packet concept',
+                    diagnostics=_grounding_diagnostics('RELATION_ENDPOINT_UNRESOLVED', **position),
                 )
             if predicate not in _RELATION_PREDICATES or not isinstance(evidence, list) or not evidence:
                 raise BatchPayloadError(
-                    "section graph relation predicate or evidence is invalid",
+                    'section graph relation predicate or evidence is invalid',
                     diagnostics=_grounding_diagnostics(
-                        "INVALID_SCHEMA",
+                        'INVALID_SCHEMA',
                         evidence_count=len(evidence) if isinstance(evidence, list) else None,
                         **position,
                     ),
@@ -2536,8 +2487,8 @@ class SQLiteBatchRepository:
                         span=span,
                         position={
                             **position,
-                            "evidence_index": evidence_index,
-                            "evidence_count": len(evidence),
+                            'evidence_index': evidence_index,
+                            'evidence_count': len(evidence),
                         },
                         toc_titles=toc_titles,
                         evidence_floor=evidence_floor,
@@ -2547,7 +2498,7 @@ class SQLiteBatchRepository:
                     if not claim_level and probe is None:
                         raise
                     if probe is not None:
-                        probe.record_span_failure("RELATION_EVIDENCE", exc)
+                        probe.record_span_failure('RELATION_EVIDENCE', exc)
                     if claim_level:
                         skipped_ungrounded_evidence += 1
                     continue
@@ -2567,9 +2518,9 @@ class SQLiteBatchRepository:
                 if probe is not None:
                     probe.relations_dropped_without_evidence += 1
                 continue
-            grounded_relations.append({**relation, "evidence": grounded_evidence})
+            grounded_relations.append({**relation, 'evidence': grounded_evidence})
         return _GroundedPayload(
-            {"concepts": grounded_concepts, "relations": grounded_relations},
+            {'concepts': grounded_concepts, 'relations': grounded_relations},
             skipped_short_evidence,
             skipped_ungrounded_evidence,
         )
@@ -2617,54 +2568,50 @@ class SQLiteBatchRepository:
         """
         connection = self._store._connection()
         job = self._require_job(connection, batch_job_id)
-        if job["job_kind"] != "SECTION_GRAPH":
-            raise BatchServiceError("only a SECTION_GRAPH item can be measured as a packet")
+        if job['job_kind'] != 'SECTION_GRAPH':
+            raise BatchServiceError('only a SECTION_GRAPH item can be measured as a packet')
         item = self._item_for_update(connection, batch_job_id, custom_id)
         probe = _PacketProbe()
         measurement: dict[str, Any] = {
-            "custom_id": custom_id,
-            "status": str(item["status"]),
-            "stored_reason": (
-                _safe_failure_diagnostics(item["failure_diagnostics_json"]) or {}
-            ).get("reason"),
+            'custom_id': custom_id,
+            'status': str(item['status']),
+            'stored_reason': (_safe_failure_diagnostics(item['failure_diagnostics_json']) or {}).get('reason'),
         }
         try:
             grounded, skipped_short_evidence, skipped_ungrounded = self._ground_section_graph_payload(
                 connection,
-                version_id=job["version_id"],
+                version_id=job['version_id'],
                 payload=payload,
-                toc_titles=_packet_toc_titles(item["request_json"]),
-                evidence_floor=self._evidence_floor(job["prompt_profile"]),
+                toc_titles=_packet_toc_titles(item['request_json']),
+                evidence_floor=self._evidence_floor(job['prompt_profile']),
                 probe=probe,
             )
         except BatchPayloadError as exc:
-            reason = (exc.diagnostics or {}).get("reason")
+            reason = (exc.diagnostics or {}).get('reason')
             return {
                 **measurement,
-                "grounded": False,
-                "unmeasurable_reason": (
-                    str(reason)
-                    if reason in _GROUNDING_FAILURE_REASONS
-                    else _UNDIAGNOSED_FAILURE_REASON
+                'grounded': False,
+                'unmeasurable_reason': (
+                    str(reason) if reason in _GROUNDING_FAILURE_REASONS else _UNDIAGNOSED_FAILURE_REASON
                 ),
             }
         # Totals come from the packet the provider returned, and are only read
         # once the walk above has validated every list they count.
-        concepts = payload["concepts"]
-        relations = payload["relations"]
-        mention_spans = sum(len(concept["mentions"]) for concept in concepts)
-        relation_evidence_spans = sum(len(relation["evidence"]) for relation in relations)
-        grounded_mentions = sum(len(concept["mentions"]) for concept in grounded["concepts"])
+        concepts = payload['concepts']
+        relations = payload['relations']
+        mention_spans = sum(len(concept['mentions']) for concept in concepts)
+        relation_evidence_spans = sum(len(relation['evidence']) for relation in relations)
+        grounded_mentions = sum(len(concept['mentions']) for concept in grounded['concepts'])
         return {
             **measurement,
-            "grounded": True,
-            "unmeasurable_reason": None,
+            'grounded': True,
+            'unmeasurable_reason': None,
             # Every span the packet asked to be located, mentions and relation
             # evidence alike, because both are grounded by the same resolver.
-            "evidence_spans": mention_spans + relation_evidence_spans,
-            "mention_spans": mention_spans,
-            "relation_evidence_spans": relation_evidence_spans,
-            "spans_failed": probe.failed_spans,
+            'evidence_spans': mention_spans + relation_evidence_spans,
+            'mention_spans': mention_spans,
+            'relation_evidence_spans': relation_evidence_spans,
+            'spans_failed': probe.failed_spans,
             # Of those, the ones ingest would itself drop under SDD 4.2.2 point
             # 6d.  Reported next to ``spans_failed`` rather than instead of it
             # because the two can differ: a probe classifies an ANCHOR_MISMATCH
@@ -2673,26 +2620,26 @@ class SQLiteBatchRepository:
             # happen.  Where they are equal - which is every one of the ten
             # measured packets - this packet's grounded counts are exactly what
             # a re-ingest will write.
-            "spans_skipped_by_ingest": skipped_ungrounded,
+            'spans_skipped_by_ingest': skipped_ungrounded,
             # The split the decision turned on.  ABSENT means the model quoted
             # text that is not in the passage it named; AMBIGUOUS means the text
             # is there verbatim and only the occurrence is unresolved.
-            "spans_failed_by_reason": probe.failures_by_reason(),
-            "mention_spans_failed_by_reason": dict(probe.mention_failures),
-            "relation_evidence_spans_failed_by_reason": dict(probe.relation_evidence_failures),
+            'spans_failed_by_reason': probe.failures_by_reason(),
+            'mention_spans_failed_by_reason': dict(probe.mention_failures),
+            'relation_evidence_spans_failed_by_reason': dict(probe.relation_evidence_failures),
             # Dropped for being below the enforced floor rather than ungrounded;
             # reported apart because that skip is already the decided rule.
-            "spans_below_floor": skipped_short_evidence,
-            "concepts": len(concepts),
-            "concepts_grounded": len(grounded["concepts"]),
-            "mentions_grounded": grounded_mentions,
-            "relations": len(relations),
-            "relations_grounded": len(grounded["relations"]),
+            'spans_below_floor': skipped_short_evidence,
+            'concepts': len(concepts),
+            'concepts_grounded': len(grounded['concepts']),
+            'mentions_grounded': grounded_mentions,
+            'relations': len(relations),
+            'relations_grounded': len(grounded['relations']),
             # What the cascade costs, by cause, because the two are different
             # arguments: an endpoint lost its every mention, or the relation
             # itself lost its every citation.
-            "relations_lost_to_dropped_endpoint": probe.relations_dropped_endpoint,
-            "relations_lost_without_evidence": probe.relations_dropped_without_evidence,
+            'relations_lost_to_dropped_endpoint': probe.relations_dropped_endpoint,
+            'relations_lost_without_evidence': probe.relations_dropped_without_evidence,
         }
 
     def _write_section_graph(
@@ -2731,11 +2678,11 @@ class SQLiteBatchRepository:
         thing entirely, and is still rejected by the read-only pass before
         anything is written.
         """
-        relations = payload["relations"]
+        relations = payload['relations']
         local_concepts: dict[str, str] = {}
         skipped_local_ids: set[str] = set()
-        for suggestion in payload["concepts"]:
-            local_id = str(suggestion["local_id"])
+        for suggestion in payload['concepts']:
+            local_id = str(suggestion['local_id'])
             concept_id = self._resolve_or_create_concept(connection, suggestion)
             if concept_id is None:
                 # No concept to hang them on, so the mentions go too.  They stay
@@ -2745,16 +2692,16 @@ class SQLiteBatchRepository:
             self._add_mentions(
                 connection,
                 concept_id,
-                item["passage_id"],
-                suggestion["mentions"],
+                item['passage_id'],
+                suggestion['mentions'],
                 version_id=version_id,
                 require_passage_ids=True,
             )
             local_concepts[local_id] = concept_id
         skipped_self_relations = 0
         for relation_index, relation in enumerate(relations):
-            subject_local_id = str(relation["subject_local_id"])
-            object_local_id = str(relation["object_local_id"])
+            subject_local_id = str(relation['subject_local_id'])
+            object_local_id = str(relation['object_local_id'])
             if subject_local_id in skipped_local_ids or object_local_id in skipped_local_ids:
                 continue
             # Both lookups are total once the skips are excluded: the grounding
@@ -2770,15 +2717,15 @@ class SQLiteBatchRepository:
                     connection,
                     version_id=version_id,
                     subject_concept_id=subject_concept_id,
-                    predicate=str(relation["predicate"]),
+                    predicate=str(relation['predicate']),
                     object_concept_id=object_concept_id,
-                    evidence=relation["evidence"],
+                    evidence=relation['evidence'],
                 )
             except ValueError as exc:
                 raise BatchPayloadError(
                     str(exc),
                     diagnostics=_grounding_diagnostics(
-                        "RELATION_REJECTED",
+                        'RELATION_REJECTED',
                         relation_index=relation_index,
                         relation_count=len(relations),
                         local_concept_count=len(local_concepts),
@@ -2833,34 +2780,32 @@ class SQLiteBatchRepository:
             # than from whichever profile is currently the default, for the same
             # reason the mention shape does: a stored request replays under the
             # contract it was submitted with.
-            evidence_floor = self._evidence_floor(job["prompt_profile"])
+            evidence_floor = self._evidence_floor(job['prompt_profile'])
             # NULL rather than 0 where no grounding pass ran at all, so "not
             # measured" stays distinguishable from a measured zero.
             skipped_short_evidence: int | None = None
             skipped_ungrounded_evidence: int | None = None
-            if job["job_kind"] == "SECTION_GRAPH":
+            if job['job_kind'] == 'SECTION_GRAPH':
                 payload, skipped_short_evidence, skipped_ungrounded_evidence = self._ground_section_graph_payload(
                     connection,
-                    version_id=job["version_id"],
+                    version_id=job['version_id'],
                     payload=payload,
                     # Read back from the request that was actually sent, so a
                     # rejection can name the field the model copied from.
-                    toc_titles=_packet_toc_titles(item["request_json"]),
+                    toc_titles=_packet_toc_titles(item['request_json']),
                     evidence_floor=evidence_floor,
                 )
-            elif job["provider"] == "openai-batch":
-                payload, skipped_short_evidence, skipped_ungrounded_evidence = (
-                    self._ground_openai_concept_payload(
-                        connection, item=item, payload=payload, evidence_floor=evidence_floor
-                    )
+            elif job['provider'] == 'openai-batch':
+                payload, skipped_short_evidence, skipped_ungrounded_evidence = self._ground_openai_concept_payload(
+                    connection, item=item, payload=payload, evidence_floor=evidence_floor
                 )
             serialized = _canonical_json(payload)
-            if item["status"] == "SUCCEEDED":
-                if item["response_json"] == serialized:
+            if item['status'] == 'SUCCEEDED':
+                if item['response_json'] == serialized:
                     return False
-                raise BatchPayloadError("different output received for an already ingested Batch item")
-            if item["status"] not in {"PENDING", "SUBMITTED", "RETRY", "FAILED"}:
-                raise BatchPayloadError(f"cannot ingest output for item state {item['status']}")
+                raise BatchPayloadError('different output received for an already ingested Batch item')
+            if item['status'] not in {'PENDING', 'SUBMITTED', 'RETRY', 'FAILED'}:
+                raise BatchPayloadError(f'cannot ingest output for item state {item["status"]}')
             # NULL rather than 0 for a CONCEPT_MENTIONS item: it carries no
             # relations, so there is nothing to have skipped, and "not
             # measured" must stay distinguishable from a measured zero.
@@ -2869,17 +2814,17 @@ class SQLiteBatchRepository:
             # success resolves concepts, so a zero here is always a real zero
             # and NULL means only "written before this column existed".
             skipped_ambiguous_concepts = 0
-            if job["job_kind"] == "SECTION_GRAPH":
+            if job['job_kind'] == 'SECTION_GRAPH':
                 skipped_self_relations, skipped_ambiguous_concepts = self._write_section_graph(
-                    connection, version_id=job["version_id"], item=item, payload=payload
+                    connection, version_id=job['version_id'], item=item, payload=payload
                 )
             else:
-                concepts = payload.get("concepts")
+                concepts = payload.get('concepts')
                 if not isinstance(concepts, list):
-                    raise BatchPayloadError("provider success payload must contain a concepts list")
+                    raise BatchPayloadError('provider success payload must contain a concepts list')
                 for suggestion in concepts:
                     if not isinstance(suggestion, Mapping):
-                        raise BatchPayloadError("concepts must contain objects")
+                        raise BatchPayloadError('concepts must contain objects')
                     concept_id = self._resolve_or_create_concept(connection, suggestion)
                     if concept_id is None:
                         # SDD 4.2.2 point 6c.  The mentions are skipped with it:
@@ -2887,7 +2832,7 @@ class SQLiteBatchRepository:
                         # one would perform the merge the guard exists to refuse.
                         skipped_ambiguous_concepts += 1
                         continue
-                    self._add_mentions(connection, concept_id, item["passage_id"], suggestion.get("mentions"))
+                    self._add_mentions(connection, concept_id, item['passage_id'], suggestion.get('mentions'))
             connection.execute(
                 """UPDATE batch_items
                    SET status = 'SUCCEEDED', response_json = ?, error_text = NULL,
@@ -2902,7 +2847,7 @@ class SQLiteBatchRepository:
                     skipped_short_evidence,
                     skipped_ambiguous_concepts,
                     skipped_ungrounded_evidence,
-                    item["batch_item_id"],
+                    item['batch_item_id'],
                 ),
             )
         return True
@@ -2921,15 +2866,13 @@ class SQLiteBatchRepository:
         because a provider transport failure measures nothing.
         """
         if not error.strip():
-            raise BatchPayloadError("a failed Batch item needs an error message")
+            raise BatchPayloadError('a failed Batch item needs an error message')
         serialized = _canonical_json(diagnostics) if diagnostics is not None else None
         with self._store._write() as connection:
             item = self._item_for_update(connection, batch_job_id, custom_id)
-            if item["status"] == "SUCCEEDED":
-                raise DurableSuccessRetained(
-                    "a succeeded Batch item cannot be overwritten as failed"
-                )
-            if item["status"] == "FAILED" and item["error_text"] == error:
+            if item['status'] == 'SUCCEEDED':
+                raise DurableSuccessRetained('a succeeded Batch item cannot be overwritten as failed')
+            if item['status'] == 'FAILED' and item['error_text'] == error:
                 # Repeating a failure class is still not a new failure, so the
                 # caller's count is unchanged.  The measurement is refreshed
                 # anyway: it is re-derived from the same durable inputs, and
@@ -2937,12 +2880,12 @@ class SQLiteBatchRepository:
                 # instrumentation existed gain diagnostics from a re-poll of
                 # its original remote job, without paying for a new run.  A
                 # stored measurement is never replaced with nothing.
-                if serialized is not None and serialized != item["failure_diagnostics_json"]:
+                if serialized is not None and serialized != item['failure_diagnostics_json']:
                     connection.execute(
                         """UPDATE batch_items
                            SET failure_diagnostics_json = ?, updated_at = CURRENT_TIMESTAMP
                            WHERE batch_item_id = ?""",
-                        (serialized, item["batch_item_id"]),
+                        (serialized, item['batch_item_id']),
                     )
                 return False
             connection.execute(
@@ -2950,7 +2893,7 @@ class SQLiteBatchRepository:
                    SET status = 'FAILED', error_text = ?, failure_diagnostics_json = ?,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE batch_item_id = ?""",
-                (error, serialized, item["batch_item_id"]),
+                (error, serialized, item['batch_item_id']),
             )
         return True
 
@@ -2981,8 +2924,8 @@ class SQLiteBatchRepository:
         """
         with self._store._write() as connection:
             job = self._require_job(connection, batch_job_id)
-            if job["status"] not in _TERMINAL_JOB_STATES:
-                raise BatchServiceError("only a terminal Batch job can reconcile missing results")
+            if job['status'] not in _TERMINAL_JOB_STATES:
+                raise BatchServiceError('only a terminal Batch job can reconcile missing results')
             cursor = connection.execute(
                 """UPDATE batch_items
                    SET status = 'FAILED', error_text = ?, failure_diagnostics_json = ?,
@@ -3000,7 +2943,7 @@ class SQLiteBatchRepository:
                     batch_job_id,
                 ),
             )
-            if job["last_error"] == _RESULTS_PENDING_RETRIEVAL:
+            if job['last_error'] == _RESULTS_PENDING_RETRIEVAL:
                 connection.execute(
                     """UPDATE batch_jobs SET last_error = NULL, updated_at = CURRENT_TIMESTAMP
                        WHERE batch_job_id = ?""",
@@ -3018,14 +2961,14 @@ class SQLiteBatchRepository:
                 (batch_job_id,),
             ).fetchone()
             if existing is not None:
-                return existing["child_batch_job_id"]
+                return existing['child_batch_job_id']
             failed_items = connection.execute(
                 """SELECT passage_id, custom_id, request_json FROM batch_items
                    WHERE batch_job_id = ? AND status = 'FAILED' ORDER BY custom_id""",
                 (batch_job_id,),
             ).fetchall()
             if not failed_items:
-                raise BatchServiceError("Batch job has no failed items to retry")
+                raise BatchServiceError('Batch job has no failed items to retry')
             child_id = str(uuid4())
             connection.execute(
                 """INSERT INTO batch_jobs(
@@ -3034,26 +2977,26 @@ class SQLiteBatchRepository:
                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     child_id,
-                    parent["version_id"],
-                    parent["provider"],
-                    parent["profile_name"],
-                    parent["job_kind"],
+                    parent['version_id'],
+                    parent['provider'],
+                    parent['profile_name'],
+                    parent['job_kind'],
                     # A retry replays the parent's own stored requests, so it
                     # is the same prompt profile by construction.  It does not
                     # re-enter the approval gate for the same reason: nothing
                     # new is being sent.
-                    parent["prompt_profile"],
-                    parent["is_sample"],
+                    parent['prompt_profile'],
+                    parent['is_sample'],
                 ),
             )
             for item in failed_items:
-                retry_custom_id = f"retry:{batch_job_id}:{item['custom_id']}"
-                retry_request = json.loads(item["request_json"])
+                retry_custom_id = f'retry:{batch_job_id}:{item["custom_id"]}'
+                retry_request = json.loads(item['request_json'])
                 # ``custom_id`` is an envelope field.  If a provider requires
                 # it in the request body, keep it in sync with the successor's
                 # durable ID instead of making JSONL construction ambiguous.
-                if "custom_id" in retry_request:
-                    retry_request["custom_id"] = retry_custom_id
+                if 'custom_id' in retry_request:
+                    retry_request['custom_id'] = retry_custom_id
                 connection.execute(
                     """INSERT INTO batch_items(
                            batch_item_id, batch_job_id, passage_id, custom_id, request_json, attempt_count
@@ -3061,7 +3004,7 @@ class SQLiteBatchRepository:
                     (
                         str(uuid4()),
                         child_id,
-                        item["passage_id"],
+                        item['passage_id'],
                         retry_custom_id,
                         _canonical_json(retry_request),
                     ),
@@ -3077,7 +3020,7 @@ class SQLiteBatchRepository:
         where = "status IN ('SUBMITTED', 'RUNNING')"
         parameters: tuple[Any, ...] = ()
         if provider is not None:
-            where = "provider = ? AND " + where
+            where = 'provider = ? AND ' + where
             parameters = (provider,)
         return [
             row[0]
@@ -3105,7 +3048,7 @@ class BatchJobService:
         provider: str,
         profile_name: str,
         items: Sequence[BatchItemInput],
-        job_kind: str = "CONCEPT_MENTIONS",
+        job_kind: str = 'CONCEPT_MENTIONS',
         is_sample: bool = False,
         batch_job_id: str | None = None,
         prompt_profile: str | None = None,
@@ -3128,20 +3071,12 @@ class BatchJobService:
     def get_job_summary(self, batch_job_id: str) -> dict[str, Any]:
         return self._repository.get_job_summary(batch_job_id)
 
-    def list_job_summaries(
-        self, *, version_id: str | None = None, offset: int = 0, limit: int = 50
-    ) -> dict[str, Any]:
-        total, items = self._repository.list_job_summaries(
-            version_id=version_id, offset=offset, limit=limit
-        )
-        return {"total": total, "offset": offset, "items": items}
+    def list_job_summaries(self, *, version_id: str | None = None, offset: int = 0, limit: int = 50) -> dict[str, Any]:
+        total, items = self._repository.list_job_summaries(version_id=version_id, offset=offset, limit=limit)
+        return {'total': total, 'offset': offset, 'items': items}
 
-    def review_sample_job(
-        self, batch_job_id: str, *, status: str, reviewed_by: str
-    ) -> dict[str, Any]:
-        return self._repository.review_sample_job(
-            batch_job_id, status=status, reviewed_by=reviewed_by
-        )
+    def review_sample_job(self, batch_job_id: str, *, status: str, reviewed_by: str) -> dict[str, Any]:
+        return self._repository.review_sample_job(batch_job_id, status=status, reviewed_by=reviewed_by)
 
     def list_sample_reviews(
         self, *, version_id: str | None = None, job_kind: str | None = None
@@ -3160,12 +3095,12 @@ class BatchJobService:
 
     def submit(self, batch_job_id: str, provider: BatchProvider) -> str:
         job = self._repository.get_job(batch_job_id)
-        if job["provider"] != provider.name:
-            raise BatchServiceError("provider implementation does not match durable Batch job provider")
-        if job["status"] in _TERMINAL_JOB_STATES:
-            raise BatchServiceError("a terminal Batch job cannot be submitted")
-        if job["provider_job_id"]:
-            return str(job["provider_job_id"])
+        if job['provider'] != provider.name:
+            raise BatchServiceError('provider implementation does not match durable Batch job provider')
+        if job['status'] in _TERMINAL_JOB_STATES:
+            raise BatchServiceError('a terminal Batch job cannot be submitted')
+        if job['provider_job_id']:
+            return str(job['provider_job_id'])
         # The job/items were committed before this call.  If the process dies
         # now, retrying this method uses the same idempotency key and therefore
         # reclaims the same remote job instead of paying for a duplicate batch.
@@ -3177,42 +3112,38 @@ class BatchJobService:
 
     def poll_and_ingest(self, batch_job_id: str, provider: BatchProvider) -> dict[str, int | str | bool]:
         job = self._repository.get_job(batch_job_id)
-        if job["provider"] != provider.name:
-            raise BatchServiceError("provider implementation does not match durable Batch job provider")
-        provider_job_id = job["provider_job_id"]
+        if job['provider'] != provider.name:
+            raise BatchServiceError('provider implementation does not match durable Batch job provider')
+        provider_job_id = job['provider_job_id']
         if not provider_job_id:
-            raise BatchServiceError("cannot poll an unsubmitted Batch job")
+            raise BatchServiceError('cannot poll an unsubmitted Batch job')
         snapshot = provider.poll(str(provider_job_id))
         state = _PROVIDER_TO_JOB_STATE.get(snapshot.state)
         if state is None:
-            raise BatchServiceError(f"provider returned unknown Batch state: {snapshot.state}")
+            raise BatchServiceError(f'provider returned unknown Batch state: {snapshot.state}')
         self._repository.set_provider_state(batch_job_id, state, snapshot.error)
         added = failed = retained = 0
-        if state in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+        if state in {'SUCCEEDED', 'FAILED', 'CANCELLED'}:
             # Read and validate the complete result set before reconciling
             # missing items.  A provider output iterator can fail halfway
             # through a download, in which case no absence is conclusive.
             try:
                 results = list(provider.fetch_results(str(provider_job_id)))
-                known_custom_ids = {
-                    item["custom_id"] for item in self._repository.list_items(batch_job_id)
-                }
+                known_custom_ids = {item['custom_id'] for item in self._repository.list_items(batch_job_id)}
                 seen_custom_ids: set[str] = set()
                 for result in results:
                     if not result.custom_id:
-                        raise BatchPayloadError("provider result custom_id cannot be empty")
+                        raise BatchPayloadError('provider result custom_id cannot be empty')
                     if result.custom_id in seen_custom_ids:
-                        raise BatchPayloadError("provider returned duplicate item output")
+                        raise BatchPayloadError('provider returned duplicate item output')
                     if result.custom_id not in known_custom_ids:
-                        raise BatchPayloadError("provider result has unknown custom_id")
+                        raise BatchPayloadError('provider result has unknown custom_id')
                     if (result.payload is None) == (result.error is None):
-                        raise BatchPayloadError("provider result needs exactly one of payload or error")
+                        raise BatchPayloadError('provider result needs exactly one of payload or error')
                     if result.payload is not None and not isinstance(result.payload, Mapping):
-                        raise BatchPayloadError("provider success payload must be an object")
-                    if result.error is not None and (
-                        not isinstance(result.error, str) or not result.error.strip()
-                    ):
-                        raise BatchPayloadError("provider item failure must be a non-empty string")
+                        raise BatchPayloadError('provider success payload must be an object')
+                    if result.error is not None and (not isinstance(result.error, str) or not result.error.strip()):
+                        raise BatchPayloadError('provider item failure must be a non-empty string')
                     seen_custom_ids.add(result.custom_id)
             except Exception:
                 # The API summary exposes only this controlled boolean.  An
@@ -3220,11 +3151,11 @@ class BatchJobService:
                 # until an item is known to have no terminal result.
                 self._repository.mark_results_pending_retrieval(batch_job_id)
                 return {
-                    "job_id": batch_job_id,
-                    "state": state,
-                    "ingested": 0,
-                    "failed": 0,
-                    "results_pending_retrieval": True,
+                    'job_id': batch_job_id,
+                    'state': state,
+                    'ingested': 0,
+                    'failed': 0,
+                    'results_pending_retrieval': True,
                 }
 
             for result in results:
@@ -3269,19 +3200,17 @@ class BatchJobService:
                         retained += 1
             failed += self._repository.reconcile_terminal_missing_results(batch_job_id)
         return {
-            "job_id": batch_job_id,
-            "state": state,
-            "ingested": added,
-            "failed": failed,
+            'job_id': batch_job_id,
+            'state': state,
+            'ingested': added,
+            'failed': failed,
             # Items a tightened contract re-rejects but whose stored success is
             # retained.  Reported so a re-poll that changes nothing is visibly
             # different from one that had nothing to do.
-            "retained": retained,
+            'retained': retained,
         }
 
-    def dry_run_failed_packets(
-        self, batch_job_id: str, provider: BatchProvider
-    ) -> dict[str, Any]:
+    def dry_run_failed_packets(self, batch_job_id: str, provider: BatchProvider) -> dict[str, Any]:
         """Measure every failed section-graph packet.  Submits nothing, writes nothing.
 
         This mirrors :meth:`poll_and_ingest`'s fetch path deliberately and then
@@ -3318,76 +3247,64 @@ class BatchJobService:
         stream carried no line for it - rather than estimated or omitted.
         """
         job = self._repository.get_job(batch_job_id)
-        if job["provider"] != provider.name:
-            raise BatchServiceError("provider implementation does not match durable Batch job provider")
-        if job["job_kind"] != "SECTION_GRAPH":
-            raise BatchServiceError("only a SECTION_GRAPH job has packets to measure")
-        provider_job_id = job["provider_job_id"]
+        if job['provider'] != provider.name:
+            raise BatchServiceError('provider implementation does not match durable Batch job provider')
+        if job['job_kind'] != 'SECTION_GRAPH':
+            raise BatchServiceError('only a SECTION_GRAPH job has packets to measure')
+        provider_job_id = job['provider_job_id']
         if not provider_job_id:
-            raise BatchServiceError("cannot measure an unsubmitted Batch job")
+            raise BatchServiceError('cannot measure an unsubmitted Batch job')
         snapshot = provider.poll(str(provider_job_id))
         state = _PROVIDER_TO_JOB_STATE.get(snapshot.state)
         if state is None:
-            raise BatchServiceError(f"provider returned unknown Batch state: {snapshot.state}")
-        failed_items = [
-            item
-            for item in self._repository.list_items(batch_job_id)
-            if item["status"] == "FAILED"
-        ]
+            raise BatchServiceError(f'provider returned unknown Batch state: {snapshot.state}')
+        failed_items = [item for item in self._repository.list_items(batch_job_id) if item['status'] == 'FAILED']
         report: dict[str, Any] = {
-            "job_id": batch_job_id,
-            "state": state,
-            "failed_item_count": len(failed_items),
-            "results_pending_retrieval": False,
-            "packets": [],
+            'job_id': batch_job_id,
+            'state': state,
+            'failed_item_count': len(failed_items),
+            'results_pending_retrieval': False,
+            'packets': [],
         }
-        if state not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+        if state not in {'SUCCEEDED', 'FAILED', 'CANCELLED'}:
             # Nothing durable to download yet.  Reported, not guessed at.
-            report["results_pending_retrieval"] = True
+            report['results_pending_retrieval'] = True
             return report
         try:
             results = {
-                result.custom_id: result
-                for result in provider.fetch_results(str(provider_job_id))
-                if result.custom_id
+                result.custom_id: result for result in provider.fetch_results(str(provider_job_id)) if result.custom_id
             }
         except Exception:
             # Unlike the poll path this records nothing: an unreadable download
             # is a fact about this measurement, never about the durable job.
-            report["results_pending_retrieval"] = True
+            report['results_pending_retrieval'] = True
             return report
         packets: list[dict[str, Any]] = []
         for item in failed_items:
-            custom_id = str(item["custom_id"])
+            custom_id = str(item['custom_id'])
             result = results.get(custom_id)
             if result is None or result.payload is None:
                 packets.append(
                     {
-                        "custom_id": custom_id,
-                        "status": str(item["status"]),
-                        "stored_reason": (
-                            _safe_failure_diagnostics(item["failure_diagnostics_json"]) or {}
-                        ).get("reason"),
-                        "grounded": False,
-                        "unmeasurable_reason": (
-                            "TERMINAL_WITHOUT_RESULT"
-                            if result is None
-                            else "PROVIDER_ITEM_ERROR"
+                        'custom_id': custom_id,
+                        'status': str(item['status']),
+                        'stored_reason': (_safe_failure_diagnostics(item['failure_diagnostics_json']) or {}).get(
+                            'reason'
                         ),
+                        'grounded': False,
+                        'unmeasurable_reason': ('TERMINAL_WITHOUT_RESULT' if result is None else 'PROVIDER_ITEM_ERROR'),
                     }
                 )
                 continue
-            packets.append(
-                self._repository.dry_run_section_graph_packet(
-                    batch_job_id, custom_id, result.payload
-                )
-            )
-        report["packets"] = packets
+            packets.append(self._repository.dry_run_section_graph_packet(batch_job_id, custom_id, result.payload))
+        report['packets'] = packets
         return report
 
     def recover(self, provider: BatchProvider) -> list[dict[str, int | str | bool]]:
         """Poll all non-terminal work after a process restart; safe to repeat."""
-        return [self.poll_and_ingest(job_id, provider) for job_id in self._repository.list_recoverable_jobs(provider.name)]
+        return [
+            self.poll_and_ingest(job_id, provider) for job_id in self._repository.list_recoverable_jobs(provider.name)
+        ]
 
     def recover_all(self, providers: Mapping[str, BatchProvider]) -> dict[str, list[dict[str, Any]]]:
         """Resume submitted/running jobs without submitting any new cloud work.
@@ -3401,19 +3318,19 @@ class BatchJobService:
         skipped: list[dict[str, str]] = []
         for batch_job_id in self._repository.list_recoverable_jobs():
             job = self._repository.get_job(batch_job_id)
-            provider_name = str(job["provider"])
+            provider_name = str(job['provider'])
             provider = providers.get(provider_name)
             if provider is None:
                 skipped.append(
                     {
-                        "job_id": batch_job_id,
-                        "provider": provider_name,
-                        "reason": "provider is not configured",
+                        'job_id': batch_job_id,
+                        'provider': provider_name,
+                        'reason': 'provider is not configured',
                     }
                 )
                 continue
             recovered.append(self.poll_and_ingest(batch_job_id, provider))
-        return {"recovered": recovered, "skipped": skipped}
+        return {'recovered': recovered, 'skipped': skipped}
 
     def retry_failed_items(self, batch_job_id: str) -> str:
         """Return an idempotently-created successor job; submit it normally."""
