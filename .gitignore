@@ -315,3 +315,7 @@ cypress/videos
 cypress/screenshots
 .vscode/settings.json
 .cptr
+
+# Local-only development notes that must never be published (see
+# docs/specs/local/epub_source_book_redaction_map.md).
+docs/specs/local/
