@@ -310,6 +310,70 @@ class HubFakeSource(FakeSource):
         )
 
 
+class GenericTermFakeSource(FakeSource):
+    """One concept the whole book is about, and one that names a single thing.
+
+    ``全域潮汐枢纽`` is reachable by its full canonical name *and* by the
+    one-character alias ``枢`` a model proposed, has 175 mentions, and has 20
+    grounded ``HAS_PART`` children.  ``汛期观测`` is reachable by a four-character
+    name, has two mentions, and has one child.  Both must resolve; only the
+    second may seed a walk.
+
+    The specificity columns are supplied exactly as the SQLite store supplies
+    them.  :class:`FakeSource` deliberately supplies none of them, which is how
+    the tests keep proving that a repository answering the older three-column
+    shape still expands exactly as it did.
+    """
+
+    HUB = "枢所作的事无人能测透，人只能从中认识枢。"
+    HUB_CHILD = "枢纽的基准线是人无法测透的。"
+    FLOOD = "枢要用汛期观测，嘱咐值守员造锚站。"
+    ARK = "锚站造成之后，浮标阵列都进去了。"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.passages = {
+            "hub": self._passage("hub", "第一章", self.HUB),
+            "righteousness": self._passage("righteousness", "第九章", self.HUB_CHILD),
+            "flood": self._passage("flood", "第四章", self.FLOOD),
+            "ark": self._passage("ark", "第四章", self.ARK),
+        }
+        self.terms = [
+            {"concept_id": "hub", "canonical_name": "全域潮汐枢纽", "term": "全域潮汐枢纽",
+             "term_source": "MODEL", "mention_count": 175, "has_part_fanout": 20},
+            {"concept_id": "hub", "canonical_name": "全域潮汐枢纽", "term": "枢",
+             "term_source": "MODEL", "mention_count": 175, "has_part_fanout": 20},
+            {"concept_id": "flood", "canonical_name": "汛期观测", "term": "汛期观测",
+             "term_source": "MODEL", "mention_count": 2, "has_part_fanout": 1},
+        ]
+        self.occurrences = [
+            {**self.passages["hub"], "concept_id": "hub", "canonical_name": "全域潮汐枢纽",
+             "start_codepoint": 0, "end_codepoint": 6},
+            {**self.passages["righteousness"], "concept_id": "righteousness",
+             "canonical_name": "枢纽的基准线", "start_codepoint": 0, "end_codepoint": 6},
+            {**self.passages["flood"], "concept_id": "flood", "canonical_name": "汛期观测",
+             "start_codepoint": 0, "end_codepoint": 8},
+            {**self.passages["ark"], "concept_id": "ark_animals", "canonical_name": "浮标阵列",
+             "start_codepoint": 0, "end_codepoint": 6},
+        ]
+        self.relations = [
+            {"subject_concept_id": "hub", "predicate": "HAS_PART",
+             "object_concept_id": "righteousness"},
+            {"subject_concept_id": "flood", "predicate": "HAS_PART",
+             "object_concept_id": "ark_animals"},
+        ]
+        self.units = {}
+
+    def matched_concept_names(self, passage_id, concept_ids):
+        return sorted(
+            {
+                row["canonical_name"]
+                for row in self.occurrences
+                if row["passage_id"] == passage_id and row["concept_id"] in concept_ids
+            }
+        )
+
+
 class FakeEmbeddings:
     profile = "private-embed-v1"
 
@@ -620,6 +684,64 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(shared.provenance, ("graph",))
         self.assertEqual(response.graph_results[3].matched_concepts, ("子主题",))
         self.assertEqual(response.graph_results[3].provenance, ("graph", "relation:HAS_PART:1"))
+
+    def test_a_generic_term_still_resolves_but_seeds_no_expansion(self) -> None:
+        """Resolution and expansion are different questions about the same match.
+
+        ``全域潮汐枢纽`` is matched by its full canonical name, so it resolves
+        and contributes every one of its own spans — nothing here is capped,
+        hidden, or down-weighted.  What it does not do is seed a walk: at 175
+        mentions it is what the whole book is about, and one hop out of it
+        returns spans about something else entirely, which is how a query about
+        one thing came back holding a hub child the reader never named.
+
+        The same concept reached through its one-character model alias ``枢`` is
+        refused for two independent reasons at once, and must behave
+        identically — the guard is about the concept's specificity, not about
+        which surface form happened to win.
+        """
+        service = EpubSearchService(source=GenericTermFakeSource())
+
+        for query in ("全域潮汐枢纽", "枢"):
+            with self.subTest(query=query):
+                response = service.search(query, graph_limit=10)
+                self.assertEqual(response.resolved_concepts, ("全域潮汐枢纽",))
+                # Its own span, and none of its 20 children's.
+                self.assertEqual(response.graph_total, 1)
+                names = {name for hit in response.graph_results for name in hit.matched_concepts}
+                self.assertNotIn("枢纽的基准线", names)
+                self.assertEqual(
+                    {hit.provenance for hit in response.graph_results}, {("graph",)}
+                )
+
+        # The contrast is what makes the rule a rule rather than a cap: a
+        # four-character name on a two-mention concept seeds its walk exactly as
+        # it did before, and its child arrives with relation provenance.
+        specific = service.search("汛期观测", graph_limit=10)
+        self.assertEqual(specific.graph_total, 2)
+        self.assertEqual(
+            specific.graph_results[1].provenance, ("graph", "relation:HAS_PART:1")
+        )
+
+    def test_a_repository_without_specificity_columns_expands_exactly_as_before(self) -> None:
+        """The new guards read what is offered and invent nothing.
+
+        :class:`FakeSource` answers the three-column vocabulary and has no
+        ``list_toc_child_concepts`` at all, which is the shape a read model that
+        has not caught up would present.  It must keep today's behaviour rather
+        than raise or silently stop expanding: ``父主题`` still reaches its
+        ``HAS_PART`` child, and the mention ceiling — which nothing has declared
+        — refuses nothing.
+        """
+        source = FakeSource()
+        service = EpubSearchService(source=source)
+
+        self.assertEqual(service._expansion_seed_ids(
+            service._concept_matcher().match_spans("父主题", boundaries=_boundaries("父主题"))
+        ), ("parent",))
+        response = service.search("父主题", graph_limit=10)
+        self.assertEqual(response.graph_total, 2)
+        self.assertEqual(response.graph_results[1].provenance, ("graph", "relation:HAS_PART:1"))
 
     def test_graph_pages_stay_exhaustive_once_the_channel_is_ranked(self) -> None:
         """Ranking reorders the result set; it must not change what is in it.

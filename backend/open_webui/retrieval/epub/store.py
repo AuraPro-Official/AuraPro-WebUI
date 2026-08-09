@@ -1012,12 +1012,45 @@ class SQLiteEpubStore:
         )
 
     def list_concept_terms(self) -> list[dict[str, Any]]:
-        """Return canonical names and aliases for the in-memory Tier-1 matcher."""
+        """Return the Tier-1 vocabulary together with how specific each concept is.
+
+        The first three columns are the matcher's own: a concept, its display
+        name, and one surface form to scan for.  The remaining three exist so
+        that *resolution* can tell a specific concept from a generic one before
+        it decides what to expand out of, and none of them is source text:
+
+        * ``term_source`` — whether a model, a seed list or an administrator
+          supplied this surface form.  A one-character alias a model proposed
+          is the weakest kind of evidence in the whole vocabulary.
+        * ``mention_count`` — how much of the book the concept touches, by the
+          same correlated subquery :meth:`list_concepts` already reports to an
+          administrator.  On the acceptance book it separates cleanly: 扰动源 179,
+          全域潮汐枢纽 175, 锚站 160, 观测手册 41, against a long tail in single
+          digits.
+        * ``has_part_fanout`` — how many distinct ``HAS_PART`` children the
+          concept has under exactly the predicate
+          :meth:`list_concept_relation_neighbors` walks, so the two can never
+          disagree about whether a concept has a semantic decomposition.
+
+        Measured cost on the full acceptance book: 1.9 ms for the three-column
+        form, 3.0 ms for this one, for 1,293 rows.  That is paid once per
+        vocabulary change, not once per query, because search holds the
+        compiled matcher across requests (see ``concept_term_fingerprint``).
+        """
         return [
             dict(row)
             for row in self._connection()
             .execute(
-                """SELECT c.concept_id, c.canonical_name, a.alias AS term
+                """SELECT c.concept_id, c.canonical_name, a.alias AS term,
+                          a.source AS term_source,
+                          (SELECT COUNT(*) FROM concept_mentions AS m
+                            WHERE m.concept_id = c.concept_id) AS mention_count,
+                          (SELECT COUNT(DISTINCT r.object_concept_id)
+                             FROM concept_relations AS r
+                             JOIN concept_relation_assertions AS s
+                               ON s.relation_id = r.relation_id AND s.status != 'REJECTED'
+                            WHERE r.subject_concept_id = c.concept_id
+                              AND r.predicate = 'HAS_PART') AS has_part_fanout
                    FROM concepts AS c
                    JOIN concept_aliases AS a ON a.concept_id = c.concept_id
                    WHERE c.status != 'REJECTED'

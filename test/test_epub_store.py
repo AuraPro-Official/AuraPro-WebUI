@@ -301,6 +301,58 @@ class SQLiteEpubStoreTest(unittest.TestCase):
             {"TCP", "Transmission Control Protocol"},
         )
 
+    def test_concept_terms_carry_the_specificity_search_resolves_with(self) -> None:
+        """Every alias row states how broad, and how well-attested, its concept is.
+
+        Search cannot ask "is this concept specific enough to expand out of?"
+        without these three columns, and it must not have to run a second query
+        per matched concept to find out.  ``has_part_fanout`` in particular has
+        to agree with ``list_concept_relation_neighbors``: both count only
+        edges holding a non-rejected assertion, so a concept can never be
+        reported as decomposed while the walk finds nothing to walk.
+        """
+        self.store.add_passages("version-a", [self._passage()])
+        hub = self.store.upsert_concept("父概念", aliases=["父"])
+        part = self.store.upsert_concept("子概念")
+        rejected_part = self.store.upsert_concept("被否决的部分")
+        leaf = self.store.upsert_concept("独立概念")
+        self.store.upsert_concept("从未提及的概念")
+        self.store.add_concept_mention(hub, "passage-a", start_codepoint=0, end_codepoint=2)
+        self.store.add_concept_mention(hub, "passage-a", start_codepoint=3, end_codepoint=5)
+        self.store.add_concept_mention(leaf, "passage-a", start_codepoint=5, end_codepoint=6)
+        self.store.add_concept_mention(part, "passage-a", start_codepoint=8, end_codepoint=9)
+        self.store.add_concept_mention(rejected_part, "passage-a", start_codepoint=9, end_codepoint=10)
+        self.store.add_concept_relation(
+            "version-a", hub, "HAS_PART", part,
+            evidence=[{"passage_id": "passage-a", "start_codepoint": 0,
+                       "end_codepoint": 2, "evidence": "原文"}],
+        )
+        # An edge whose only assertion is rejected is not a decomposition, and
+        # must not count towards the fan-out that keeps TOC structure out.
+        rejected_relation = self.store.add_concept_relation(
+            "version-a", hub, "HAS_PART", rejected_part,
+            evidence=[{"passage_id": "passage-a", "start_codepoint": 3,
+                       "end_codepoint": 5, "evidence": "含标"}],
+        )
+        for assertion in self.store.list_concept_relation_assertions():
+            if assertion["relation_id"] == rejected_relation:
+                self.store.set_concept_relation_assertion_status(
+                    assertion["assertion_id"], "REJECTED"
+                )
+
+        rows = {entry["term"]: entry for entry in self.store.list_concept_terms()}
+
+        # The alias and the canonical spelling describe the same concept, so
+        # they report the same specificity; only the surface form differs.
+        self.assertEqual(rows["父"]["mention_count"], 2)
+        self.assertEqual(rows["父概念"]["mention_count"], 2)
+        self.assertEqual(rows["父"]["has_part_fanout"], 1)
+        self.assertEqual(rows["独立概念"]["mention_count"], 1)
+        self.assertEqual(rows["独立概念"]["has_part_fanout"], 0)
+        # A concept with no mention at all is a real state, not a missing value.
+        self.assertEqual(rows["从未提及的概念"]["mention_count"], 0)
+        self.assertEqual(rows["父"]["term_source"], "MODEL")
+
     def _graph_span_fixture(self) -> list[str]:
         """Mentions that duplicate, nest and partially overlap in two passages.
 
