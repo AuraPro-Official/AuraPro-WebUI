@@ -28,7 +28,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 OVERLAY_FORMAT_VERSION = 1
 
-CONCEPT_STATUSES = frozenset({"PROVISIONAL", "APPROVED", "REJECTED"})
+CONCEPT_STATUSES = frozenset({'PROVISIONAL', 'APPROVED', 'REJECTED'})
 
 # The relation predicate vocabulary belongs to the canonical store, which
 # rejects an unsupported value while applying the artifact.  Only the shape is
@@ -51,8 +51,8 @@ def normalize_concept_key(value: str) -> str:
     disagree and silently split or merge concepts on import.
     """
     if not isinstance(value, str):
-        raise OverlayError("a concept name or alias must be a string")
-    return " ".join(value.split()).casefold()
+        raise OverlayError('a concept name or alias must be a string')
+    return ' '.join(value.split()).casefold()
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,7 @@ class PassageFingerprint:
     digest: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {"count": self.count, "digest": self.digest}
+        return {'count': self.count, 'digest': self.digest}
 
 
 def passage_fingerprint(pairs: Iterable[tuple[int, str]]) -> PassageFingerprint:
@@ -77,13 +77,13 @@ def passage_fingerprint(pairs: Iterable[tuple[int, str]]) -> PassageFingerprint:
     seen: set[int] = set()
     for ordinal, digest in ordered:
         if ordinal < 0:
-            raise OverlayError("a passage ordinal cannot be negative")
+            raise OverlayError('a passage ordinal cannot be negative')
         if ordinal in seen:
-            raise OverlayError("a passage ordinal cannot repeat within one version")
+            raise OverlayError('a passage ordinal cannot repeat within one version')
         seen.add(ordinal)
-        _require_sha256(digest, "passage content_sha256")
-    lines = "\n".join(f"{ordinal}:{digest}" for ordinal, digest in ordered)
-    return PassageFingerprint(len(ordered), sha256(lines.encode("utf-8")).hexdigest())
+        _require_sha256(digest, 'passage content_sha256')
+    lines = '\n'.join(f'{ordinal}:{digest}' for ordinal, digest in ordered)
+    return PassageFingerprint(len(ordered), sha256(lines.encode('utf-8')).hexdigest())
 
 
 @dataclass(frozen=True)
@@ -97,10 +97,10 @@ class OverlaySpan:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "ordinal": self.ordinal,
-            "content_sha256": self.content_sha256,
-            "start_codepoint": self.start_codepoint,
-            "end_codepoint": self.end_codepoint,
+            'ordinal': self.ordinal,
+            'content_sha256': self.content_sha256,
+            'start_codepoint': self.start_codepoint,
+            'end_codepoint': self.end_codepoint,
         }
 
     @property
@@ -115,16 +115,16 @@ class OverlayConcept:
     key: str
     canonical_name: str
     aliases: tuple[str, ...] = ()
-    definition: str = ""
-    status: str = "PROVISIONAL"
+    definition: str = ''
+    status: str = 'PROVISIONAL'
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "key": self.key,
-            "canonical_name": self.canonical_name,
-            "aliases": list(self.aliases),
-            "definition": self.definition,
-            "status": self.status,
+            'key': self.key,
+            'canonical_name': self.canonical_name,
+            'aliases': list(self.aliases),
+            'definition': self.definition,
+            'status': self.status,
         }
 
 
@@ -140,18 +140,16 @@ class OverlayMention:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "concept_key": self.concept_key,
-            "ordinal": self.ordinal,
-            "content_sha256": self.content_sha256,
-            "start_codepoint": self.start_codepoint,
-            "end_codepoint": self.end_codepoint,
+            'concept_key': self.concept_key,
+            'ordinal': self.ordinal,
+            'content_sha256': self.content_sha256,
+            'start_codepoint': self.start_codepoint,
+            'end_codepoint': self.end_codepoint,
         }
 
     @property
     def span(self) -> OverlaySpan:
-        return OverlaySpan(
-            self.ordinal, self.content_sha256, self.start_codepoint, self.end_codepoint
-        )
+        return OverlaySpan(self.ordinal, self.content_sha256, self.start_codepoint, self.end_codepoint)
 
     @property
     def sort_key(self) -> tuple[str, int, int, int]:
@@ -165,16 +163,16 @@ class OverlayRelation:
     subject_key: str
     predicate: str
     object_key: str
-    status: str = "PROVISIONAL"
+    status: str = 'PROVISIONAL'
     evidence: tuple[OverlaySpan, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "subject_key": self.subject_key,
-            "predicate": self.predicate,
-            "object_key": self.object_key,
-            "status": self.status,
-            "evidence": [span.to_dict() for span in self.evidence],
+            'subject_key': self.subject_key,
+            'predicate': self.predicate,
+            'object_key': self.object_key,
+            'status': self.status,
+            'evidence': [span.to_dict() for span in self.evidence],
         }
 
     @property
@@ -198,14 +196,14 @@ class ConceptOverlay:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "overlay_format_version": self.overlay_format_version,
-            "epub_sha256": self.epub_sha256,
-            "parser_version": self.parser_version,
-            "book_title": self.book_title,
-            "passage_fingerprint": self.fingerprint.to_dict(),
-            "concepts": [concept.to_dict() for concept in self.concepts],
-            "mentions": [mention.to_dict() for mention in self.mentions],
-            "relations": [relation.to_dict() for relation in self.relations],
+            'overlay_format_version': self.overlay_format_version,
+            'epub_sha256': self.epub_sha256,
+            'parser_version': self.parser_version,
+            'book_title': self.book_title,
+            'passage_fingerprint': self.fingerprint.to_dict(),
+            'concepts': [concept.to_dict() for concept in self.concepts],
+            'mentions': [mention.to_dict() for mention in self.mentions],
+            'relations': [relation.to_dict() for relation in self.relations],
         }
 
     def to_json(self) -> str:
@@ -223,13 +221,13 @@ def canonical_json(payload: Mapping[str, Any]) -> str:
     ``ensure_ascii=False`` so Chinese labels stay readable, tight separators.
     """
     try:
-        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     except (TypeError, ValueError) as error:
-        raise OverlayError("the overlay artifact must be JSON serializable") from error
+        raise OverlayError('the overlay artifact must be JSON serializable') from error
 
 
 def overlay_sha256(text: str) -> str:
-    return sha256(text.encode("utf-8")).hexdigest()
+    return sha256(text.encode('utf-8')).hexdigest()
 
 
 def build_overlay(
@@ -250,33 +248,28 @@ def build_overlay(
     ordering contract has a single implementation.
     """
     if overlay_format_version != OVERLAY_FORMAT_VERSION:
-        raise OverlayError(
-            f"unsupported overlay_format_version: {overlay_format_version!r}"
-        )
-    _require_sha256(epub_sha256, "epub_sha256")
+        raise OverlayError(f'unsupported overlay_format_version: {overlay_format_version!r}')
+    _require_sha256(epub_sha256, 'epub_sha256')
     if not isinstance(parser_version, str) or not parser_version.strip() or len(parser_version) > 32:
-        raise OverlayError("parser_version must be a short non-empty string")
+        raise OverlayError('parser_version must be a short non-empty string')
     if not isinstance(book_title, str) or len(book_title) > MAX_LABEL_LENGTH:
-        raise OverlayError("book_title must be a string of at most 500 characters")
+        raise OverlayError('book_title must be a string of at most 500 characters')
     if not isinstance(fingerprint, PassageFingerprint):
-        raise OverlayError("passage_fingerprint must be a count and a digest")
+        raise OverlayError('passage_fingerprint must be a count and a digest')
     if not isinstance(fingerprint.count, int) or fingerprint.count < 0:
-        raise OverlayError("passage_fingerprint.count must be a non-negative integer")
-    _require_sha256(fingerprint.digest, "passage_fingerprint.digest")
+        raise OverlayError('passage_fingerprint.count must be a non-negative integer')
+    _require_sha256(fingerprint.digest, 'passage_fingerprint.digest')
 
     ordered_concepts: dict[str, OverlayConcept] = {}
     for concept in concepts:
         validated = _validate_concept(concept)
         previous = ordered_concepts.get(validated.key)
         if previous is not None and previous != validated:
-            raise OverlayError(f"overlay declares one concept key twice: {validated.key!r}")
+            raise OverlayError(f'overlay declares one concept key twice: {validated.key!r}')
         ordered_concepts[validated.key] = validated
     keys = frozenset(ordered_concepts)
 
-    unique_mentions = {
-        mention.sort_key: mention
-        for mention in (_validate_mention(value, keys) for value in mentions)
-    }
+    unique_mentions = {mention.sort_key: mention for mention in (_validate_mention(value, keys) for value in mentions)}
     unique_relations: dict[tuple[str, str, str], OverlayRelation] = {}
     for relation in relations:
         validated = _validate_relation(relation, keys)
@@ -307,7 +300,7 @@ def build_overlay(
     )
 
 
-_STATUS_STRENGTH = {"REJECTED": 0, "PROVISIONAL": 1, "APPROVED": 2}
+_STATUS_STRENGTH = {'REJECTED': 0, 'PROVISIONAL': 1, 'APPROVED': 2}
 
 
 def _stronger_status(left: str, right: str) -> str:
@@ -317,80 +310,78 @@ def _stronger_status(left: str, right: str) -> str:
 def parse_overlay(payload: Any) -> ConceptOverlay:
     """Read an untrusted artifact document into its validated canonical form."""
     if not isinstance(payload, Mapping):
-        raise OverlayError("an overlay artifact must be a JSON object")
+        raise OverlayError('an overlay artifact must be a JSON object')
     unknown = set(payload) - {
-        "overlay_format_version",
-        "epub_sha256",
-        "parser_version",
-        "book_title",
-        "passage_fingerprint",
-        "concepts",
-        "mentions",
-        "relations",
+        'overlay_format_version',
+        'epub_sha256',
+        'parser_version',
+        'book_title',
+        'passage_fingerprint',
+        'concepts',
+        'mentions',
+        'relations',
     }
     if unknown:
         # An unexpected field is far more likely to be smuggled passage text or
         # a newer format than a harmless extra, so refuse rather than ignore.
-        raise OverlayError(f"overlay artifact has unsupported fields: {sorted(unknown)}")
-    fingerprint = payload.get("passage_fingerprint")
-    if not isinstance(fingerprint, Mapping) or set(fingerprint) != {"count", "digest"}:
-        raise OverlayError("passage_fingerprint must hold exactly a count and a digest")
-    location_fields = frozenset({"ordinal", "content_sha256", "start_codepoint", "end_codepoint"})
+        raise OverlayError(f'overlay artifact has unsupported fields: {sorted(unknown)}')
+    fingerprint = payload.get('passage_fingerprint')
+    if not isinstance(fingerprint, Mapping) or set(fingerprint) != {'count', 'digest'}:
+        raise OverlayError('passage_fingerprint must hold exactly a count and a digest')
+    location_fields = frozenset({'ordinal', 'content_sha256', 'start_codepoint', 'end_codepoint'})
     return build_overlay(
-        overlay_format_version=_int(payload.get("overlay_format_version"), "overlay_format_version"),
-        epub_sha256=_text(payload.get("epub_sha256"), "epub_sha256"),
-        parser_version=_text(payload.get("parser_version"), "parser_version"),
-        book_title=_text(payload.get("book_title"), "book_title", allow_empty=True),
+        overlay_format_version=_int(payload.get('overlay_format_version'), 'overlay_format_version'),
+        epub_sha256=_text(payload.get('epub_sha256'), 'epub_sha256'),
+        parser_version=_text(payload.get('parser_version'), 'parser_version'),
+        book_title=_text(payload.get('book_title'), 'book_title', allow_empty=True),
         fingerprint=PassageFingerprint(
-            count=_int(fingerprint.get("count"), "passage_fingerprint.count"),
-            digest=_text(fingerprint.get("digest"), "passage_fingerprint.digest"),
+            count=_int(fingerprint.get('count'), 'passage_fingerprint.count'),
+            digest=_text(fingerprint.get('digest'), 'passage_fingerprint.digest'),
         ),
         concepts=[
             OverlayConcept(
-                key=_text(item.get("key"), "concept key"),
-                canonical_name=_text(item.get("canonical_name"), "canonical_name"),
-                aliases=tuple(_alias_list(item.get("aliases"))),
-                definition=_text(item.get("definition", ""), "definition", allow_empty=True),
-                status=_text(item.get("status", "PROVISIONAL"), "concept status"),
+                key=_text(item.get('key'), 'concept key'),
+                canonical_name=_text(item.get('canonical_name'), 'canonical_name'),
+                aliases=tuple(_alias_list(item.get('aliases'))),
+                definition=_text(item.get('definition', ''), 'definition', allow_empty=True),
+                status=_text(item.get('status', 'PROVISIONAL'), 'concept status'),
             )
             for item in _objects(
-                payload.get("concepts"),
-                "concepts",
-                frozenset({"key", "canonical_name", "aliases", "definition", "status"}),
+                payload.get('concepts'),
+                'concepts',
+                frozenset({'key', 'canonical_name', 'aliases', 'definition', 'status'}),
             )
         ],
         mentions=[
             OverlayMention(
-                concept_key=_text(item.get("concept_key"), "concept_key"),
-                ordinal=_int(item.get("ordinal"), "mention ordinal"),
-                content_sha256=_text(item.get("content_sha256"), "mention content_sha256"),
-                start_codepoint=_int(item.get("start_codepoint"), "start_codepoint"),
-                end_codepoint=_int(item.get("end_codepoint"), "end_codepoint"),
+                concept_key=_text(item.get('concept_key'), 'concept_key'),
+                ordinal=_int(item.get('ordinal'), 'mention ordinal'),
+                content_sha256=_text(item.get('content_sha256'), 'mention content_sha256'),
+                start_codepoint=_int(item.get('start_codepoint'), 'start_codepoint'),
+                end_codepoint=_int(item.get('end_codepoint'), 'end_codepoint'),
             )
-            for item in _objects(
-                payload.get("mentions"), "mentions", location_fields | {"concept_key"}
-            )
+            for item in _objects(payload.get('mentions'), 'mentions', location_fields | {'concept_key'})
         ],
         relations=[
             OverlayRelation(
-                subject_key=_text(item.get("subject_key"), "subject_key"),
-                predicate=_text(item.get("predicate"), "predicate"),
-                object_key=_text(item.get("object_key"), "object_key"),
-                status=_text(item.get("status", "PROVISIONAL"), "relation status"),
+                subject_key=_text(item.get('subject_key'), 'subject_key'),
+                predicate=_text(item.get('predicate'), 'predicate'),
+                object_key=_text(item.get('object_key'), 'object_key'),
+                status=_text(item.get('status', 'PROVISIONAL'), 'relation status'),
                 evidence=tuple(
                     OverlaySpan(
-                        ordinal=_int(span.get("ordinal"), "evidence ordinal"),
-                        content_sha256=_text(span.get("content_sha256"), "evidence content_sha256"),
-                        start_codepoint=_int(span.get("start_codepoint"), "evidence start_codepoint"),
-                        end_codepoint=_int(span.get("end_codepoint"), "evidence end_codepoint"),
+                        ordinal=_int(span.get('ordinal'), 'evidence ordinal'),
+                        content_sha256=_text(span.get('content_sha256'), 'evidence content_sha256'),
+                        start_codepoint=_int(span.get('start_codepoint'), 'evidence start_codepoint'),
+                        end_codepoint=_int(span.get('end_codepoint'), 'evidence end_codepoint'),
                     )
-                    for span in _objects(item.get("evidence"), "relation evidence", location_fields)
+                    for span in _objects(item.get('evidence'), 'relation evidence', location_fields)
                 ),
             )
             for item in _objects(
-                payload.get("relations"),
-                "relations",
-                frozenset({"subject_key", "predicate", "object_key", "status", "evidence"}),
+                payload.get('relations'),
+                'relations',
+                frozenset({'subject_key', 'predicate', 'object_key', 'status', 'evidence'}),
             )
         ],
     )
@@ -399,35 +390,35 @@ def parse_overlay(payload: Any) -> ConceptOverlay:
 def parse_overlay_json(data: bytes | str) -> ConceptOverlay:
     """Decode UTF-8 artifact bytes without leaking a parser's own error text."""
     try:
-        text = data.decode("utf-8") if isinstance(data, bytes) else data
+        text = data.decode('utf-8') if isinstance(data, bytes) else data
         payload = json.loads(text)
     except (UnicodeDecodeError, ValueError) as error:
-        raise OverlayError("the overlay artifact must be a UTF-8 JSON document") from error
+        raise OverlayError('the overlay artifact must be a UTF-8 JSON document') from error
     return parse_overlay(payload)
 
 
 def _validate_concept(concept: OverlayConcept) -> OverlayConcept:
     if not isinstance(concept, OverlayConcept):
-        raise OverlayError("each overlay concept must be a concept object")
+        raise OverlayError('each overlay concept must be a concept object')
     canonical = concept.canonical_name
     if not isinstance(canonical, str) or not canonical.strip():
-        raise OverlayError("a concept needs a non-empty canonical_name")
+        raise OverlayError('a concept needs a non-empty canonical_name')
     if len(canonical) > MAX_LABEL_LENGTH:
-        raise OverlayError("a concept canonical_name is too long")
+        raise OverlayError('a concept canonical_name is too long')
     expected_key = normalize_concept_key(canonical)
     if concept.key != expected_key:
         # The key is the join key for every mention and relation, so a key
         # that does not fold from its own label would attach the analysis to
         # the wrong concept in the receiving store.
-        raise OverlayError("a concept key must be the normalized form of its canonical_name")
+        raise OverlayError('a concept key must be the normalized form of its canonical_name')
     if concept.status not in CONCEPT_STATUSES:
-        raise OverlayError(f"invalid concept status: {concept.status!r}")
+        raise OverlayError(f'invalid concept status: {concept.status!r}')
     if not isinstance(concept.definition, str) or len(concept.definition) > MAX_DEFINITION_LENGTH:
-        raise OverlayError("a concept definition must be a string of at most 10000 characters")
+        raise OverlayError('a concept definition must be a string of at most 10000 characters')
     aliases: dict[str, str] = {}
     for alias in concept.aliases:
         if not isinstance(alias, str) or not alias.strip() or len(alias) > MAX_LABEL_LENGTH:
-            raise OverlayError("a concept alias must be a non-empty label")
+            raise OverlayError('a concept alias must be a non-empty label')
         aliases[normalize_concept_key(alias)] = alias
     aliases.setdefault(expected_key, canonical)
     return OverlayConcept(
@@ -441,31 +432,31 @@ def _validate_concept(concept: OverlayConcept) -> OverlayConcept:
 
 def _validate_mention(mention: OverlayMention, keys: frozenset[str]) -> OverlayMention:
     if not isinstance(mention, OverlayMention):
-        raise OverlayError("each overlay mention must be a mention object")
+        raise OverlayError('each overlay mention must be a mention object')
     if mention.concept_key not in keys:
-        raise OverlayError("an overlay mention names a concept the artifact does not declare")
+        raise OverlayError('an overlay mention names a concept the artifact does not declare')
     _validate_location(mention.ordinal, mention.content_sha256, mention.start_codepoint, mention.end_codepoint)
     return mention
 
 
 def _validate_relation(relation: OverlayRelation, keys: frozenset[str]) -> OverlayRelation:
     if not isinstance(relation, OverlayRelation):
-        raise OverlayError("each overlay relation must be a relation object")
+        raise OverlayError('each overlay relation must be a relation object')
     if relation.subject_key not in keys or relation.object_key not in keys:
-        raise OverlayError("an overlay relation names a concept the artifact does not declare")
+        raise OverlayError('an overlay relation names a concept the artifact does not declare')
     if relation.subject_key == relation.object_key:
-        raise OverlayError("an overlay relation needs two distinct concept endpoints")
+        raise OverlayError('an overlay relation needs two distinct concept endpoints')
     predicate = relation.predicate
     if not isinstance(predicate, str) or not predicate.strip() or len(predicate) > MAX_PREDICATE_LENGTH:
-        raise OverlayError("an overlay relation predicate must be a short non-empty string")
+        raise OverlayError('an overlay relation predicate must be a short non-empty string')
     if relation.status not in CONCEPT_STATUSES:
-        raise OverlayError(f"invalid relation status: {relation.status!r}")
+        raise OverlayError(f'invalid relation status: {relation.status!r}')
     if not relation.evidence:
-        raise OverlayError("an overlay relation needs at least one evidence location")
+        raise OverlayError('an overlay relation needs at least one evidence location')
     spans: dict[tuple[int, int, int], OverlaySpan] = {}
     for span in relation.evidence:
         if not isinstance(span, OverlaySpan):
-            raise OverlayError("each relation evidence entry must be a location object")
+            raise OverlayError('each relation evidence entry must be a location object')
         _validate_location(span.ordinal, span.content_sha256, span.start_codepoint, span.end_codepoint)
         spans[span.sort_key] = span
     return OverlayRelation(
@@ -479,33 +470,33 @@ def _validate_relation(relation: OverlayRelation, keys: frozenset[str]) -> Overl
 
 def _validate_location(ordinal: int, digest: str, start: int, end: int) -> None:
     if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0:
-        raise OverlayError("a location ordinal must be a non-negative integer")
-    _require_sha256(digest, "a location content_sha256")
+        raise OverlayError('a location ordinal must be a non-negative integer')
+    _require_sha256(digest, 'a location content_sha256')
     for value in (start, end):
         if not isinstance(value, int) or isinstance(value, bool):
-            raise OverlayError("location offsets must be integer code-point positions")
+            raise OverlayError('location offsets must be integer code-point positions')
     if start < 0 or end <= start:
-        raise OverlayError("a location must identify a non-empty forward span")
+        raise OverlayError('a location must identify a non-empty forward span')
 
 
 def _require_sha256(value: Any, label: str) -> None:
     if (
         not isinstance(value, str)
         or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
+        or any(character not in '0123456789abcdef' for character in value)
     ):
-        raise OverlayError(f"{label} must be a lowercase 64-character SHA-256 digest")
+        raise OverlayError(f'{label} must be a lowercase 64-character SHA-256 digest')
 
 
 def _text(value: Any, label: str, *, allow_empty: bool = False) -> str:
     if not isinstance(value, str) or (not allow_empty and not value):
-        raise OverlayError(f"{label} must be a non-empty string")
+        raise OverlayError(f'{label} must be a non-empty string')
     return value
 
 
 def _int(value: Any, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
-        raise OverlayError(f"{label} must be an integer")
+        raise OverlayError(f'{label} must be an integer')
     return value
 
 
@@ -513,7 +504,7 @@ def _alias_list(value: Any) -> Sequence[str]:
     if value is None:
         return ()
     if not isinstance(value, list):
-        raise OverlayError("concept aliases must be a list of labels")
+        raise OverlayError('concept aliases must be a list of labels')
     return value
 
 
@@ -528,9 +519,9 @@ def _objects(value: Any, label: str, allowed: frozenset[str]) -> Sequence[Mappin
     if value is None:
         return ()
     if not isinstance(value, list) or any(not isinstance(item, Mapping) for item in value):
-        raise OverlayError(f"{label} must be a list of objects")
+        raise OverlayError(f'{label} must be a list of objects')
     for item in value:
         unknown = set(item) - allowed
         if unknown:
-            raise OverlayError(f"{label} has unsupported fields: {sorted(unknown)}")
+            raise OverlayError(f'{label} has unsupported fields: {sorted(unknown)}')
     return value

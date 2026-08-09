@@ -99,9 +99,7 @@ def evidence_floors() -> dict[str, int]:
     }
     floors.update(
         {
-            profile_id: get_section_graph_profile(
-                profile_id
-            ).enforced_min_evidence_codepoints
+            profile_id: get_section_graph_profile(profile_id).enforced_min_evidence_codepoints
             for profile_id in available_section_graph_profiles()
         }
     )
@@ -172,11 +170,9 @@ class EpubConceptService:
         if batch is None:
             if not isinstance(store, SQLiteEpubStore):
                 raise EpubServiceUnavailable(
-                    "the configured EPUB store needs a BatchRepository adapter before Batch APIs can start"
+                    'the configured EPUB store needs a BatchRepository adapter before Batch APIs can start'
                 )
-            batch = BatchJobService(
-                SQLiteBatchRepository(store, evidence_floors=evidence_floors())
-            )
+            batch = BatchJobService(SQLiteBatchRepository(store, evidence_floors=evidence_floors()))
         self._batch = batch
         self._providers = dict(providers or {})
         self._vector_indexer = vector_indexer
@@ -190,19 +186,19 @@ class EpubConceptService:
         book = self._store.get_book(book_id)
         if book is None:
             return None
-        return {**book, "versions": self._store.list_versions(book_id)}
+        return {**book, 'versions': self._store.list_versions(book_id)}
 
     def list_passages(self, version_id: str, *, offset: int, limit: int) -> dict[str, Any]:
         if offset < 0 or not 1 <= limit <= 200:
-            raise EpubServiceError("passage pagination values are invalid")
+            raise EpubServiceError('passage pagination values are invalid')
         if self._store.get_version(version_id) is None:
-            raise EpubServiceError("unknown EPUB version")
+            raise EpubServiceError('unknown EPUB version')
         passages = self._store.list_passages(version_id)
         return {
-            "version_id": version_id,
-            "total": len(passages),
-            "offset": offset,
-            "items": passages[offset : offset + limit],
+            'version_id': version_id,
+            'total': len(passages),
+            'offset': offset,
+            'items': passages[offset : offset + limit],
         }
 
     def get_passage(self, passage_id: str) -> dict[str, Any] | None:
@@ -243,22 +239,22 @@ class EpubConceptService:
         epub_bytes: bytes,
         source_locator: str | None = None,
     ) -> dict[str, Any]:
-        if not filename.lower().endswith(".epub"):
-            raise EpubServiceError("uploaded file must have an .epub extension")
+        if not filename.lower().endswith('.epub'):
+            raise EpubServiceError('uploaded file must have an .epub extension')
         if not epub_bytes:
-            raise EpubServiceError("uploaded EPUB cannot be empty")
+            raise EpubServiceError('uploaded EPUB cannot be empty')
         digest = sha256(epub_bytes).hexdigest()
         duplicate = self._store.find_version_by_sha256(digest)
         if duplicate is not None:
-            return {"created": False, "duplicate": True, **duplicate}
+            return {'created': False, 'duplicate': True, **duplicate}
 
         # The parser accepts a path so it can perform ZIP safety checks before
         # extraction.  NamedTemporaryFile is closed before Windows-compatible
         # reopening and always removed afterwards.
-        suffix = Path(filename).suffix or ".epub"
+        suffix = Path(filename).suffix or '.epub'
         temp_path: str | None = None
         try:
-            with tempfile.NamedTemporaryFile(prefix="epub-import-", suffix=suffix, delete=False) as handle:
+            with tempfile.NamedTemporaryFile(prefix='epub-import-', suffix=suffix, delete=False) as handle:
                 handle.write(epub_bytes)
                 temp_path = handle.name
             parsed = EPUBParser(temp_path).parse_book()
@@ -270,7 +266,7 @@ class EpubConceptService:
                     pass
 
         if not parsed.passages:
-            raise EpubServiceError("EPUB contains no supported visible textual passages")
+            raise EpubServiceError('EPUB contains no supported visible textual passages')
 
         book_id = self._store.create_book(parsed.book_title)
         version = self._store.create_book_version(
@@ -282,11 +278,11 @@ class EpubConceptService:
         # check.  Its canonical version wins and this request is a no-op.
         if not version.created:
             return {
-                "created": False,
-                "duplicate": True,
-                "version_id": version.version_id,
-                "book_id": version.book_id,
-                "epub_sha256": version.epub_sha256,
+                'created': False,
+                'duplicate': True,
+                'version_id': version.version_id,
+                'book_id': version.book_id,
+                'epub_sha256': version.epub_sha256,
             }
         try:
             toc_ids = self._persist_toc(version.version_id, parsed.passages)
@@ -294,32 +290,32 @@ class EpubConceptService:
                 version.version_id,
                 [
                     {
-                        "toc_node_id": toc_ids.get(passage.toc_path),
-                        "source_href": passage.source_path,
-                        "source_fragment": passage.source_fragment,
-                        "spine_index": passage.spine_index,
-                        "ordinal": passage.ordinal,
-                        "content_kind": passage.content_kind,
-                        "content": passage.content,
+                        'toc_node_id': toc_ids.get(passage.toc_path),
+                        'source_href': passage.source_path,
+                        'source_fragment': passage.source_fragment,
+                        'spine_index': passage.spine_index,
+                        'ordinal': passage.ordinal,
+                        'content_kind': passage.content_kind,
+                        'content': passage.content,
                     }
                     for passage in parsed.passages
                 ],
             )
             retrieval_unit_count = self._create_retrieval_units(passage_ids)
-            self._store.set_version_status(version.version_id, "READY")
+            self._store.set_version_status(version.version_id, 'READY')
         except Exception as error:
-            self._store.set_version_status(version.version_id, "FAILED", failure_reason=_safe_reason(error))
+            self._store.set_version_status(version.version_id, 'FAILED', failure_reason=_safe_reason(error))
             raise
         return {
-            "created": True,
-            "duplicate": False,
-            "book_id": version.book_id,
-            "version_id": version.version_id,
-            "book_title": parsed.book_title,
-            "epub_sha256": version.epub_sha256,
-            "total_passages": len(parsed.passages),
-            "total_retrieval_units": retrieval_unit_count,
-            "warnings": [asdict(warning) for warning in parsed.warnings],
+            'created': True,
+            'duplicate': False,
+            'book_id': version.book_id,
+            'version_id': version.version_id,
+            'book_title': parsed.book_title,
+            'epub_sha256': version.epub_sha256,
+            'total_passages': len(parsed.passages),
+            'total_retrieval_units': retrieval_unit_count,
+            'warnings': [asdict(warning) for warning in parsed.warnings],
         }
 
     def _create_retrieval_units(self, passage_ids: Sequence[str]) -> int:
@@ -333,10 +329,10 @@ class EpubConceptService:
         for passage_id in passage_ids:
             passage = self._store.get_passage(passage_id)
             if passage is None:
-                raise EpubServiceError("newly stored EPUB passage is unavailable")
-            content = passage.get("content")
+                raise EpubServiceError('newly stored EPUB passage is unavailable')
+            content = passage.get('content')
             if not isinstance(content, str):
-                raise EpubServiceError("newly stored EPUB passage has invalid source content")
+                raise EpubServiceError('newly stored EPUB passage has invalid source content')
             for window in plan_retrieval_windows(content):
                 self._store.add_retrieval_unit(
                     passage_id,
@@ -356,23 +352,23 @@ class EpubConceptService:
         reproduce them.
         """
         if self._store.get_version(version_id) is None:
-            raise EpubResourceNotFound("unknown EPUB version")
+            raise EpubResourceNotFound('unknown EPUB version')
         try:
             overlay = self._store.export_concept_overlay(version_id)
         except (IntegrityError, OverlayError) as error:
             raise EpubServiceError(str(error)) from error
         overlay_json = overlay.to_json()
         return {
-            "version_id": version_id,
-            "epub_sha256": overlay.epub_sha256,
-            "parser_version": overlay.parser_version,
-            "overlay_format_version": overlay.overlay_format_version,
-            "overlay_json": overlay_json,
-            "overlay_sha256": overlay_sha256(overlay_json),
-            "passage_count": overlay.fingerprint.count,
-            "concept_count": len(overlay.concepts),
-            "mention_count": len(overlay.mentions),
-            "relation_count": len(overlay.relations),
+            'version_id': version_id,
+            'epub_sha256': overlay.epub_sha256,
+            'parser_version': overlay.parser_version,
+            'overlay_format_version': overlay.overlay_format_version,
+            'overlay_json': overlay_json,
+            'overlay_sha256': overlay_sha256(overlay_json),
+            'passage_count': overlay.fingerprint.count,
+            'concept_count': len(overlay.concepts),
+            'mention_count': len(overlay.mentions),
+            'relation_count': len(overlay.relations),
         }
 
     def apply_concept_overlay(self, *, overlay_bytes: bytes) -> dict[str, Any]:
@@ -385,7 +381,7 @@ class EpubConceptService:
         caller is told to rebuild the version's derived index afterwards.
         """
         if not overlay_bytes:
-            raise EpubServiceError("the uploaded overlay artifact cannot be empty")
+            raise EpubServiceError('the uploaded overlay artifact cannot be empty')
         try:
             overlay = parse_overlay_json(overlay_bytes)
         except OverlayError as error:
@@ -395,29 +391,23 @@ class EpubConceptService:
             # recorded format.  Both matter: this one refuses an artifact no
             # build of this server could ever have produced, before any
             # version is even resolved.
-            raise EpubServiceError(
-                "the overlay was produced by an EPUB parser format this server does not implement"
-            )
+            raise EpubServiceError('the overlay was produced by an EPUB parser format this server does not implement')
         version = self._store.find_version_by_sha256(overlay.epub_sha256)
         if version is None:
-            raise EpubResourceNotFound(
-                "no EPUB version in this library matches the overlay's archive hash"
-            )
+            raise EpubResourceNotFound("no EPUB version in this library matches the overlay's archive hash")
         try:
-            summary = self._store.apply_overlay(overlay, version_id=str(version["version_id"]))
+            summary = self._store.apply_overlay(overlay, version_id=str(version['version_id']))
         except IntegrityError as error:
-            raise EpubServiceError(
-                f"{getattr(error, 'reason', 'overlay_rejected')}: {error}"
-            ) from error
+            raise EpubServiceError(f'{getattr(error, "reason", "overlay_rejected")}: {error}') from error
         return {
             **summary,
-            "book_id": version.get("book_id"),
-            "book_title": version.get("book_title"),
-            "uploaded_overlay_sha256": sha256(overlay_bytes).hexdigest(),
-            "canonical_overlay_sha256": overlay.digest(),
+            'book_id': version.get('book_id'),
+            'book_title': version.get('book_title'),
+            'uploaded_overlay_sha256': sha256(overlay_bytes).hexdigest(),
+            'canonical_overlay_sha256': overlay.digest(),
             # An imported overlay carries no vectors by design; the derived
             # index has to be rebuilt before the new concepts are searchable.
-            "vectors_require_reindex": True,
+            'vectors_require_reindex': True,
         }
 
     def list_prompt_profiles(self) -> dict[str, Any]:
@@ -430,8 +420,8 @@ class EpubConceptService:
         owned so no browser can read or replace the extraction policy.
         """
         return {
-            "prompt_profiles": list(available_prompt_profiles()),
-            "default_prompt_profile": DEFAULT_CONCEPT_PROMPT_PROFILE,
+            'prompt_profiles': list(available_prompt_profiles()),
+            'default_prompt_profile': DEFAULT_CONCEPT_PROMPT_PROFILE,
         }
 
     def create_batch_draft(
@@ -444,24 +434,22 @@ class EpubConceptService:
         sample_limit: int,
     ) -> dict[str, Any]:
         if not profile_name.strip():
-            raise EpubServiceError("Batch profile_name cannot be empty")
+            raise EpubServiceError('Batch profile_name cannot be empty')
         if not 1 <= sample_limit <= 500:
-            raise EpubServiceError("sample_limit must be between 1 and 500")
+            raise EpubServiceError('sample_limit must be between 1 and 500')
         passages = self._store.list_passages(version_id)
         if not passages:
-            raise EpubServiceError("EPUB version contains no passages")
+            raise EpubServiceError('EPUB version contains no passages')
         try:
-            selected = (
-                select_stratified_passages(passages, limit=sample_limit) if is_sample else passages
-            )
+            selected = select_stratified_passages(passages, limit=sample_limit) if is_sample else passages
             items = [
                 BatchItemInput(
-                    passage_id=str(passage["passage_id"]),
-                    custom_id=f"{version_id}:{passage['passage_id']}",
+                    passage_id=str(passage['passage_id']),
+                    custom_id=f'{version_id}:{passage["passage_id"]}',
                     request=self._batch_request(
                         model=profile_name,
                         prompt_profile=prompt_profile,
-                        content=str(passage["content"]),
+                        content=str(passage['content']),
                     ),
                 )
                 for passage in selected
@@ -470,7 +458,7 @@ class EpubConceptService:
             raise EpubServiceError(str(error)) from error
         job_id = self._batch.create_draft(
             version_id=version_id,
-            provider="openai-batch",
+            provider='openai-batch',
             profile_name=profile_name,
             items=items,
             is_sample=is_sample,
@@ -480,12 +468,12 @@ class EpubConceptService:
             prompt_profile=prompt_profile,
         )
         return {
-            "batch_job_id": job_id,
-            "item_count": len(items),
-            "status": "DRAFT",
-            "job_kind": "CONCEPT_MENTIONS",
-            "is_sample": is_sample,
-            "prompt_profile": prompt_profile,
+            'batch_job_id': job_id,
+            'item_count': len(items),
+            'status': 'DRAFT',
+            'job_kind': 'CONCEPT_MENTIONS',
+            'is_sample': is_sample,
+            'prompt_profile': prompt_profile,
         }
 
     def create_section_graph_batch_draft(
@@ -505,16 +493,16 @@ class EpubConceptService:
         source passage and character span.
         """
         if not profile_name.strip():
-            raise EpubServiceError("Batch profile_name cannot be empty")
+            raise EpubServiceError('Batch profile_name cannot be empty')
         if not 1 <= sample_limit <= 500:
-            raise EpubServiceError("sample_limit must be between 1 and 500")
+            raise EpubServiceError('sample_limit must be between 1 and 500')
         try:
             get_section_graph_profile(section_graph_profile)
         except SectionGraphError as error:
             raise EpubServiceError(str(error)) from error
         passages = self._store.list_passages(version_id)
         if not passages:
-            raise EpubServiceError("EPUB version contains no passages")
+            raise EpubServiceError('EPUB version contains no passages')
         if is_sample:
             selected = select_stratified_passages(passages, limit=sample_limit)
         else:
@@ -526,7 +514,7 @@ class EpubConceptService:
         items = [
             BatchItemInput(
                 passage_id=packet.anchor_passage_id,
-                custom_id=f"{version_id}:section-graph:{index}",
+                custom_id=f'{version_id}:section-graph:{index}',
                 request=self._section_graph_batch_request(
                     model=profile_name, packet=packet, profile_id=section_graph_profile
                 ),
@@ -535,20 +523,20 @@ class EpubConceptService:
         ]
         job_id = self._batch.create_draft(
             version_id=version_id,
-            provider="openai-batch",
+            provider='openai-batch',
             profile_name=profile_name,
-            job_kind="SECTION_GRAPH",
+            job_kind='SECTION_GRAPH',
             items=items,
             is_sample=is_sample,
             prompt_profile=section_graph_profile,
         )
         return {
-            "batch_job_id": job_id,
-            "item_count": len(items),
-            "status": "DRAFT",
-            "job_kind": "SECTION_GRAPH",
-            "is_sample": is_sample,
-            "prompt_profile": section_graph_profile,
+            'batch_job_id': job_id,
+            'item_count': len(items),
+            'status': 'DRAFT',
+            'job_kind': 'SECTION_GRAPH',
+            'is_sample': is_sample,
+            'prompt_profile': section_graph_profile,
         }
 
     def backfill_batch_prompt_profiles(self) -> dict[str, Any]:
@@ -577,15 +565,15 @@ class EpubConceptService:
         reads never leaves this method.
         """
         instructions: dict[str, dict[str, set[str]]] = {
-            "CONCEPT_MENTIONS": {},
-            "SECTION_GRAPH": {},
+            'CONCEPT_MENTIONS': {},
+            'SECTION_GRAPH': {},
         }
         for profile_id in available_prompt_profiles():
             instruction = get_prompt_profile(profile_id).system_instruction
-            instructions["CONCEPT_MENTIONS"].setdefault(instruction, set()).add(profile_id)
+            instructions['CONCEPT_MENTIONS'].setdefault(instruction, set()).add(profile_id)
         for profile_id in available_section_graph_profiles():
             instruction = get_section_graph_profile(profile_id).system_instruction
-            instructions["SECTION_GRAPH"].setdefault(instruction, set()).add(profile_id)
+            instructions['SECTION_GRAPH'].setdefault(instruction, set()).add(profile_id)
 
         resolved: list[dict[str, Any]] = []
         unresolved: list[dict[str, Any]] = []
@@ -594,12 +582,12 @@ class EpubConceptService:
         except BatchServiceError as error:
             raise EpubServiceError(str(error)) from error
         for job in pending:
-            job_id = str(job["batch_job_id"])
-            job_kind = str(job["job_kind"])
-            record = {"batch_job_id": job_id, "job_kind": job_kind}
+            job_id = str(job['batch_job_id'])
+            job_kind = str(job['job_kind'])
+            record = {'batch_job_id': job_id, 'job_kind': job_kind}
             candidates = instructions.get(job_kind)
             if candidates is None:
-                unresolved.append({**record, "reason": "UNSUPPORTED_JOB_KIND"})
+                unresolved.append({**record, 'reason': 'UNSUPPORTED_JOB_KIND'})
                 continue
             try:
                 request = self._batch.first_item_request(job_id)
@@ -607,29 +595,29 @@ class EpubConceptService:
                 raise EpubServiceError(str(error)) from error
             instruction = self._system_instruction(request)
             if instruction is None:
-                unresolved.append({**record, "reason": "NO_STORED_INSTRUCTION"})
+                unresolved.append({**record, 'reason': 'NO_STORED_INSTRUCTION'})
                 continue
             matches = candidates.get(instruction, set())
             if not matches:
-                unresolved.append({**record, "reason": "NO_REGISTERED_PROFILE_MATCHES"})
+                unresolved.append({**record, 'reason': 'NO_REGISTERED_PROFILE_MATCHES'})
                 continue
             if len(matches) > 1:
                 # Two registered profiles sharing one instruction cannot be
                 # told apart from what was sent, and picking either would
                 # attribute an approval to a profile that may not have been
                 # the one requested.
-                unresolved.append({**record, "reason": "AMBIGUOUS_REGISTERED_PROFILES"})
+                unresolved.append({**record, 'reason': 'AMBIGUOUS_REGISTERED_PROFILES'})
                 continue
             profile_id = next(iter(matches))
             try:
                 self._batch.backfill_prompt_profile(job_id, profile_id)
             except BatchServiceError as error:
                 raise EpubServiceError(str(error)) from error
-            resolved.append({**record, "prompt_profile": profile_id})
+            resolved.append({**record, 'prompt_profile': profile_id})
         return {
-            "examined": len(pending),
-            "resolved": resolved,
-            "unresolved": unresolved,
+            'examined': len(pending),
+            'resolved': resolved,
+            'unresolved': unresolved,
         }
 
     @staticmethod
@@ -642,17 +630,17 @@ class EpubConceptService:
         """
         if not isinstance(request, Mapping):
             return None
-        body = request.get("body")
+        body = request.get('body')
         if not isinstance(body, Mapping):
             return None
-        messages = body.get("messages")
+        messages = body.get('messages')
         if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
             return None
         found: list[str] = []
         for message in messages:
-            if not isinstance(message, Mapping) or message.get("role") != "system":
+            if not isinstance(message, Mapping) or message.get('role') != 'system':
                 continue
-            content = message.get("content")
+            content = message.get('content')
             if not isinstance(content, str):
                 return None
             found.append(content)
@@ -661,11 +649,9 @@ class EpubConceptService:
     def submit_batch(self, batch_job_id: str) -> dict[str, Any]:
         provider = self._provider_for_job(batch_job_id)
         provider_job_id = self._batch.submit(batch_job_id, provider)
-        return {"batch_job_id": batch_job_id, "provider_job_id": provider_job_id}
+        return {'batch_job_id': batch_job_id, 'provider_job_id': provider_job_id}
 
-    def list_batch_jobs(
-        self, *, version_id: str | None = None, offset: int = 0, limit: int = 50
-    ) -> dict[str, Any]:
+    def list_batch_jobs(self, *, version_id: str | None = None, offset: int = 0, limit: int = 50) -> dict[str, Any]:
         """Return safe operator history, excluding prompts, results and raw errors."""
         try:
             return self._batch.list_job_summaries(version_id=version_id, offset=offset, limit=limit)
@@ -678,26 +664,16 @@ class EpubConceptService:
         except BatchServiceError as error:
             raise EpubServiceError(str(error)) from error
 
-    def review_sample_batch(
-        self, *, batch_job_id: str, status: str, reviewed_by: str
-    ) -> dict[str, Any]:
+    def review_sample_batch(self, *, batch_job_id: str, status: str, reviewed_by: str) -> dict[str, Any]:
         """Persist an administrator quality decision for a completed cloud sample."""
         try:
-            return self._batch.review_sample_job(
-                batch_job_id, status=status, reviewed_by=reviewed_by
-            )
+            return self._batch.review_sample_job(batch_job_id, status=status, reviewed_by=reviewed_by)
         except BatchServiceError as error:
             raise EpubServiceError(str(error)) from error
 
-    def list_sample_batch_reviews(
-        self, *, version_id: str | None, job_kind: str | None
-    ) -> dict[str, Any]:
+    def list_sample_batch_reviews(self, *, version_id: str | None, job_kind: str | None) -> dict[str, Any]:
         try:
-            return {
-                "items": self._batch.list_sample_reviews(
-                    version_id=version_id, job_kind=job_kind
-                )
-            }
+            return {'items': self._batch.list_sample_reviews(version_id=version_id, job_kind=job_kind)}
         except BatchServiceError as error:
             raise EpubServiceError(str(error)) from error
 
@@ -718,11 +694,9 @@ class EpubConceptService:
     ) -> dict[str, Any]:
         try:
             return {
-                "total": self._store.count_concept_relation_assertions(
-                    status=status, version_id=version_id
-                ),
-                "offset": offset,
-                "items": self._store.list_concept_relation_assertions(
+                'total': self._store.count_concept_relation_assertions(status=status, version_id=version_id),
+                'offset': offset,
+                'items': self._store.list_concept_relation_assertions(
                     status=status, version_id=version_id, offset=offset, limit=limit
                 ),
             }
@@ -734,15 +708,13 @@ class EpubConceptService:
             self._store.set_concept_relation_assertion_status(assertion_id, status)
         except IntegrityError as error:
             raise EpubServiceError(str(error)) from error
-        return {"assertion_id": assertion_id, "status": status}
+        return {'assertion_id': assertion_id, 'status': status}
 
-    def run_local_calibration(
-        self, *, version_id: str, prompt_profile: str, sample_limit: int
-    ) -> dict[str, Any]:
+    def run_local_calibration(self, *, version_id: str, prompt_profile: str, sample_limit: int) -> dict[str, Any]:
         if self._calibration_runner is None:
-            raise EpubServiceUnavailable("the Desktop-managed local calibration runtime is not configured")
+            raise EpubServiceUnavailable('the Desktop-managed local calibration runtime is not configured')
         if self._store.get_version(version_id) is None:
-            raise EpubServiceError("unknown EPUB version")
+            raise EpubServiceError('unknown EPUB version')
         try:
             return self._calibration_runner.run(
                 passages=self._store.list_passages(version_id),
@@ -766,7 +738,7 @@ class EpubConceptService:
         return self._batch.poll_and_ingest(batch_job_id, self._provider_for_job(batch_job_id))
 
     def retry_batch(self, batch_job_id: str) -> dict[str, str]:
-        return {"batch_job_id": self._batch.retry_failed_items(batch_job_id), "parent_batch_job_id": batch_job_id}
+        return {'batch_job_id': self._batch.retry_failed_items(batch_job_id), 'parent_batch_job_id': batch_job_id}
 
     def upsert_concept(
         self, *, canonical_name: str, aliases: Sequence[str], definition: str, status: str
@@ -776,9 +748,9 @@ class EpubConceptService:
             aliases=aliases,
             definition=definition,
             status=status,
-            alias_source="ADMIN",
+            alias_source='ADMIN',
         )
-        return {"concept_id": concept_id}
+        return {'concept_id': concept_id}
 
     def list_concepts(self, *, status: str | None, offset: int, limit: int) -> dict[str, Any]:
         """Page the concept graph so an administrator can find merge candidates.
@@ -789,9 +761,9 @@ class EpubConceptService:
         """
         try:
             return {
-                "total": self._store.count_concepts(status=status),
-                "offset": offset,
-                "items": self._store.list_concepts(status=status, offset=offset, limit=limit),
+                'total': self._store.count_concepts(status=status),
+                'offset': offset,
+                'items': self._store.list_concepts(status=status, offset=offset, limit=limit),
             }
         except IntegrityError as error:
             raise EpubServiceError(str(error)) from error
@@ -854,13 +826,13 @@ class EpubConceptService:
 
     def index_retrieval_unit(self, retrieval_unit_id: str) -> dict[str, Any]:
         if self._vector_indexer is None:
-            raise EpubServiceUnavailable("the server has no private EPUB vector indexer configured")
+            raise EpubServiceUnavailable('the server has no private EPUB vector indexer configured')
         result = self._vector_indexer.index(retrieval_unit_id)
         return {
-            "retrieval_unit_id": result.retrieval_unit_id,
-            "state": result.state,
-            "availability": asdict(result.availability),
-            "reason": result.reason,
+            'retrieval_unit_id': result.retrieval_unit_id,
+            'state': result.state,
+            'availability': asdict(result.availability),
+            'reason': result.reason,
         }
 
     async def index_retrieval_unit_async(self, retrieval_unit_id: str) -> dict[str, Any]:
@@ -877,73 +849,69 @@ class EpubConceptService:
         retried after the private runtime recovers.
         """
         if self._vector_indexer is None:
-            raise EpubServiceUnavailable("the server has no private EPUB vector indexer configured")
+            raise EpubServiceUnavailable('the server has no private EPUB vector indexer configured')
         if self._store.get_version(version_id) is None:
-            raise EpubServiceError("unknown EPUB version")
+            raise EpubServiceError('unknown EPUB version')
 
         all_units = self._store.list_retrieval_units_for_version(version_id)
-        selected = all_units if rebuild else [
-            unit for unit in all_units if unit.get("vector_state") != "READY"
-        ]
+        selected = all_units if rebuild else [unit for unit in all_units if unit.get('vector_state') != 'READY']
         errors: list[dict[str, str]] = []
         ready = degraded = failed = 0
         for unit in selected:
-            retrieval_unit_id = str(unit["retrieval_unit_id"])
+            retrieval_unit_id = str(unit['retrieval_unit_id'])
             try:
                 result = self._vector_indexer.index(retrieval_unit_id)
-                if result.state == "READY":
-                    self._store.set_retrieval_unit_vector_state(retrieval_unit_id, "READY")
+                if result.state == 'READY':
+                    self._store.set_retrieval_unit_vector_state(retrieval_unit_id, 'READY')
                     ready += 1
-                elif result.state == "DEGRADED":
+                elif result.state == 'DEGRADED':
                     degraded += 1
                     errors.append(
                         {
-                            "retrieval_unit_id": retrieval_unit_id,
-                            "reason": result.reason or "private embedding runtime is unavailable",
+                            'retrieval_unit_id': retrieval_unit_id,
+                            'reason': result.reason or 'private embedding runtime is unavailable',
                         }
                     )
                 else:
-                    self._store.set_retrieval_unit_vector_state(retrieval_unit_id, "FAILED")
+                    self._store.set_retrieval_unit_vector_state(retrieval_unit_id, 'FAILED')
                     failed += 1
                     errors.append(
                         {
-                            "retrieval_unit_id": retrieval_unit_id,
-                            "reason": result.reason or f"unexpected index state: {result.state}",
+                            'retrieval_unit_id': retrieval_unit_id,
+                            'reason': result.reason or f'unexpected index state: {result.state}',
                         }
                     )
             except Exception as error:
-                self._store.set_retrieval_unit_vector_state(retrieval_unit_id, "FAILED")
+                self._store.set_retrieval_unit_vector_state(retrieval_unit_id, 'FAILED')
                 failed += 1
-                errors.append({"retrieval_unit_id": retrieval_unit_id, "reason": _safe_reason(error)})
+                errors.append({'retrieval_unit_id': retrieval_unit_id, 'reason': _safe_reason(error)})
 
         return {
-            "version_id": version_id,
-            "mode": "REBUILD" if rebuild else "PENDING",
-            "total_retrieval_units": len(all_units),
-            "selected_retrieval_units": len(selected),
-            "skipped_ready": len(all_units) - len(selected),
-            "ready": ready,
-            "degraded": degraded,
-            "failed": failed,
+            'version_id': version_id,
+            'mode': 'REBUILD' if rebuild else 'PENDING',
+            'total_retrieval_units': len(all_units),
+            'selected_retrieval_units': len(selected),
+            'skipped_ready': len(all_units) - len(selected),
+            'ready': ready,
+            'degraded': degraded,
+            'failed': failed,
             # The count is present even when individual details are capped so
             # a large malformed EPUB cannot turn an operational response into
             # an unbounded payload.
-            "error_count": len(errors),
-            "errors": errors[:20],
+            'error_count': len(errors),
+            'errors': errors[:20],
         }
 
-    async def index_version_retrieval_units_async(
-        self, version_id: str, *, rebuild: bool = False
-    ) -> dict[str, Any]:
+    async def index_version_retrieval_units_async(self, version_id: str, *, rebuild: bool = False) -> dict[str, Any]:
         return await asyncio.to_thread(self.index_version_retrieval_units, version_id, rebuild=rebuild)
 
     def _provider_for_job(self, batch_job_id: str) -> BatchProvider:
         job = self._batch.get_job(batch_job_id)
-        provider_name = str(job["provider"])
+        provider_name = str(job['provider'])
         provider = self._providers.get(provider_name)
         if provider is None:
             raise EpubServiceUnavailable(
-                f"the server administrator has not configured Batch provider {provider_name!r}"
+                f'the server administrator has not configured Batch provider {provider_name!r}'
             )
         return provider
 
@@ -955,18 +923,18 @@ class EpubConceptService:
         nodes: list[dict[str, Any]] = []
         for ordinal, path in enumerate(paths):
             parent = path[:-1]
-            node_id = f"{version_id}:toc-{ordinal + 1}"
+            node_id = f'{version_id}:toc-{ordinal + 1}'
             ids[path] = node_id
             first = next(passage for passage in passages if tuple(passage.toc_path) == path)
             nodes.append(
                 {
-                    "toc_node_id": node_id,
-                    "parent_toc_node_id": ids.get(parent),
-                    "title": path[-1],
-                    "href": first.source_path,
-                    "fragment": first.source_fragment,
-                    "spine_index": first.spine_index,
-                    "ordinal": ordinal,
+                    'toc_node_id': node_id,
+                    'parent_toc_node_id': ids.get(parent),
+                    'title': path[-1],
+                    'href': first.source_path,
+                    'fragment': first.source_fragment,
+                    'spine_index': first.spine_index,
+                    'ordinal': ordinal,
                 }
             )
         self._store.add_toc_nodes(version_id, nodes)
@@ -982,9 +950,9 @@ class EpubConceptService:
             remote_structured_output=True,
         )
         return {
-            "method": "POST",
-            "url": "/v1/chat/completions",
-            "body": body,
+            'method': 'POST',
+            'url': '/v1/chat/completions',
+            'body': body,
         }
 
     @staticmethod
@@ -992,37 +960,35 @@ class EpubConceptService:
         *, model: str, packet: Any, profile_id: str = DEFAULT_SECTION_GRAPH_PROFILE
     ) -> dict[str, Any]:
         return {
-            "method": "POST",
-            "url": "/v1/chat/completions",
-            "body": build_section_graph_completion_request(
-                model=model, packet=packet, profile_id=profile_id
-            ),
+            'method': 'POST',
+            'url': '/v1/chat/completions',
+            'body': build_section_graph_completion_request(model=model, packet=packet, profile_id=profile_id),
         }
 
     @staticmethod
     def _search_response(response: SearchResponse) -> dict[str, Any]:
         def hit(value: Any) -> dict[str, Any]:
             return {
-                "passage_id": value.passage_id,
-                "book_title": value.book_title,
-                "toc_path": list(value.toc_path),
-                "content": value.content,
-                "content_sha256": value.content_sha256,
-                "matched_concepts": list(value.matched_concepts),
-                "provenance": list(value.provenance),
-                "excerpt": asdict(value.excerpt),
-                "score": value.score,
+                'passage_id': value.passage_id,
+                'book_title': value.book_title,
+                'toc_path': list(value.toc_path),
+                'content': value.content,
+                'content_sha256': value.content_sha256,
+                'matched_concepts': list(value.matched_concepts),
+                'provenance': list(value.provenance),
+                'excerpt': asdict(value.excerpt),
+                'score': value.score,
             }
 
         return {
-            "query": response.query,
-            "resolved_concepts": list(response.resolved_concepts),
-            "graph_total": response.graph_total,
-            "graph_offset": response.graph_offset,
-            "graph_results": [hit(value) for value in response.graph_results],
-            "vector_results": [hit(value) for value in response.vector_results],
-            "fused_results": [hit(value) for value in response.fused_results],
-            "degraded": [asdict(value) for value in response.degraded],
+            'query': response.query,
+            'resolved_concepts': list(response.resolved_concepts),
+            'graph_total': response.graph_total,
+            'graph_offset': response.graph_offset,
+            'graph_results': [hit(value) for value in response.graph_results],
+            'vector_results': [hit(value) for value in response.vector_results],
+            'fused_results': [hit(value) for value in response.fused_results],
+            'degraded': [asdict(value) for value in response.degraded],
         }
 
 

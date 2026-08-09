@@ -91,7 +91,7 @@ class ConceptPayloadValidation:
     reason: str | None = None
 
 
-DEFAULT_CONCEPT_PROMPT_PROFILE = "zh-glossary-v7"
+DEFAULT_CONCEPT_PROMPT_PROFILE = 'zh-glossary-v7'
 
 # Bounded, adjacent literal context distinguishes repeated evidence without
 # putting another copy of a passage into a provider response.
@@ -107,34 +107,37 @@ MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS = 48
 # request is built once and replayed from its stored row, so a superseded shape
 # has to keep being buildable byte for byte.
 _LEGACY_MENTION_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["start_codepoint", "end_codepoint", "evidence"],
-    "properties": {
-        "start_codepoint": {"type": "integer", "minimum": 0},
-        "end_codepoint": {"type": "integer", "minimum": 1},
-        "evidence": {"type": "string", "minLength": 1},
+    'type': 'object',
+    'additionalProperties': False,
+    'required': ['start_codepoint', 'end_codepoint', 'evidence'],
+    'properties': {
+        'start_codepoint': {'type': 'integer', 'minimum': 0},
+        'end_codepoint': {'type': 'integer', 'minimum': 1},
+        'evidence': {'type': 'string', 'minLength': 1},
     },
 }
 
 _ANCHORED_MENTION_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": [
-        "start_codepoint", "end_codepoint", "evidence",
-        "context_before", "context_after",
+    'type': 'object',
+    'additionalProperties': False,
+    'required': [
+        'start_codepoint',
+        'end_codepoint',
+        'evidence',
+        'context_before',
+        'context_after',
     ],
-    "properties": {
-        "start_codepoint": {"type": "integer", "minimum": 0},
-        "end_codepoint": {"type": "integer", "minimum": 1},
-        "evidence": {"type": "string", "minLength": 1},
-        "context_before": {
-            "type": "string",
-            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+    'properties': {
+        'start_codepoint': {'type': 'integer', 'minimum': 0},
+        'end_codepoint': {'type': 'integer', 'minimum': 1},
+        'evidence': {'type': 'string', 'minLength': 1},
+        'context_before': {
+            'type': 'string',
+            'maxLength': MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
         },
-        "context_after": {
-            "type": "string",
-            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        'context_after': {
+            'type': 'string',
+            'maxLength': MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
         },
     },
 }
@@ -149,18 +152,18 @@ _ANCHORED_MENTION_SCHEMA: dict[str, Any] = {
 # anchor is what remains: it is the only thing a model has to supply for the
 # server to choose between repeated literals.
 _ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["evidence", "context_before", "context_after"],
-    "properties": {
-        "evidence": {"type": "string", "minLength": 1},
-        "context_before": {
-            "type": "string",
-            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+    'type': 'object',
+    'additionalProperties': False,
+    'required': ['evidence', 'context_before', 'context_after'],
+    'properties': {
+        'evidence': {'type': 'string', 'minLength': 1},
+        'context_before': {
+            'type': 'string',
+            'maxLength': MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
         },
-        "context_after": {
-            "type": "string",
-            "maxLength": MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
+        'context_after': {
+            'type': 'string',
+            'maxLength': MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS,
         },
     },
 }
@@ -174,21 +177,21 @@ def _concept_output_schema(mention_schema: Mapping[str, Any]) -> dict[str, Any]:
     reason :func:`section_graph._output_schema` exists.
     """
     return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["concepts"],
-        "properties": {
-            "concepts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["name", "aliases", "definition", "mentions"],
-                    "properties": {
-                        "name": {"type": "string", "minLength": 1},
-                        "aliases": {"type": "array", "items": {"type": "string"}},
-                        "definition": {"type": "string"},
-                        "mentions": {"type": "array", "items": dict(mention_schema)},
+        'type': 'object',
+        'additionalProperties': False,
+        'required': ['concepts'],
+        'properties': {
+            'concepts': {
+                'type': 'array',
+                'items': {
+                    'type': 'object',
+                    'additionalProperties': False,
+                    'required': ['name', 'aliases', 'definition', 'mentions'],
+                    'properties': {
+                        'name': {'type': 'string', 'minLength': 1},
+                        'aliases': {'type': 'array', 'items': {'type': 'string'}},
+                        'definition': {'type': 'string'},
+                        'mentions': {'type': 'array', 'items': dict(mention_schema)},
                     },
                 },
             }
@@ -200,20 +203,16 @@ def _concept_output_schema(mention_schema: Mapping[str, Any]) -> dict[str, Any]:
 # already been decoded.  Cloud ingest keeps its own copies in ``batch.py``: it
 # must recognise a shape without importing an extraction-policy module, and the
 # durable store is the only place where a mismatch could corrupt a citation.
-_LEGACY_MENTION_FIELDS = set(_LEGACY_MENTION_SCHEMA["required"])
-_ANCHORED_MENTION_FIELDS = set(_ANCHORED_MENTION_SCHEMA["required"])
-_ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS = set(
-    _ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS["required"]
-)
+_LEGACY_MENTION_FIELDS = set(_LEGACY_MENTION_SCHEMA['required'])
+_ANCHORED_MENTION_FIELDS = set(_ANCHORED_MENTION_SCHEMA['required'])
+_ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS = set(_ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS['required'])
 
 
 _LEGACY_CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = _concept_output_schema(_LEGACY_MENTION_SCHEMA)
 
 CONCEPT_OUTPUT_SCHEMA: dict[str, Any] = _concept_output_schema(_ANCHORED_MENTION_SCHEMA)
 
-CONCEPT_OUTPUT_SCHEMA_WITHOUT_OFFSETS: dict[str, Any] = _concept_output_schema(
-    _ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS
-)
+CONCEPT_OUTPUT_SCHEMA_WITHOUT_OFFSETS: dict[str, Any] = _concept_output_schema(_ANCHORED_MENTION_SCHEMA_WITHOUT_OFFSETS)
 
 
 # A registered profile is immutable.  Durable cloud sample approvals key on the
@@ -224,81 +223,81 @@ CONCEPT_OUTPUT_SCHEMA_WITHOUT_OFFSETS: dict[str, Any] = _concept_output_schema(
 # approval unlocked, so it is digest-pinned in test_epub_prompt_profiles.py
 # exactly as v1-v5 are.
 _PROFILES: dict[str, ConceptPromptProfile] = {
-    "zh-glossary-v1": ConceptPromptProfile(
-        profile_id="zh-glossary-v1",
+    'zh-glossary-v1': ConceptPromptProfile(
+        profile_id='zh-glossary-v1',
         system_instruction=(
-            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
-            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
-            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
-            "每个概念必须有至少一个出现位置；name 是最适合索引的规范写法，aliases 只包含本段可见的等价写法。"
-            "definition 用一句简短中文说明，且只能依据本段。mentions 的 start_codepoint 从 0 开始，"
-            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
-            "包括标点和空格。没有合格概念时返回 concepts 的空数组。"
-            "仅返回符合指定 JSON 结构的对象，不要 Markdown 或解释。"
+            '你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、'
+            '在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。'
+            '不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。'
+            '每个概念必须有至少一个出现位置；name 是最适合索引的规范写法，aliases 只包含本段可见的等价写法。'
+            'definition 用一句简短中文说明，且只能依据本段。mentions 的 start_codepoint 从 0 开始，'
+            'end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，'
+            '包括标点和空格。没有合格概念时返回 concepts 的空数组。'
+            '仅返回符合指定 JSON 结构的对象，不要 Markdown 或解释。'
         ),
     ),
-    "zh-glossary-v2": ConceptPromptProfile(
-        profile_id="zh-glossary-v2",
+    'zh-glossary-v2': ConceptPromptProfile(
+        profile_id='zh-glossary-v2',
         max_tokens=512,
         system_instruction=(
-            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
-            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
-            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
-            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
-            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
-            "每个概念只保留一个最有代表性的出现位置。mentions 的 start_codepoint 从 0 开始，"
-            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
-            "包括标点和空格。没有合格概念时返回 {\"concepts\":[]}。"
-            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
-            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+            '你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、'
+            '在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。'
+            '不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。'
+            '每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，'
+            '且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。'
+            '每个概念只保留一个最有代表性的出现位置。mentions 的 start_codepoint 从 0 开始，'
+            'end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，'
+            '包括标点和空格。没有合格概念时返回 {"concepts":[]}。'
+            '输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；'
+            '不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。'
         ),
     ),
-    "zh-glossary-v3": ConceptPromptProfile(
-        profile_id="zh-glossary-v3",
+    'zh-glossary-v3': ConceptPromptProfile(
+        profile_id='zh-glossary-v3',
         max_tokens=512,
         system_instruction=(
-            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
-            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
-            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
-            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
-            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
-            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
-            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、"
-            "end_codepoint、evidence 三个字段；start_codepoint 从 0 开始，end_codepoint 为排他位置，"
-            "evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，包括标点和空格。"
-            "没有合格概念时返回 {\"concepts\":[]}。输出形状必须为"
-            "{\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
-            "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":1,\"evidence\":\"…\"}]}]}。"
-            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
-            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+            '你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、'
+            '在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。'
+            '不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。'
+            '每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，'
+            '且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。'
+            '每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，'
+            '且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、'
+            'end_codepoint、evidence 三个字段；start_codepoint 从 0 开始，end_codepoint 为排他位置，'
+            'evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，包括标点和空格。'
+            '没有合格概念时返回 {"concepts":[]}。输出形状必须为'
+            '{"concepts":[{"name":"…","aliases":[],"definition":"…",'
+            '"mentions":[{"start_codepoint":0,"end_codepoint":1,"evidence":"…"}]}]}。'
+            '输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；'
+            '不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。'
         ),
     ),
-    "zh-glossary-v4": ConceptPromptProfile(
-        profile_id="zh-glossary-v4",
+    'zh-glossary-v4': ConceptPromptProfile(
+        profile_id='zh-glossary-v4',
         max_tokens=512,
         uses_context_anchors=True,
         system_instruction=(
-            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
-            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
-            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
-            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
-            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
-            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
-            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、"
-            "end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，"
-            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
-            "包括标点和空格。context_before 和 context_after 分别是 evidence 紧邻前后各最多 48 个"
-            "Unicode 字符的原文；evidence 在本段重复时，至少提供一个非空上下文以唯一确定该出现位置。"
-            "evidence 唯一时两个上下文可为空字符串。没有合格概念时返回 {\"concepts\":[]}。"
-            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
-            "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":1,\"evidence\":\"…\","
-            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
-            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
-            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+            '你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、'
+            '在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。'
+            '不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。'
+            '每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，'
+            '且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。'
+            '每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，'
+            '且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、'
+            'end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，'
+            'end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，'
+            '包括标点和空格。context_before 和 context_after 分别是 evidence 紧邻前后各最多 48 个'
+            'Unicode 字符的原文；evidence 在本段重复时，至少提供一个非空上下文以唯一确定该出现位置。'
+            'evidence 唯一时两个上下文可为空字符串。没有合格概念时返回 {"concepts":[]}。'
+            '输出形状必须为 {"concepts":[{"name":"…","aliases":[],"definition":"…",'
+            '"mentions":[{"start_codepoint":0,"end_codepoint":1,"evidence":"…",'
+            '"context_before":"","context_after":""}]}]}。'
+            '输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；'
+            '不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。'
         ),
     ),
-    "zh-glossary-v5": ConceptPromptProfile(
-        profile_id="zh-glossary-v5",
+    'zh-glossary-v5': ConceptPromptProfile(
+        profile_id='zh-glossary-v5',
         # v4's 512-token budget was the direct cause of a third of its sample
         # failures: the provider returned no JSON payload at all on the longest
         # passages (1174, 1040 and 692 code points).  The worst case this
@@ -315,29 +314,29 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
         max_tokens=2_048,
         uses_context_anchors=True,
         system_instruction=(
-            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
-            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
-            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
-            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
-            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
-            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
-            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、"
-            "end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，"
-            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
-            "包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、"
-            "全角与半角标点、空格和大小写。evidence 在本段只出现一次时，"
-            "context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，"
-            "两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，"
-            "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
-            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
-            "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":1,\"evidence\":\"…\","
-            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
-            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
-            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+            '你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、'
+            '在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。'
+            '不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。'
+            '每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，'
+            '且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。'
+            '每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，'
+            '且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、'
+            'end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，'
+            'end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，'
+            '包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、'
+            '全角与半角标点、空格和大小写。evidence 在本段只出现一次时，'
+            'context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，'
+            '两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，'
+            '以唯一确定该出现位置。没有合格概念时返回 {"concepts":[]}。'
+            '输出形状必须为 {"concepts":[{"name":"…","aliases":[],"definition":"…",'
+            '"mentions":[{"start_codepoint":0,"end_codepoint":1,"evidence":"…",'
+            '"context_before":"","context_after":""}]}]}。'
+            '输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；'
+            '不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。'
         ),
     ),
-    "zh-glossary-v6": ConceptPromptProfile(
-        profile_id="zh-glossary-v6",
+    'zh-glossary-v6': ConceptPromptProfile(
+        profile_id='zh-glossary-v6',
         # v6 is v5 plus one clause: a minimum evidence span.  Everything else --
         # the 2_048-token budget, the conditional anchors, the verbatim-copy
         # rule, the object shape, the leading-"{" rule and the six-concept cap --
@@ -382,28 +381,28 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
         enforced_min_evidence_codepoints=6,
         uses_context_anchors=True,
         system_instruction=(
-            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
-            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
-            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
-            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
-            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
-            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
-            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、"
-            "end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，"
-            "end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，"
-            "包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、"
-            "全角与半角标点、空格和大小写。evidence 至少 10 个 Unicode 字符，"
-            "且必须是包含该概念的完整、有意义的短语或分句，不得只给出概念本身，"
-            "也不得截取无意义的字符片段；本段总长不足 10 个 Unicode 字符时，evidence 取本段全文。"
-            "evidence 在本段只出现一次时，"
-            "context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，"
-            "两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，"
-            "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
-            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
-            "\"mentions\":[{\"start_codepoint\":0,\"end_codepoint\":10,\"evidence\":\"…\","
-            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
-            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
-            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+            '你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、'
+            '在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。'
+            '不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。'
+            '每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，'
+            '且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。'
+            '每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，'
+            '且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 start_codepoint、'
+            'end_codepoint、evidence、context_before、context_after 五个字段；start_codepoint 从 0 开始，'
+            'end_codepoint 为排他位置，evidence 必须与 passage[start_codepoint:end_codepoint] 完全一致，'
+            '包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、'
+            '全角与半角标点、空格和大小写。evidence 至少 10 个 Unicode 字符，'
+            '且必须是包含该概念的完整、有意义的短语或分句，不得只给出概念本身，'
+            '也不得截取无意义的字符片段；本段总长不足 10 个 Unicode 字符时，evidence 取本段全文。'
+            'evidence 在本段只出现一次时，'
+            'context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，'
+            '两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，'
+            '以唯一确定该出现位置。没有合格概念时返回 {"concepts":[]}。'
+            '输出形状必须为 {"concepts":[{"name":"…","aliases":[],"definition":"…",'
+            '"mentions":[{"start_codepoint":0,"end_codepoint":10,"evidence":"…",'
+            '"context_before":"","context_after":""}]}]}。'
+            '输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；'
+            '不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。'
         ),
     ),
     DEFAULT_CONCEPT_PROMPT_PROFILE: ConceptPromptProfile(
@@ -459,29 +458,29 @@ _PROFILES: dict[str, ConceptPromptProfile] = {
         uses_context_anchors=True,
         asks_for_offsets=False,
         system_instruction=(
-            "你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、"
-            "在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。"
-            "不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。"
-            "每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，"
-            "且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。"
-            "每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，"
-            "且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 evidence、"
-            "context_before、context_after 三个字段；不要输出任何字符位置，"
-            "字符位置由程序依据 evidence 在本段中重新推导。"
-            "evidence 必须与本段中的一段原文完全一致，"
-            "包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、"
-            "全角与半角标点、空格和大小写。evidence 至少 10 个 Unicode 字符，"
-            "且必须是包含该概念的完整、有意义的短语或分句，不得只给出概念本身，"
-            "也不得截取无意义的字符片段；本段总长不足 10 个 Unicode 字符时，evidence 取本段全文。"
-            "evidence 在本段只出现一次时，"
-            "context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，"
-            "两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，"
-            "以唯一确定该出现位置。没有合格概念时返回 {\"concepts\":[]}。"
-            "输出形状必须为 {\"concepts\":[{\"name\":\"…\",\"aliases\":[],\"definition\":\"…\","
-            "\"mentions\":[{\"evidence\":\"…\","
-            "\"context_before\":\"\",\"context_after\":\"\"}]}]}。"
-            "输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；"
-            "不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。"
+            '你是中文 EPUB 的术语与专名抽取器。只抽取读者可能需要检索或解释的、'
+            '在本段中有明确依据的专有名词、人物、组织、地点、事件、制度、作品名或专业术语。'
+            '不要抽取普通功能词、泛化主题、纯修辞、没有可验证文本依据的推测，也不要根据外部知识补充事实。'
+            '每段最多抽取 6 个最值得检索的概念。name 是最适合索引的规范写法；aliases 最多 2 个，'
+            '且只包含本段可见的等价写法；definition 是不超过 30 个汉字的一句说明，且只能依据本段。'
+            '每个概念必须有且只能有 name、aliases、definition、mentions 四个字段；mentions 不能为空，'
+            '且只保留一个最有代表性的出现位置。每个 mention 必须有且只能有 evidence、'
+            'context_before、context_after 三个字段；不要输出任何字符位置，'
+            '字符位置由程序依据 evidence 在本段中重新推导。'
+            'evidence 必须与本段中的一段原文完全一致，'
+            '包括标点和空格。evidence 必须从本段逐字复制：不得改写、翻译或统一引号、'
+            '全角与半角标点、空格和大小写。evidence 至少 10 个 Unicode 字符，'
+            '且必须是包含该概念的完整、有意义的短语或分句，不得只给出概念本身，'
+            '也不得截取无意义的字符片段；本段总长不足 10 个 Unicode 字符时，evidence 取本段全文。'
+            'evidence 在本段只出现一次时，'
+            'context_before 和 context_after 必须都是空字符串；evidence 在本段重复出现时，'
+            '两者分别取 evidence 紧邻前后各最多 48 个 Unicode 字符的原文，且至少一个非空，'
+            '以唯一确定该出现位置。没有合格概念时返回 {"concepts":[]}。'
+            '输出形状必须为 {"concepts":[{"name":"…","aliases":[],"definition":"…",'
+            '"mentions":[{"evidence":"…",'
+            '"context_before":"","context_after":""}]}]}。'
+            '输出必须是一个 JSON 对象：第一个字符必须是 {，唯一顶层键必须是 concepts；'
+            '不得返回 JSON 数组、JSON 字符串、Markdown 代码块或任何解释。'
         ),
     ),
 }
@@ -494,7 +493,7 @@ def available_prompt_profiles() -> tuple[str, ...]:
 def get_prompt_profile(profile_id: str) -> ConceptPromptProfile:
     profile = _PROFILES.get(profile_id)
     if profile is None:
-        raise PromptProfileError(f"unknown EPUB concept prompt profile: {profile_id}")
+        raise PromptProfileError(f'unknown EPUB concept prompt profile: {profile_id}')
     return profile
 
 
@@ -519,53 +518,53 @@ def build_concept_completion_request(
 ) -> dict[str, Any]:
     """Build the exact model request used by local and remote calibration."""
     if not model.strip():
-        raise PromptProfileError("concept extraction model cannot be empty")
+        raise PromptProfileError('concept extraction model cannot be empty')
     if not passage:
-        raise PromptProfileError("concept extraction passage cannot be empty")
+        raise PromptProfileError('concept extraction passage cannot be empty')
     profile = get_prompt_profile(profile_id)
     response_format: dict[str, Any]
     if remote_structured_output:
         response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "epub_concepts",
-                "strict": True,
+            'type': 'json_schema',
+            'json_schema': {
+                'name': 'epub_concepts',
+                'strict': True,
                 # Both flags come from the profile, never from the current
                 # default, so a superseded profile keeps sending the exact
                 # schema it was sampled with.
-                "schema": _strict_schema_for(profile),
+                'schema': _strict_schema_for(profile),
             },
         }
     else:
-        response_format = {"type": "json_object"}
+        response_format = {'type': 'json_object'}
     return {
-        "model": model.strip(),
-        "temperature": profile.temperature,
-        "seed": 0,
-        "max_tokens": profile.max_tokens,
-        "response_format": response_format,
-        "messages": [
-            {"role": "system", "content": profile.system_instruction},
-            {"role": "user", "content": passage},
+        'model': model.strip(),
+        'temperature': profile.temperature,
+        'seed': 0,
+        'max_tokens': profile.max_tokens,
+        'response_format': response_format,
+        'messages': [
+            {'role': 'system', 'content': profile.system_instruction},
+            {'role': 'user', 'content': passage},
         ],
     }
 
 
-def select_stratified_passages(
-    passages: Sequence[Mapping[str, Any]], *, limit: int
-) -> list[Mapping[str, Any]]:
+def select_stratified_passages(passages: Sequence[Mapping[str, Any]], *, limit: int) -> list[Mapping[str, Any]]:
     """Choose a deterministic, evenly distributed cross-chapter calibration set."""
     if not 1 <= limit <= 500:
-        raise PromptProfileError("calibration sample limit must be between 1 and 500")
-    ordered = sorted(passages, key=lambda value: (int(value.get("ordinal", 0)), str(value.get("passage_id", ""))))
+        raise PromptProfileError('calibration sample limit must be between 1 and 500')
+    ordered = sorted(passages, key=lambda value: (int(value.get('ordinal', 0)), str(value.get('passage_id', ''))))
     if not ordered:
-        raise PromptProfileError("EPUB version contains no passages")
+        raise PromptProfileError('EPUB version contains no passages')
     groups: dict[tuple[str, ...], list[Mapping[str, Any]]] = {}
     for passage in ordered:
-        raw_path = passage.get("toc_path")
-        path = tuple(str(part) for part in raw_path) if isinstance(raw_path, (list, tuple)) and raw_path else ("",)
+        raw_path = passage.get('toc_path')
+        path = tuple(str(part) for part in raw_path) if isinstance(raw_path, (list, tuple)) and raw_path else ('',)
         groups.setdefault(path[:1], []).append(passage)
-    chapters = sorted(groups.values(), key=lambda values: (int(values[0].get("ordinal", 0)), str(values[0].get("passage_id", ""))))
+    chapters = sorted(
+        groups.values(), key=lambda values: (int(values[0].get('ordinal', 0)), str(values[0].get('passage_id', '')))
+    )
     selected_groups = _evenly_spaced(chapters, min(limit, len(chapters)))
     remaining = limit
     selected: list[Mapping[str, Any]] = []
@@ -577,45 +576,45 @@ def select_stratified_passages(
     # When some short chapters cannot absorb their fair share, fill the rest
     # deterministically without duplicating a passage.
     if remaining > 0:
-        selected_ids = {str(value.get("passage_id", "")) for value in selected}
+        selected_ids = {str(value.get('passage_id', '')) for value in selected}
         for passage in ordered:
-            if str(passage.get("passage_id", "")) not in selected_ids:
+            if str(passage.get('passage_id', '')) not in selected_ids:
                 selected.append(passage)
-                selected_ids.add(str(passage.get("passage_id", "")))
+                selected_ids.add(str(passage.get('passage_id', '')))
                 if len(selected) >= limit:
                     break
-    return sorted(selected[:limit], key=lambda value: (int(value.get("ordinal", 0)), str(value.get("passage_id", ""))))
+    return sorted(selected[:limit], key=lambda value: (int(value.get('ordinal', 0)), str(value.get('passage_id', ''))))
 
 
 def validate_concept_payload(payload: Any, *, passage: str) -> ConceptPayloadValidation:
     """Validate the model payload before it can affect a concept graph."""
-    if not isinstance(payload, Mapping) or set(payload) != {"concepts"}:
-        return ConceptPayloadValidation(False, 0, 0, "response must be an object with only concepts")
-    concepts = payload.get("concepts")
+    if not isinstance(payload, Mapping) or set(payload) != {'concepts'}:
+        return ConceptPayloadValidation(False, 0, 0, 'response must be an object with only concepts')
+    concepts = payload.get('concepts')
     if not isinstance(concepts, list):
-        return ConceptPayloadValidation(False, 0, 0, "concepts must be a list")
+        return ConceptPayloadValidation(False, 0, 0, 'concepts must be a list')
     mentions = 0
     for concept in concepts:
-        if not isinstance(concept, Mapping) or set(concept) != {"name", "aliases", "definition", "mentions"}:
-            return ConceptPayloadValidation(False, 0, mentions, "each concept has an invalid schema")
-        if not isinstance(concept["name"], str) or not concept["name"].strip():
-            return ConceptPayloadValidation(False, 0, mentions, "concept name must be non-empty text")
-        if not isinstance(concept["definition"], str):
-            return ConceptPayloadValidation(False, 0, mentions, "concept definition must be text")
-        aliases = concept["aliases"]
+        if not isinstance(concept, Mapping) or set(concept) != {'name', 'aliases', 'definition', 'mentions'}:
+            return ConceptPayloadValidation(False, 0, mentions, 'each concept has an invalid schema')
+        if not isinstance(concept['name'], str) or not concept['name'].strip():
+            return ConceptPayloadValidation(False, 0, mentions, 'concept name must be non-empty text')
+        if not isinstance(concept['definition'], str):
+            return ConceptPayloadValidation(False, 0, mentions, 'concept definition must be text')
+        aliases = concept['aliases']
         if not isinstance(aliases, list) or not all(isinstance(alias, str) for alias in aliases):
-            return ConceptPayloadValidation(False, 0, mentions, "concept aliases must be text")
-        concept_mentions = concept["mentions"]
+            return ConceptPayloadValidation(False, 0, mentions, 'concept aliases must be text')
+        concept_mentions = concept['mentions']
         if not isinstance(concept_mentions, list) or not concept_mentions:
-            return ConceptPayloadValidation(False, 0, mentions, "each concept needs a visible mention")
+            return ConceptPayloadValidation(False, 0, mentions, 'each concept needs a visible mention')
         for mention in concept_mentions:
             if not isinstance(mention, Mapping) or set(mention) not in (
                 _LEGACY_MENTION_FIELDS,
                 _ANCHORED_MENTION_FIELDS,
                 _ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS,
             ):
-                return ConceptPayloadValidation(False, 0, mentions, "each mention has an invalid schema")
-            evidence = mention["evidence"]
+                return ConceptPayloadValidation(False, 0, mentions, 'each mention has an invalid schema')
+            evidence = mention['evidence']
             if set(mention) == _ANCHORED_MENTION_FIELDS_WITHOUT_OFFSETS:
                 # A v7 payload carries no offsets at all, so this validator
                 # derives them from the literal exactly as cloud ingest does.
@@ -624,18 +623,16 @@ def validate_concept_payload(payload: Any, *, passage: str) -> ConceptPayloadVal
                 # than a second, looser one for the newer shape.
                 located = _locate_evidence(
                     passage,
-                    evidence if isinstance(evidence, str) else "",
-                    mention["context_before"],
-                    mention["context_after"],
+                    evidence if isinstance(evidence, str) else '',
+                    mention['context_before'],
+                    mention['context_after'],
                 )
                 if located is None:
-                    return ConceptPayloadValidation(
-                        False, 0, mentions, "mention evidence cannot be uniquely located"
-                    )
+                    return ConceptPayloadValidation(False, 0, mentions, 'mention evidence cannot be uniquely located')
                 start, end = located
             else:
-                start = mention["start_codepoint"]
-                end = mention["end_codepoint"]
+                start = mention['start_codepoint']
+                end = mention['end_codepoint']
             if (
                 isinstance(start, bool)
                 or isinstance(end, bool)
@@ -647,23 +644,20 @@ def validate_concept_payload(payload: Any, *, passage: str) -> ConceptPayloadVal
                 or not isinstance(evidence, str)
                 or passage[start:end] != evidence
             ):
-                return ConceptPayloadValidation(False, 0, mentions, "mention evidence or codepoint offsets are invalid")
-            if "context_before" in mention:
-                before = mention["context_before"]
-                after = mention["context_after"]
+                return ConceptPayloadValidation(False, 0, mentions, 'mention evidence or codepoint offsets are invalid')
+            if 'context_before' in mention:
+                before = mention['context_before']
+                after = mention['context_after']
                 if (
                     not isinstance(before, str)
                     or not isinstance(after, str)
                     or len(before) > MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
                     or len(after) > MAX_EVIDENCE_CONTEXT_ANCHOR_CODEPOINTS
-                    or passage[max(0, start - len(before)):start] != before
-                    or passage[end:end + len(after)] != after
-                    or (
-                        passage.find(evidence, passage.find(evidence) + 1) >= 0
-                        and not (before or after)
-                    )
+                    or passage[max(0, start - len(before)) : start] != before
+                    or passage[end : end + len(after)] != after
+                    or (passage.find(evidence, passage.find(evidence) + 1) >= 0 and not (before or after))
                 ):
-                    return ConceptPayloadValidation(False, 0, mentions, "mention evidence context anchor is invalid")
+                    return ConceptPayloadValidation(False, 0, mentions, 'mention evidence context anchor is invalid')
             mentions += 1
     return ConceptPayloadValidation(True, len(concepts), mentions)
 
@@ -678,7 +672,7 @@ def normalize_local_payload_offsets(payload: Any, *, passage: str) -> Any:
     """
     if not isinstance(payload, Mapping):
         return payload
-    concepts = payload.get("concepts")
+    concepts = payload.get('concepts')
     if not isinstance(concepts, list):
         return payload
     normalized_concepts: list[Any] = []
@@ -687,32 +681,30 @@ def normalize_local_payload_offsets(payload: Any, *, passage: str) -> Any:
             normalized_concepts.append(concept)
             continue
         normalized_concept = dict(concept)
-        mentions = concept.get("mentions")
+        mentions = concept.get('mentions')
         if not isinstance(mentions, list):
             normalized_concepts.append(normalized_concept)
             continue
         normalized_mentions: list[Any] = []
         for mention in mentions:
-            if not isinstance(mention, Mapping) or not isinstance(mention.get("evidence"), str):
+            if not isinstance(mention, Mapping) or not isinstance(mention.get('evidence'), str):
                 normalized_mentions.append(mention)
                 continue
-            evidence = mention["evidence"]
+            evidence = mention['evidence']
             start = passage.find(evidence)
             if not evidence or start < 0 or passage.find(evidence, start + len(evidence)) >= 0:
                 normalized_mentions.append(dict(mention))
                 continue
             normalized_mention = dict(mention)
-            normalized_mention["start_codepoint"] = start
-            normalized_mention["end_codepoint"] = start + len(evidence)
+            normalized_mention['start_codepoint'] = start
+            normalized_mention['end_codepoint'] = start + len(evidence)
             normalized_mentions.append(normalized_mention)
-        normalized_concept["mentions"] = normalized_mentions
+        normalized_concept['mentions'] = normalized_mentions
         normalized_concepts.append(normalized_concept)
-    return {**payload, "concepts": normalized_concepts}
+    return {**payload, 'concepts': normalized_concepts}
 
 
-def _locate_evidence(
-    passage: str, evidence: str, before: Any, after: Any
-) -> tuple[int, int] | None:
+def _locate_evidence(passage: str, evidence: str, before: Any, after: Any) -> tuple[int, int] | None:
     """Derive the span of an offsets-free mention, or ``None`` if it is unsafe.
 
     This is the read-only twin of the no-offsets branch of
@@ -739,10 +731,8 @@ def _locate_evidence(
         candidates = [
             occurrence
             for occurrence in occurrences
-            if passage[max(0, occurrence - len(before)):occurrence] == before
-            and passage[
-                occurrence + len(evidence):occurrence + len(evidence) + len(after)
-            ] == after
+            if passage[max(0, occurrence - len(before)) : occurrence] == before
+            and passage[occurrence + len(evidence) : occurrence + len(evidence) + len(after)] == after
         ]
     if len(candidates) != 1:
         return None
