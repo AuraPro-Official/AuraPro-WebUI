@@ -166,6 +166,20 @@ export type EpubBatchItemSummary = {
 	 * both job kinds.
 	 */
 	skipped_ambiguous_concepts: number | null;
+	/**
+	 * Evidence spans this item dropped because they could not be verified
+	 * against the passage they named — the model quoted text that is not there,
+	 * or text that is there more than once with nothing to select an occurrence.
+	 * The claim goes with the citation: a concept left with no mention is
+	 * dropped, and a relation left with no evidence, or whose endpoint was one
+	 * of those concepts, goes with it. A count only, for the same schema reason
+	 * as above. Deliberately not folded into `skipped_short_evidence`: a
+	 * sub-floor span is our own threshold, this is the model's bookkeeping, and
+	 * one must not mask the other. `null` means the rule could not run: a
+	 * `CONCEPT_MENTIONS` item, whose ungrounded spans still fail it whole, an
+	 * item that has not succeeded, or a row written before the column existed.
+	 */
+	skipped_ungrounded_evidence: number | null;
 	updated_at: string | null;
 };
 
@@ -213,6 +227,12 @@ export type EpubBatchSummary = {
 	 * relations that cascaded off them.
 	 */
 	item_skipped_ambiguous_concepts: number;
+	/**
+	 * Unverifiable evidence spans dropped across this job's succeeded items,
+	 * aggregated here for the same reason as the counts above. Kept separate
+	 * from `item_skipped_short_evidence` because the two settle differently.
+	 */
+	item_skipped_ungrounded_evidence: number;
 	items?: EpubBatchItemSummary[];
 };
 
