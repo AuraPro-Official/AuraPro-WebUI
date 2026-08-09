@@ -2194,7 +2194,8 @@ async def export_knowledge_with_vectors(
     content_disposition = f'attachment; filename="{zip_filename}"; filename*=UTF-8\'\'{quoted_name}'
 
     zip_buffer = await create_knowledge_export_zip(
-        id, progress_callback=_emit_progress,
+        id,
+        progress_callback=_emit_progress,
     )
     safe_name = ''.join(c if c.isascii() and (c.isalnum() or c in ' -_') else '_' for c in knowledge.name)
     zip_filename = f'{safe_name}_with_vectors.zip'
