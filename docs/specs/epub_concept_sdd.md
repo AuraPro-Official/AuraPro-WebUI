@@ -106,8 +106,14 @@ its actual URL is loopback/private, or its private DNS hostname is explicitly
 listed in the server-only comma-separated
 `EPUB_CONCEPT_TRUSTED_MODEL_HOSTNAMES`; OpenAI, Azure, and external reranker
 engines are disabled for EPUB rather than falling back. Tier-2 concept
-resolution is optional only while it is unconfigured. Administrator-managed
-or development deployments may configure `EPUB_CONCEPT_LOCAL_LLM_ENDPOINT`
+resolution is optional only while it is unconfigured. It does **not** run until
+it is configured: there is no built-in local LLM, so a deployment that has not
+supplied one gets Tier 1 only, and every response whose Tier-1 answer was weak
+enough to have consulted the resolver reports `local-concept-resolver` as a
+degraded component with the reason `not configured`. That is the intended
+signal, not a warning to suppress — a reader is told the tier could have helped
+and did not run. Administrator-managed or development deployments may configure
+`EPUB_CONCEPT_LOCAL_LLM_ENDPOINT`
 and `EPUB_CONCEPT_LOCAL_LLM_MODEL`; the endpoint is validated with the same
 private-address policy and accepts an explicit private-DNS allowlist through
 `EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`. In a Desktop-managed local
@@ -507,6 +513,36 @@ relationship affects retrieval provenance and ranking, never citation text.
 - Tier 2 uses a local/private small LLM to resolve a concept only when Tier 1
   has no useful match. If unavailable, return an explicit degraded state rather
   than calling a cloud fallback.
+- "No useful match" is **weakness, not emptiness**, and it is defined
+  structurally rather than by a score — nothing else in search scores a Tier-1
+  match, and a score invented for this gate would be a second ordering to keep
+  in step with relation cost. Any one of three conditions is enough: nothing
+  survived longest-match suppression; nothing that survived is
+  expansion-eligible under the resolution rule above, so the query brushed
+  concepts without naming one; or the resolved set's `graph_total` is below a
+  small floor, so paging the whole graph channel would show the reader a heading
+  and little else. Gating on emptiness alone let a single spurious match suppress
+  the tier on exactly the queries that needed it. A Tier-2 concept is **added to**
+  what Tier 1 found and never substituted for it: a weak Tier-1 match still
+  resolves and still contributes every one of its own spans, and where both tiers
+  name the same concept the Tier-1 match wins, so a model naming a concept the
+  query only brushed does not lengthen the matched term the expansion guard
+  measures.
+- Tier 2 is asked to **select from a bounded shortlist**, never from the whole
+  vocabulary. The shortlist is the concepts mentioned by the parent passages of
+  Channel B's top vector candidates: it reuses the embedding pass the request has
+  already run, needs no new index and no derived data, and puts the question to
+  the model as a selection within the neighbourhood the query landed in rather
+  than a lookup over the entire graph — a thousand-name payload is why the tier
+  could not work in practice. Candidates are ordered by the nearest vector
+  candidate that mentions them, so the ceiling truncates the least related names.
+  The ceiling is the invariant, not the vector channel: a vocabulary that already
+  fits under it is sent whole, and one that does not, with no vector candidates
+  available, is **refused and reported degraded** rather than sent.
+- The model may only **select an existing concept**. Its answer is re-validated
+  through the same Tier-1 matcher that failed on the query, so a name the store
+  does not hold resolves nothing, is reported degraded, and can never create a
+  graph node or reach a citation.
 - Channel A enumerates all distinct graph source spans and exposes an exhaustive
   count and pagination over them. The unit of enumeration is a distinct
   `(passage, start_codepoint, end_codepoint)` span, not a mention row: several
