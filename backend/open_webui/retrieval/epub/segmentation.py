@@ -1,8 +1,8 @@
 """Query-side word segmentation for Tier-1 concept matching.
 
 CJK text has no spaces, so a substring search over a natural-language query
-happily anchors a concept in the middle of an unrelated word: ``义`` inside
-``意义``, or the one-character alias ``约`` inside ``约伯``.  A segmenter gives
+happily anchors a concept in the middle of an unrelated word: ``律`` inside
+``规律``, or the one-character alias ``锚`` inside ``锚站``.  A segmenter gives
 the matcher the one thing it is missing — where the query's own words begin and
 end — so a CJK term can be required to sit on a word boundary the way a Latin
 term already is.
@@ -11,7 +11,7 @@ Two decisions are load-bearing and deliberate:
 
 * **Only the query is segmented, never the concept terms.**  Segmentation here
   supplies a *boundary predicate*, not a pattern set.  A term like
-  ``神对约伯的试炼`` is a phrase no segmenter will ever emit as one token;
+  ``枢对锚站的校验`` is a phrase no segmenter will ever emit as one token;
   rebuilding the trie over tokens would fragment it into pieces that no longer
   exist as a unit, and the term would stop matching the very query it names.
   The trie keeps matching whole terms; segmentation only decides which of its
@@ -42,9 +42,9 @@ class TokenBoundaries:
     ``starts`` and ``ends`` are half-open-interval endpoints: a token covering
     ``text[a:b]`` contributes ``a`` to ``starts`` and ``b`` to ``ends``.  A
     match ``[start, end)`` is boundary-valid when both endpoints are members,
-    which allows a term to span several adjacent tokens (``神对约伯的试炼``
-    covers four) while rejecting one that begins or ends mid-token (``义``
-    inside ``意义``).
+    which allows a term to span several adjacent tokens (``枢对锚站的校验``
+    covers four) while rejecting one that begins or ends mid-token (``律``
+    inside ``规律``).
 
     ``0`` and ``len(text)`` are always members, whatever the tokenizer said.
     Without that, a text consisting of exactly one term could fail its own
@@ -89,8 +89,8 @@ class JiebaQuerySegmenter:
 
     The dictionary is deliberately the stock one.  Seeding it from the concept
     vocabulary is a separate change that needs its own measurement, and it is
-    actively dangerous below two code points: teaching the tokenizer that ``神``
-    is a word would split ``神对`` and re-admit exactly the spurious one
+    actively dangerous below two code points: teaching the tokenizer that ``枢``
+    is a word would split ``枢对`` and re-admit exactly the spurious one
     character alias matches this module exists to stop.
     """
 

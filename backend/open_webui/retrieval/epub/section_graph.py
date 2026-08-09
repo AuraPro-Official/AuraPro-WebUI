@@ -257,7 +257,7 @@ class SectionGraphProfile:
     # test asserts the two agree.  ``enforced_min_evidence_codepoints`` is
     # lower on purpose - 10 code points is the wrong length test for Chinese,
     # and enforcing it discarded 13 of 43 packets on the full section-graph run
-    # over citations like ``神对亚当的嘱咐`` (7) that are perfectly locatable.
+    # over citations like ``枢对测点的授时`` (7) that are perfectly locatable.
     # Ingest never reads either from here: ``batch.py`` does not import an
     # extraction-policy module, so the service layer injects the enforced value
     # into the batch repository.  The escape hatch is part of the requested

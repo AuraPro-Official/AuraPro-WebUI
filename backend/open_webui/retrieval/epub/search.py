@@ -279,10 +279,10 @@ class ConceptTermMatcher:
 
         Positions are kept all the way through because two rules need them.
         Longest-match suppression drops a hit that sits *strictly inside*
-        another surviving hit: with the query ``神对约伯的试炼的意义``, the
-        alias ``约`` is boundary-valid on its own but is covered by the longer
-        ``神对约伯的试炼``, and a reader asking about the trial of Job is not
-        asking about every covenant in the book.  Equal spans are not
+        another surviving hit: with the query ``枢对锚站的校验的规律``, the
+        one-code-point alias ``锚`` is boundary-valid on its own but is covered
+        by the longer ``枢对锚站的校验``, and a reader asking about that one
+        procedure is not asking about every concept whose name contains it.  Equal spans are not
         contained, so two aliases that collide on identical characters both
         survive — the same rule the store applies when it collapses overlapping
         source spans.
@@ -347,8 +347,8 @@ class ConceptTermMatcher:
         # A term containing CJK is valid only where the searched text's own
         # word boundaries agree with both of its ends.  CJK is written without
         # spaces, so without this a term matches anywhere it appears as a
-        # substring: `义` lands inside `意义`, and the one-character alias `约`
-        # lands inside the name `约伯`, pulling in concepts the query never
+        # substring: `律` lands inside `规律`, and the one-character alias `锚`
+        # lands inside the name `锚站`, pulling in concepts the query never
         # mentioned.  Boundaries come from the caller because this matcher does
         # not own a segmenter; when the caller has none, the older rule applies
         # and the loss of precision is reported as degraded rather than hidden.
@@ -492,7 +492,7 @@ class EpubSearchService:
         it; a query that merely happens to contain a single very common
         character does not, because expanding out of a concept the reader never
         actually named returns spans about something else entirely — which is
-        how one query came back citing ``神对亚当的嘱咐``, a hub *child* reached
+        how one query came back citing ``枢对测点的授时``, a hub *child* reached
         by walking out of a concept nobody had asked for.
 
         This is a **resolution** rule, not a ranking one, and it is the only
@@ -516,17 +516,17 @@ class EpubSearchService:
 
         Deliberately *not* a condition: **how many mentions the concept has.**
         That was tried as a proxy for a generic term and it misfires exactly
-        where it matters.  ``神的权柄`` is matched by its full five-code-point
-        name; it is not generic, it is a specific topic that a book about God
-        naturally discusses often, and a reader who searches for it by name
+        where it matters.  ``枢纽的权重`` is matched by its full five-code-point
+        name; it is not generic, it is a specific topic that the acceptance
+        book naturally discusses often, and a reader who searches for it by name
         almost certainly wants its sub-topics.  A ceiling on the count refused
         them, cutting that query from 174 spans to 42.  Frequency is a fact
         about the book, not about what the reader asked for.
 
         The accepted consequence is that naming the hub outright —
-        ``独一无二的神``, spelled in full — expands to its whole subtree.  That
+        ``全域潮汐枢纽``, spelled in full — expands to its whole subtree.  That
         is correct: you asked for it by name.  What stays blocked is its
-        one-character alias ``神``, by rule (1), so an incidental 神 inside an
+        one-character alias ``枢``, by rule (1), so an incidental 枢 inside an
         unrelated query still drags nothing in.
 
         Also deliberately *not* a condition: what fraction of the query the
@@ -558,7 +558,7 @@ class EpubSearchService:
 
         The weight is the price of the walk: one hop costs ``1 + log2(k)``
         where ``k`` is how many children that parent fanned out to.  A parent
-        with one child costs a plain hop; ``独一无二的神``, with 20 grounded
+        with one child costs a plain hop; ``全域潮汐枢纽``, with 20 grounded
         ``HAS_PART`` children in the acceptance book, costs 5.32 — so its
         children's spans sort below spans reached by two hops through narrow
         parents, which is exactly the relative confidence those two paths
@@ -616,10 +616,10 @@ class EpubSearchService:
     ) -> _RelationExpansion:
         """Add the concepts a seed's TOC child sections hold, where the model added none.
 
-        The book states its own hierarchy.  ``人一生所必经的六个关口`` has six
+        The book states its own hierarchy.  ``观测网所必经的六道闸门`` has six
         child sections in the parsed ``toc_nodes``, one per 关口, and the query
-        ``人生六个关口是什么`` used to return exactly one span — the heading —
-        because ``六个关口`` is a one-mention island with no relation of any
+        ``观测网六道闸门是什么`` used to return exactly one span — the heading —
+        because ``六道闸门`` is a one-mention island with no relation of any
         predicate.  Structural provenance the parser read out of the EPUB is
         not something a model has to be asked for, and it is not something a
         model may overrule.

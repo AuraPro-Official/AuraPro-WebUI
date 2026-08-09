@@ -543,7 +543,7 @@ _MIGRATION_10: tuple[str, ...] = (
     # item ingests (SDD 4.2.2 point 6c).  Measured on the full-book runs, the
     # failing behaviour held 33 items, of which 32 collided on pairs an
     # administrator had already adjudicated as *distinct* -- 13 on
-    # ``独一无二的神``/``造物主`` alone -- so no merge could resolve them and the
+    # ``全域潮汐枢纽``/``潮汐源`` alone -- so no merge could resolve them and the
     # items were being discarded permanently, taking every valid concept and
     # mention beside the collision with them.
     #
@@ -1303,9 +1303,9 @@ class SQLiteEpubStore:
         The book's own table of contents is structural provenance the parser
         read out of the EPUB; no model proposed it and none can revise it.  It
         is therefore usable as a *fallback* decomposition for a concept the
-        model never decomposed — the acceptance book's ``六个关口`` has no
+        model never decomposed — the acceptance book's ``六道闸门`` has no
         relation of any predicate, while its TOC node
-        ``人一生所必经的六个关口`` has exactly the six sections that answer the
+        ``观测网所必经的六道闸门`` has exactly the six sections that answer the
         question.
 
         Nothing here is stored.  A TOC edge has no prose evidence, and
@@ -1321,8 +1321,8 @@ class SQLiteEpubStore:
 
         * A concept *binds* to a TOC node only when **every** one of its
           mentions lands in a passage under that one node.  On the acceptance
-          book 821 of 1,111 mentioned concepts qualify; ``独一无二的神`` and
-          ``造物主``, which are discussed throughout, do not — which is what
+          book 821 of 1,111 mentioned concepts qualify; ``全域潮汐枢纽`` and
+          ``潮汐源``, which are discussed throughout, do not — which is what
           stops this channel from becoming another hub.
         * A child concept is admitted only if it is itself fully bound inside
           one of those child nodes.  Ungated, the acceptance query reaches 138
@@ -2162,7 +2162,7 @@ class SQLiteEpubStore:
 
         :meth:`merge_concepts` is one-way, and an administrator merge is a
         fallible judgement -- a context-specific designation folded into a
-        generic one, a teaching folded into the scripture locator that names
+        generic one, a procedure folded into the document locator that names
         it.  Restoring a backup and replaying stops being possible as soon as a
         later job postdates the backup, so this is the correction path.
 

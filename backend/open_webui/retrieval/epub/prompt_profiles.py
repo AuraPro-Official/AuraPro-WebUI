@@ -58,11 +58,11 @@ class ConceptPromptProfile:
     # optional: measured on the completed full-book v6 run, 345 of 2,619 stored
     # mentions (13.2%) came in below it, 45 of them 1-3 code points.  But the
     # requested number is also the wrong number to enforce.  The pathology it
-    # was aimed at is the one-to-four-character bare term - ``神``, ``撒但``,
-    # ``耶和华神`` - which is ubiquitous and therefore unlocatable and useless as
+    # was aimed at is the one-to-four-character bare term - ``枢``, ``扰动源``,
+    # ``潮位观测站`` - which is ubiquitous and therefore unlocatable and useless as
     # a citation.  Length was a proxy for "distinctive and locatable", and in
-    # Chinese 10 code points overshoots that proxy badly: ``神对亚当的嘱咐`` (7)
-    # and ``万口在称独一真神`` (8) are complete, distinctive citations, and
+    # Chinese 10 code points overshoots that proxy badly: ``枢对测点的授时`` (7)
+    # and ``全网同步统一时基`` (8) are complete, distinctive citations, and
     # enforcing 10 on the section-graph run discarded them along with 140
     # concepts, 140 mentions and 105 relations across 13 of 43 packets.
     #
