@@ -56,7 +56,7 @@ class TokenBoundaries:
     ends: frozenset[int]
 
     @classmethod
-    def from_tokens(cls, length: int, tokens: "list[tuple[int, int]]") -> "TokenBoundaries":
+    def from_tokens(cls, length: int, tokens: 'list[tuple[int, int]]') -> 'TokenBoundaries':
         starts = {0, length}
         ends = {0, length}
         for start, end in tokens:
@@ -98,7 +98,7 @@ class JiebaQuerySegmenter:
         try:
             import jieba
         except Exception as error:  # pragma: no cover - import environment
-            raise SegmenterUnavailable(f"jieba is not importable: {error}") from error
+            raise SegmenterUnavailable(f'jieba is not importable: {error}') from error
         try:
             # A private instance, never ``jieba.dt``: the global tokenizer is
             # shared with utils/glossary_translation.py and
@@ -111,7 +111,7 @@ class JiebaQuerySegmenter:
             # process rather than once per request.
             tokenizer.initialize()
         except Exception as error:  # pragma: no cover - runtime environment
-            raise SegmenterUnavailable(f"jieba failed to initialize: {error}") from error
+            raise SegmenterUnavailable(f'jieba failed to initialize: {error}') from error
         self._tokenizer = tokenizer
 
     def boundaries(self, text: str) -> TokenBoundaries:

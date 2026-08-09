@@ -31,8 +31,8 @@ class SearchError(ValueError):
 # administrator can revise, ``structure:`` is the book's own table of contents,
 # which no model authored.  A reader who sees the second must not be able to
 # mistake it for the first.
-_RELATION_HAS_PART = "relation:HAS_PART"
-_STRUCTURE_TOC_CHILD = "structure:TOC_CHILD"
+_RELATION_HAS_PART = 'relation:HAS_PART'
+_STRUCTURE_TOC_CHILD = 'structure:TOC_CHILD'
 
 # When one span is attributed to several expansion-derived concepts at the same
 # hop count, this order decides which edge explains it.  The semantic graph
@@ -196,21 +196,17 @@ class EpubSearchRepository(Protocol):
 
     def get_retrieval_unit(self, retrieval_unit_id: str) -> Mapping[str, Any] | None: ...
 
-    def matched_concept_names(
-        self, passage_id: str, concept_ids: Sequence[str]
-    ) -> list[str]: ...
+    def matched_concept_names(self, passage_id: str, concept_ids: Sequence[str]) -> list[str]: ...
 
     def list_concept_relation_neighbors(
-        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ('HAS_PART',)
     ) -> list[Mapping[str, Any]]: ...
 
     # Structural, deterministic decomposition read from the book's own table of
     # contents, for concepts the model never decomposed.  Search calls it only
     # when the repository actually has it, so a read model that cannot answer
     # the question is served today's behaviour rather than an AttributeError.
-    def list_toc_child_concepts(
-        self, concept_ids: Sequence[str]
-    ) -> list[Mapping[str, Any]]: ...
+    def list_toc_child_concepts(self, concept_ids: Sequence[str]) -> list[Mapping[str, Any]]: ...
 
 
 class VectorCandidateBackend(Protocol):
@@ -222,7 +218,7 @@ class VectorCandidateBackend(Protocol):
 
 
 class _TrieNode:
-    __slots__ = ("children", "terms", "failure")
+    __slots__ = ('children', 'terms', 'failure')
 
     def __init__(self) -> None:
         self.children: dict[str, _TrieNode] = {}
@@ -278,9 +274,7 @@ class ConceptTermMatcher:
         """Concepts this text mentions, one per concept."""
         return tuple(hit.term for hit in self.match_spans(text, boundaries=boundaries))
 
-    def match_spans(
-        self, text: str, *, boundaries: TokenBoundaries | None = None
-    ) -> tuple[_TermMatch, ...]:
+    def match_spans(self, text: str, *, boundaries: TokenBoundaries | None = None) -> tuple[_TermMatch, ...]:
         """Concepts this text mentions, each with the span that won it.
 
         Positions are kept all the way through because two rules need them.
@@ -349,9 +343,7 @@ class ConceptTermMatcher:
                 queue.append(child)
 
     @staticmethod
-    def _valid_boundaries(
-        text: str, start: int, end: int, term: str, boundaries: TokenBoundaries | None
-    ) -> bool:
+    def _valid_boundaries(text: str, start: int, end: int, term: str, boundaries: TokenBoundaries | None) -> bool:
         # A term containing CJK is valid only where the searched text's own
         # word boundaries agree with both of its ends.  CJK is written without
         # spaces, so without this a term matches anywhere it appears as a
@@ -389,7 +381,7 @@ class EpubSearchService:
         mmr_lambda: float = 0.7,
     ) -> None:
         if not 0.0 <= mmr_lambda <= 1.0:
-            raise SearchError("mmr_lambda must be between 0 and 1")
+            raise SearchError('mmr_lambda must be between 0 and 1')
         self._source = source
         self._vector_backend = vector_backend
         self._embeddings = embeddings
@@ -416,7 +408,7 @@ class EpubSearchService:
         vector_candidate_limit: int = 50,
     ) -> SearchResponse:
         if not isinstance(query, str) or not query.strip():
-            raise SearchError("query must be non-empty text")
+            raise SearchError('query must be non-empty text')
         if (
             graph_offset < 0
             or graph_limit < 1
@@ -424,7 +416,7 @@ class EpubSearchService:
             or vector_limit < 1
             or vector_candidate_limit < vector_limit
         ):
-            raise SearchError("search pagination limits are invalid")
+            raise SearchError('search pagination limits are invalid')
 
         degraded: list[ModelAvailability] = []
         matcher = self._concept_matcher()
@@ -444,9 +436,7 @@ class EpubSearchService:
         graph_concept_ids = expansion.concept_ids
 
         graph_total = self._source.count_concept_occurrences(graph_concept_ids) if graph_concept_ids else 0
-        graph_results = self._graph_page(
-            expansion, resolved_names, offset=graph_offset, limit=graph_limit
-        )
+        graph_results = self._graph_page(expansion, resolved_names, offset=graph_offset, limit=graph_limit)
         # The fused channel reads the *top* of the ranked graph channel, never
         # the page the panel happens to be showing.  Feeding it the display
         # page made ``graph_limit`` a recall ceiling on a ranked channel: with
@@ -549,7 +539,7 @@ class EpubSearchService:
             term = hit.term
             if (hit.end - hit.start) < _MIN_SEED_TERM_LENGTH:
                 continue
-            if term.term_source == "MODEL" and len(term.term) < _MIN_SEED_TERM_LENGTH:
+            if term.term_source == 'MODEL' and len(term.term) < _MIN_SEED_TERM_LENGTH:
                 continue
             seeds.append(term.concept_id)
         return tuple(dict.fromkeys(seeds))
@@ -590,15 +580,15 @@ class EpubSearchService:
         for depth in range(1, max_depth + 1):
             if not frontier:
                 break
-            edges = self._source.list_concept_relation_neighbors(frontier, predicates=("HAS_PART",))
+            edges = self._source.list_concept_relation_neighbors(frontier, predicates=('HAS_PART',))
             children: dict[str, set[str]] = {}
             for edge in edges:
-                subject, target = edge.get("subject_concept_id"), edge.get("object_concept_id")
+                subject, target = edge.get('subject_concept_id'), edge.get('object_concept_id')
                 if isinstance(subject, str) and isinstance(target, str) and subject and target:
                     children.setdefault(subject, set()).add(target)
             step_costs: dict[str, float] = {}
             for edge in edges:
-                subject, target = edge.get("subject_concept_id"), edge.get("object_concept_id")
+                subject, target = edge.get('subject_concept_id'), edge.get('object_concept_id')
                 if not isinstance(target, str) or not target:
                     continue
                 fanout = len(children.get(subject, ())) if isinstance(subject, str) else 0
@@ -615,9 +605,7 @@ class EpubSearchService:
                 if cost < costs.get(target, math.inf):
                     costs[target] = cost
             frontier = next_frontier
-        return _RelationExpansion(
-            concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels
-        )
+        return _RelationExpansion(concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels)
 
     def _expand_toc_child_concepts(
         self,
@@ -672,19 +660,17 @@ class EpubSearchService:
         concept ids: this method never touches passages, spans, or offsets, so
         the count and the pages still share their one predicate.
         """
-        children_of = getattr(self._source, "list_toc_child_concepts", None)
+        children_of = getattr(self._source, 'list_toc_child_concepts', None)
         if children_of is None or not seed_ids:
             return expansion
         fanouts = {hit.term.concept_id: hit.term.has_part_fanout for hit in matches}
-        undecomposed = [
-            concept_id for concept_id in seed_ids if fanouts.get(concept_id) == 0
-        ]
+        undecomposed = [concept_id for concept_id in seed_ids if fanouts.get(concept_id) == 0]
         if not undecomposed:
             return expansion
         by_seed: dict[str, list[str]] = {}
         for row in children_of(undecomposed):
-            seed = row.get("seed_concept_id")
-            child = row.get("concept_id")
+            seed = row.get('seed_concept_id')
+            child = row.get('concept_id')
             if isinstance(seed, str) and seed and isinstance(child, str) and child:
                 by_seed.setdefault(seed, []).append(child)
         depths = dict(expansion.depths)
@@ -695,9 +681,9 @@ class EpubSearchService:
             if len(reached) > _MAX_TOC_CHILD_CONCEPTS:
                 degraded.append(
                     ModelAvailability.degraded(
-                        "toc-child-expansion",
-                        f"{len(reached)} concepts under one node exceeds the "
-                        f"{_MAX_TOC_CHILD_CONCEPTS} budget; skipped whole",
+                        'toc-child-expansion',
+                        f'{len(reached)} concepts under one node exceeds the '
+                        f'{_MAX_TOC_CHILD_CONCEPTS} budget; skipped whole',
                     )
                 )
                 continue
@@ -709,9 +695,7 @@ class EpubSearchService:
                     labels[child] = _STRUCTURE_TOC_CHILD
                 if cost < costs.get(child, math.inf):
                     costs[child] = cost
-        return _RelationExpansion(
-            concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels
-        )
+        return _RelationExpansion(concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels)
 
     def _graph_page(
         self,
@@ -749,11 +733,7 @@ class EpubSearchService:
         matcher every time rather than a possibly stale one.
         """
         fingerprint = self._source.concept_term_fingerprint()
-        if (
-            self._matcher is not None
-            and fingerprint is not None
-            and fingerprint == self._matcher_fingerprint
-        ):
+        if self._matcher is not None and fingerprint is not None and fingerprint == self._matcher_fingerprint:
             return self._matcher
         matcher = ConceptTermMatcher(self._concept_terms())
         self._matcher = matcher
@@ -777,11 +757,7 @@ class EpubSearchService:
             self._segmenter, self._segmenter_reason = load_query_segmenter()
             self._segmenter_loaded = True
         if self._segmenter is None:
-            degraded.append(
-                ModelAvailability.degraded(
-                    "query-segmenter", self._segmenter_reason or "not configured"
-                )
-            )
+            degraded.append(ModelAvailability.degraded('query-segmenter', self._segmenter_reason or 'not configured'))
         return self._segmenter
 
     def _concept_terms(self) -> list[ConceptTerm]:
@@ -795,18 +771,18 @@ class EpubSearchService:
         """
         terms: list[ConceptTerm] = []
         for row in self._source.list_concept_terms():
-            concept_id = row.get("concept_id")
-            canonical = row.get("canonical_name")
-            term = row.get("term")
+            concept_id = row.get('concept_id')
+            canonical = row.get('canonical_name')
+            term = row.get('term')
             if all(isinstance(value, str) and value for value in (concept_id, canonical, term)):
                 terms.append(
                     ConceptTerm(
                         concept_id,
                         canonical,
                         term,
-                        term_source=_optional_string(row.get("term_source")),
-                        mention_count=_optional_int(row.get("mention_count")),
-                        has_part_fanout=_optional_int(row.get("has_part_fanout")),
+                        term_source=_optional_string(row.get('term_source')),
+                        mention_count=_optional_int(row.get('mention_count')),
+                        has_part_fanout=_optional_int(row.get('has_part_fanout')),
                     )
                 )
         return terms
@@ -819,7 +795,7 @@ class EpubSearchService:
         degraded: list[ModelAvailability],
     ) -> tuple[_TermMatch, ...]:
         if self._concept_resolver is None:
-            degraded.append(ModelAvailability.degraded("local-concept-resolver", "not configured"))
+            degraded.append(ModelAvailability.degraded('local-concept-resolver', 'not configured'))
             return ()
         availability = self._concept_resolver.availability()
         if not availability.available:
@@ -831,7 +807,7 @@ class EpubSearchService:
         try:
             resolved = self._concept_resolver.resolve(query, candidates)
         except Exception as error:
-            degraded.append(ModelAvailability.degraded("local-concept-resolver", _safe_reason(error)))
+            degraded.append(ModelAvailability.degraded('local-concept-resolver', _safe_reason(error)))
             return ()
         if not resolved:
             return ()
@@ -846,24 +822,22 @@ class EpubSearchService:
         # Tier-1 match.
         accepted = matcher.match_spans(resolved, boundaries=_boundaries(segmenter, resolved))
         if not accepted:
-            degraded.append(
-                ModelAvailability.degraded("local-concept-resolver", "returned an unknown concept")
-            )
+            degraded.append(ModelAvailability.degraded('local-concept-resolver', 'returned an unknown concept'))
         return accepted
 
     def _graph_hit(
         self, row: Mapping[str, Any], resolved_names: Sequence[str], expansion: _RelationExpansion
     ) -> SearchHit:
         passage = self._passage_from_row(row)
-        start = row.get("start_codepoint")
-        end = row.get("end_codepoint")
-        excerpt = _verified_excerpt(passage["content"], passage["content_sha256"], start, end)
+        start = row.get('start_codepoint')
+        end = row.get('end_codepoint')
+        excerpt = _verified_excerpt(passage['content'], passage['content_sha256'], start, end)
         # A graph row is one distinct source span, not one mention: the store
         # collapses duplicate and nested spans, so a single row can carry every
         # concept that anchored on that span.
-        names = _row_strings(row, "canonical_names")
+        names = _row_strings(row, 'canonical_names')
         matched = names or tuple(resolved_names)
-        concept_ids = _row_strings(row, "concept_ids")
+        concept_ids = _row_strings(row, 'concept_ids')
         # A span that a directly matched concept anchored is a direct hit even
         # when it also absorbed an expansion-derived concept, so the shallowest
         # depth wins.  A span reached only by expansion keeps the provenance of
@@ -876,13 +850,13 @@ class EpubSearchService:
         depths = [expansion.depths.get(concept_id, 0) for concept_id in concept_ids]
         relation_depth = min(depths) if depths else 0
         label = _best_label(expansion, concept_ids, relation_depth)
-        provenance = ("graph",) if not relation_depth else ("graph", f"{label}:{relation_depth}")
+        provenance = ('graph',) if not relation_depth else ('graph', f'{label}:{relation_depth}')
         return SearchHit(
-            passage_id=passage["passage_id"],
-            book_title=passage["book_title"],
-            toc_path=passage["toc_path"],
-            content=passage["content"],
-            content_sha256=passage["content_sha256"],
+            passage_id=passage['passage_id'],
+            book_title=passage['book_title'],
+            toc_path=passage['toc_path'],
+            content=passage['content'],
+            content_sha256=passage['content_sha256'],
             matched_concepts=matched,
             provenance=provenance,
             excerpt=excerpt,
@@ -903,7 +877,7 @@ class EpubSearchService:
         an empty-but-successful result.
         """
         if self._vector_backend is None or self._embeddings is None or self._reranker is None:
-            degraded.append(ModelAvailability.degraded("local-vector-search", "not fully configured"))
+            degraded.append(ModelAvailability.degraded('local-vector-search', 'not fully configured'))
             return None
         embedding_availability = self._embeddings.availability()
         if not embedding_availability.available:
@@ -916,7 +890,7 @@ class EpubSearchService:
         try:
             vectors = self._embeddings.embed([query])
             if len(vectors) != 1:
-                raise SearchError("local embedding must return exactly one query vector")
+                raise SearchError('local embedding must return exactly one query vector')
             query_vector = _validated_vector(vectors[0])
             candidates = self._vector_backend.search(
                 query_vector,
@@ -927,7 +901,7 @@ class EpubSearchService:
                 return ()
             for candidate in candidates:
                 if candidate.embedding_profile != self._embeddings.profile:
-                    raise SearchError("vector backend returned a candidate from another embedding profile")
+                    raise SearchError('vector backend returned a candidate from another embedding profile')
                 # Validate query/index dimension compatibility even for a
                 # backend that returned only one result (where MMR would not
                 # otherwise calculate a cosine similarity).
@@ -938,7 +912,7 @@ class EpubSearchService:
             for candidate in candidates:
                 self._validated_candidate_window(candidate)
         except Exception as error:
-            degraded.append(ModelAvailability.degraded("local-vector-search", _safe_reason(error)))
+            degraded.append(ModelAvailability.degraded('local-vector-search', _safe_reason(error)))
             return None
         return tuple(candidates)
 
@@ -956,12 +930,12 @@ class EpubSearchService:
             return ()
         assert self._reranker is not None
         try:
-            documents = [self._validated_candidate_window(candidate)["content"] for candidate in vector_candidates]
+            documents = [self._validated_candidate_window(candidate)['content'] for candidate in vector_candidates]
             scores = _validated_scores(self._reranker.score(query, documents), expected=len(vector_candidates))
             ranked = sorted(zip(vector_candidates, scores), key=lambda pair: pair[1], reverse=True)
             selected = _mmr_select(ranked, limit=result_limit, lambda_value=self._mmr_lambda)
         except Exception as error:
-            degraded.append(ModelAvailability.degraded("local-vector-search", _safe_reason(error)))
+            degraded.append(ModelAvailability.degraded('local-vector-search', _safe_reason(error)))
             return ()
 
         results: list[SearchHit] = []
@@ -973,19 +947,21 @@ class EpubSearchService:
             unit = self._validated_candidate_window(candidate)
             passage = self._search_passage(candidate.passage_id)
             excerpt = _verified_excerpt(
-                passage["content"], passage["content_sha256"],
-                unit["start_codepoint"], unit["end_codepoint"],
+                passage['content'],
+                passage['content_sha256'],
+                unit['start_codepoint'],
+                unit['end_codepoint'],
             )
             matched = tuple(self._source.matched_concept_names(candidate.passage_id, concept_ids))
             results.append(
                 SearchHit(
-                    passage_id=passage["passage_id"],
-                    book_title=passage["book_title"],
-                    toc_path=passage["toc_path"],
-                    content=passage["content"],
-                    content_sha256=passage["content_sha256"],
+                    passage_id=passage['passage_id'],
+                    book_title=passage['book_title'],
+                    toc_path=passage['toc_path'],
+                    content=passage['content'],
+                    content_sha256=passage['content_sha256'],
                     matched_concepts=matched,
-                    provenance=("vector", "cross-encoder", "mmr"),
+                    provenance=('vector', 'cross-encoder', 'mmr'),
                     excerpt=excerpt,
                     score=float(score),
                 )
@@ -1028,7 +1004,7 @@ class EpubSearchService:
             ranked = sorted(zip(candidates, scores), key=lambda pair: pair[1], reverse=True)
             selected = _mmr_select_fused(ranked, limit=result_limit, lambda_value=self._mmr_lambda)
         except Exception as error:
-            degraded.append(ModelAvailability.degraded("local-fused-search", _safe_reason(error)))
+            degraded.append(ModelAvailability.degraded('local-fused-search', _safe_reason(error)))
             return ()
 
         results: list[SearchHit] = []
@@ -1047,7 +1023,7 @@ class EpubSearchService:
                     content=candidate.hit.content,
                     content_sha256=candidate.hit.content_sha256,
                     matched_concepts=candidate.hit.matched_concepts,
-                    provenance=(*candidate.hit.provenance, "cross-encoder", "mmr", "fused"),
+                    provenance=(*candidate.hit.provenance, 'cross-encoder', 'mmr', 'fused'),
                     excerpt=candidate.hit.excerpt,
                     score=float(score),
                 )
@@ -1069,19 +1045,19 @@ class EpubSearchService:
             unit = self._validated_candidate_window(vector_candidate)
             passage = self._search_passage(vector_candidate.passage_id)
             excerpt = _verified_excerpt(
-                passage["content"], passage["content_sha256"],
-                unit["start_codepoint"], unit["end_codepoint"],
+                passage['content'],
+                passage['content_sha256'],
+                unit['start_codepoint'],
+                unit['end_codepoint'],
             )
             hit = SearchHit(
-                passage_id=passage["passage_id"],
-                book_title=passage["book_title"],
-                toc_path=passage["toc_path"],
-                content=passage["content"],
-                content_sha256=passage["content_sha256"],
-                matched_concepts=tuple(
-                    self._source.matched_concept_names(vector_candidate.passage_id, concept_ids)
-                ),
-                provenance=("vector",),
+                passage_id=passage['passage_id'],
+                book_title=passage['book_title'],
+                toc_path=passage['toc_path'],
+                content=passage['content'],
+                content_sha256=passage['content_sha256'],
+                matched_concepts=tuple(self._source.matched_concept_names(vector_candidate.passage_id, concept_ids)),
+                provenance=('vector',),
                 excerpt=excerpt,
             )
             vector_by_excerpt[(hit.passage_id, excerpt.start_codepoint, excerpt.end_codepoint)] = _FusedCandidate(
@@ -1108,9 +1084,7 @@ class EpubSearchService:
                         toc_path=graph_hit.toc_path,
                         content=graph_hit.content,
                         content_sha256=graph_hit.content_sha256,
-                        matched_concepts=_merged_strings(
-                            graph_hit.matched_concepts, vector_match.hit.matched_concepts
-                        ),
+                        matched_concepts=_merged_strings(graph_hit.matched_concepts, vector_match.hit.matched_concepts),
                         provenance=_merged_provenance(graph_hit.provenance, vector_match.hit.provenance),
                         excerpt=graph_hit.excerpt,
                     ),
@@ -1124,7 +1098,7 @@ class EpubSearchService:
             # MMR compare both retrieval channels in the same vector space.
             graph_vectors = self._embeddings.embed([hit.excerpt.content for hit in graph_without_vector])
             if len(graph_vectors) != len(graph_without_vector):
-                raise SearchError("local embedding must score every graph candidate")
+                raise SearchError('local embedding must score every graph candidate')
             for graph_hit, graph_vector in zip(graph_without_vector, graph_vectors):
                 graph_vector = _validated_vector(graph_vector)
                 # Enforce a single embedding space before MMR; vectors from
@@ -1141,64 +1115,63 @@ class EpubSearchService:
     def _validated_candidate_window(self, candidate: DerivedVectorRecord) -> Mapping[str, Any]:
         unit = self._source.get_retrieval_unit(candidate.retrieval_unit_id)
         if unit is None:
-            raise SearchError("vector candidate refers to a missing retrieval unit")
+            raise SearchError('vector candidate refers to a missing retrieval unit')
         if (
-            unit.get("passage_id") != candidate.passage_id
-            or unit.get("content_sha256") != candidate.content_sha256
-            or unit.get("start_codepoint") != candidate.start_codepoint
-            or unit.get("end_codepoint") != candidate.end_codepoint
+            unit.get('passage_id') != candidate.passage_id
+            or unit.get('content_sha256') != candidate.content_sha256
+            or unit.get('start_codepoint') != candidate.start_codepoint
+            or unit.get('end_codepoint') != candidate.end_codepoint
         ):
-            raise SearchError("vector candidate does not match its derived source record")
+            raise SearchError('vector candidate does not match its derived source record')
         passage = self._search_passage(candidate.passage_id)
         excerpt = _verified_excerpt(
-            passage["content"], passage["content_sha256"],
+            passage['content'],
+            passage['content_sha256'],
             candidate.start_codepoint,
             candidate.end_codepoint,
         )
-        if unit.get("content") != excerpt.content:
-            raise SearchError("retrieval-unit text does not equal its source excerpt")
+        if unit.get('content') != excerpt.content:
+            raise SearchError('retrieval-unit text does not equal its source excerpt')
         return unit
 
     def _search_passage(self, passage_id: str) -> dict[str, Any]:
         row = self._source.get_search_passage(passage_id)
         if row is None:
-            raise SearchError("search result refers to a missing passage")
+            raise SearchError('search result refers to a missing passage')
         return self._passage_from_row(row)
 
     @staticmethod
     def _passage_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
-        passage_id = row.get("passage_id")
-        title = row.get("book_title")
-        content = row.get("content")
-        content_sha256 = row.get("content_sha256")
-        raw_path = row.get("toc_path", ())
+        passage_id = row.get('passage_id')
+        title = row.get('book_title')
+        content = row.get('content')
+        content_sha256 = row.get('content_sha256')
+        raw_path = row.get('toc_path', ())
         if not all(isinstance(value, str) and value for value in (passage_id, title, content, content_sha256)):
-            raise SearchError("search passage has invalid mandatory source fields")
+            raise SearchError('search passage has invalid mandatory source fields')
         if not isinstance(raw_path, (tuple, list)) or any(not isinstance(item, str) for item in raw_path):
-            raise SearchError("search passage has an invalid TOC path")
+            raise SearchError('search passage has an invalid TOC path')
         if _hash_text(content) != content_sha256:
-            raise SearchError("search passage source hash does not match its content")
+            raise SearchError('search passage source hash does not match its content')
         return {
-            "passage_id": passage_id,
-            "book_title": title,
-            "toc_path": tuple(raw_path),
-            "content": content,
-            "content_sha256": content_sha256,
+            'passage_id': passage_id,
+            'book_title': title,
+            'toc_path': tuple(raw_path),
+            'content': content,
+            'content_sha256': content_sha256,
         }
 
 
-def _verified_excerpt(
-    content: str, content_sha256: str, start: Any, end: Any
-) -> SearchExcerpt:
+def _verified_excerpt(content: str, content_sha256: str, start: Any, end: Any) -> SearchExcerpt:
     if _hash_text(content) != content_sha256:
-        raise SearchError("source content hash does not match returned passage")
+        raise SearchError('source content hash does not match returned passage')
     if start is None and end is None:
         return SearchExcerpt(content=content, start_codepoint=0, end_codepoint=len(content))
     if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start or end > len(content):
-        raise SearchError("excerpt offsets must identify a non-empty source substring")
+        raise SearchError('excerpt offsets must identify a non-empty source substring')
     excerpt = content[start:end]
     if excerpt != content[start:end]:  # Retained as an explicit contract guard.
-        raise SearchError("excerpt must be a continuous source substring")
+        raise SearchError('excerpt must be a continuous source substring')
     return SearchExcerpt(content=excerpt, start_codepoint=start, end_codepoint=end)
 
 
@@ -1217,9 +1190,7 @@ def _mmr_select(
         best_index = 0
         best_mmr = -math.inf
         for index, (candidate, relevance) in enumerate(remaining):
-            diversity = max(
-                (_cosine(candidate.vector, existing.vector) for existing, _ in selected), default=0.0
-            )
+            diversity = max((_cosine(candidate.vector, existing.vector) for existing, _ in selected), default=0.0)
             score = lambda_value * relevance - (1.0 - lambda_value) * diversity
             if score > best_mmr:
                 best_index, best_mmr = index, score
@@ -1239,9 +1210,7 @@ def _mmr_select_fused(
         for index, (candidate, relevance) in enumerate(remaining):
             if any(existing.hit.passage_id == candidate.hit.passage_id for existing, _ in selected):
                 continue
-            diversity = max(
-                (_cosine(candidate.vector, existing.vector) for existing, _ in selected), default=0.0
-            )
+            diversity = max((_cosine(candidate.vector, existing.vector) for existing, _ in selected), default=0.0)
             score = lambda_value * relevance - (1.0 - lambda_value) * diversity
             if score > best_mmr:
                 best_index, best_mmr = index, score
@@ -1252,7 +1221,7 @@ def _mmr_select_fused(
 
 
 def _ascii_word(character: str) -> bool:
-    return character.isascii() and (character.isalnum() or character == "_")
+    return character.isascii() and (character.isalnum() or character == '_')
 
 
 def _boundaries(segmenter: QuerySegmenter | None, text: str) -> TokenBoundaries | None:
@@ -1297,29 +1266,28 @@ def _strictly_contained(hit: _TermMatch, hits: Sequence[_TermMatch]) -> bool:
     """
     length = hit.end - hit.start
     return any(
-        other.start <= hit.start and hit.end <= other.end and (other.end - other.start) > length
-        for other in hits
+        other.start <= hit.start and hit.end <= other.end and (other.end - other.start) > length for other in hits
     )
 
 
 def _validated_vector(vector: Sequence[float]) -> tuple[float, ...]:
     if not vector:
-        raise SearchError("local embedding returned an empty query vector")
+        raise SearchError('local embedding returned an empty query vector')
     result: list[float] = []
     for value in vector:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise SearchError("local embedding returned a non-finite query vector")
+            raise SearchError('local embedding returned a non-finite query vector')
         result.append(float(value))
     return tuple(result)
 
 
 def _validated_scores(scores: Sequence[float], *, expected: int) -> tuple[float, ...]:
     if len(scores) != expected:
-        raise SearchError("local reranker must score every candidate")
+        raise SearchError('local reranker must score every candidate')
     result: list[float] = []
     for score in scores:
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
-            raise SearchError("local reranker returned a non-finite score")
+            raise SearchError('local reranker returned a non-finite score')
         result.append(float(score))
     return tuple(result)
 
@@ -1338,9 +1306,7 @@ def _optional_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _best_label(
-    expansion: _RelationExpansion, concept_ids: Sequence[str], depth: int
-) -> str:
+def _best_label(expansion: _RelationExpansion, concept_ids: Sequence[str], depth: int) -> str:
     """Which kind of edge explains a span reached at ``depth``.
 
     Only the concepts that were actually reached at that depth get a say, so a
@@ -1394,7 +1360,7 @@ def _mark_vector_results_fused(results: Sequence[SearchHit]) -> tuple[SearchHit,
             content=hit.content,
             content_sha256=hit.content_sha256,
             matched_concepts=hit.matched_concepts,
-            provenance=(*hit.provenance, "fused"),
+            provenance=(*hit.provenance, 'fused'),
             excerpt=hit.excerpt,
             score=hit.score,
         )
@@ -1404,7 +1370,7 @@ def _mark_vector_results_fused(results: Sequence[SearchHit]) -> tuple[SearchHit,
 
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     if len(left) != len(right) or not left:
-        raise SearchError("vector candidate dimensions do not match query/index dimensions")
+        raise SearchError('vector candidate dimensions do not match query/index dimensions')
     left_norm = math.sqrt(sum(value * value for value in left))
     right_norm = math.sqrt(sum(value * value for value in right))
     if not left_norm or not right_norm:
@@ -1413,7 +1379,7 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
 
 
 def _hash_text(value: str) -> str:
-    return sha256(value.encode("utf-8")).hexdigest()
+    return sha256(value.encode('utf-8')).hexdigest()
 
 
 def _safe_reason(error: Exception) -> str:
