@@ -14,6 +14,7 @@ from collections import deque
 from dataclasses import dataclass
 from hashlib import sha256
 import math
+from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 from .inference import ConceptResolver, EmbeddingService, ModelAvailability, RerankerService
@@ -25,13 +26,68 @@ class SearchError(ValueError):
     """The caller supplied an invalid search request or source invariant failed."""
 
 
+# How a concept was reached when it was not matched directly.  The prefix is
+# load-bearing: ``relation:`` is a semantic claim a model made and an
+# administrator can revise, ``structure:`` is the book's own table of contents,
+# which no model authored.  A reader who sees the second must not be able to
+# mistake it for the first.
+_RELATION_HAS_PART = "relation:HAS_PART"
+_STRUCTURE_TOC_CHILD = "structure:TOC_CHILD"
+
+# When one span is attributed to several expansion-derived concepts at the same
+# hop count, this order decides which edge explains it.  The semantic graph
+# wins wherever it exists; TOC structure is the fallback, never a competitor.
+_LABEL_PRIORITY = (_RELATION_HAS_PART, _STRUCTURE_TOC_CHILD)
+
+_EMPTY_LABELS: Mapping[str, str] = MappingProxyType({})
+
+# A concept matched only by a short or model-invented surface form still
+# resolves and still contributes its own spans; it just does not get to seed
+# expansion.  See :meth:`EpubSearchService._expansion_seed_ids` for why the test
+# is about the term and not about the concept behind it.
+_MIN_SEED_TERM_LENGTH = 2
+
+# A TOC node whose children hold more bound concepts than this contributes no
+# expansion at all.  Skipping is deliberate: truncating would leave
+# ``graph_total`` a number with no explanation of what was left out.
+_MAX_TOC_CHILD_CONCEPTS = 64
+
+
 @dataclass(frozen=True, slots=True)
 class ConceptTerm:
-    """One canonical concept/alias term available to the Tier-1 matcher."""
+    """One canonical concept/alias term available to the Tier-1 matcher.
+
+    The first three fields are all the matcher itself ever reads.  The last
+    three describe the concept rather than the match, and each has one reader:
+
+    * ``term_source`` distinguishes a surface form a model invented from one a
+      seed list or an administrator supplied, and
+      :meth:`EpubSearchService._expansion_seed_ids` refuses to seed expansion
+      from a single character a model proposed.
+    * ``has_part_fanout`` is how
+      :meth:`EpubSearchService._expand_toc_child_concepts` knows the model
+      already decomposed a concept and that TOC structure must stay out of the
+      way.
+    * ``mention_count`` currently gates nothing.  It was tried as a proxy for a
+      generic term and removed, because frequency is a fact about the book and
+      not about what the reader asked for — see
+      :meth:`EpubSearchService._expansion_seed_ids`.  It is kept because it is
+      free alongside the fan-out the store already computes, and because a
+      future specificity signal will want it; it is deliberately not deleted
+      and re-added.
+
+    All three default to ``None``, meaning "this repository did not say".  A
+    repository that supplies none of them — a test double, a future PostgreSQL
+    read model that has not caught up — gets exactly today's behaviour instead
+    of an error, because every guard reads them only when present.
+    """
 
     concept_id: str
     canonical_name: str
     term: str
+    term_source: str | None = None
+    mention_count: int | None = None
+    has_part_fanout: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,11 +134,18 @@ class _RelationExpansion:
     span than one hop out of a concept with a single child.  Keeping the two
     apart means bounding a hub changes ranking without rewriting the provenance
     a reader is shown.
+
+    ``labels`` records *by what kind of edge* a concept was reached, for the
+    concepts that were not matched directly.  A semantic ``HAS_PART`` edge a
+    model proposed and an administrator can revise, and a structural TOC edge
+    the parser read out of the book, are both one hop, but they are not the
+    same claim, and a reader is shown which one they got.
     """
 
     concept_ids: tuple[str, ...]
     depths: Mapping[str, int]
     costs: Mapping[str, float]
+    labels: Mapping[str, str] = _EMPTY_LABELS
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +202,14 @@ class EpubSearchRepository(Protocol):
 
     def list_concept_relation_neighbors(
         self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ("HAS_PART",)
+    ) -> list[Mapping[str, Any]]: ...
+
+    # Structural, deterministic decomposition read from the book's own table of
+    # contents, for concepts the model never decomposed.  Search calls it only
+    # when the repository actually has it, so a read model that cannot answer
+    # the question is served today's behaviour rather than an AttributeError.
+    def list_toc_child_concepts(
+        self, concept_ids: Sequence[str]
     ) -> list[Mapping[str, Any]]: ...
 
 
@@ -358,12 +429,18 @@ class EpubSearchService:
         degraded: list[ModelAvailability] = []
         matcher = self._concept_matcher()
         segmenter = self._query_segmenter(degraded)
-        matched = matcher.match(query, boundaries=_boundaries(segmenter, query))
-        if not matched:
-            matched = self._resolve_tier_two(query, matcher, segmenter, degraded)
-        concept_ids = tuple(term.concept_id for term in matched)
+        matches = matcher.match_spans(query, boundaries=_boundaries(segmenter, query))
+        if not matches:
+            matches = self._resolve_tier_two(query, matcher, segmenter, degraded)
+        matched = tuple(hit.term for hit in matches)
+        concept_ids = tuple(dict.fromkeys(term.concept_id for term in matched))
         resolved_names = tuple(dict.fromkeys(term.canonical_name for term in matched))
-        expansion = self._expand_relation_concepts(concept_ids)
+        # Resolution and expansion are two different questions.  Every matched
+        # concept is resolved and contributes its own spans; only the subset
+        # that names something specific gets to pull the graph behind it.
+        seed_ids = self._expansion_seed_ids(matches)
+        expansion = self._expand_relation_concepts(concept_ids, seed_ids)
+        expansion = self._expand_toc_child_concepts(expansion, matches, seed_ids, degraded)
         graph_concept_ids = expansion.concept_ids
 
         graph_total = self._source.count_concept_occurrences(graph_concept_ids) if graph_concept_ids else 0
@@ -417,8 +494,68 @@ class EpubSearchService:
             degraded=tuple(degraded),
         )
 
+    def _expansion_seed_ids(self, matches: Sequence[_TermMatch]) -> tuple[str, ...]:
+        """Which resolved concepts are allowed to *seed* expansion.
+
+        The question is about the **matched term**, never about the concept
+        behind it.  A query that names something brings its neighbourhood with
+        it; a query that merely happens to contain a single very common
+        character does not, because expanding out of a concept the reader never
+        actually named returns spans about something else entirely — which is
+        how one query came back citing ``枢对测点的授时``, a hub *child* reached
+        by walking out of a concept nobody had asked for.
+
+        This is a **resolution** rule, not a ranking one, and it is the only
+        place the two could be confused.  Ranking still down-weights a
+        high-degree concept and never caps it: everything a seed reaches is
+        still counted and still pageable.  What changes here is which concepts
+        are seeds at all.  The concept itself stays resolved either way and
+        contributes every one of its own spans — that is what makes this safe.
+
+        Two conditions, both about the term's shape, and both must hold:
+
+        1. **The winning matched term is at least two code points.**  Measured
+           on the query, not on the vocabulary: ``match_spans`` keeps the
+           longest surviving span per concept, so a concept whose full name the
+           query spelled out is judged on that name even if a one-character
+           alias also matched somewhere.
+        2. **Not a one-character alias a model invented.**  Implied by (1)
+           today, and stated anyway: (1) is about how much of the query the
+           term covered, this is about how much the term is worth, and a future
+           relaxation of the first must not silently readmit the second.
+
+        Deliberately *not* a condition: **how many mentions the concept has.**
+        That was tried as a proxy for a generic term and it misfires exactly
+        where it matters.  ``枢纽的权重`` is matched by its full five-code-point
+        name; it is not generic, it is a specific topic that a book about God
+        naturally discusses often, and a reader who searches for it by name
+        almost certainly wants its sub-topics.  A ceiling on the count refused
+        them, cutting that query from 174 spans to 42.  Frequency is a fact
+        about the book, not about what the reader asked for.
+
+        The accepted consequence is that naming the hub outright —
+        ``全域潮汐枢纽``, spelled in full — expands to its whole subtree.  That
+        is correct: you asked for it by name.  What stays blocked is its
+        one-character alias ``枢``, by rule (1), so an incidental 枢 inside an
+        unrelated query still drags nothing in.
+
+        Also deliberately *not* a condition: what fraction of the query the
+        term covered.  That number moves with phrasing rather than with
+        meaning, and longest-match suppression already discards the short alias
+        that sits inside a longer one.
+        """
+        seeds: list[str] = []
+        for hit in matches:
+            term = hit.term
+            if (hit.end - hit.start) < _MIN_SEED_TERM_LENGTH:
+                continue
+            if term.term_source == "MODEL" and len(term.term) < _MIN_SEED_TERM_LENGTH:
+                continue
+            seeds.append(term.concept_id)
+        return tuple(dict.fromkeys(seeds))
+
     def _expand_relation_concepts(
-        self, concept_ids: Sequence[str], *, max_depth: int = 2
+        self, concept_ids: Sequence[str], seed_ids: Sequence[str] | None = None, *, max_depth: int = 2
     ) -> _RelationExpansion:
         """Follow a bounded containment graph without turning relations into citations.
 
@@ -438,10 +575,18 @@ class EpubSearchService:
         deserve.  Because a hub can make a one-hop path dearer than a two-hop
         one, cost takes the cheapest path found while ``depths`` keeps the hop
         count, which is what provenance reports.
+
+        ``seed_ids`` is which of the matched concepts may *start* a walk, and
+        defaults to all of them.  It changes only the frontier: ``depths`` and
+        ``costs`` still open at zero for every directly matched concept, and
+        ``concept_ids`` still contains every one of them, so a concept that
+        cannot seed expansion is in no way less resolved than before and
+        ``resolved_concepts`` is untouched.
         """
         depths = {concept_id: 0 for concept_id in concept_ids}
         costs: dict[str, float] = {concept_id: 0.0 for concept_id in concept_ids}
-        frontier = list(concept_ids)
+        labels: dict[str, str] = {}
+        frontier = list(concept_ids if seed_ids is None else seed_ids)
         for depth in range(1, max_depth + 1):
             if not frontier:
                 break
@@ -465,11 +610,108 @@ class EpubSearchService:
             for target, cost in step_costs.items():
                 if target not in depths:
                     depths[target] = depth
+                    labels[target] = _RELATION_HAS_PART
                     next_frontier.append(target)
                 if cost < costs.get(target, math.inf):
                     costs[target] = cost
             frontier = next_frontier
-        return _RelationExpansion(concept_ids=tuple(depths), depths=depths, costs=costs)
+        return _RelationExpansion(
+            concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels
+        )
+
+    def _expand_toc_child_concepts(
+        self,
+        expansion: _RelationExpansion,
+        matches: Sequence[_TermMatch],
+        seed_ids: Sequence[str],
+        degraded: list[ModelAvailability],
+    ) -> _RelationExpansion:
+        """Add the concepts a seed's TOC child sections hold, where the model added none.
+
+        The book states its own hierarchy.  ``观测网所必经的六道闸门`` has six
+        child sections in the parsed ``toc_nodes``, one per 关口, and the query
+        ``观测网六道闸门是什么`` used to return exactly one span — the heading —
+        because ``六道闸门`` is a one-mention island with no relation of any
+        predicate.  Structural provenance the parser read out of the EPUB is
+        not something a model has to be asked for, and it is not something a
+        model may overrule.
+
+        It is also not allowed to compete with the semantic graph.  Three gates,
+        in this order:
+
+        * The seed must be **expansion-eligible** by the same rule the relation
+          walk uses, so a concept the query only brushed cannot reach TOC
+          structure either.
+        * The seed must have **``HAS_PART`` out-degree 0**.  Where a model did
+          decompose a concept, that decomposition is authoritative and this
+          fallback stays out of the way entirely.  A repository that does not
+          report the degree cannot answer the question, so it gets no TOC
+          expansion rather than an assumed zero.
+        * The seed must be **bound to exactly one TOC node**, and only concepts
+          themselves fully bound inside that node's children are admitted.  The
+          repository enforces both; see
+          :meth:`SQLiteEpubStore.list_toc_child_concepts` for why an
+          all-mentions-in-one-node rule and not a majority.
+
+        Only child nodes, never siblings — measured on the acceptance book, a
+        node's siblings hold a median of 10 bound concepts against a median of
+        0 for its children, so siblings are association rather than
+        decomposition.
+
+        A child set larger than ``_MAX_TOC_CHILD_CONCEPTS`` is **skipped
+        whole**, and the skip is reported as a degraded component.  Truncating
+        it would be worse than not expanding: ``graph_total`` would come back a
+        smaller number with nothing anywhere saying what had been dropped.
+
+        The hop is priced exactly as a ``HAS_PART`` hop is —
+        ``parent_cost + 1 + log2(children)`` over the concepts the hop actually
+        reached — so these concepts drop straight into ``costs`` and are ordered
+        by the one existing ranking, with no second ordering to keep in step.
+
+        Nothing new reaches the store's occurrence queries but a longer tuple of
+        concept ids: this method never touches passages, spans, or offsets, so
+        the count and the pages still share their one predicate.
+        """
+        children_of = getattr(self._source, "list_toc_child_concepts", None)
+        if children_of is None or not seed_ids:
+            return expansion
+        fanouts = {hit.term.concept_id: hit.term.has_part_fanout for hit in matches}
+        undecomposed = [
+            concept_id for concept_id in seed_ids if fanouts.get(concept_id) == 0
+        ]
+        if not undecomposed:
+            return expansion
+        by_seed: dict[str, list[str]] = {}
+        for row in children_of(undecomposed):
+            seed = row.get("seed_concept_id")
+            child = row.get("concept_id")
+            if isinstance(seed, str) and seed and isinstance(child, str) and child:
+                by_seed.setdefault(seed, []).append(child)
+        depths = dict(expansion.depths)
+        costs = dict(expansion.costs)
+        labels = dict(expansion.labels)
+        for seed, children in by_seed.items():
+            reached = tuple(dict.fromkeys(children))
+            if len(reached) > _MAX_TOC_CHILD_CONCEPTS:
+                degraded.append(
+                    ModelAvailability.degraded(
+                        "toc-child-expansion",
+                        f"{len(reached)} concepts under one node exceeds the "
+                        f"{_MAX_TOC_CHILD_CONCEPTS} budget; skipped whole",
+                    )
+                )
+                continue
+            depth = depths.get(seed, 0) + 1
+            cost = costs.get(seed, 0.0) + 1.0 + math.log2(max(len(reached), 1))
+            for child in reached:
+                if child not in depths:
+                    depths[child] = depth
+                    labels[child] = _STRUCTURE_TOC_CHILD
+                if cost < costs.get(child, math.inf):
+                    costs[child] = cost
+        return _RelationExpansion(
+            concept_ids=tuple(depths), depths=depths, costs=costs, labels=labels
+        )
 
     def _graph_page(
         self,
@@ -488,7 +730,7 @@ class EpubSearchService:
             limit=limit,
             concept_costs=expansion.costs,
         )
-        return tuple(self._graph_hit(row, resolved_names, expansion.depths) for row in rows)
+        return tuple(self._graph_hit(row, resolved_names, expansion) for row in rows)
 
     def _concept_matcher(self) -> ConceptTermMatcher:
         """Return the Tier-1 matcher, rebuilding it only when the vocabulary moved.
@@ -543,13 +785,30 @@ class EpubSearchService:
         return self._segmenter
 
     def _concept_terms(self) -> list[ConceptTerm]:
+        """Read the vocabulary, keeping the specificity columns when offered.
+
+        The three identity columns are required; the three specificity columns
+        are read only if the repository supplied them, and a value of the wrong
+        type is treated as absent rather than as an error.  That is what lets
+        one search service run against both the SQLite store and a repository
+        that answers the older three-column shape.
+        """
         terms: list[ConceptTerm] = []
         for row in self._source.list_concept_terms():
             concept_id = row.get("concept_id")
             canonical = row.get("canonical_name")
             term = row.get("term")
             if all(isinstance(value, str) and value for value in (concept_id, canonical, term)):
-                terms.append(ConceptTerm(concept_id, canonical, term))
+                terms.append(
+                    ConceptTerm(
+                        concept_id,
+                        canonical,
+                        term,
+                        term_source=_optional_string(row.get("term_source")),
+                        mention_count=_optional_int(row.get("mention_count")),
+                        has_part_fanout=_optional_int(row.get("has_part_fanout")),
+                    )
+                )
         return terms
 
     def _resolve_tier_two(
@@ -558,7 +817,7 @@ class EpubSearchService:
         matcher: ConceptTermMatcher,
         segmenter: QuerySegmenter | None,
         degraded: list[ModelAvailability],
-    ) -> tuple[ConceptTerm, ...]:
+    ) -> tuple[_TermMatch, ...]:
         if self._concept_resolver is None:
             degraded.append(ModelAvailability.degraded("local-concept-resolver", "not configured"))
             return ()
@@ -582,7 +841,10 @@ class EpubSearchService:
         # query's: the offsets being validated are offsets into ``resolved``.
         # A bare canonical name is one span from 0 to its length, and those two
         # endpoints are always boundaries, so re-validation still accepts it.
-        accepted = matcher.match(resolved, boundaries=_boundaries(segmenter, resolved))
+        # Spans, not bare terms, because the expansion guard measures how much
+        # of the *answer* each winning term covered, exactly as it does for a
+        # Tier-1 match.
+        accepted = matcher.match_spans(resolved, boundaries=_boundaries(segmenter, resolved))
         if not accepted:
             degraded.append(
                 ModelAvailability.degraded("local-concept-resolver", "returned an unknown concept")
@@ -590,7 +852,7 @@ class EpubSearchService:
         return accepted
 
     def _graph_hit(
-        self, row: Mapping[str, Any], resolved_names: Sequence[str], relation_depths: Mapping[str, int]
+        self, row: Mapping[str, Any], resolved_names: Sequence[str], expansion: _RelationExpansion
     ) -> SearchHit:
         passage = self._passage_from_row(row)
         start = row.get("start_codepoint")
@@ -603,12 +865,18 @@ class EpubSearchService:
         matched = names or tuple(resolved_names)
         concept_ids = _row_strings(row, "concept_ids")
         # A span that a directly matched concept anchored is a direct hit even
-        # when it also absorbed a relation-derived concept, so the shallowest
-        # depth wins.  A span reached only through HAS_PART keeps its relation
-        # provenance.
-        depths = [relation_depths.get(concept_id, 0) for concept_id in concept_ids]
+        # when it also absorbed an expansion-derived concept, so the shallowest
+        # depth wins.  A span reached only by expansion keeps the provenance of
+        # the edge that reached it, and the edge *kind* is part of that: a
+        # semantic ``HAS_PART`` the model proposed and a structural TOC edge the
+        # parser read out of the book are both one hop and are not the same
+        # claim.  Where both explain the same span at the same depth, the
+        # semantic edge is reported, because the model's decomposition is
+        # authoritative wherever it exists.
+        depths = [expansion.depths.get(concept_id, 0) for concept_id in concept_ids]
         relation_depth = min(depths) if depths else 0
-        provenance = ("graph",) if not relation_depth else ("graph", f"relation:HAS_PART:{relation_depth}")
+        label = _best_label(expansion, concept_ids, relation_depth)
+        provenance = ("graph",) if not relation_depth else ("graph", f"{label}:{relation_depth}")
         return SearchHit(
             passage_id=passage["passage_id"],
             book_title=passage["book_title"],
@@ -1054,6 +1322,43 @@ def _validated_scores(scores: Sequence[float], *, expected: int) -> tuple[float,
             raise SearchError("local reranker returned a non-finite score")
         result.append(float(score))
     return tuple(result)
+
+
+def _optional_string(value: Any) -> str | None:
+    """A repository column that is text when present and absent otherwise."""
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_int(value: Any) -> int | None:
+    """A repository column that is a count when present and absent otherwise.
+
+    ``bool`` is excluded on purpose: it is an ``int`` in Python, and a
+    repository answering ``True`` for a count has answered nothing.
+    """
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _best_label(
+    expansion: _RelationExpansion, concept_ids: Sequence[str], depth: int
+) -> str:
+    """Which kind of edge explains a span reached at ``depth``.
+
+    Only the concepts that were actually reached at that depth get a say, so a
+    span carrying both a one-hop concept and a two-hop one is described by the
+    one-hop edge.  Among those, ``_LABEL_PRIORITY`` decides, and it is an
+    explicit order rather than whatever ``sorted`` would do to the strings:
+    a semantic relation the model asserted outranks a structural TOC edge, and
+    that must stay true if either label is ever renamed.
+    """
+    candidates = {
+        expansion.labels[concept_id]
+        for concept_id in concept_ids
+        if expansion.depths.get(concept_id) == depth and concept_id in expansion.labels
+    }
+    for label in _LABEL_PRIORITY:
+        if label in candidates:
+            return label
+    return _RELATION_HAS_PART
 
 
 def _row_strings(row: Mapping[str, Any], key: str) -> tuple[str, ...]:
