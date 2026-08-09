@@ -185,6 +185,11 @@ class FakeSource:
         # Every ``list_concept_occurrences`` call, so a test can assert what
         # relevance the service declared as well as what came back.
         self.occurrence_calls: list[dict[str, object]] = []
+        # Every ``list_concept_relation_neighbors`` call, so a test can assert
+        # which predicates were walked, in which direction, and out of what —
+        # the last of which is how "depth 1 is a hard stop" is checked without
+        # inferring it from the concepts that came back.
+        self.relation_calls: list[dict[str, object]] = []
         # How often the vocabulary was actually re-read, so a test can tell a
         # reused matcher from a rebuilt one without timing anything.
         self.term_reads = 0
@@ -294,11 +299,23 @@ class FakeSource:
     def matched_concept_names(self, passage_id, concept_ids):
         return ['TCP'] if passage_id in {'p1', 'p2'} and 'tcp' in concept_ids else []
 
-    def list_concept_relation_neighbors(self, concept_ids, *, predicates=('HAS_PART',)):
+    def list_concept_relation_neighbors(self, concept_ids, *, predicates=('HAS_PART',), direction='outgoing'):
+        """Mirror the store contract, including which end of an edge was asked about.
+
+        The row shape is the same for every direction — subject, predicate,
+        object as stored — because deciding which end is the *neighbour* is the
+        caller's job and not the repository's.  ``both`` returns the edge once
+        even when both of its ends were queried, since it is one edge.
+        """
+        self.relation_calls.append({'concept_ids': tuple(concept_ids), 'predicates': tuple(predicates), 'direction': direction})
+        matches = {
+            'outgoing': lambda relation: relation['subject_concept_id'] in concept_ids,
+            'incoming': lambda relation: relation['object_concept_id'] in concept_ids,
+            'both': lambda relation: relation['subject_concept_id'] in concept_ids
+            or relation['object_concept_id'] in concept_ids,
+        }[direction]
         return [
-            relation
-            for relation in self.relations
-            if relation['subject_concept_id'] in concept_ids and relation['predicate'] in predicates
+            relation for relation in self.relations if matches(relation) and relation['predicate'] in predicates
         ]
 
 
@@ -665,6 +682,165 @@ class TocFakeSource(FakeSource):
         return rows
 
 
+class PredicateGraphFakeSource(FakeSource):
+    """All six stored predicates on one seed, shaped to the traversal each earns.
+
+    Names are invented (see the substitution note at the top of this module).
+    The *shape* is the acceptance graph's: six predicates, a containment
+    subtree deeper than two hops, an ``ELABORATES`` edge whose stored direction
+    points back at the seed, and a sequential chain a query can land in the
+    middle of.  Measured on the real store the six predicates are distributed
+    roughly 160 / 64 / 37 / 16 / 10 / 3, so five of them together carry about as
+    many edges as ``HAS_PART`` does alone; walking only the first left half the
+    graph unreachable at query time.
+
+    Every branch below exists to pin one boundary, and each one is a boundary a
+    plain "walk everything" implementation crosses:
+
+    * ``全域潮汐枢纽`` → ``枢纽的基准线`` → ``浮标阵列`` → ``锚站的缆索`` — a
+      containment chain three deep.  Two hops are reached, the third is not.
+    * ``巡检记录`` **elaborates** ``全域潮汐枢纽``, so it is reachable from the
+      hub only by walking that edge backwards, and ``历年归档`` beyond it is not
+      reachable at all.  The stored direction of ``ELABORATES`` does not survive
+      inspection on the real graph — its edges lean about 2:1 towards
+      subject-as-topic, which is the opposite of what the predicate's name
+      asserts, and two pairs are stated both ways — so both ends are walked and
+      the second hop is refused instead.
+    * ``第一闸门`` → ``第二闸门`` → ``第三闸门`` → ``第四闸门`` — a sequential
+      chain.  Seeded on the *middle* link it must reach both neighbours, which
+      is the whole reason these predicates are bidirectional, and must not reach
+      the fourth, which is what "an associative hop is never expanded from"
+      means concretely.
+    * ``泥沙淤积`` **causes** ``基线漂移``; ``高潮位`` **contrasts** ``低潮位``;
+      ``校验流程`` is a **prerequisite** of ``读数核对``.  Three more
+      bidirectional pairs, present so the remaining predicates are exercised by
+      name rather than assumed to behave like the one that was.
+    * The hub also **causes** ``枢纽的基准线``, which containment already
+      reaches more cheaply.  One concept, two predicates, one hop each: the
+      provenance a reader is shown has to name the edge that won.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.passages = {
+            concept_id: self._passage(concept_id, chapter, content)
+            for concept_id, chapter, content in (
+                ('hub', '第一章', '全域潮汐枢纽按班次编排全网的观测时序。'),
+                ('baseline', '第二章', '枢纽的基准线由长期观测归算得到。'),
+                ('array', '第三章', '浮标阵列沿岸线布放，逐点回报水位。'),
+                ('cable', '第四章', '锚站的缆索每季度换新一次。'),
+                ('log', '第五章', '巡检记录按站汇总，随月报一并归档。'),
+                ('archive', '第六章', '历年归档只在复核时调阅。'),
+                ('gate_one', '第七章', '第一闸门先行放水，为后续留出余量。'),
+                ('gate_two', '第八章', '第二闸门在此之后开启。'),
+                ('gate_three', '第九章', '第三闸门收束尾水。'),
+                ('gate_four', '第十章', '第四闸门只在大汛时启用。'),
+                ('silt', '第十一章', '泥沙淤积改变了断面形状。'),
+                ('drift', '第十二章', '基线漂移由长期淤积累积而成。'),
+                ('tide_high', '第十三章', '高潮位出现在每日两次的峰段。'),
+                ('tide_low', '第十四章', '低潮位是同一周期的谷段。'),
+                ('calib', '第十五章', '校验流程须在核对之前走完。'),
+                ('reading', '第十六章', '读数核对以校验后的基准为准。'),
+            )
+        }
+        self.terms = [
+            self._named_term(concept_id, name)
+            for concept_id, name in (
+                ('hub', '全域潮汐枢纽'),
+                ('gate_two', '第二闸门'),
+                ('drift', '基线漂移'),
+                ('tide_low', '低潮位'),
+                ('reading', '读数核对'),
+                ('log', '巡检记录'),
+            )
+        ]
+        # One span per concept, so ``graph_total`` counts reached concepts and a
+        # blow-up in the walk shows up directly in the number.
+        self.occurrences = [
+            {
+                **self.passages[concept_id],
+                'concept_id': concept_id,
+                'canonical_name': name,
+                'start_codepoint': 0,
+                'end_codepoint': len(name),
+            }
+            for concept_id, name in (
+                ('hub', '全域潮汐枢纽'),
+                ('baseline', '枢纽的基准线'),
+                ('array', '浮标阵列'),
+                ('cable', '锚站的缆索'),
+                ('log', '巡检记录'),
+                ('archive', '历年归档'),
+                ('gate_one', '第一闸门'),
+                ('gate_two', '第二闸门'),
+                ('gate_three', '第三闸门'),
+                ('gate_four', '第四闸门'),
+                ('silt', '泥沙淤积'),
+                ('drift', '基线漂移'),
+                ('tide_high', '高潮位'),
+                ('tide_low', '低潮位'),
+                ('calib', '校验流程'),
+                ('reading', '读数核对'),
+            )
+        ]
+        self.relations = [
+            {'subject_concept_id': subject, 'predicate': predicate, 'object_concept_id': object_}
+            for subject, predicate, object_ in (
+                ('hub', 'HAS_PART', 'baseline'),
+                ('baseline', 'HAS_PART', 'array'),
+                ('array', 'HAS_PART', 'cable'),
+                ('hub', 'CAUSES', 'baseline'),
+                ('log', 'ELABORATES', 'hub'),
+                ('log', 'ELABORATES', 'archive'),
+                ('gate_one', 'PRECEDES', 'gate_two'),
+                ('gate_two', 'PRECEDES', 'gate_three'),
+                ('gate_three', 'PRECEDES', 'gate_four'),
+                ('silt', 'CAUSES', 'drift'),
+                ('tide_high', 'CONTRASTS', 'tide_low'),
+                ('calib', 'PREREQUISITE', 'reading'),
+            )
+        ]
+        self.units = {}
+
+    @staticmethod
+    def _passage(passage_id: str, chapter: str, content: str) -> dict[str, object]:
+        return {
+            'passage_id': passage_id,
+            'book_title': '潮汐观测总志',
+            'toc_path': (chapter,),
+            'content': content,
+            'content_sha256': _hash(content),
+        }
+
+    @staticmethod
+    def _named_term(concept_id: str, name: str) -> dict[str, object]:
+        return {
+            'concept_id': concept_id,
+            'canonical_name': name,
+            'term': name,
+            'term_source': 'MODEL',
+            'mention_count': 1,
+            # Every seed here was decomposed by the model, so the TOC fallback
+            # stays out of the way and these tests measure the relation walk and
+            # nothing else.
+            'has_part_fanout': 1,
+        }
+
+    def matched_concept_names(self, passage_id, concept_ids):
+        return sorted(
+            {
+                row['canonical_name']
+                for row in self.occurrences
+                if row['passage_id'] == passage_id and row['concept_id'] in concept_ids
+            }
+        )
+
+    def reached(self, query: str, **kwargs) -> set[str]:
+        """The canonical names one query's graph channel reaches, spans and all."""
+        response = EpubSearchService(source=self).search(query, graph_limit=50, **kwargs)
+        return {name for hit in response.graph_results for name in hit.matched_concepts}
+
+
 class FakeEmbeddings:
     profile = 'private-embed-v1'
 
@@ -942,6 +1118,15 @@ class EpubSearchTest(unittest.TestCase):
         self.assertIn('runtime stopped', response.degraded[0].reason or '')
 
     def test_graph_expands_grounded_has_part_children_with_relation_provenance(self) -> None:
+        """Containment still reads exactly as it did, and still says so.
+
+        The literal ``relation:HAS_PART:1`` is the contract a reader and the UI
+        both depend on.  Other predicates now name themselves in the same slot
+        (see :meth:`test_provenance_names_the_predicate_that_won_the_concept`),
+        which is precisely why this one is pinned as a literal rather than as a
+        prefix match: a template change that quietly renamed the containment
+        label would otherwise pass.
+        """
         source = FakeSource()
         response = EpubSearchService(source=source).search('父主题', graph_limit=10)
 
@@ -950,6 +1135,18 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual([hit.passage_id for hit in response.graph_results], ['p1', 'p3'])
         self.assertEqual(response.graph_results[0].provenance, ('graph',))
         self.assertEqual(response.graph_results[1].provenance, ('graph', 'relation:HAS_PART:1'))
+        # The walk asked the repository for containment, downwards, and asked
+        # for each other class separately: one query per class, never one query
+        # for all six predicates at once.
+        self.assertEqual(
+            [(call['predicates'], call['direction']) for call in source.relation_calls],
+            [
+                (('HAS_PART',), 'outgoing'),
+                (('HAS_PART',), 'outgoing'),
+                (('ELABORATES',), 'both'),
+                (('PRECEDES', 'PREREQUISITE', 'CAUSES', 'CONTRASTS'), 'both'),
+            ],
+        )
 
     def test_one_source_span_shared_by_two_concepts_is_one_hit_naming_both(self) -> None:
         """The graph channel returns a piece of source once, not once per concept.
@@ -971,6 +1168,180 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(shared.provenance, ('graph',))
         self.assertEqual(response.graph_results[3].matched_concepts, ('子主题',))
         self.assertEqual(response.graph_results[3].provenance, ('graph', 'relation:HAS_PART:1'))
+
+    def test_each_predicate_class_expands_to_the_depth_its_meaning_licenses(self) -> None:
+        """Six predicates, three traversals, and every bound checked at its edge.
+
+        Walking ``HAS_PART`` alone left roughly half the stored edges — about
+        130 of 290 on the acceptance graph — unreachable at query time.  The fix
+        is not to add the other five to the same walk: measured on that graph,
+        one seed goes from 8 concepts / 184 spans (containment, two hops) to
+        51 / 968 walking every predicate downwards to the same depth, and
+        61 / 1,119 bidirectionally.  So each class travels only as far as what
+        it asserts is worth.
+
+        Containment travels two hops and stops: ``浮标阵列`` is reached,
+        ``锚站的缆索`` one hop further is not.  ``ELABORATES`` travels one, and
+        it travels it in both directions — ``巡检记录`` is reached although its
+        stored edge points *at* the hub rather than away from it, while
+        ``历年归档``, one hop past it, is not.  Nothing here is a coverage cap:
+        a concept that is reached is counted and paged in full, and what is
+        refused is refused before the walk, not truncated after it.
+        """
+        source = PredicateGraphFakeSource()
+        reached = source.reached('全域潮汐枢纽')
+
+        self.assertEqual(reached, {'全域潮汐枢纽', '枢纽的基准线', '浮标阵列', '巡检记录'})
+        # Depth 2 is containment's bound and containment's alone; the third
+        # containment hop and the second elaboration hop are both absent, and
+        # they are absent for different reasons stated in the same set.
+        self.assertNotIn('锚站的缆索', reached)
+        self.assertNotIn('历年归档', reached)
+
+    def test_a_sequential_chain_is_reachable_from_a_link_in_its_middle(self) -> None:
+        """Why the associative predicates are walked in both directions.
+
+        ``第二闸门`` names a link in the middle of a chain.  Downwards-only, the
+        reader who asks about it is told what comes after and never what comes
+        before, which for a sequence is half an answer — and for ``CONTRASTS``,
+        where the stored subject is arbitrary, it is a coin toss.  Bidirectional
+        at depth 1 is what makes a chain reachable from any link in it.
+
+        The same hop count is what keeps it a neighbourhood.  ``第四闸门`` is
+        two links away and is not returned: the concept that ``第二闸门``
+        reached is not itself somewhere to walk on from, so a chain of any
+        length still contributes exactly its two adjacent links.
+        """
+        source = PredicateGraphFakeSource()
+        response = EpubSearchService(source=source).search('第二闸门', graph_limit=50)
+
+        self.assertEqual(response.graph_total, 3)
+        self.assertEqual(
+            {name for hit in response.graph_results for name in hit.matched_concepts},
+            {'第二闸门', '第一闸门', '第三闸门'},
+        )
+        self.assertEqual(
+            [hit.provenance for hit in response.graph_results],
+            [('graph',), ('graph', 'relation:PRECEDES:1'), ('graph', 'relation:PRECEDES:1')],
+        )
+
+    def test_an_associative_hop_is_never_itself_expanded_from(self) -> None:
+        """Depth 1 is a hard stop, and this is the check that it is not a default.
+
+        Two independent ways of getting this wrong are pinned together, because
+        a walk that composes classes passes either one alone.
+
+        First, by what came back: ``巡检记录`` elaborates the hub, so seeding on
+        it reaches ``全域潮汐枢纽`` in one hop — and stops there.  The hub's
+        whole containment subtree stays out, although containment is allowed two
+        hops in its own right, because the concept an elaboration reached is not
+        a seed for anything.
+
+        Second, by what was asked.  The repository records every call, so the
+        frontier itself is visible: after the first round, no query ever names a
+        concept that a non-containment edge produced.  Asserting only the first
+        would let an implementation that walked further but deduplicated the
+        result pass.
+        """
+        source = PredicateGraphFakeSource()
+        reached = source.reached('巡检记录')
+
+        self.assertEqual(reached, {'巡检记录', '全域潮汐枢纽', '历年归档'})
+        self.assertNotIn('枢纽的基准线', reached)
+        self.assertNotIn('浮标阵列', reached)
+
+        # ``全域潮汐枢纽`` and ``历年归档`` were both produced by an
+        # ``ELABORATES`` hop.  No query may name either of them: not the second
+        # round of the elaboration walk, which does not exist, and not the
+        # containment walk, whose frontier is only ever what containment itself
+        # reached.
+        self.assertEqual(
+            {call['concept_ids'] for call in source.relation_calls},
+            {('log',)},
+        )
+
+    def test_provenance_names_the_predicate_that_won_the_concept(self) -> None:
+        """One slot, six possible answers, and the cheapest edge is the one shown.
+
+        ``relation:{predicate}:{depth}`` replaces a hardcoded ``HAS_PART``.  A
+        reader told that a span was reached "by a relation" learns almost
+        nothing; told it was reached by a containment edge rather than by a
+        contrastive one, they can judge it.  Each predicate is asserted by name
+        here rather than by prefix, because the point of the change is the
+        predicate and a template that lost it would still match a prefix.
+
+        The hub both *contains* and *causes* ``枢纽的基准线`` — one concept, two
+        predicates, one hop each.  Containment is the cheaper hop and the
+        stronger claim, so it is what provenance names.  The structural TOC
+        label is unaffected and is pinned by
+        :meth:`test_toc_children_answer_a_concept_the_model_never_decomposed`:
+        no semantic predicate outranks it into silence and it outranks none of
+        them.
+        """
+        source = PredicateGraphFakeSource()
+        service = EpubSearchService(source=source)
+
+        def provenance(query: str, concept: str) -> tuple[str, ...]:
+            response = service.search(query, graph_limit=50)
+            return next(hit.provenance for hit in response.graph_results if concept in hit.matched_concepts)
+
+        self.assertEqual(provenance('全域潮汐枢纽', '枢纽的基准线'), ('graph', 'relation:HAS_PART:1'))
+        self.assertEqual(provenance('全域潮汐枢纽', '浮标阵列'), ('graph', 'relation:HAS_PART:2'))
+        self.assertEqual(provenance('全域潮汐枢纽', '巡检记录'), ('graph', 'relation:ELABORATES:1'))
+        self.assertEqual(provenance('第二闸门', '第一闸门'), ('graph', 'relation:PRECEDES:1'))
+        self.assertEqual(provenance('基线漂移', '泥沙淤积'), ('graph', 'relation:CAUSES:1'))
+        self.assertEqual(provenance('低潮位', '高潮位'), ('graph', 'relation:CONTRASTS:1'))
+        self.assertEqual(provenance('读数核对', '校验流程'), ('graph', 'relation:PREREQUISITE:1'))
+
+    def test_multi_predicate_expansion_still_resolves_only_tier_one_matches(self) -> None:
+        """Expansion reaches concepts; it does not claim the query named them.
+
+        ``resolved_concepts`` is what the reader asked for, and adding five
+        predicates to the walk must not put a single new name in it — otherwise
+        a query about one thing reports itself as a query about its whole
+        neighbourhood.  The concepts the new predicates reach are all present in
+        the channel and all counted; they are simply not resolutions.
+        """
+        source = PredicateGraphFakeSource()
+        response = EpubSearchService(source=source).search('第二闸门', graph_limit=50)
+
+        self.assertEqual(response.resolved_concepts, ('第二闸门',))
+        self.assertGreater(response.graph_total, 1)
+        self.assertIn('第一闸门', {name for hit in response.graph_results for name in hit.matched_concepts})
+
+    def test_a_multi_predicate_page_walk_still_ends_at_graph_total(self) -> None:
+        """§4.3's shared-predicate contract, over a set five predicates helped build.
+
+        Where a concept id came from is not a fact the occurrence queries know:
+        expansion only lengthens the tuple handed to them, and the count and the
+        pages still apply one predicate to it.  That is an argument, and this is
+        the check that the argument survived six predicates rather than one.
+        Walk the expanded set one span at a time and it must visit each distinct
+        source span exactly once, stop at ``graph_total``, and return the same
+        order the unpaged read does.
+        """
+        source = PredicateGraphFakeSource()
+        service = EpubSearchService(source=source)
+        query = '全域潮汐枢纽'
+        total = service.search(query, graph_limit=1).graph_total
+        self.assertEqual(total, 4)
+
+        walked: list[object] = []
+        for offset in range(total + 1):
+            page = service.search(query, graph_offset=offset, graph_limit=1)
+            self.assertEqual(page.graph_total, total)
+            if not page.graph_results:
+                break
+            hit = page.graph_results[0]
+            walked.append((hit.passage_id, hit.excerpt.start_codepoint, hit.excerpt.end_codepoint))
+
+        self.assertEqual(len(walked), total)
+        self.assertEqual(len(set(walked)), total)
+        whole = service.search(query, graph_limit=total)
+        self.assertEqual(
+            walked,
+            [(hit.passage_id, hit.excerpt.start_codepoint, hit.excerpt.end_codepoint) for hit in whole.graph_results],
+        )
 
     def test_toc_children_answer_a_concept_the_model_never_decomposed(self) -> None:
         """The book's own hierarchy reaches sections no relation points at.
