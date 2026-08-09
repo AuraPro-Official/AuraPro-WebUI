@@ -29,7 +29,7 @@ WHICH INTERPRETER
 Channel A (graph) needs no models at all and runs on the EPUB test venv:
 
     ./scripts/epub_test_env.sh          # provisions it, once
-    ~/.cache/aurapro/epub-test-venv/bin/python scripts/epub_query.py "洪水灭世"
+    ~/.cache/aurapro/epub-test-venv/bin/python scripts/epub_query.py "汛期观测"
 
 Channels B (vector) and fused additionally need torch + sentence-transformers.
 Those are NOT in the test venv, but they ARE in the Python that AuraPro Desktop
@@ -37,7 +37,7 @@ provisions, together with the BGE models this store was indexed with:
 
     PYTHONPATH=backend \
       "$HOME/Library/Application Support/aurapro/python/bin/python3" \
-      scripts/epub_query.py "洪水灭世"
+      scripts/epub_query.py "汛期观测"
 
 Run with no query argument for a REPL; models load once, up front.
 

@@ -9,6 +9,15 @@ Wiki. It records decisions confirmed with the product owner and takes precedence
 over earlier planning documents when they conflict. Read this document and the
 task tracker before starting or resuming work.
 
+> **Source-book redaction note.** The EPUB acceptance corpus is a copyrighted
+> book. No text, heading or concept name from it appears in this repository.
+> Where a concept, heading or query is named below, the name is an **invented
+> substitute** drawn from a fictional tidal-observation domain; the shape it
+> stands for — code-point length, containment, fan-out, mention count — is the
+> real one, and so are the measured numbers attached to it. Do not expect these
+> names to match anything in the acceptance store. The mapping from substitute
+> to real name is kept locally and is never committed.
+
 ## 1. Product scope
 
 The system imports EPUB books into a shared private-server library, builds a
@@ -314,7 +323,7 @@ second, relation layer before its full-version offline Batch is accepted.
    grounding pass. They hold **183 evidence spans, of which only 17 are
    ungrounded**, and failing whole over those 17 was discarding **78 concepts,
    78 mentions and 51 relations** — including every relation in two chapters
-   (`独一无二的神自己 七` and `八`) that consequently held none at all. The
+   (`全域潮汐枢纽自身 七` and `八`) that consequently held none at all. The
    classification also showed `EVIDENCE_ABSENT` to be a misnomer. **None of its
    six spans was invented text.** Three were verbatim book text filed against a
    neighbouring passage the same packet had shown the model — one named a
@@ -372,7 +381,7 @@ second, relation layer before its full-version offline Batch is accepted.
    plainly — a human _could_ resolve it, by merging. Measured against the
    full-book runs, that remedy is mostly unavailable: of 33 held items, 32
    collided on pairs already adjudicated as distinct (13 on
-   `独一无二的神`｜`造物主` alone), which no merge can resolve without
+   `全域潮汐枢纽`｜`潮汐源` alone), which no merge can resolve without
    reversing the adjudication, and a model will keep proposing them on every
    future book because the text genuinely uses both. Exactly one was a
    reviewable merge candidate. So the choice was never "skip versus review by
@@ -463,9 +472,9 @@ second, relation layer before its full-version offline Batch is accepted.
    instruction requests. The request encourages a substantive, distinctive
    citation; the floor rejects only what is genuinely unusable. Length is a
    proxy for "distinctive and locatable", and the requested 10 code points
-   overshoots that proxy in Chinese — `神对亚当的嘱咐` (7) and `万口在称独一真神`
-   (8) are complete citations, while the pathology is the bare term (`神`,
-   `耶和华神`). The two numbers are named apart on the profile records, the
+   overshoots that proxy in Chinese — `枢对测点的授时` (7) and `全网同步统一时基`
+   (8) are complete citations, while the pathology is the bare term (`枢`,
+   `潮位观测站`). The two numbers are named apart on the profile records, the
    requested one asserted against the instruction text so a profile cannot
    silently disagree with its own wording, and the enforced one pinned
    separately.
@@ -484,12 +493,12 @@ relationship affects retrieval provenance and ranking, never citation text.
   with Latin-token boundary handling and **token-aligned CJK phrase matching**.
   Only the query is segmented, by a deterministic local dictionary tokenizer
   that performs no inference and opens no socket; concept terms are never
-  segmented, since a phrase such as `神对约伯的试炼` exists as a term but as no
+  segmented, since a phrase such as `枢对锚站的校验` exists as a term but as no
   tokenizer's token. Segmentation therefore supplies a boundary predicate, not
   a pattern set: a CJK match is valid only where both its ends coincide with a
   query token boundary, so a term may span several adjacent tokens while a term
-  landing inside one (`义` within `意义`, the one-character alias `约` within
-  `约伯`) is rejected. Where two valid matches overlap, one strictly contained
+  landing inside one (`律` within `规律`, the one-character alias `锚` within
+  `锚站`) is rejected. Where two valid matches overlap, one strictly contained
   in another is suppressed and the longer survives; equal spans both survive,
   matching Channel A's containment rule. If the segmenter is unavailable, Tier 1
   falls back to unsegmented CJK matching and the response reports a degraded
@@ -546,8 +555,8 @@ relationship affects retrieval provenance and ranking, never citation text.
   rule above still governs everything that is reached.
 - Two properties of the _concept_ are deliberately excluded from that rule.
   **Mention count is not a signal.** How often a book discusses something is a
-  fact about the book, not about what the reader asked for: `神的权柄` is matched
-  by its full five-code-point name and is a specific topic that a book about God
+  fact about the book, not about what the reader asked for: `枢纽的权重` is matched
+  by its full five-code-point name and is a specific topic that the acceptance book
   naturally mentions often, so a frequency ceiling refuses exactly the reader who
   asked for it by name. The accepted consequence is that naming a high-degree
   concept in full expands to its subtree — that is the correct answer to having
