@@ -38,7 +38,7 @@ class SearchForm(BaseModel):
 class BatchDraftForm(BaseModel):
     version_id: str = Field(min_length=1, max_length=128)
     profile_name: str = Field(min_length=1, max_length=200)
-    prompt_profile: str = Field(default="zh-glossary-v3", min_length=1, max_length=100)
+    prompt_profile: str = Field(default="zh-glossary-v4", min_length=1, max_length=100)
     is_sample: bool = False
     sample_limit: int = Field(default=20, ge=1, le=500)
 
@@ -52,7 +52,7 @@ class SectionGraphBatchDraftForm(BaseModel):
 
 class LocalCalibrationForm(BaseModel):
     version_id: str = Field(min_length=1, max_length=128)
-    prompt_profile: str = Field(default="zh-glossary-v3", min_length=1, max_length=100)
+    prompt_profile: str = Field(default="zh-glossary-v4", min_length=1, max_length=100)
     sample_limit: int = Field(default=20, ge=1, le=100)
 
 
