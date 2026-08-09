@@ -28,20 +28,34 @@ from open_webui.retrieval.epub.calibration import LocalConceptCalibrationRunner
 from open_webui.retrieval.epub.prompt_profiles import (
     DEFAULT_CONCEPT_PROMPT_PROFILE,
     PromptProfileError,
+    available_prompt_profiles,
     build_concept_completion_request,
+    get_prompt_profile,
     select_stratified_passages,
+)
+from open_webui.retrieval.epub.overlay import (
+    ConceptOverlay,
+    OverlayError,
+    overlay_sha256,
+    parse_overlay_json,
 )
 from open_webui.retrieval.epub.retrieval_units import plan_retrieval_windows
 from open_webui.retrieval.epub.search import EpubSearchService, SearchResponse
 from open_webui.retrieval.epub.section_graph import (
+    DEFAULT_SECTION_GRAPH_PROFILE,
     SECTION_GRAPH_MAX_CHARACTERS,
-    SECTION_GRAPH_PROFILE,
     SectionGraphError,
+    available_section_graph_profiles,
     build_section_graph_completion_request,
     build_section_graph_packets,
+    get_section_graph_profile,
 )
-from open_webui.retrieval.epub.store import IntegrityError, SQLiteEpubStore
-from open_webui.retrieval.parsers.epub.parser import EPUBParser
+from open_webui.retrieval.epub.store import (
+    IntegrityError,
+    SQLiteEpubStore,
+    UnknownConceptError,
+)
+from open_webui.retrieval.parsers.epub.parser import PARSER_FORMAT_VERSION, EPUBParser
 
 
 class EpubServiceError(ValueError):
@@ -50,6 +64,48 @@ class EpubServiceError(ValueError):
 
 class EpubServiceUnavailable(EpubServiceError):
     """A server-only integration has not been configured or is unavailable."""
+
+
+class EpubResourceNotFound(EpubServiceError):
+    """A referenced EPUB record does not exist, so the route answers 404."""
+
+
+def evidence_floors() -> dict[str, int]:
+    """Map every registered prompt profile to the evidence floor ingest enforces.
+
+    This is the seam that lets cloud ingest apply a per-profile minimum evidence
+    length without importing an extraction-policy module.  ``batch.py``
+    recognises a payload shape from the fields a model returned and must keep
+    doing so with no knowledge of profiles; this service layer already imports
+    both registries for entirely ordinary reasons, so it is the natural place to
+    read the contract and hand the batch repository the resulting numbers.
+
+    Deliberately the *enforced* number, not the requested one.  A profile's
+    instruction asks for a longer span than ingest insists on, because the
+    request encourages a substantive citation while the floor only rejects what
+    is genuinely unusable; the two are named apart on the profile dataclasses,
+    which document why.  Handing the requested number to ingest is the bug this
+    function's name would otherwise invite.
+
+    One flat mapping covers both job kinds because the two profile namespaces
+    are disjoint - ``zh-glossary-*`` and ``zh-section-graph-*`` - and a job
+    records exactly one identifier in ``batch_jobs.prompt_profile``.  A profile
+    that never asked for a minimum contributes ``0``, which is what keeps every
+    superseded sample replayable on the contract it was actually given.
+    """
+    floors = {
+        profile_id: get_prompt_profile(profile_id).enforced_min_evidence_codepoints
+        for profile_id in available_prompt_profiles()
+    }
+    floors.update(
+        {
+            profile_id: get_section_graph_profile(
+                profile_id
+            ).enforced_min_evidence_codepoints
+            for profile_id in available_section_graph_profiles()
+        }
+    )
+    return floors
 
 
 class EpubApiRepository(Protocol):
@@ -81,9 +137,15 @@ class EpubApiRepository(Protocol):
     def set_retrieval_unit_vector_state(self, retrieval_unit_id: str, vector_state: str) -> None: ...
     def set_version_status(self, version_id: str, status: str, *, failure_reason: str | None = None) -> None: ...
     def upsert_concept(self, canonical_name: str, **kwargs: Any) -> str: ...
+    def list_concepts(self, **kwargs: Any) -> list[dict[str, Any]]: ...
+    def count_concepts(self, **kwargs: Any) -> int: ...
+    def merge_concepts(self, **kwargs: Any) -> dict[str, Any]: ...
+    def split_concept(self, **kwargs: Any) -> dict[str, Any]: ...
     def list_concept_relation_assertions(self, **kwargs: Any) -> list[dict[str, Any]]: ...
     def count_concept_relation_assertions(self, **kwargs: Any) -> int: ...
     def set_concept_relation_assertion_status(self, assertion_id: str, status: str) -> None: ...
+    def export_concept_overlay(self, version_id: str) -> ConceptOverlay: ...
+    def apply_overlay(self, overlay: ConceptOverlay, **kwargs: Any) -> dict[str, Any]: ...
 
 
 class EpubConceptService:
@@ -112,7 +174,9 @@ class EpubConceptService:
                 raise EpubServiceUnavailable(
                     "the configured EPUB store needs a BatchRepository adapter before Batch APIs can start"
                 )
-            batch = BatchJobService(SQLiteBatchRepository(store))
+            batch = BatchJobService(
+                SQLiteBatchRepository(store, evidence_floors=evidence_floors())
+            )
         self._batch = batch
         self._providers = dict(providers or {})
         self._vector_indexer = vector_indexer
@@ -283,6 +347,93 @@ class EpubConceptService:
                 created_or_reused += 1
         return created_or_reused
 
+    def export_concept_overlay(self, version_id: str) -> dict[str, Any]:
+        """Publish one version's analysis as portable, text-free artifact bytes.
+
+        The canonical JSON *text* is returned rather than a decoded object:
+        the published SHA-256 has to cover the exact bytes an administrator
+        redistributes, and re-serializing the object downstream would not
+        reproduce them.
+        """
+        if self._store.get_version(version_id) is None:
+            raise EpubResourceNotFound("unknown EPUB version")
+        try:
+            overlay = self._store.export_concept_overlay(version_id)
+        except (IntegrityError, OverlayError) as error:
+            raise EpubServiceError(str(error)) from error
+        overlay_json = overlay.to_json()
+        return {
+            "version_id": version_id,
+            "epub_sha256": overlay.epub_sha256,
+            "parser_version": overlay.parser_version,
+            "overlay_format_version": overlay.overlay_format_version,
+            "overlay_json": overlay_json,
+            "overlay_sha256": overlay_sha256(overlay_json),
+            "passage_count": overlay.fingerprint.count,
+            "concept_count": len(overlay.concepts),
+            "mention_count": len(overlay.mentions),
+            "relation_count": len(overlay.relations),
+        }
+
+    def apply_concept_overlay(self, *, overlay_bytes: bytes) -> dict[str, Any]:
+        """Attach a published analysis to this server's own copy of the book.
+
+        The uploaded artifact never supplies passage text, so this cannot add
+        source material: the store re-derives every mention and evidence
+        string from its own passages, and refuses the whole upload if a single
+        location fails to verify.  An applied overlay has no vectors, so the
+        caller is told to rebuild the version's derived index afterwards.
+        """
+        if not overlay_bytes:
+            raise EpubServiceError("the uploaded overlay artifact cannot be empty")
+        try:
+            overlay = parse_overlay_json(overlay_bytes)
+        except OverlayError as error:
+            raise EpubServiceError(str(error)) from error
+        if overlay.parser_version != str(PARSER_FORMAT_VERSION):
+            # The store checks this again against the target version's own
+            # recorded format.  Both matter: this one refuses an artifact no
+            # build of this server could ever have produced, before any
+            # version is even resolved.
+            raise EpubServiceError(
+                "the overlay was produced by an EPUB parser format this server does not implement"
+            )
+        version = self._store.find_version_by_sha256(overlay.epub_sha256)
+        if version is None:
+            raise EpubResourceNotFound(
+                "no EPUB version in this library matches the overlay's archive hash"
+            )
+        try:
+            summary = self._store.apply_overlay(overlay, version_id=str(version["version_id"]))
+        except IntegrityError as error:
+            raise EpubServiceError(
+                f"{getattr(error, 'reason', 'overlay_rejected')}: {error}"
+            ) from error
+        return {
+            **summary,
+            "book_id": version.get("book_id"),
+            "book_title": version.get("book_title"),
+            "uploaded_overlay_sha256": sha256(overlay_bytes).hexdigest(),
+            "canonical_overlay_sha256": overlay.digest(),
+            # An imported overlay carries no vectors by design; the derived
+            # index has to be rebuilt before the new concepts are searchable.
+            "vectors_require_reindex": True,
+        }
+
+    def list_prompt_profiles(self) -> dict[str, Any]:
+        """List the selectable concept prompt profile identifiers only.
+
+        An administrator has to be able to choose any profile the server
+        actually implements, including the current default; hardcoding a
+        client-side list silently strips newer profiles from the UI.  Only the
+        identifiers travel: instruction text and output schemas stay server-
+        owned so no browser can read or replace the extraction policy.
+        """
+        return {
+            "prompt_profiles": list(available_prompt_profiles()),
+            "default_prompt_profile": DEFAULT_CONCEPT_PROMPT_PROFILE,
+        }
+
     def create_batch_draft(
         self,
         *,
@@ -323,6 +474,10 @@ class EpubConceptService:
             profile_name=profile_name,
             items=items,
             is_sample=is_sample,
+            # Passed explicitly rather than re-derived from the built items:
+            # the batch layer must record what this caller asked for, and it
+            # deliberately knows nothing about extraction policy.
+            prompt_profile=prompt_profile,
         )
         return {
             "batch_job_id": job_id,
@@ -340,6 +495,7 @@ class EpubConceptService:
         profile_name: str,
         is_sample: bool,
         sample_limit: int,
+        section_graph_profile: str = DEFAULT_SECTION_GRAPH_PROFILE,
     ) -> dict[str, Any]:
         """Create one durable cloud item per bounded TOC section packet.
 
@@ -352,6 +508,10 @@ class EpubConceptService:
             raise EpubServiceError("Batch profile_name cannot be empty")
         if not 1 <= sample_limit <= 500:
             raise EpubServiceError("sample_limit must be between 1 and 500")
+        try:
+            get_section_graph_profile(section_graph_profile)
+        except SectionGraphError as error:
+            raise EpubServiceError(str(error)) from error
         passages = self._store.list_passages(version_id)
         if not passages:
             raise EpubServiceError("EPUB version contains no passages")
@@ -367,7 +527,9 @@ class EpubConceptService:
             BatchItemInput(
                 passage_id=packet.anchor_passage_id,
                 custom_id=f"{version_id}:section-graph:{index}",
-                request=self._section_graph_batch_request(model=profile_name, packet=packet),
+                request=self._section_graph_batch_request(
+                    model=profile_name, packet=packet, profile_id=section_graph_profile
+                ),
             )
             for index, packet in enumerate(packets)
         ]
@@ -378,6 +540,7 @@ class EpubConceptService:
             job_kind="SECTION_GRAPH",
             items=items,
             is_sample=is_sample,
+            prompt_profile=section_graph_profile,
         )
         return {
             "batch_job_id": job_id,
@@ -385,8 +548,115 @@ class EpubConceptService:
             "status": "DRAFT",
             "job_kind": "SECTION_GRAPH",
             "is_sample": is_sample,
-            "prompt_profile": SECTION_GRAPH_PROFILE,
+            "prompt_profile": section_graph_profile,
         }
+
+    def backfill_batch_prompt_profiles(self) -> dict[str, Any]:
+        """Recover the prompt profile of jobs created before it was recorded.
+
+        The durable sample-review gate now binds to the prompt profile, so
+        every job predating that column would otherwise be permanently unable
+        to unlock -- or, for an already-approved sample, to keep unlocking --
+        a full run.  The information is not lost: each item's stored request
+        holds the exact system instruction that was sent.
+
+        Matching is exact string equality against the registered profiles'
+        instructions, and nothing else.  A near match is not a match: the
+        whole point of the gate is that the approved quality belongs to one
+        specific instruction, so a "probably v6" guess would reintroduce
+        precisely the confusion being fixed.  Anything unresolved keeps its
+        NULL and therefore keeps being refused; an administrator can create a
+        fresh sample instead.
+
+        This lives in the service because it needs both the batch persistence
+        layer and the extraction-policy registries, and the store and its SQL
+        migrations must not import the latter.
+
+        The report is identifier-only: job IDs, kinds, a resolved profile
+        identifier, or a content-free reason class.  The request envelope it
+        reads never leaves this method.
+        """
+        instructions: dict[str, dict[str, set[str]]] = {
+            "CONCEPT_MENTIONS": {},
+            "SECTION_GRAPH": {},
+        }
+        for profile_id in available_prompt_profiles():
+            instruction = get_prompt_profile(profile_id).system_instruction
+            instructions["CONCEPT_MENTIONS"].setdefault(instruction, set()).add(profile_id)
+        for profile_id in available_section_graph_profiles():
+            instruction = get_section_graph_profile(profile_id).system_instruction
+            instructions["SECTION_GRAPH"].setdefault(instruction, set()).add(profile_id)
+
+        resolved: list[dict[str, Any]] = []
+        unresolved: list[dict[str, Any]] = []
+        try:
+            pending = self._batch.list_jobs_without_prompt_profile()
+        except BatchServiceError as error:
+            raise EpubServiceError(str(error)) from error
+        for job in pending:
+            job_id = str(job["batch_job_id"])
+            job_kind = str(job["job_kind"])
+            record = {"batch_job_id": job_id, "job_kind": job_kind}
+            candidates = instructions.get(job_kind)
+            if candidates is None:
+                unresolved.append({**record, "reason": "UNSUPPORTED_JOB_KIND"})
+                continue
+            try:
+                request = self._batch.first_item_request(job_id)
+            except BatchServiceError as error:
+                raise EpubServiceError(str(error)) from error
+            instruction = self._system_instruction(request)
+            if instruction is None:
+                unresolved.append({**record, "reason": "NO_STORED_INSTRUCTION"})
+                continue
+            matches = candidates.get(instruction, set())
+            if not matches:
+                unresolved.append({**record, "reason": "NO_REGISTERED_PROFILE_MATCHES"})
+                continue
+            if len(matches) > 1:
+                # Two registered profiles sharing one instruction cannot be
+                # told apart from what was sent, and picking either would
+                # attribute an approval to a profile that may not have been
+                # the one requested.
+                unresolved.append({**record, "reason": "AMBIGUOUS_REGISTERED_PROFILES"})
+                continue
+            profile_id = next(iter(matches))
+            try:
+                self._batch.backfill_prompt_profile(job_id, profile_id)
+            except BatchServiceError as error:
+                raise EpubServiceError(str(error)) from error
+            resolved.append({**record, "prompt_profile": profile_id})
+        return {
+            "examined": len(pending),
+            "resolved": resolved,
+            "unresolved": unresolved,
+        }
+
+    @staticmethod
+    def _system_instruction(request: Mapping[str, Any] | None) -> str | None:
+        """Read the single system message out of a stored Batch envelope.
+
+        Returns ``None`` for any shape this server did not write, rather than
+        reaching for whatever string is nearby: an unrecognised envelope is an
+        unknown profile, and unknown must stay unknown.
+        """
+        if not isinstance(request, Mapping):
+            return None
+        body = request.get("body")
+        if not isinstance(body, Mapping):
+            return None
+        messages = body.get("messages")
+        if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+            return None
+        found: list[str] = []
+        for message in messages:
+            if not isinstance(message, Mapping) or message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                return None
+            found.append(content)
+        return found[0] if len(found) == 1 else None
 
     def submit_batch(self, batch_job_id: str) -> dict[str, Any]:
         provider = self._provider_for_job(batch_job_id)
@@ -509,6 +779,78 @@ class EpubConceptService:
             alias_source="ADMIN",
         )
         return {"concept_id": concept_id}
+
+    def list_concepts(self, *, status: str | None, offset: int, limit: int) -> dict[str, Any]:
+        """Page the concept graph so an administrator can find merge candidates.
+
+        Aliases and canonical names are concept labels, and mention counts are
+        integers; no passage text, evidence span, prompt or model output is
+        part of this response.
+        """
+        try:
+            return {
+                "total": self._store.count_concepts(status=status),
+                "offset": offset,
+                "items": self._store.list_concepts(status=status, offset=offset, limit=limit),
+            }
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def merge_concepts(
+        self,
+        *,
+        target_concept_id: str,
+        source_concept_id: str,
+        canonical_name: str | None,
+        merged_by: str,
+    ) -> dict[str, Any]:
+        """Resolve a model-suggested duplicate by folding one concept into another.
+
+        Ingest deliberately refuses an item whose suggestion exactly matches
+        two concepts, and nothing else in the API could resolve that.  This is
+        the administrator remedy; the acting user is recorded in the audit row.
+        """
+        try:
+            return self._store.merge_concepts(
+                target_concept_id=target_concept_id,
+                source_concept_id=source_concept_id,
+                canonical_name=canonical_name,
+                merged_by=merged_by,
+            )
+        except UnknownConceptError as error:
+            raise EpubResourceNotFound(str(error)) from error
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
+
+    def split_concept(
+        self,
+        *,
+        source_concept_id: str,
+        canonical_name: str,
+        aliases: Sequence[str],
+        mentions: Sequence[Mapping[str, Any]],
+        split_by: str,
+    ) -> dict[str, Any]:
+        """Carve part of one concept out into a new one an administrator names.
+
+        A merge is one-way and has twice been wrong.  Nothing else in the API
+        can correct one, and restoring a backup stops being possible once a
+        later job postdates it.  This is not an undo -- the store cannot derive
+        a faithful reverse from a merge audit row -- so the administrator states
+        the whole decision and is recorded in the split's own audit row.
+        """
+        try:
+            return self._store.split_concept(
+                source_concept_id=source_concept_id,
+                canonical_name=canonical_name,
+                aliases=aliases,
+                mentions=mentions,
+                split_by=split_by,
+            )
+        except UnknownConceptError as error:
+            raise EpubResourceNotFound(str(error)) from error
+        except IntegrityError as error:
+            raise EpubServiceError(str(error)) from error
 
     def index_retrieval_unit(self, retrieval_unit_id: str) -> dict[str, Any]:
         if self._vector_indexer is None:
@@ -646,11 +988,15 @@ class EpubConceptService:
         }
 
     @staticmethod
-    def _section_graph_batch_request(*, model: str, packet: Any) -> dict[str, Any]:
+    def _section_graph_batch_request(
+        *, model: str, packet: Any, profile_id: str = DEFAULT_SECTION_GRAPH_PROFILE
+    ) -> dict[str, Any]:
         return {
             "method": "POST",
             "url": "/v1/chat/completions",
-            "body": build_section_graph_completion_request(model=model, packet=packet),
+            "body": build_section_graph_completion_request(
+                model=model, packet=packet, profile_id=profile_id
+            ),
         }
 
     @staticmethod
