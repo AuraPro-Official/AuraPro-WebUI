@@ -270,7 +270,8 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         """Mentions that duplicate, nest and partially overlap in two passages.
 
         The passages are inserted out of book order so the graph read surface
-        has to sort by ``spine_index``/``ordinal`` rather than by insertion.
+        has to sort by ``spine_index``/``ordinal`` rather than by insertion,
+        which is the tie-break the ranking signals fall through to.
         """
         self.store.add_passages(
             "version-a",
@@ -304,19 +305,23 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         of ``[0,2)`` are the same characters, and ``[4,6)`` is already visible
         inside ``[3,7)``.  A reader wants each piece of source once, so the
         maximal span survives and carries the concepts it absorbed.
+
+        With every concept matched directly, the two two-concept spans lead and
+        the longer span of each pair leads its passage — book order only breaks
+        what the ranking signals leave tied.
         """
         concept_ids = self._graph_span_fixture()
         rows = self.store.list_concept_occurrences(concept_ids, offset=0, limit=20)
 
         self.assertEqual(
             self._span_keys(rows),
-            [("passage-a", 0, 2), ("passage-a", 3, 7), ("passage-b", 0, 4), ("passage-b", 2, 7)],
+            [("passage-a", 3, 7), ("passage-a", 0, 2), ("passage-b", 2, 7), ("passage-b", 0, 4)],
         )
-        # The exact duplicate collapses; neither concept is dropped.
-        self.assertEqual(rows[0]["canonical_names"], ("Alpha", "Beta"))
-        self.assertEqual(rows[0]["concept_ids"], tuple(sorted(concept_ids[:2])))
         # The nested span collapses into its container, which carries both.
-        self.assertEqual(rows[1]["canonical_names"], ("Alpha", "Gamma"))
+        self.assertEqual(rows[0]["canonical_names"], ("Alpha", "Gamma"))
+        # The exact duplicate collapses; neither concept is dropped.
+        self.assertEqual(rows[1]["canonical_names"], ("Alpha", "Beta"))
+        self.assertEqual(rows[1]["concept_ids"], tuple(sorted(concept_ids[:2])))
         # Every surviving span is still a byte-exact slice of its passage.
         for row in rows:
             start, end = row["start_codepoint"], row["end_codepoint"]
@@ -334,24 +339,31 @@ class SQLiteEpubStoreTest(unittest.TestCase):
             if row["passage_id"] == "passage-b"
         ]
 
-        self.assertEqual(self._span_keys(rows), [("passage-b", 0, 4), ("passage-b", 2, 7)])
-        self.assertEqual(rows[0]["canonical_names"], ("Alpha",))
-        self.assertEqual(rows[1]["canonical_names"], ("Gamma",))
+        self.assertEqual(self._span_keys(rows), [("passage-b", 2, 7), ("passage-b", 0, 4)])
+        self.assertEqual(rows[0]["canonical_names"], ("Gamma",))
+        self.assertEqual(rows[1]["canonical_names"], ("Alpha",))
 
     def test_graph_occurrence_total_equals_every_page_walked_one_by_one(self) -> None:
         """The count and the pages must apply the same de-duplication predicate.
 
         Filtering duplicates after ``LIMIT``/``OFFSET`` would give ragged pages
         and a total that disagrees with them, so this walks the pages instead
-        of recomputing the expectation.
+        of recomputing the expectation.  Ranking is deliberately expressed as
+        one total order in ``ORDER BY`` rather than as a per-page rerank, so it
+        cannot move a span across a page boundary: the walk is done with a
+        relation cost that reorders the result set, and it must still visit
+        every span exactly once and end at the count.
         """
         concept_ids = self._graph_span_fixture()
+        costs = {concept_ids[0]: 0.0, concept_ids[1]: 3.0, concept_ids[2]: 5.32}
         total = self.store.count_concept_occurrences(concept_ids)
 
         walked: list[dict[str, object]] = []
         offset = 0
         while True:
-            page = self.store.list_concept_occurrences(concept_ids, offset=offset, limit=1)
+            page = self.store.list_concept_occurrences(
+                concept_ids, offset=offset, limit=1, concept_costs=costs
+            )
             if not page:
                 break
             self.assertEqual(len(page), 1)
@@ -363,8 +375,51 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         keys = self._span_keys(walked)
         self.assertEqual(len(set(keys)), len(keys))
         self.assertEqual(
-            keys, self._span_keys(self.store.list_concept_occurrences(concept_ids, offset=0, limit=20))
+            keys,
+            self._span_keys(
+                self.store.list_concept_occurrences(
+                    concept_ids, offset=0, limit=20, concept_costs=costs
+                )
+            ),
         )
+        # The count is a function of the shared predicate alone, so declaring a
+        # cost must not add, drop, or duplicate a single span.
+        self.assertEqual(
+            set(keys), set(self._span_keys(self.store.list_concept_occurrences(concept_ids, offset=0, limit=20)))
+        )
+        self.assertEqual(self.store.count_concept_occurrences(concept_ids), total)
+
+    def test_a_directly_matched_span_is_paged_before_a_relation_expanded_one(self) -> None:
+        """The caller's per-concept cost, not book position, picks the first page.
+
+        ``Gamma`` here stands for a concept reached only by walking out of a
+        high-degree hub: its span sits earlier in the book and is longer, and
+        it must still sort behind every span a directly matched concept
+        anchored.  A span that merely *absorbed* a hub concept keeps its direct
+        rank, because that is what its attribution shows the reader.
+        """
+        concept_ids = self._graph_span_fixture()
+        alpha, beta, gamma = concept_ids
+        rows = self.store.list_concept_occurrences(
+            concept_ids,
+            offset=0,
+            limit=20,
+            concept_costs={alpha: 0.0, beta: 0.0, gamma: 5.32},
+        )
+
+        self.assertEqual(
+            self._span_keys(rows),
+            [("passage-a", 3, 7), ("passage-a", 0, 2), ("passage-b", 0, 4), ("passage-b", 2, 7)],
+        )
+        # passage-b[2,7) is Gamma alone: longer, earlier in the passage than
+        # nothing else, and still last because it cost 5.32 to reach.
+        self.assertEqual(rows[-1]["canonical_names"], ("Gamma",))
+        self.assertEqual(rows[-1]["rank_relation_cost"], 5.32)
+        # passage-a[3,7) is anchored by Gamma but absorbed Alpha's [4,6), so it
+        # is attributed to a direct match and ranks as one.
+        self.assertEqual(rows[0]["canonical_names"], ("Alpha", "Gamma"))
+        self.assertEqual(rows[0]["rank_relation_cost"], 0.0)
+        self.assertEqual(rows[0]["rank_concept_count"], 2)
 
 
 class SQLiteEpubConceptMergeTest(unittest.TestCase):

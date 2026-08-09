@@ -68,6 +68,23 @@ class SearchResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class _RelationExpansion:
+    """The concept set a query reaches, with how far and how cheaply it got there.
+
+    ``depths`` is hop count and is what a hit's provenance reports.  ``costs``
+    is the retrieval-ranking signal and is deliberately *not* hop count: one
+    hop out of a concept with 20 ``HAS_PART`` children says far less about a
+    span than one hop out of a concept with a single child.  Keeping the two
+    apart means bounding a hub changes ranking without rewriting the provenance
+    a reader is shown.
+    """
+
+    concept_ids: tuple[str, ...]
+    depths: Mapping[str, int]
+    costs: Mapping[str, float]
+
+
+@dataclass(frozen=True, slots=True)
 class _FusedCandidate:
     """A locally-rankable, source-verified candidate from either channel.
 
@@ -92,8 +109,16 @@ class EpubSearchRepository(Protocol):
     # disagrees with the pages.
     def count_concept_occurrences(self, concept_ids: Sequence[str]) -> int: ...
 
+    # ``concept_costs`` declares how expensive it was to reach each concept, so
+    # the store can rank before it truncates.  It affects ``ORDER BY`` only:
+    # the predicate the count and the pages share is untouched.
     def list_concept_occurrences(
-        self, concept_ids: Sequence[str], *, offset: int, limit: int
+        self,
+        concept_ids: Sequence[str],
+        *,
+        offset: int,
+        limit: int,
+        concept_costs: Mapping[str, float] | None = None,
     ) -> list[Mapping[str, Any]]: ...
 
     def get_search_passage(self, passage_id: str) -> Mapping[str, Any] | None: ...
@@ -236,12 +261,19 @@ class EpubSearchService:
         *,
         graph_offset: int = 0,
         graph_limit: int = 20,
+        graph_fusion_limit: int = 20,
         vector_limit: int = 10,
         vector_candidate_limit: int = 50,
     ) -> SearchResponse:
         if not isinstance(query, str) or not query.strip():
             raise SearchError("query must be non-empty text")
-        if graph_offset < 0 or graph_limit < 1 or vector_limit < 1 or vector_candidate_limit < vector_limit:
+        if (
+            graph_offset < 0
+            or graph_limit < 1
+            or graph_fusion_limit < 1
+            or vector_limit < 1
+            or vector_candidate_limit < vector_limit
+        ):
             raise SearchError("search pagination limits are invalid")
 
         terms = self._concept_terms()
@@ -252,16 +284,24 @@ class EpubSearchService:
             matched = self._resolve_tier_two(query, matcher, degraded)
         concept_ids = tuple(term.concept_id for term in matched)
         resolved_names = tuple(dict.fromkeys(term.canonical_name for term in matched))
-        graph_concept_ids, relation_depths = self._expand_relation_concepts(concept_ids)
+        expansion = self._expand_relation_concepts(concept_ids)
+        graph_concept_ids = expansion.concept_ids
 
         graph_total = self._source.count_concept_occurrences(graph_concept_ids) if graph_concept_ids else 0
-        graph_rows = (
-            self._source.list_concept_occurrences(graph_concept_ids, offset=graph_offset, limit=graph_limit)
-            if graph_concept_ids
-            else []
+        graph_results = self._graph_page(
+            expansion, resolved_names, offset=graph_offset, limit=graph_limit
         )
-        graph_results = tuple(
-            self._graph_hit(row, resolved_names, relation_depths) for row in graph_rows
+        # The fused channel reads the *top* of the ranked graph channel, never
+        # the page the panel happens to be showing.  Feeding it the display
+        # page made ``graph_limit`` a recall ceiling on a ranked channel: with
+        # the default 20 against a ``graph_total`` of 778, fusion only ever saw
+        # the 20 spans nearest the front of the book, and its results looked
+        # sound only because 50 vector candidates carried them.  Paging the
+        # panel must not change what the fused answer is, either.
+        fusion_graph_results = (
+            graph_results[:graph_fusion_limit]
+            if graph_offset == 0 and graph_limit >= graph_fusion_limit
+            else self._graph_page(expansion, resolved_names, offset=0, limit=graph_fusion_limit)
         )
         vector_candidates = self._vector_candidates(
             query,
@@ -278,13 +318,13 @@ class EpubSearchService:
         fused_results = (
             self._fused_hits(
                 query,
-                graph_results=graph_results,
+                graph_results=fusion_graph_results,
                 vector_candidates=vector_candidates,
                 concept_ids=graph_concept_ids,
                 result_limit=vector_limit,
                 degraded=degraded,
             )
-            if graph_results
+            if fusion_graph_results
             else _mark_vector_results_fused(vector_results)
         )
         return SearchResponse(
@@ -300,23 +340,76 @@ class EpubSearchService:
 
     def _expand_relation_concepts(
         self, concept_ids: Sequence[str], *, max_depth: int = 2
-    ) -> tuple[tuple[str, ...], Mapping[str, int]]:
-        """Follow a bounded containment graph without turning relations into citations."""
+    ) -> _RelationExpansion:
+        """Follow a bounded containment graph without turning relations into citations.
+
+        Coverage is unchanged by ranking: every concept reachable within
+        ``max_depth`` is still queried, and ``graph_total`` still counts every
+        span they occur in.  A high-degree concept is *down-weighted*, never
+        dropped — capping the fan-out would delete source a reader could
+        otherwise page to, and it would do so invisibly, since the count would
+        simply come back smaller with no way to tell why.
+
+        The weight is the price of the walk: one hop costs ``1 + log2(k)``
+        where ``k`` is how many children that parent fanned out to.  A parent
+        with one child costs a plain hop; ``独一无二的神``, with 20 grounded
+        ``HAS_PART`` children in the acceptance book, costs 5.32 — so its
+        children's spans sort below spans reached by two hops through narrow
+        parents, which is exactly the relative confidence those two paths
+        deserve.  Because a hub can make a one-hop path dearer than a two-hop
+        one, cost takes the cheapest path found while ``depths`` keeps the hop
+        count, which is what provenance reports.
+        """
         depths = {concept_id: 0 for concept_id in concept_ids}
+        costs: dict[str, float] = {concept_id: 0.0 for concept_id in concept_ids}
         frontier = list(concept_ids)
         for depth in range(1, max_depth + 1):
             if not frontier:
                 break
             edges = self._source.list_concept_relation_neighbors(frontier, predicates=("HAS_PART",))
-            next_frontier: list[str] = []
+            children: dict[str, set[str]] = {}
             for edge in edges:
-                target = edge.get("object_concept_id")
-                if not isinstance(target, str) or not target or target in depths:
+                subject, target = edge.get("subject_concept_id"), edge.get("object_concept_id")
+                if isinstance(subject, str) and isinstance(target, str) and subject and target:
+                    children.setdefault(subject, set()).add(target)
+            step_costs: dict[str, float] = {}
+            for edge in edges:
+                subject, target = edge.get("subject_concept_id"), edge.get("object_concept_id")
+                if not isinstance(target, str) or not target:
                     continue
-                depths[target] = depth
-                next_frontier.append(target)
+                fanout = len(children.get(subject, ())) if isinstance(subject, str) else 0
+                parent_cost = costs.get(subject, 0.0) if isinstance(subject, str) else 0.0
+                candidate = parent_cost + 1.0 + math.log2(max(fanout, 1))
+                if candidate < step_costs.get(target, math.inf):
+                    step_costs[target] = candidate
+            next_frontier: list[str] = []
+            for target, cost in step_costs.items():
+                if target not in depths:
+                    depths[target] = depth
+                    next_frontier.append(target)
+                if cost < costs.get(target, math.inf):
+                    costs[target] = cost
             frontier = next_frontier
-        return tuple(depths), depths
+        return _RelationExpansion(concept_ids=tuple(depths), depths=depths, costs=costs)
+
+    def _graph_page(
+        self,
+        expansion: _RelationExpansion,
+        resolved_names: Sequence[str],
+        *,
+        offset: int,
+        limit: int,
+    ) -> tuple[SearchHit, ...]:
+        """Read one page of the ranked graph channel."""
+        if not expansion.concept_ids:
+            return ()
+        rows = self._source.list_concept_occurrences(
+            expansion.concept_ids,
+            offset=offset,
+            limit=limit,
+            concept_costs=expansion.costs,
+        )
+        return tuple(self._graph_hit(row, resolved_names, expansion.depths) for row in rows)
 
     def _concept_terms(self) -> list[ConceptTerm]:
         terms: list[ConceptTerm] = []
