@@ -612,29 +612,71 @@ _GROUNDING_DIAGNOSTIC_FIELDS = frozenset(
     }
 )
 _UNDIAGNOSED_FAILURE_REASON = "UNDIAGNOSED"
+# The rejections that name one citation and nothing else, and are therefore the
+# only ones a section-graph packet can localize to a single claim (SDD 4.2.2
+# point 6d).  Both say the same thing about the model: it reproduced real text
+# and got the bookkeeping around it wrong.  ABSENT means the literal is not in
+# the passage the span names - measured on the ten failed packets, every one of
+# its six spans was genuine book text filed against a neighbouring passage the
+# same packet had shown the model, differing at most by one punctuation mark.
+# AMBIGUOUS means the literal *is* there and only the occurrence is unresolved.
+#
+# Nothing else joins them, and the omissions are deliberate rather than
+# pending.  ANCHOR_MISMATCH, ANCHOR_MISSING, ANCHOR_INVALID, INVALID_OFFSETS,
+# EVIDENCE_FROM_TOC_PATH and PASSAGE_UNAVAILABLE all remain hard failures: none
+# of them has been measured against a real run under this rule, and the whole
+# reason this rule needed three revisions is that each earlier one generalized
+# past what it had actually measured.
+_CLAIM_LEVEL_GROUNDING_FAILURE_REASONS = frozenset({"EVIDENCE_ABSENT", "EVIDENCE_AMBIGUOUS"})
 _PROVIDER_ITEM_ERROR_DIAGNOSTICS: Mapping[str, Any] = {"reason": "PROVIDER_ITEM_ERROR"}
 _TERMINAL_WITHOUT_RESULT_DIAGNOSTICS: Mapping[str, Any] = {"reason": "TERMINAL_WITHOUT_RESULT"}
+
+
+def _is_claim_level_failure(error: BatchPayloadError) -> bool:
+    """Whether this rejection blames one citation rather than the packet.
+
+    This predicate is the single place the claim-level rule is decided, so a
+    measurement and an ingest cannot come to different answers about the same
+    span: both call it, on the same exception object, from the same walk.  A
+    rejection raised without diagnostics is not claim-level, because a rule that
+    drops output has to know what it is dropping.
+    """
+    reason = (error.diagnostics or {}).get("reason")
+    return reason in _CLAIM_LEVEL_GROUNDING_FAILURE_REASONS
 
 
 class _GroundedPayload(NamedTuple):
     """One grounded result plus what the grounding pass removed from it.
 
-    ``payload`` is what gets written and stored; ``skipped_short_evidence`` is
-    how many spans the enforced evidence floor dropped on the way there.  The
-    count cannot be recovered from ``payload`` afterwards - the dropped spans
-    are exactly what is no longer in it - so it travels out with it and is
-    persisted beside the result, the way ``skipped_self_relations`` already is.
+    ``payload`` is what gets written and stored; the two counts are what the
+    pass dropped on the way there, by cause.  Neither can be recovered from
+    ``payload`` afterwards - the dropped spans are exactly what is no longer in
+    it - so they travel out with it and are persisted beside the result, the way
+    ``skipped_self_relations`` already is.
 
-    One counter covers both span kinds.  A dropped concept mention and a dropped
-    relation-evidence span are the same defect with the same remedy - the
-    instruction has to ask for a more distinctive citation - and both are
-    removed by the same resolver, so splitting them would add a column that
-    answers no question an operator actually asks and that is structurally
-    always zero for a CONCEPT_MENTIONS job.
+    ``skipped_short_evidence`` is the enforced evidence floor: real source text,
+    correctly quoted, too small to locate anything for a reader.
+    ``skipped_ungrounded_evidence`` is a citation that could not be verified
+    against the passage it named at all.  They are separate because they settle
+    differently: the floor is our own threshold and moves when we move it, while
+    an unverifiable citation is the model's bookkeeping and only a prompt or a
+    model changes it.  One counter would let a rising floor hide a degrading
+    model, or the reverse.
+
+    Each counter covers both span kinds.  A dropped concept mention and a
+    dropped relation-evidence span are the same defect with the same remedy and
+    are removed by the same resolver, so splitting them would add columns that
+    answer no question an operator actually asks.
+
+    ``skipped_ungrounded_evidence`` is ``None`` rather than 0 for a
+    CONCEPT_MENTIONS payload, which cannot skip such a span at all: SDD 4.2.2
+    point 6d is scoped to section-graph packets, so a zero there would read as a
+    measured absence rather than as "the rule does not run here".
     """
 
     payload: dict[str, Any]
     skipped_short_evidence: int
+    skipped_ungrounded_evidence: int | None
 
 
 class _SectionGraphWrite(NamedTuple):
@@ -659,23 +701,25 @@ class _SectionGraphWrite(NamedTuple):
 
 
 class _PacketProbe:
-    """Turns one read-only grounding pass into a measurement of a failed packet.
+    """Classifies, by reason slug, every ungrounded span in one packet.
 
-    ``_ground_section_graph_payload`` normally stops at the first ungrounded
-    span, because that is the ingest contract: an item that cannot be grounded
-    fails, whole.  That is also why a failed item stores no ``response_json`` -
-    ``ingest_success`` is that column's only writer - and therefore why nobody
-    can say, from the durable store alone, how many spans in a failed packet
-    were ungrounded and how much valid work sat beside them.
+    This began as the way to measure a packet ingest rejected whole, back when
+    the first ungrounded span failed its item and a failed item stored no
+    ``response_json``, so the shape of that packet existed nowhere durable.  The
+    measurement it produced is what SDD 4.2.2 point 6d was decided from, and the
+    rule then absorbed the probe's central behaviour: dropping a claim-level
+    rejection and carrying on is now what *ingest* does, not something a probe
+    switches on.  See :func:`_is_claim_level_failure`, which both callers ask.
 
-    A probe answers exactly that question without asking a second
-    implementation to answer it.  Passing one to the grounding pass makes the
-    pass record an ungrounded span and carry on, the way it already carries on
-    past a sub-floor one, instead of raising on the first.  Everything else -
-    the resolver, the anchors, the cascade - is the production code path,
-    untouched, so a measurement cannot disagree with what ingest would do.  With
-    no probe the pass behaves exactly as before, which is what every ingest
-    caller gets.
+    What remains is a classifier.  ``_ground_section_graph_payload`` counts the
+    spans it drops but does not keep their reasons - a count is what belongs on
+    an item row, a histogram is not - so a probe is how the dry run says whether
+    a packet's losses were absent citations or ambiguous ones.  It also still
+    records the rejections ingest does *not* drop, which is now its only
+    remaining leniency and is confined to a method that writes nothing: an
+    ANCHOR_MISMATCH span is classified here and would still fail the item, so a
+    dry-run reader is given ``spans_skipped_by_ingest`` alongside
+    ``spans_failed`` rather than being left to assume the two agree.
 
     A probe never *decides* anything.  It is deliberately write-free and
     content-free: reason slugs already whitelisted by
@@ -1384,11 +1428,12 @@ class SQLiteBatchRepository:
         per-job aggregate lets an administrator read "7 ambiguous, 3 absent"
         off the history list without opening a single item.
 
-        ``skipped_self_relations``, ``skipped_short_evidence`` and
-        ``skipped_ambiguous_concepts`` are exposed for the same reason and are
-        safe for a stronger one: each column can only hold an integer or NULL,
-        so none of them needs a read-side validator to be sure it is
-        content-free.  All three are aggregated per job as well, because a
+        ``skipped_self_relations``, ``skipped_short_evidence``,
+        ``skipped_ambiguous_concepts`` and ``skipped_ungrounded_evidence`` are
+        exposed for the same reason and are safe for a stronger one: each column
+        can only hold an integer or NULL, so none of them needs a read-side
+        validator to be sure it is content-free.  All four are aggregated per
+        job as well, because a
         succeeded item is exactly the one an administrator never opens - a skip
         that only a stored result knew about would be silent in practice, and a
         dropped span is not even in the stored result.
@@ -1415,18 +1460,20 @@ class SQLiteBatchRepository:
             diagnostics = _safe_failure_diagnostics(failure["failure_diagnostics_json"])
             reason = str(diagnostics["reason"]) if diagnostics else _UNDIAGNOSED_FAILURE_REASON
             reasons[reason] = reasons.get(reason, 0) + 1
-        # SUM over three integer-or-NULL columns: three scalars, no JSON to
+        # SUM over four integer-or-NULL columns: four scalars, no JSON to
         # parse, and no response ever loaded to produce them.
         skips = connection.execute(
             """SELECT COALESCE(SUM(skipped_self_relations), 0),
                       COALESCE(SUM(skipped_short_evidence), 0),
-                      COALESCE(SUM(skipped_ambiguous_concepts), 0)
+                      COALESCE(SUM(skipped_ambiguous_concepts), 0),
+                      COALESCE(SUM(skipped_ungrounded_evidence), 0)
                FROM batch_items WHERE batch_job_id = ?""",
             (row["batch_job_id"],),
         ).fetchone()
         skipped_self_relations = int(skips[0])
         skipped_short_evidence = int(skips[1])
         skipped_ambiguous_concepts = int(skips[2])
+        skipped_ungrounded_evidence = int(skips[3])
         summary: dict[str, Any] = {
             "batch_job_id": row["batch_job_id"],
             "version_id": row["version_id"],
@@ -1464,6 +1511,14 @@ class SQLiteBatchRepository:
             # the same reason as the counter above: the cause is what is
             # unrecoverable, and a cascade is derivable from the stored payload.
             "item_skipped_ambiguous_concepts": skipped_ambiguous_concepts,
+            # Citations this job's succeeded items dropped because they could
+            # not be verified against the passage they named (SDD 4.2.2 point
+            # 6d).  Deliberately not folded into the counter above it: a
+            # sub-floor span is our own threshold and settles when we move the
+            # floor, while this one is the model's bookkeeping and settles only
+            # with a prompt or a model.  Summed together, a rising floor would
+            # hide a degrading model.
+            "item_skipped_ungrounded_evidence": skipped_ungrounded_evidence,
         }
         if include_items:
             summary["items"] = [
@@ -1502,13 +1557,22 @@ class SQLiteBatchRepository:
                         if item["skipped_ambiguous_concepts"] is None
                         else int(item["skipped_ambiguous_concepts"])
                     ),
+                    # None where the rule could not apply: a CONCEPT_MENTIONS
+                    # item, whose ungrounded spans still fail it whole, an item
+                    # that has not succeeded, or a row that predates the column.
+                    "skipped_ungrounded_evidence": (
+                        None
+                        if item["skipped_ungrounded_evidence"] is None
+                        else int(item["skipped_ungrounded_evidence"])
+                    ),
                     "updated_at": item["updated_at"],
                 }
                 for item in connection.execute(
                     """SELECT batch_item_id, passage_id, custom_id, status, attempt_count,
                               response_json, error_text, failure_diagnostics_json,
                               skipped_self_relations, skipped_short_evidence,
-                              skipped_ambiguous_concepts, updated_at
+                              skipped_ambiguous_concepts, skipped_ungrounded_evidence,
+                              updated_at
                        FROM batch_items WHERE batch_job_id = ? ORDER BY custom_id""",
                     (row["batch_job_id"],),
                 )
@@ -1890,6 +1954,14 @@ class SQLiteBatchRepository:
         least one, and a payload reduced to no concepts at all is still a
         success - ``{"concepts": []}`` is a valid response and always has been.
         Returns the surviving payload and how many spans were dropped.
+
+        An *ungrounded* span still fails this item whole.  SDD 4.2.2 point 6d
+        drops one instead, but is scoped to section-graph packets and does not
+        run here, which is why the returned ``skipped_ungrounded_evidence`` is
+        ``None``.  The scope is deliberate: the ten failed packets are the only
+        thing that rule has been measured against, no equivalent measurement
+        exists for a concept response, and this rule has already been restated
+        twice for generalizing past its evidence.
         """
         if set(payload) != {"concepts"} or not isinstance(payload.get("concepts"), list):
             raise BatchPayloadError(
@@ -2045,7 +2117,7 @@ class SQLiteBatchRepository:
             grounded = dict(concept)
             grounded["mentions"] = grounded_mentions
             grounded_concepts.append(grounded)
-        return _GroundedPayload({"concepts": grounded_concepts}, skipped_short_evidence)
+        return _GroundedPayload({"concepts": grounded_concepts}, skipped_short_evidence, None)
 
     @staticmethod
     def _add_mentions(
@@ -2263,10 +2335,15 @@ class SQLiteBatchRepository:
         is a different defect from invented prose - and are used for nothing
         else; no title is stored, compared for idempotency, or written.
 
-        ``evidence_floor`` applies to every span in the packet, mention and
-        relation evidence alike, because both go through the same resolver.  A
-        sub-floor span is dropped here rather than failing the packet, and the
-        cascade runs to whatever the contract can no longer express:
+        Two classes of span are dropped here rather than failing the packet, and
+        both feed one cascade.  ``evidence_floor`` applies to every span in the
+        packet, mention and relation evidence alike, because both go through the
+        same resolver; a span below it is our own threshold refusing a citation
+        too small to locate anything.  A span whose rejection
+        :func:`_is_claim_level_failure` accepts - EVIDENCE_ABSENT or
+        EVIDENCE_AMBIGUOUS - is dropped for the different reason that it cannot
+        be verified against the source at all (SDD 4.2.2 point 6d).  The two are
+        counted apart and returned apart; only the cascade is shared:
 
         * a concept whose every mention was dropped is dropped, because a
           concept must carry at least one mention;
@@ -2284,8 +2361,13 @@ class SQLiteBatchRepository:
         empty concepts and relations arrays are a valid response.
 
         Evidence spans are grounded even for a relation already doomed by a
-        dropped endpoint, so a genuinely ungrounded span inside it still fails
-        the item.  Only the floor is lenient here; nothing else becomes so.
+        dropped endpoint, so a span that would fail the item still fails it from
+        inside a relation that was going to be dropped anyway.
+
+        Nothing unverified is admitted by any of this.  A dropped span leaves no
+        trace in the payload, so what survives is exactly what the resolver
+        located byte-exactly in the immutable source - the rule changes which
+        *unit* a bad citation destroys, never what a stored citation means.
 
         This pass is deliberately read-only and complete.  Ingest is atomic per
         item and the enclosing transaction would roll back anyway, but doing
@@ -2293,17 +2375,19 @@ class SQLiteBatchRepository:
         unresolvable relation endpoint discovered after nine concepts were
         written can never depend on the rollback to undo them.
 
-        ``probe`` is how a diagnostic measures a packet that ingest rejects, and
-        it is ``None`` for every ingest caller, which is every caller in
-        production.  Supplying one changes nothing about *grounding* - the
-        resolver, the anchors, the floor and the cascade are the same code
-        deciding the same way - it changes only what happens to a rejection:
-        instead of leaving this function, an ungrounded span is recorded by slug
-        and dropped, so the walk reaches the spans behind it and the caller
-        learns how much of the packet is grounded rather than only that some of
-        it is not.  See :class:`_PacketProbe`.  Nothing is written either way;
-        this pass could not write if it wanted to, which is what makes measuring
-        a failed packet safe to do before any rule about it has been decided.
+        ``probe`` is ``None`` for every ingest caller, which is every caller in
+        production, and supplying one changes no grounding decision: the
+        resolver, the anchors, the floor, the claim-level predicate and the
+        cascade are the same code deciding the same way, so a measurement cannot
+        disagree with what ingest would write.  A probe adds exactly two things,
+        both of which only a write-free caller needs.  It keeps the reason slug
+        of each dropped span, which an item row deliberately does not.  And it
+        records - rather than re-raising - the rejections that are *not*
+        claim-level, so a packet that ingest would still fail whole can be
+        classified instead of merely refused.  That second one is the only place
+        the two paths part, which is why the dry run reports both
+        ``spans_failed`` and ``spans_skipped_by_ingest``.
+        See :class:`_PacketProbe`.
         """
         if set(payload) != {"concepts", "relations"}:
             raise BatchPayloadError(
@@ -2326,6 +2410,7 @@ class SQLiteBatchRepository:
         # from a relation pointing at an ID that was never declared at all.
         dropped_local_ids: set[str] = set()
         skipped_short_evidence = 0
+        skipped_ungrounded_evidence = 0
         grounded_concepts: list[dict[str, Any]] = []
         for concept_index, suggestion in enumerate(concepts):
             position: dict[str, Any] = {
@@ -2377,11 +2462,19 @@ class SQLiteBatchRepository:
                         evidence_floor=evidence_floor,
                     )
                 except BatchPayloadError as exc:
-                    # Ingest, and therefore every caller that is not measuring,
-                    # re-raises here and the packet fails whole.
-                    if probe is None:
+                    # SDD 4.2.2 point 6d.  A rejection that names this one
+                    # citation drops this one citation; anything else still
+                    # fails the packet whole, here as before.  The order matters:
+                    # the predicate is asked first and asked once, so a probe
+                    # cannot make ingest keep a span ingest would have refused,
+                    # nor make it refuse one ingest would have kept.
+                    claim_level = _is_claim_level_failure(exc)
+                    if not claim_level and probe is None:
                         raise
-                    probe.record_span_failure("MENTION", exc)
+                    if probe is not None:
+                        probe.record_span_failure("MENTION", exc)
+                    if claim_level:
+                        skipped_ungrounded_evidence += 1
                     continue
                 if grounded_mention is None:
                     skipped_short_evidence += 1
@@ -2450,17 +2543,22 @@ class SQLiteBatchRepository:
                         evidence_floor=evidence_floor,
                     )
                 except BatchPayloadError as exc:
-                    if probe is None:
+                    claim_level = _is_claim_level_failure(exc)
+                    if not claim_level and probe is None:
                         raise
-                    probe.record_span_failure("RELATION_EVIDENCE", exc)
+                    if probe is not None:
+                        probe.record_span_failure("RELATION_EVIDENCE", exc)
+                    if claim_level:
+                        skipped_ungrounded_evidence += 1
                     continue
                 if grounded_span is None:
                     skipped_short_evidence += 1
                     continue
                 grounded_evidence.append(grounded_span)
-            # Grounded first, dropped second: a relation whose endpoint the
-            # floor removed is still checked for ungrounded evidence, so
-            # leniency stays confined to the floor.
+            # Grounded first, dropped second: a relation whose endpoint was
+            # already removed still has its own evidence walked, so a rejection
+            # that is not claim-level fails the packet from in here too rather
+            # than being skipped over because the relation was doomed anyway.
             if subject in dropped_local_ids or object_ in dropped_local_ids:
                 if probe is not None:
                     probe.relations_dropped_endpoint += 1
@@ -2473,6 +2571,7 @@ class SQLiteBatchRepository:
         return _GroundedPayload(
             {"concepts": grounded_concepts, "relations": grounded_relations},
             skipped_short_evidence,
+            skipped_ungrounded_evidence,
         )
 
     def dry_run_section_graph_packet(
@@ -2488,10 +2587,15 @@ class SQLiteBatchRepository:
         written.  There is no ``_write()`` here and no UPDATE: the item's status,
         its ``response_json``, its diagnostics and the graph are all exactly as
         they were.  That is the point of the method rather than an incidental
-        property of it.  A rule that would skip an ungrounded span and keep the
-        rest of a packet has not been decided; this exists so the decision can
-        be made against a measurement instead of an extrapolation, and it must
-        be safe to run while the rule is still open.
+        property of it.  It was built so the rule now recorded as SDD 4.2.2
+        point 6d could be decided against a measurement instead of an
+        extrapolation, and had to be safe to run while that rule was open.
+
+        The rule is decided and the method keeps its use.  It is now a preview:
+        what a re-ingest of this packet would write, and - through
+        ``spans_failed_by_reason``, which no item row keeps - why.  Reading it
+        before re-ingesting a failed item is how a claimed recovery gets checked
+        against the write instead of trusted.
 
         Why it takes ``payload`` rather than reading one: a FAILED item stores
         no response at all, because ``ingest_success`` is the only writer of
@@ -2525,7 +2629,7 @@ class SQLiteBatchRepository:
             ).get("reason"),
         }
         try:
-            grounded, skipped_short_evidence = self._ground_section_graph_payload(
+            grounded, skipped_short_evidence, skipped_ungrounded = self._ground_section_graph_payload(
                 connection,
                 version_id=job["version_id"],
                 payload=payload,
@@ -2561,9 +2665,18 @@ class SQLiteBatchRepository:
             "mention_spans": mention_spans,
             "relation_evidence_spans": relation_evidence_spans,
             "spans_failed": probe.failed_spans,
-            # The split the decision turns on.  ABSENT means the model quoted
-            # text that is not in the book; AMBIGUOUS means the text is there
-            # verbatim and only the occurrence is unresolved.
+            # Of those, the ones ingest would itself drop under SDD 4.2.2 point
+            # 6d.  Reported next to ``spans_failed`` rather than instead of it
+            # because the two can differ: a probe classifies an ANCHOR_MISMATCH
+            # span, ingest still fails the item over it, and a reader must be
+            # able to see that rather than infer a recovery that will not
+            # happen.  Where they are equal - which is every one of the ten
+            # measured packets - this packet's grounded counts are exactly what
+            # a re-ingest will write.
+            "spans_skipped_by_ingest": skipped_ungrounded,
+            # The split the decision turned on.  ABSENT means the model quoted
+            # text that is not in the passage it named; AMBIGUOUS means the text
+            # is there verbatim and only the occurrence is unresolved.
             "spans_failed_by_reason": probe.failures_by_reason(),
             "mention_spans_failed_by_reason": dict(probe.mention_failures),
             "relation_evidence_spans_failed_by_reason": dict(probe.relation_evidence_failures),
@@ -2694,6 +2807,14 @@ class SQLiteBatchRepository:
         way, in ``batch_items.skipped_short_evidence``, because it is likewise
         unrecoverable from what was stored.
 
+        A span dropped for being ungrounded behaves exactly like the floor and
+        for exactly the same reason - the read-only pass removes it before
+        anything is serialized - so it too is absent from the stored result and
+        replays byte-identically.  Its count goes to
+        ``batch_items.skipped_ungrounded_evidence``, kept apart from the floor's
+        because a sub-floor span is our threshold and an unverifiable citation
+        is the model's bookkeeping.
+
         An ambiguous concept behaves like the self-relation rather than like the
         floor, and for the same reason: resolution is a write, so the grounding
         pass never sees it and the concept is still in the stored response
@@ -2716,8 +2837,9 @@ class SQLiteBatchRepository:
             # NULL rather than 0 where no grounding pass ran at all, so "not
             # measured" stays distinguishable from a measured zero.
             skipped_short_evidence: int | None = None
+            skipped_ungrounded_evidence: int | None = None
             if job["job_kind"] == "SECTION_GRAPH":
-                payload, skipped_short_evidence = self._ground_section_graph_payload(
+                payload, skipped_short_evidence, skipped_ungrounded_evidence = self._ground_section_graph_payload(
                     connection,
                     version_id=job["version_id"],
                     payload=payload,
@@ -2727,8 +2849,10 @@ class SQLiteBatchRepository:
                     evidence_floor=evidence_floor,
                 )
             elif job["provider"] == "openai-batch":
-                payload, skipped_short_evidence = self._ground_openai_concept_payload(
-                    connection, item=item, payload=payload, evidence_floor=evidence_floor
+                payload, skipped_short_evidence, skipped_ungrounded_evidence = (
+                    self._ground_openai_concept_payload(
+                        connection, item=item, payload=payload, evidence_floor=evidence_floor
+                    )
                 )
             serialized = _canonical_json(payload)
             if item["status"] == "SUCCEEDED":
@@ -2769,6 +2893,7 @@ class SQLiteBatchRepository:
                    SET status = 'SUCCEEDED', response_json = ?, error_text = NULL,
                        failure_diagnostics_json = NULL, skipped_self_relations = ?,
                        skipped_short_evidence = ?, skipped_ambiguous_concepts = ?,
+                       skipped_ungrounded_evidence = ?,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE batch_item_id = ?""",
                 (
@@ -2776,6 +2901,7 @@ class SQLiteBatchRepository:
                     skipped_self_relations,
                     skipped_short_evidence,
                     skipped_ambiguous_concepts,
+                    skipped_ungrounded_evidence,
                     item["batch_item_id"],
                 ),
             )
