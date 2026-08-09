@@ -115,7 +115,11 @@ class EpubStore(Protocol):
     ) -> str: ...
 
     def list_concept_relation_neighbors(
-        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ('HAS_PART',)
+        self,
+        concept_ids: Sequence[str],
+        *,
+        predicates: Sequence[str] = ('HAS_PART',),
+        direction: str = 'outgoing',
     ) -> list[dict[str, Any]]: ...
 
     def list_concept_relation_assertions(
@@ -1272,15 +1276,46 @@ class SQLiteEpubStore:
         return resolved_id
 
     def list_concept_relation_neighbors(
-        self, concept_ids: Sequence[str], *, predicates: Sequence[str] = ('HAS_PART',)
+        self,
+        concept_ids: Sequence[str],
+        *,
+        predicates: Sequence[str] = ('HAS_PART',),
+        direction: str = 'outgoing',
     ) -> list[dict[str, Any]]:
-        """Return edges with at least one non-rejected grounded assertion."""
+        """Return edges with at least one non-rejected grounded assertion.
+
+        ``direction`` says which end of the edge the queried concepts sit on,
+        and it exists because the predicates do not all mean the same shape of
+        thing.  ``HAS_PART`` is containment and reads one way only — a whole
+        names its parts, and walking from a part back to its whole would return
+        everything the whole contains.  A sequential or contrastive predicate is
+        a chain, and a chain is only reachable at all if either link may name
+        the other: ``incoming`` and ``both`` exist for those.
+
+        The three values are ``'outgoing'`` (the queried concepts are subjects),
+        ``'incoming'`` (they are objects) and ``'both'``.  Rows are unchanged in
+        every case — subject, predicate and object as stored — so the caller,
+        which is the only party that knows which concepts it asked about, is
+        also the only party that decides which end of a returned edge is the
+        neighbour.  An edge with both ends in the queried set is returned once,
+        not twice, for the same reason: it is one edge.
+        """
         if not concept_ids or not predicates:
             return []
         if any(predicate not in _RELATION_PREDICATES for predicate in predicates):
             raise IntegrityError('unsupported concept relation predicate')
+        if direction not in ('outgoing', 'incoming', 'both'):
+            raise IntegrityError('unsupported concept relation traversal direction')
         concept_placeholders = ', '.join('?' for _ in concept_ids)
         predicate_placeholders = ', '.join('?' for _ in predicates)
+        endpoint_clauses = {
+            'outgoing': f'r.subject_concept_id IN ({concept_placeholders})',
+            'incoming': f'r.object_concept_id IN ({concept_placeholders})',
+            'both': (
+                f'(r.subject_concept_id IN ({concept_placeholders}) OR r.object_concept_id IN ({concept_placeholders}))'
+            ),
+        }
+        endpoint_parameters = tuple(concept_ids) * (2 if direction == 'both' else 1)
         return [
             dict(row)
             for row in self._connection()
@@ -1288,11 +1323,11 @@ class SQLiteEpubStore:
                 f"""SELECT DISTINCT r.relation_id, r.subject_concept_id, r.predicate, r.object_concept_id
                     FROM concept_relations AS r
                     JOIN concept_relation_assertions AS a ON a.relation_id = r.relation_id
-                    WHERE r.subject_concept_id IN ({concept_placeholders})
+                    WHERE {endpoint_clauses[direction]}
                       AND r.predicate IN ({predicate_placeholders})
                       AND a.status != 'REJECTED'
                     ORDER BY r.subject_concept_id, r.predicate, r.object_concept_id, r.relation_id""",
-                (*concept_ids, *predicates),
+                (*endpoint_parameters, *predicates),
             )
             .fetchall()
         ]
