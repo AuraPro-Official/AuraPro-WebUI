@@ -5,7 +5,7 @@ node_modules
 /build
 /.svelte-kit
 /package
-*env*
+.env*
 test*.py
 
 backend/tests/*
