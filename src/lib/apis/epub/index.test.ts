@@ -334,6 +334,45 @@ describe('EPUB concept API client', () => {
 		expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST' });
 	});
 
+	it('carries every ingest skip counter through the Batch summary', async () => {
+		// A succeeded item is the one an administrator never opens, so a skip
+		// that only the stored result knew about would be silent in practice.
+		// All three counters are integers or null by database schema, which is
+		// why they are safe on a lifecycle-only endpoint at all. The client is a
+		// passthrough; this pins the shape it is typed to carry.
+		const summary = {
+			batch_job_id: 'batch-1',
+			item_skipped_self_relations: 1,
+			item_skipped_short_evidence: 2,
+			item_skipped_ambiguous_concepts: 3,
+			items: [
+				{
+					batch_item_id: 'item-1',
+					custom_id: 'section-1',
+					status: 'SUCCEEDED',
+					skipped_self_relations: 1,
+					skipped_short_evidence: 2,
+					skipped_ambiguous_concepts: 3
+				},
+				{
+					// A row written before the ambiguous-concept column existed:
+					// "not measured", which must survive as null rather than
+					// collapsing to a zero the write never made.
+					batch_item_id: 'item-2',
+					custom_id: 'section-2',
+					status: 'SUCCEEDED',
+					skipped_self_relations: 0,
+					skipped_short_evidence: 0,
+					skipped_ambiguous_concepts: null
+				}
+			]
+		};
+		const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(summary));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await expect(getEpubBatchJob('admin-token', 'batch-1')).resolves.toEqual(summary);
+	});
+
 	it('recovers missing prompt profiles through its own administrator endpoint', async () => {
 		// The full-run approval gate binds to the prompt profile, so a job that
 		// predates the column unlocks nothing. The client reports per job what
