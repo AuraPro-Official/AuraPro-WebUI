@@ -83,6 +83,16 @@ from open_webui.retrieval.epub.store import SQLiteEpubStore  # noqa: E402
 DEFAULT_DB = '/private/tmp/aurapro-epub-e2e/epub_concept_v1.db'
 DEFAULT_RERANKER = 'BAAI/bge-reranker-base'
 
+# What the web app actually asks for, so what this harness must ask for by
+# default.  ``SearchForm.vector_limit`` in ``open_webui.routers.epub`` and the
+# ``vector_limit`` the ``/epub`` route posts are both this number.  The harness
+# used to default to 5, which is not a smaller view of the same answer: the
+# fused channel is MMR-selected, so halving the limit changes *which* results
+# are chosen, not merely how many are shown.  Anyone judging ranking quality
+# with the harness was judging a different selection from the one the reader
+# gets.  Keep this in step with the router if the router ever moves.
+PRODUCTION_VECTOR_LIMIT = 10
+
 
 # ───────────────────────────── terminal helpers ──────────────────────────────
 
@@ -687,7 +697,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument('--graph-offset', type=int, default=0)
     parser.add_argument('--graph-limit', type=int, default=5)
-    parser.add_argument('--vector-limit', type=int, default=5)
+    parser.add_argument(
+        '--vector-limit',
+        type=int,
+        default=PRODUCTION_VECTOR_LIMIT,
+        help=f'vector/fused results to return (default: {PRODUCTION_VECTOR_LIMIT}, what the web app sends)',
+    )
     parser.add_argument('--vector-candidate-limit', type=int, default=50)
     parser.add_argument('--full', action='store_true', help='print the full parent passage, not a truncated excerpt')
     parser.add_argument('--width', type=int, default=100, help='output width in columns')
