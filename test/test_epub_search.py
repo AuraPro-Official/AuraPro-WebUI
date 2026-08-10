@@ -682,6 +682,122 @@ class TocFakeSource(FakeSource):
         return rows
 
 
+class EnumerationFakeSource(FakeSource):
+    """One enumerated TOC node, in the shape fused ranking has to survive.
+
+    Names are invented (see the substitution note at the top of this module).
+    The shape is the acceptance book's, and every part of it was measured on the
+    query that motivated the sibling rule:
+
+    * ``观测网所必经的六道闸门`` is a TOC parent with **six** child sections and
+      is the node TOC-child expansion reaches.  All six enter the candidate pool
+      and only five used to come back.
+    * The parent node carries **two passages of its own** — the heading and a
+      framing sentence.  Both outscore most of the sections, and neither is an
+      item of the list, so neither may be a sibling of one.
+    * ``第一闸门`` and ``第六闸门`` each hold **two passages**, one reached by the
+      graph channel and one only by the vector channel.  This is the case that
+      breaks a per-candidate provenance test: on the real book the best-scoring
+      span of most sections came from the channel that labels nothing, so
+      membership has to be a property of the *node*, not of the retrieval path.
+    * ``1）量程分档`` is a **sub-node of the fourth section**, so a hit in it is
+      one level too deep to be a seventh item.
+    * ``另一组`` is a second parent with three child sections that TOC-child
+      expansion never touched.  It exists to be treated as ordinary: sharing a
+      TOC parent is association, not decomposition, and only expansion says
+      otherwise.
+
+    ``spine_index``/``ordinal`` are supplied exactly as the SQLite store
+    supplies them, because the order sections come back in is part of the
+    answer.  :class:`FakeSource` supplies neither, which is how the tests keep
+    proving a repository without them still returns the same citations.
+    """
+
+    CHAPTER = '闸门总述'
+    PARENT = '观测网所必经的六道闸门'
+    SECTIONS = (
+        ('gate-1', '第一闸门　流量校准', '流量校准'),
+        ('gate-2', '第二闸门　基线复核', '基线复核'),
+        ('gate-3', '第三闸门　相位对齐', '相位对齐'),
+        ('gate-4', '第四闸门　量程标定', '量程标定'),
+        ('gate-5', '第五闸门　残差归算', '残差归算'),
+        ('gate-6', '第六闸门　停机封存', '停机封存'),
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.passages = {
+            'gates': self._ordered('gates', (self.CHAPTER, self.PARENT), '观测网所必经的六道闸门', 0, 10),
+            'gates_body': self._ordered(
+                'gates_body', (self.CHAPTER, self.PARENT), '每一个观测网都要经过几道关键闸门。', 0, 11
+            ),
+            'g1': self._ordered('g1', self._path(1), '流量校准决定后续标定的取值。', 0, 20),
+            'g1b': self._ordered('g1b', self._path(1), '流量校准的复核在每季度进行一次。', 0, 21),
+            'g2': self._ordered('g2', self._path(2), '基线复核由长期观测归算得到。', 0, 30),
+            'g3': self._ordered('g3', self._path(3), '相位对齐要求各站共用同一时基。', 0, 40),
+            'g4': self._ordered('g4', self._path(4), '量程标定按分档逐级完成。', 0, 50),
+            'g4sub': self._ordered('g4sub', (*self._path(4), '1）量程分档'), '量程分档的档位由历史极值决定。', 0, 55),
+            'g5': self._ordered('g5', self._path(5), '残差归算给出本轮校验的判定。', 0, 60),
+            'g6': self._ordered('g6', self._path(6), '停机封存', 0, 70),
+            'g6v': self._ordered('g6v', self._path(6), '停机封存之前要留存最后一组读数。', 0, 71),
+            'o1': self._ordered('o1', ('另一章', '另一组', '甲节'), '甲节的记录另作说明。', 1, 10),
+            'o2': self._ordered('o2', ('另一章', '另一组', '乙节'), '乙节的记录另作说明。', 1, 11),
+            'o3': self._ordered('o3', ('另一章', '另一组', '丙节'), '丙节的记录另作说明。', 1, 12),
+        }
+        self.bindings = {'gates': 'n-gates', **{concept: node for node, _, concept in self.SECTIONS}}
+        self.toc_children = {'n-gates': tuple(node for node, _, _ in self.SECTIONS)}
+        self.terms = [
+            TocFakeSource._term('gates', '六道闸门', '六道闸门', mentions=1, fanout=0),
+            *(TocFakeSource._term(concept, concept, concept, mentions=1, fanout=0) for _, _, concept in self.SECTIONS),
+        ]
+        # One graph span per section, plus the seed's own heading span.  The
+        # vector-only passages carry no mention at all, which is the whole point
+        # of ``g1b``/``g6v``/``g4sub``: they are reachable by embedding and by
+        # nothing else.
+        self.occurrences = [
+            self._occurrence('gates', '六道闸门', 'gates', 7, 11),
+            *(
+                self._occurrence(concept, concept, f'g{index}', 0, len(concept))
+                for index, (_, _, concept) in enumerate(self.SECTIONS, start=1)
+            ),
+        ]
+        self.relations = []
+        self.units = {
+            passage_id: self._whole(passage_id)
+            for passage_id in ('gates_body', 'g1b', 'g4sub', 'g6v', 'o1', 'o2', 'o3')
+        }
+
+    def _path(self, section: int) -> tuple[str, ...]:
+        return (self.CHAPTER, self.PARENT, self.SECTIONS[section - 1][1])
+
+    def _ordered(self, passage_id, toc_path, content, spine_index, ordinal) -> dict[str, object]:
+        return {
+            'passage_id': passage_id,
+            'book_title': '潮汐观测总志',
+            'toc_path': tuple(toc_path),
+            'content': content,
+            'content_sha256': _hash(content),
+            'spine_index': spine_index,
+            'ordinal': ordinal,
+        }
+
+    def _whole(self, passage_id: str) -> dict[str, object]:
+        content = str(self.passages[passage_id]['content'])
+        return {
+            'retrieval_unit_id': passage_id,
+            'passage_id': passage_id,
+            'start_codepoint': 0,
+            'end_codepoint': len(content),
+            'content': content,
+            'content_sha256': _hash(content),
+        }
+
+    _occurrence = TocFakeSource._occurrence
+    matched_concept_names = TocFakeSource.matched_concept_names
+    list_toc_child_concepts = TocFakeSource.list_toc_child_concepts
+
+
+
 class PredicateGraphFakeSource(FakeSource):
     """All six stored predicates on one seed, shaped to the traversal each earns.
 
@@ -1084,6 +1200,68 @@ def _record(source: FakeSource, unit_id: str, vector: tuple[float, ...]) -> obje
         embedding_profile='private-embed-v1',
         vector=vector,
     )
+
+
+class ScriptedEmbeddings(FakeEmbeddings):
+    """Vectors named per text, so a test states the cosines it is about."""
+
+    def __init__(self, vectors: dict[str, tuple[float, ...]], default: tuple[float, ...]) -> None:
+        super().__init__()
+        self.vectors = vectors
+        self.default = default
+
+    def embed(self, texts):
+        self.calls.append(list(texts))
+        return [self.vectors.get(text, self.default) for text in texts]
+
+
+class ScriptedReranker(FakeReranker):
+    """Relevance named per excerpt, so a test states the ranking it is about."""
+
+    def __init__(self, scores: dict[str, float], default: float = 0.01) -> None:
+        super().__init__()
+        self.scores = scores
+        self.default = default
+
+    def score(self, query, documents):
+        self.calls.append((query, list(documents)))
+        return [self.scores.get(document, self.default) for document in documents]
+
+
+ENUMERATION_QUERY = '六道闸门是什么'
+# Three axes so "everything else" can be orthogonal to both groups a test names,
+# rather than accidentally identical to one of them.
+GATE_AXIS = (1.0, 0.0, 0.0)
+OTHER_AXIS = (0.0, 1.0, 0.0)
+UNRELATED_AXIS = (0.0, 0.0, 1.0)
+
+
+def _enumeration_service(source, *, scores, vectors, **kwargs):
+    """The production service, with only the two local models scripted.
+
+    ``scores`` and ``vectors`` are keyed by the text a model would actually be
+    handed — a graph excerpt or a whole vector window — so a test reads as the
+    ranking it is about rather than as a table of identifiers.
+    """
+    vectors = {ENUMERATION_QUERY: GATE_AXIS, **vectors}
+    backend = FakeVectorBackend(
+        [
+            _record(source, unit_id, vectors.get(str(source.units[unit_id]['content']), UNRELATED_AXIS))
+            for unit_id in source.units
+        ]
+    )
+    return EpubSearchService(
+        source=source,
+        vector_backend=backend,
+        embeddings=ScriptedEmbeddings(vectors, default=UNRELATED_AXIS),
+        reranker=ScriptedReranker(scores),
+        **kwargs,
+    )
+
+
+def _sections(response) -> list[str]:
+    """The TOC section each fused result sits in, in the order returned."""
+    return [hit.toc_path[-1] for hit in response.fused_results]
 
 
 class EpubSearchTest(unittest.TestCase):
@@ -2069,6 +2247,246 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(vector_hit.provenance, ('vector', 'cross-encoder', 'mmr', 'fused'))
         self.assertEqual(reranker.calls[-1][1], ['TCP', source.units['u2']['content']])
         self.assertEqual(embeddings.calls, [['TCP'], ['TCP']])
+
+    def test_sibling_sections_of_one_enumerated_node_stop_crowding_each_other_out(self) -> None:
+        """An enumeration's sections are complementary, so MMR must not net them off.
+
+        This is the defect the sibling rule exists for, in the shape it was
+        measured in.  Six sections reach the pool; the reranker likes all six;
+        and MMR — which assumes a candidate resembling a selected one is
+        *redundant* with it — spends the answer's slots on near-duplicates of
+        the sections it already has and drops two sections entirely.  "The fifth
+        gate" is not more of "the fourth", and a reader who asked what the gates
+        are wants both.
+
+        Four claims, asserted together because they are one rule:
+
+        * all six sections come back;
+        * ``g1b``, a second passage of a section already present, does **not**
+          take a slot, though it outscores three sections that do.  Cosine calls
+          it novel — 0.6 against its own section's span — and cosine is wrong:
+          the unit an enumeration enumerates is the section;
+        * ``g4sub``, one level deeper, does **not** take a slot either, though
+          it outscores four sections that do.  A sub-section of the fourth gate
+          is not a seventh gate;
+        * ``g6v`` does, and it is reachable only by the vector channel.  The
+          claim is about the node, not about which channel found the span.
+        """
+        source = EnumerationFakeSource()
+        response = _enumeration_service(
+            source,
+            scores={
+                '六道闸门': 0.92,
+                '流量校准': 0.90,
+                '每一个观测网都要经过几道关键闸门。': 0.88,
+                '流量校准的复核在每季度进行一次。': 0.86,
+                '量程分档的档位由历史极值决定。': 0.85,
+                '基线复核': 0.84,
+                '相位对齐': 0.82,
+                '量程标定': 0.80,
+                '残差归算': 0.78,
+                '停机封存之前要留存最后一组读数。': 0.76,
+                '停机封存': 0.30,
+            },
+            vectors={
+                '六道闸门': OTHER_AXIS,
+                '每一个观测网都要经过几道关键闸门。': (0.8, 0.6, 0.0),
+                '流量校准的复核在每季度进行一次。': (0.6, 0.8, 0.0),
+                **{text: GATE_AXIS for text in ('流量校准', '基线复核', '相位对齐', '量程标定', '残差归算', '停机封存')},
+                '量程分档的档位由历史极值决定。': GATE_AXIS,
+                '停机封存之前要留存最后一组读数。': GATE_AXIS,
+            },
+        ).search(ENUMERATION_QUERY, graph_limit=20, vector_limit=8, vector_candidate_limit=20)
+
+        self.assertEqual(response.resolved_concepts, ('六道闸门',))
+        self.assertEqual(
+            [hit.passage_id for hit in response.fused_results],
+            ['gates', 'g1', 'g2', 'g3', 'g4', 'g5', 'g6v', 'gates_body'],
+        )
+        self.assertEqual(
+            _sections(response)[1:7], [title for _, title, _ in EnumerationFakeSource.SECTIONS]
+        )
+        # Both near-duplicates lose to sections they outscore, which is the
+        # trade the rule is making and the reason it is worth making.
+        self.assertNotIn('g1b', [hit.passage_id for hit in response.fused_results])
+        self.assertNotIn('g4sub', [hit.passage_id for hit in response.fused_results])
+        self.assertGreater(0.86, 0.76)
+
+    def test_sibling_sections_come_back_in_book_order_among_themselves(self) -> None:
+        """An enumeration reads in the book's order, not in the reranker's.
+
+        MMR's selection order is a relevance order, and for a list of stages it
+        is the wrong one: on the acceptance book the sections came back first,
+        sixth, second, third, fifth.  Only the occupants of the group's own
+        slots are permuted, so a section can never displace anything that
+        outranked it — here the seed's heading keeps rank 1 and the parent's
+        framing sentence keeps rank 8, exactly as ranking placed them.
+
+        The scores are deliberately in reverse book order, so a result that came
+        back in book order cannot have come back by relevance: the second result
+        scores 0.70 and the seventh scores 0.90.
+        """
+        source = EnumerationFakeSource()
+        response = _enumeration_service(
+            source,
+            scores={
+                '六道闸门': 0.92,
+                '停机封存之前要留存最后一组读数。': 0.90,
+                '残差归算': 0.88,
+                '量程标定': 0.86,
+                '相位对齐': 0.84,
+                '基线复核': 0.82,
+                '流量校准': 0.70,
+                '每一个观测网都要经过几道关键闸门。': 0.60,
+            },
+            vectors={
+                '六道闸门': OTHER_AXIS,
+                '每一个观测网都要经过几道关键闸门。': (0.8, 0.6, 0.0),
+                **{
+                    text: GATE_AXIS
+                    for text in ('流量校准', '基线复核', '相位对齐', '量程标定', '残差归算', '停机封存')
+                },
+                # Every other span under this chapter reads on the same axis,
+                # so nothing wins a slot merely by being unlike the answer.
+                '停机封存之前要留存最后一组读数。': GATE_AXIS,
+                '流量校准的复核在每季度进行一次。': GATE_AXIS,
+                '量程分档的档位由历史极值决定。': GATE_AXIS,
+            },
+        ).search(ENUMERATION_QUERY, graph_limit=20, vector_limit=8, vector_candidate_limit=20)
+
+        self.assertEqual(
+            [hit.passage_id for hit in response.fused_results],
+            ['gates', 'g1', 'g2', 'g3', 'g4', 'g5', 'g6v', 'gates_body'],
+        )
+        self.assertEqual(response.fused_results[1].score, 0.70)
+        self.assertEqual(response.fused_results[6].score, 0.90)
+
+    def test_a_minority_of_sections_keeps_its_relevance_order(self) -> None:
+        """Book order is for an answer that *is* a list, not for two stray sections.
+
+        Where one node's sections are a minority of the results they are not a
+        list being read, they are supporting evidence among unrelated answers,
+        and ordering them by book position is actively wrong.  Measured on the
+        acceptance book: a query returned four sections of one node among six
+        other results, the best of the four scoring 0.9734 at rank 1 and the
+        weakest 0.0014 at rank 10 — and sorting those four by book position put
+        the 0.0014 one first.
+
+        Here the two sections are 1 of 6 and 6 of 6, in the reverse of book
+        order, and they stay that way.
+        """
+        source = EnumerationFakeSource()
+        response = _enumeration_service(
+            source,
+            scores={
+                '六道闸门': 0.95,
+                '残差归算': 0.90,
+                '甲节的记录另作说明。': 0.60,
+                '乙节的记录另作说明。': 0.55,
+                '丙节的记录另作说明。': 0.50,
+                '流量校准': 0.20,
+                '每一个观测网都要经过几道关键闸门。': 0.15,
+            },
+            vectors={
+                '六道闸门': OTHER_AXIS,
+                '残差归算': GATE_AXIS,
+                '流量校准': GATE_AXIS,
+                '甲节的记录另作说明。': UNRELATED_AXIS,
+                '乙节的记录另作说明。': (0.6, 0.0, 0.8),
+                '丙节的记录另作说明。': (0.8, 0.0, 0.6),
+                '每一个观测网都要经过几道关键闸门。': (0.8, 0.6, 0.0),
+            },
+        ).search(ENUMERATION_QUERY, graph_limit=20, vector_limit=6, vector_candidate_limit=20)
+
+        # The fifth gate is two of six results ahead of the first gate, and it
+        # stays there: it is the one the reader asked something answerable by.
+        self.assertEqual(
+            [hit.passage_id for hit in response.fused_results], ['gates', 'g5', 'o1', 'o2', 'o3', 'g1']
+        )
+
+    def test_sections_sharing_a_toc_parent_are_ordinary_without_toc_child_expansion(self) -> None:
+        """Adjacency in the TOC is association; only expansion says decomposition.
+
+        ``另一组`` has three child sections with a common parent, exactly like
+        the enumerated node — and nothing about this query asked for its parts,
+        so TOC-child expansion never labelled them and they get no exemption.
+        They crowd each other out under ordinary cosine while the enumerated
+        sections do not, in the same response, which is the whole scope of the
+        change stated as one comparison.
+
+        Read the other way round: this is what the enumerated group would still
+        look like if the rule keyed on path adjacency alone, and it is why the
+        rule does not.  A node's siblings hold a median of 10 bound concepts
+        against a median of 0 for its children; exempting every chapter's
+        sections from each other would trade the diversity of every query in the
+        book for one query shape.
+        """
+        source = EnumerationFakeSource()
+        response = _enumeration_service(
+            source,
+            scores={
+                # The seed's own heading: relevant, in neither group, and the
+                # candidate the unenumerated sections have to beat.
+                '六道闸门': 0.60,
+                '流量校准': 0.80,
+                '甲节的记录另作说明。': 0.795,
+                '基线复核': 0.79,
+                '乙节的记录另作说明。': 0.79,
+                '丙节的记录另作说明。': 0.785,
+                '相位对齐': 0.78,
+                '量程标定': 0.77,
+            },
+            vectors={
+                **{text: GATE_AXIS for text in ('流量校准', '基线复核', '相位对齐', '量程标定')},
+                **{text: OTHER_AXIS for text in ('甲节的记录另作说明。', '乙节的记录另作说明。', '丙节的记录另作说明。')},
+            },
+        ).search(ENUMERATION_QUERY, graph_limit=20, vector_limit=6, vector_candidate_limit=20)
+
+        returned = [hit.passage_id for hit in response.fused_results]
+        # Four enumerated sections, all of them; three unenumerated ones, one.
+        self.assertEqual(returned[:5], ['g1', 'o1', 'g2', 'g3', 'g4'])
+        self.assertNotIn('o2', returned)
+        self.assertNotIn('o3', returned)
+
+    def test_one_toc_node_cannot_take_every_slot_and_the_bound_is_reported(self) -> None:
+        """The exemption is bounded, and a bound that binds is never silent.
+
+        A parser can hand one node dozens of children — TOC-child expansion
+        refuses only above 64 concepts — and an unbounded exemption would let
+        such a node hold every slot on relevance alone, leaving nothing that
+        stands *outside* the list.  Past the budget the group's remaining
+        candidates go back to ordinary cosine rather than being dropped, so the
+        reserve is a floor on other material and never an empty slot.
+
+        The bound is reported through the same channel the TOC-child budget
+        reports through, because the reader is owed the same thing in both
+        cases: a number they can explain.
+        """
+        source = EnumerationFakeSource()
+        response = _enumeration_service(
+            source,
+            scores={
+                '六道闸门': 0.92,
+                '流量校准': 0.90,
+                '基线复核': 0.84,
+                '相位对齐': 0.82,
+                '量程标定': 0.80,
+                '残差归算': 0.78,
+                '每一个观测网都要经过几道关键闸门。': 0.88,
+            },
+            vectors={
+                '六道闸门': OTHER_AXIS,
+                '每一个观测网都要经过几道关键闸门。': (0.8, 0.6, 0.0),
+                **{text: GATE_AXIS for text in ('流量校准', '基线复核', '相位对齐', '量程标定', '残差归算')},
+            },
+        ).search(ENUMERATION_QUERY, graph_limit=20, vector_limit=4, vector_candidate_limit=20)
+
+        self.assertEqual(
+            [hit.passage_id for hit in response.fused_results], ['gates', 'g1', 'g2', 'gates_body']
+        )
+        bound = [item for item in response.degraded if item.component == 'toc-sibling-diversity']
+        self.assertEqual(len(bound), 1)
+        self.assertIn('one TOC node', bound[0].reason or '')
 
     def test_malformed_local_graph_embedding_fails_closed_for_fused_channel(self) -> None:
         source = FakeSource()
