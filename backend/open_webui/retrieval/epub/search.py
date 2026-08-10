@@ -291,10 +291,16 @@ class _FusedCandidate:
     ``hit`` keeps the canonical passage and exact excerpt that will be
     rendered.  ``vector`` is only used locally for MMR diversification; it is
     never exposed as source evidence.
+
+    ``book_order`` is the passage's ``(spine_index, ordinal)`` and is likewise
+    local: it decides the order sibling sections of one enumeration are emitted
+    in, and is never a citation.  ``None`` where the repository does not report
+    it, which costs that repository the sibling ordering and nothing else.
     """
 
     hit: SearchHit
     vector: tuple[float, ...]
+    book_order: tuple[int, int] | None = None
 
 
 class EpubSearchRepository(Protocol):
@@ -328,6 +334,10 @@ class EpubSearchRepository(Protocol):
         concept_costs: Mapping[str, float] | None = None,
     ) -> list[Mapping[str, Any]]: ...
 
+    # ``spine_index``/``ordinal`` are optional here and only here.  They say
+    # where the passage sits in the book, which fusion uses to emit the sections
+    # of one enumeration in reading order; a repository that omits them serves
+    # the same citations in MMR's own order.  Every other field is mandatory.
     def get_search_passage(self, passage_id: str) -> Mapping[str, Any] | None: ...
 
     def get_retrieval_unit(self, retrieval_unit_id: str) -> Mapping[str, Any] | None: ...
@@ -1429,7 +1439,7 @@ class EpubSearchService:
         for notice in notices:
             degraded.append(ModelAvailability.degraded('toc-sibling-diversity', notice))
 
-        results: list[SearchHit] = []
+        results: list[tuple[_FusedCandidate, SearchHit]] = []
         rendered_passages: set[str] = set()
         for candidate, score in selected:
             # A result always cites one complete immutable parent passage.  We
@@ -1438,21 +1448,24 @@ class EpubSearchService:
                 continue
             rendered_passages.add(candidate.hit.passage_id)
             results.append(
-                SearchHit(
-                    passage_id=candidate.hit.passage_id,
-                    book_title=candidate.hit.book_title,
-                    toc_path=candidate.hit.toc_path,
-                    content=candidate.hit.content,
-                    content_sha256=candidate.hit.content_sha256,
-                    matched_concepts=candidate.hit.matched_concepts,
-                    provenance=(*candidate.hit.provenance, 'cross-encoder', 'mmr', 'fused'),
-                    excerpt=candidate.hit.excerpt,
-                    score=float(score),
+                (
+                    candidate,
+                    SearchHit(
+                        passage_id=candidate.hit.passage_id,
+                        book_title=candidate.hit.book_title,
+                        toc_path=candidate.hit.toc_path,
+                        content=candidate.hit.content,
+                        content_sha256=candidate.hit.content_sha256,
+                        matched_concepts=candidate.hit.matched_concepts,
+                        provenance=(*candidate.hit.provenance, 'cross-encoder', 'mmr', 'fused'),
+                        excerpt=candidate.hit.excerpt,
+                        score=float(score),
+                    ),
                 )
             )
             if len(results) == result_limit:
                 break
-        return tuple(results)
+        return _in_book_order_within_groups(results, parents=parents)
 
     def _fused_candidates(
         self,
@@ -1462,10 +1475,21 @@ class EpubSearchService:
         concept_ids: Sequence[str],
     ) -> tuple[_FusedCandidate, ...]:
         """Deduplicate identical exact excerpts before locally ranking them."""
+        # One read per passage, shared by both channels.  The graph channel
+        # hands over ``SearchHit``s, which carry no book position — a citation
+        # has no use for one — so the position the sibling ordering needs is
+        # looked up here, from the same row the vector side already reads.
+        passages: dict[str, dict[str, Any]] = {}
+
+        def passage_of(passage_id: str) -> dict[str, Any]:
+            if passage_id not in passages:
+                passages[passage_id] = self._search_passage(passage_id)
+            return passages[passage_id]
+
         vector_by_excerpt: dict[tuple[str, int, int], _FusedCandidate] = {}
         for vector_candidate in vector_candidates:
             unit = self._validated_candidate_window(vector_candidate)
-            passage = self._search_passage(vector_candidate.passage_id)
+            passage = passage_of(vector_candidate.passage_id)
             excerpt = _verified_excerpt(
                 passage['content'],
                 passage['content_sha256'],
@@ -1483,7 +1507,9 @@ class EpubSearchService:
                 excerpt=excerpt,
             )
             vector_by_excerpt[(hit.passage_id, excerpt.start_codepoint, excerpt.end_codepoint)] = _FusedCandidate(
-                hit=hit, vector=_validated_vector(vector_candidate.vector)
+                hit=hit,
+                vector=_validated_vector(vector_candidate.vector),
+                book_order=passage['book_order'],
             )
 
         # Preserve graph ordering as a stable tie-breaker, then append vector
@@ -1511,6 +1537,7 @@ class EpubSearchService:
                         excerpt=graph_hit.excerpt,
                     ),
                     vector=vector_match.vector,
+                    book_order=vector_match.book_order,
                 )
             )
 
@@ -1527,7 +1554,13 @@ class EpubSearchService:
                 # indexed candidates have already been profile-validated.
                 if vector_by_excerpt:
                     _cosine(graph_vector, next(iter(vector_by_excerpt.values())).vector)
-                merged.append(_FusedCandidate(hit=graph_hit, vector=graph_vector))
+                merged.append(
+                    _FusedCandidate(
+                        hit=graph_hit,
+                        vector=graph_vector,
+                        book_order=passage_of(graph_hit.passage_id)['book_order'],
+                    )
+                )
 
         for key, vector_candidate in vector_by_excerpt.items():
             if key not in seen:
@@ -1581,7 +1614,25 @@ class EpubSearchService:
             'toc_path': tuple(raw_path),
             'content': content,
             'content_sha256': content_sha256,
+            'book_order': _optional_book_order(row),
         }
+
+
+def _optional_book_order(row: Mapping[str, Any]) -> tuple[int, int] | None:
+    """Where this passage sits in the book, when the repository says.
+
+    Deliberately optional and deliberately never validated into an error: book
+    position is a presentation signal for one ordering rule, not a citation, so
+    a repository that does not report it loses the sibling ordering and nothing
+    else.  A mandatory field here would have failed a search over an older read
+    model that answers every question a citation actually needs.
+    """
+    spine, ordinal = row.get('spine_index'), row.get('ordinal')
+    if isinstance(spine, bool) or isinstance(ordinal, bool):
+        return None
+    if not isinstance(spine, int) or not isinstance(ordinal, int) or spine < 0 or ordinal < 0:
+        return None
+    return spine, ordinal
 
 
 def _verified_excerpt(content: str, content_sha256: str, start: Any, end: Any) -> SearchExcerpt:
@@ -1759,6 +1810,46 @@ def _mmr_select_fused(
             taken[chosen_key[0]] = taken.get(chosen_key[0], 0) + 1
         selected.append(remaining.pop(best_index))
     return selected
+
+
+def _in_book_order_within_groups(
+    pairs: Sequence[tuple[_FusedCandidate, SearchHit]], *, parents: frozenset[tuple[str, ...]] = frozenset()
+) -> tuple[SearchHit, ...]:
+    """Emit an enumeration's sections in book order — when it *is* the answer.
+
+    MMR's selection order is a relevance order, and for a list of stages that is
+    the wrong order to read: the sections came back first, sixth, second, third,
+    fifth, which is not what anyone who asked what the stages are expects.  Only
+    the *occupants* of one group's slots are permuted among themselves; which
+    ranks the group holds is left exactly as ranking decided.
+
+    **Only when the group is most of the answer.**  This bound is not caution,
+    it is a measured result.  Where one node's sections are a *minority* of the
+    results they are not a list being read, they are supporting evidence sitting
+    among unrelated answers — and reordering them by book position is then
+    actively wrong.  On the acceptance book, one query returned four sections of
+    a single node among six other results; the best of the four scored 0.9734
+    and ranked first, the weakest scored 0.0014 and ranked last, and sorting the
+    four by book position put the 0.0014 one at rank 1.  A presentation rule
+    must not be able to do that.  When the group holds more than half the
+    results the question was answered *by the list*, and a list reads in order.
+
+    A member whose repository did not report a book position keeps its own slot
+    rather than being sorted to an invented one.
+    """
+    groups: dict[tuple[str, ...], list[int]] = {}
+    for index, (candidate, _) in enumerate(pairs):
+        key = _toc_sibling_key(candidate.hit, parents)
+        if key is not None and candidate.book_order is not None:
+            groups.setdefault(key[0], []).append(index)
+    ordered = [hit for _, hit in pairs]
+    for slots in groups.values():
+        if len(slots) < 2 or len(slots) * 2 <= len(pairs):
+            continue
+        members = sorted(slots, key=lambda index: pairs[index][0].book_order or ())
+        for slot, member in zip(slots, members):
+            ordered[slot] = pairs[member][1]
+    return tuple(ordered)
 
 
 def _ascii_word(character: str) -> bool:
