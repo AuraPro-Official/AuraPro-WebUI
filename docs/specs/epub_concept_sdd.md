@@ -693,6 +693,47 @@ instruction, and belongs to the prompt profile that produced it.
   the graph panel must not change the fused answer.
 - Candidate windows are locally cross-encoder reranked, then diversified with
   MMR before their parent passages are rendered.
+- **Inside one enumerated TOC node, structure decides redundancy, not cosine.**
+  MMR penalises a candidate for resembling one already selected, on the
+  assumption that resemblance means redundancy. For the child sections of one
+  TOC node that assumption is false: the fourth stage of something is not more
+  of the third, it is the next item, and a reader who asked what the stages are
+  wants both. Measured: six sibling sections reached the fused pool at the
+  production limit and five came back, the fourth pushed to rank 12 by the
+  presence of its own siblings, with two slots spent on near-duplicates of
+  sections already present. So between two candidates lying in **different
+  children of a node TOC-child expansion reached**, the diversity penalty is
+  **0**; between two candidates in the **same** child it is **1**, because the
+  unit an enumeration enumerates is the section and cosine underestimates that
+  redundancy badly — a section heading and that section's prose measured 0.52
+  while being interchangeable as answers. Everything else keeps ordinary
+  cosine, and `mmr_lambda` is not touched: trading diversity away globally would
+  pay for one query shape with every other one.
+- Membership is a property of the **node**, not of the retrieval path. A node is
+  enumerated when some candidate in the pool carries `structure:TOC_CHILD`;
+  every candidate sitting directly in one of that node's children is then a
+  member, whichever channel found it. Reading the token per candidate instead is
+  wrong and was measured wrong: the best-scoring span of most of those sections
+  came from the vector channel, which labels nothing. Sharing a TOC parent is
+  **not** on its own sufficient — §4.2 already records that a node's siblings
+  hold a median of 10 bound concepts against a median of 0 for its children, so
+  siblings are association rather than decomposition, and only expansion makes
+  the decomposition claim. A hit one level deeper, in a sub-node of a section,
+  is not a member: it is part of that section, not a further item.
+- The exemption is **bounded and the bound is reported**. One node's children
+  may hold at most `result_limit - 2` slots; past that its remaining candidates
+  are ranked under ordinary cosine — never dropped — and the binding budget is
+  reported as a degraded component, exactly as the TOC-child concept budget is.
+  A parser can hand one node dozens of children, and an answer with nothing
+  standing outside the list is not an answer.
+- Sections are emitted in `spine_index, ordinal` order **among themselves**, and
+  only when they are **more than half** the results. Which ranks the group holds
+  is left as ranking decided; only the occupants of those ranks are permuted.
+  The majority condition is measured, not cautious: where one node's sections
+  are a minority they are supporting evidence among unrelated answers rather
+  than a list being read, and on one acceptance query four such sections ranked
+  from 0.9734 first to 0.0014 last — sorting them by book position put the
+  0.0014 one at rank 1. A presentation rule must not be able to do that.
 
 ## 5. Result contract
 
