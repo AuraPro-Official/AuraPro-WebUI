@@ -128,6 +128,17 @@ _MIN_SEED_TERM_LENGTH = 2
 # ``graph_total`` a number with no explanation of what was left out.
 _MAX_TOC_CHILD_CONCEPTS = 64
 
+# How many slots of one fused answer are held back from a single TOC parent's
+# children.  The sibling rule below removes MMR's redundancy penalty *within*
+# an enumeration, and a node the parser gave 50 children could then take every
+# slot on relevance alone, leaving nothing that stands outside the list — not
+# the parent's own framing sentence, not a passage that summarises the whole
+# enumeration in one place, both of which measured as the strongest answers on
+# the query that motivated this.  Past the budget the exemption simply stops
+# and the group's remaining candidates compete under ordinary cosine MMR, so
+# the reserve is a floor on *other* material and never an empty slot.
+_TOC_SIBLING_RESERVED_SLOTS = 2
+
 # Tier 2 is consulted when Tier 1 has **no useful match**, which the SDD says
 # and which is not the same thing as no match at all.  A resolved set that can
 # page to fewer than this many distinct source spans has told the reader
@@ -1396,6 +1407,7 @@ class EpubSearchService:
             return ()
         if vector_candidates is None:
             return ()
+        notices: list[str] = []
         try:
             candidates = self._fused_candidates(graph_results, vector_candidates, concept_ids=concept_ids)
             if not candidates:
@@ -1404,11 +1416,18 @@ class EpubSearchService:
                 self._reranker.score(query, [candidate.hit.excerpt.content for candidate in candidates]),
                 expected=len(candidates),
             )
+            # Read over the whole pool, once, so both the selection and the
+            # ordering below answer "is this node enumerated" the same way.
+            parents = _enumerated_toc_parents(candidate.hit for candidate in candidates)
             ranked = sorted(zip(candidates, scores), key=lambda pair: pair[1], reverse=True)
-            selected = _mmr_select_fused(ranked, limit=result_limit, lambda_value=self._mmr_lambda)
+            selected = _mmr_select_fused(
+                ranked, limit=result_limit, lambda_value=self._mmr_lambda, parents=parents, notices=notices
+            )
         except Exception as error:
             degraded.append(ModelAvailability.degraded('local-fused-search', _safe_reason(error)))
             return ()
+        for notice in notices:
+            degraded.append(ModelAvailability.degraded('toc-sibling-diversity', notice))
 
         results: list[SearchHit] = []
         rendered_passages: set[str] = set()
@@ -1601,24 +1620,143 @@ def _mmr_select(
     return selected
 
 
+def _enumerated_toc_parents(hits: Iterable[SearchHit]) -> frozenset[tuple[str, ...]]:
+    """The TOC nodes this query's candidate pool says it asked for the parts of.
+
+    A node qualifies when some candidate in the pool sits in one of its children
+    *and* carries ``structure:TOC_CHILD`` — that is, when TOC-child expansion
+    reached this pool through that node.  Sharing a TOC parent is not on its own
+    a claim that two sections decompose anything, and this module already holds
+    that position and measured it: see
+    :meth:`EpubSearchService._expand_toc_child_concepts`, where a node's
+    siblings hold a median of 10 bound concepts against a median of 0 for its
+    children, "so siblings are association rather than decomposition".  Without
+    the token, two sections of one chapter would be exempted from each other on
+    every query in the book.
+
+    The token is read once, over the pool, rather than per candidate — the claim
+    is about the *node*, not about which channel happened to retrieve a given
+    span of it.  Reading it per candidate looked tighter and was wrong: measured
+    on the acceptance book, the best-scoring span of four of the six sections
+    came from the vector channel, which labels nothing, so a per-candidate test
+    exempted the sections that needed it least and none of the ones that
+    needed it most.
+    """
+    return frozenset(
+        hit.toc_path[:-1]
+        for hit in hits
+        if len(hit.toc_path) >= 2 and any(token.startswith(f'{_STRUCTURE_TOC_CHILD}:') for token in hit.provenance)
+    )
+
+
+def _toc_sibling_key(hit: SearchHit, parents: frozenset[tuple[str, ...]]) -> tuple[tuple[str, ...], str] | None:
+    """Which enumerated item this hit is, when it is one at all.
+
+    ``(parent node path, own node title)`` for a hit sitting directly in a child
+    of an enumerated node, and ``None`` for everything else.  Membership is one
+    level and exactly one level, which decides three cases the acceptance book
+    actually contains:
+
+    * a span in the parent node itself — the heading, the framing sentence — is
+      not an item of the list, so it is not a sibling of any item and competes
+      under ordinary cosine;
+    * a span in a *sub-node* of an item is not a seventh item, it is part of the
+      fourth, so it stays penalised against it.  TOC-child expansion never made
+      a claim about it either: ``list_toc_child_concepts`` admits only concepts
+      bound to a *direct* child.  Admitting it would let one item hold two
+      exempt slots;
+    * two spans of the same item share a key exactly, which is what lets the
+      caller treat them as the redundancy they are.
+    """
+    if len(hit.toc_path) < 2:
+        return None
+    parent = hit.toc_path[:-1]
+    return (parent, hit.toc_path[-1]) if parent in parents else None
+
+
 def _mmr_select_fused(
-    ranked: Sequence[tuple[_FusedCandidate, float]], *, limit: int, lambda_value: float
+    ranked: Sequence[tuple[_FusedCandidate, float]],
+    *,
+    limit: int,
+    lambda_value: float,
+    parents: frozenset[tuple[str, ...]] = frozenset(),
+    notices: list[str] | None = None,
 ) -> list[tuple[_FusedCandidate, float]]:
-    """MMR for candidates whose vectors may come from either retrieval path."""
+    """MMR for candidates whose vectors may come from either retrieval path.
+
+    Diversity is cosine, except between two sections of one enumeration, where
+    it is structural.  MMR assumes a candidate resembling an already-selected
+    one is *redundant* with it, and for the children of one TOC node that
+    assumption is simply false: "the fourth stage" is not more of "the third",
+    it is the next item, and a reader who asked what the stages are wants both.
+    On the acceptance book that cost the answer a whole section — six sibling
+    sections reached the candidate pool, five came back, and the fourth was
+    pushed to rank 12 by the presence of its own siblings.
+
+    So inside one such group, structure replaces cosine outright:
+
+    * **different children of the same parent — 0.**  They enumerate different
+      things.  Nothing they share should keep either of them out.
+    * **the same child twice — 1.**  Here cosine is wrong in the other
+      direction, and structure knows better than the embedding does: a section
+      heading and that section's prose are lexically unalike (0.52 on the
+      measured case) while being maximally redundant *as answers*, because the
+      unit an enumeration enumerates is the section, not the span.  Two spans
+      of one section took two of the ten slots the missing section needed.
+
+    Everything else keeps ordinary cosine, so this changes nothing on a query
+    that reached no TOC children.  ``lambda_value`` is untouched: trading
+    diversity away globally would pay for one query shape with every other one.
+
+    The exemption is bounded — see ``_TOC_SIBLING_RESERVED_SLOTS``.  Past the
+    budget a group's candidates fall back to cosine rather than being dropped,
+    and the binding budget is reported through ``notices`` so a shortened
+    enumeration is never a silent one.
+    """
     remaining = list(ranked)
     selected: list[tuple[_FusedCandidate, float]] = []
+    keys = {id(candidate): _toc_sibling_key(candidate.hit, parents) for candidate, _ in ranked}
+    budget = max(1, limit - _TOC_SIBLING_RESERVED_SLOTS)
+    taken: dict[tuple[str, ...], int] = {}
+    reported: set[tuple[str, ...]] = set()
+
+    def diversity(candidate: _FusedCandidate, exempt: bool) -> float:
+        worst = 0.0
+        for existing, _ in selected:
+            key, existing_key = keys[id(candidate)], keys[id(existing)]
+            if exempt and key is not None and existing_key is not None and key[0] == existing_key[0]:
+                penalty = 0.0 if key[1] != existing_key[1] else 1.0
+            else:
+                penalty = _cosine(candidate.vector, existing.vector)
+            worst = max(worst, penalty)
+        return worst
+
     while remaining and len(selected) < limit:
         best_index: int | None = None
         best_mmr = -math.inf
         for index, (candidate, relevance) in enumerate(remaining):
             if any(existing.hit.passage_id == candidate.hit.passage_id for existing, _ in selected):
                 continue
-            diversity = max((_cosine(candidate.vector, existing.vector) for existing, _ in selected), default=0.0)
-            score = lambda_value * relevance - (1.0 - lambda_value) * diversity
+            key = keys[id(candidate)]
+            exempt = key is not None and taken.get(key[0], 0) < budget
+            if key is not None and not exempt and key[0] not in reported:
+                # Reported when the budget is actually *withheld* from a real
+                # candidate, not when it is merely reached: a group that fits
+                # inside its budget has nothing to explain.
+                reported.add(key[0])
+                if notices is not None:
+                    notices.append(
+                        f'{budget} of {limit} results came from the children of one TOC node; '
+                        f'its remaining candidates were ranked without the sibling exemption'
+                    )
+            score = lambda_value * relevance - (1.0 - lambda_value) * diversity(candidate, exempt)
             if score > best_mmr:
                 best_index, best_mmr = index, score
         if best_index is None:
             break
+        chosen_key = keys[id(remaining[best_index][0])]
+        if chosen_key is not None:
+            taken[chosen_key[0]] = taken.get(chosen_key[0], 0) + 1
         selected.append(remaining.pop(best_index))
     return selected
 
