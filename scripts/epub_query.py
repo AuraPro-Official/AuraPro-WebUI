@@ -470,21 +470,35 @@ class Harness:
         print(c('!' * width, RED, BOLD))
 
     @staticmethod
-    def _relation_depth(hit: SearchHit) -> int:
+    def _expansion(hit: SearchHit) -> tuple[int, str]:
+        """How far this span is from a directly matched concept, and by what.
+
+        Reads any ``relation:{PREDICATE}:{depth}`` or ``structure:{KIND}:{depth}``
+        token, not only ``HAS_PART``.  This used to match ``relation:HAS_PART:``
+        alone, which silently reported every span reached through the five
+        non-containment predicates *and* every TOC-derived span as ``depth 0
+        DIRECT`` -- exactly the spans a reader most needs to distinguish from a
+        real concept match, since they are the ones ranking demotes.
+        """
         for token in hit.provenance:
-            if token.startswith('relation:HAS_PART:'):
+            if token.startswith(('relation:', 'structure:')):
+                _, _, kind_depth = token.partition(':')
+                kind, _, raw_depth = kind_depth.rpartition(':')
                 try:
-                    return int(token.rsplit(':', 1)[1])
+                    return int(raw_depth), kind or 'EXPANDED'
                 except ValueError:
-                    return -1
-        return 0
+                    return -1, kind or 'EXPANDED'
+        return 0, 'DIRECT'
+
+    def _relation_depth(self, hit: SearchHit) -> int:
+        return self._expansion(hit)[0]
 
     def _depth_badge(self, hit: SearchHit) -> str:
-        depth = self._relation_depth(hit)
+        depth, kind = self._expansion(hit)
         if depth == 0:
             return c(' depth 0  DIRECT ', GREEN, BOLD)
         colour = YELLOW if depth == 1 else RED
-        return c(f' depth {depth}  HAS_PART ', colour, BOLD)
+        return c(f' depth {depth}  {kind} ', colour, BOLD)
 
     def _print_hit_body(self, hit: SearchHit, width: int) -> None:
         toc = c(' › '.join(hit.toc_path) or '(no TOC path)', CYAN)
