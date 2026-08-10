@@ -1730,6 +1730,7 @@ class SQLiteEpubStore:
             self._connection()
             .execute(
                 """SELECT p.passage_id, p.content, p.content_sha256, p.toc_node_id,
+                       p.spine_index, p.ordinal,
                        b.title AS book_title
                 FROM passages AS p
                 JOIN book_versions AS v ON v.version_id = p.version_id

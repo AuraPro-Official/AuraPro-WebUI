@@ -128,6 +128,17 @@ _MIN_SEED_TERM_LENGTH = 2
 # ``graph_total`` a number with no explanation of what was left out.
 _MAX_TOC_CHILD_CONCEPTS = 64
 
+# How many slots of one fused answer are held back from a single TOC parent's
+# children.  The sibling rule below removes MMR's redundancy penalty *within*
+# an enumeration, and a node the parser gave 50 children could then take every
+# slot on relevance alone, leaving nothing that stands outside the list — not
+# the parent's own framing sentence, not a passage that summarises the whole
+# enumeration in one place, both of which measured as the strongest answers on
+# the query that motivated this.  Past the budget the exemption simply stops
+# and the group's remaining candidates compete under ordinary cosine MMR, so
+# the reserve is a floor on *other* material and never an empty slot.
+_TOC_SIBLING_RESERVED_SLOTS = 2
+
 # Tier 2 is consulted when Tier 1 has **no useful match**, which the SDD says
 # and which is not the same thing as no match at all.  A resolved set that can
 # page to fewer than this many distinct source spans has told the reader
@@ -280,10 +291,16 @@ class _FusedCandidate:
     ``hit`` keeps the canonical passage and exact excerpt that will be
     rendered.  ``vector`` is only used locally for MMR diversification; it is
     never exposed as source evidence.
+
+    ``book_order`` is the passage's ``(spine_index, ordinal)`` and is likewise
+    local: it decides the order sibling sections of one enumeration are emitted
+    in, and is never a citation.  ``None`` where the repository does not report
+    it, which costs that repository the sibling ordering and nothing else.
     """
 
     hit: SearchHit
     vector: tuple[float, ...]
+    book_order: tuple[int, int] | None = None
 
 
 class EpubSearchRepository(Protocol):
@@ -317,6 +334,10 @@ class EpubSearchRepository(Protocol):
         concept_costs: Mapping[str, float] | None = None,
     ) -> list[Mapping[str, Any]]: ...
 
+    # ``spine_index``/``ordinal`` are optional here and only here.  They say
+    # where the passage sits in the book, which fusion uses to emit the sections
+    # of one enumeration in reading order; a repository that omits them serves
+    # the same citations in MMR's own order.  Every other field is mandatory.
     def get_search_passage(self, passage_id: str) -> Mapping[str, Any] | None: ...
 
     def get_retrieval_unit(self, retrieval_unit_id: str) -> Mapping[str, Any] | None: ...
@@ -1396,6 +1417,7 @@ class EpubSearchService:
             return ()
         if vector_candidates is None:
             return ()
+        notices: list[str] = []
         try:
             candidates = self._fused_candidates(graph_results, vector_candidates, concept_ids=concept_ids)
             if not candidates:
@@ -1404,13 +1426,20 @@ class EpubSearchService:
                 self._reranker.score(query, [candidate.hit.excerpt.content for candidate in candidates]),
                 expected=len(candidates),
             )
+            # Read over the whole pool, once, so both the selection and the
+            # ordering below answer "is this node enumerated" the same way.
+            parents = _enumerated_toc_parents(candidate.hit for candidate in candidates)
             ranked = sorted(zip(candidates, scores), key=lambda pair: pair[1], reverse=True)
-            selected = _mmr_select_fused(ranked, limit=result_limit, lambda_value=self._mmr_lambda)
+            selected = _mmr_select_fused(
+                ranked, limit=result_limit, lambda_value=self._mmr_lambda, parents=parents, notices=notices
+            )
         except Exception as error:
             degraded.append(ModelAvailability.degraded('local-fused-search', _safe_reason(error)))
             return ()
+        for notice in notices:
+            degraded.append(ModelAvailability.degraded('toc-sibling-diversity', notice))
 
-        results: list[SearchHit] = []
+        results: list[tuple[_FusedCandidate, SearchHit]] = []
         rendered_passages: set[str] = set()
         for candidate, score in selected:
             # A result always cites one complete immutable parent passage.  We
@@ -1419,21 +1448,24 @@ class EpubSearchService:
                 continue
             rendered_passages.add(candidate.hit.passage_id)
             results.append(
-                SearchHit(
-                    passage_id=candidate.hit.passage_id,
-                    book_title=candidate.hit.book_title,
-                    toc_path=candidate.hit.toc_path,
-                    content=candidate.hit.content,
-                    content_sha256=candidate.hit.content_sha256,
-                    matched_concepts=candidate.hit.matched_concepts,
-                    provenance=(*candidate.hit.provenance, 'cross-encoder', 'mmr', 'fused'),
-                    excerpt=candidate.hit.excerpt,
-                    score=float(score),
+                (
+                    candidate,
+                    SearchHit(
+                        passage_id=candidate.hit.passage_id,
+                        book_title=candidate.hit.book_title,
+                        toc_path=candidate.hit.toc_path,
+                        content=candidate.hit.content,
+                        content_sha256=candidate.hit.content_sha256,
+                        matched_concepts=candidate.hit.matched_concepts,
+                        provenance=(*candidate.hit.provenance, 'cross-encoder', 'mmr', 'fused'),
+                        excerpt=candidate.hit.excerpt,
+                        score=float(score),
+                    ),
                 )
             )
             if len(results) == result_limit:
                 break
-        return tuple(results)
+        return _in_book_order_within_groups(results, parents=parents)
 
     def _fused_candidates(
         self,
@@ -1443,10 +1475,21 @@ class EpubSearchService:
         concept_ids: Sequence[str],
     ) -> tuple[_FusedCandidate, ...]:
         """Deduplicate identical exact excerpts before locally ranking them."""
+        # One read per passage, shared by both channels.  The graph channel
+        # hands over ``SearchHit``s, which carry no book position — a citation
+        # has no use for one — so the position the sibling ordering needs is
+        # looked up here, from the same row the vector side already reads.
+        passages: dict[str, dict[str, Any]] = {}
+
+        def passage_of(passage_id: str) -> dict[str, Any]:
+            if passage_id not in passages:
+                passages[passage_id] = self._search_passage(passage_id)
+            return passages[passage_id]
+
         vector_by_excerpt: dict[tuple[str, int, int], _FusedCandidate] = {}
         for vector_candidate in vector_candidates:
             unit = self._validated_candidate_window(vector_candidate)
-            passage = self._search_passage(vector_candidate.passage_id)
+            passage = passage_of(vector_candidate.passage_id)
             excerpt = _verified_excerpt(
                 passage['content'],
                 passage['content_sha256'],
@@ -1464,7 +1507,9 @@ class EpubSearchService:
                 excerpt=excerpt,
             )
             vector_by_excerpt[(hit.passage_id, excerpt.start_codepoint, excerpt.end_codepoint)] = _FusedCandidate(
-                hit=hit, vector=_validated_vector(vector_candidate.vector)
+                hit=hit,
+                vector=_validated_vector(vector_candidate.vector),
+                book_order=passage['book_order'],
             )
 
         # Preserve graph ordering as a stable tie-breaker, then append vector
@@ -1492,6 +1537,7 @@ class EpubSearchService:
                         excerpt=graph_hit.excerpt,
                     ),
                     vector=vector_match.vector,
+                    book_order=vector_match.book_order,
                 )
             )
 
@@ -1508,7 +1554,13 @@ class EpubSearchService:
                 # indexed candidates have already been profile-validated.
                 if vector_by_excerpt:
                     _cosine(graph_vector, next(iter(vector_by_excerpt.values())).vector)
-                merged.append(_FusedCandidate(hit=graph_hit, vector=graph_vector))
+                merged.append(
+                    _FusedCandidate(
+                        hit=graph_hit,
+                        vector=graph_vector,
+                        book_order=passage_of(graph_hit.passage_id)['book_order'],
+                    )
+                )
 
         for key, vector_candidate in vector_by_excerpt.items():
             if key not in seen:
@@ -1562,7 +1614,25 @@ class EpubSearchService:
             'toc_path': tuple(raw_path),
             'content': content,
             'content_sha256': content_sha256,
+            'book_order': _optional_book_order(row),
         }
+
+
+def _optional_book_order(row: Mapping[str, Any]) -> tuple[int, int] | None:
+    """Where this passage sits in the book, when the repository says.
+
+    Deliberately optional and deliberately never validated into an error: book
+    position is a presentation signal for one ordering rule, not a citation, so
+    a repository that does not report it loses the sibling ordering and nothing
+    else.  A mandatory field here would have failed a search over an older read
+    model that answers every question a citation actually needs.
+    """
+    spine, ordinal = row.get('spine_index'), row.get('ordinal')
+    if isinstance(spine, bool) or isinstance(ordinal, bool):
+        return None
+    if not isinstance(spine, int) or not isinstance(ordinal, int) or spine < 0 or ordinal < 0:
+        return None
+    return spine, ordinal
 
 
 def _verified_excerpt(content: str, content_sha256: str, start: Any, end: Any) -> SearchExcerpt:
@@ -1601,26 +1671,185 @@ def _mmr_select(
     return selected
 
 
+def _enumerated_toc_parents(hits: Iterable[SearchHit]) -> frozenset[tuple[str, ...]]:
+    """The TOC nodes this query's candidate pool says it asked for the parts of.
+
+    A node qualifies when some candidate in the pool sits in one of its children
+    *and* carries ``structure:TOC_CHILD`` — that is, when TOC-child expansion
+    reached this pool through that node.  Sharing a TOC parent is not on its own
+    a claim that two sections decompose anything, and this module already holds
+    that position and measured it: see
+    :meth:`EpubSearchService._expand_toc_child_concepts`, where a node's
+    siblings hold a median of 10 bound concepts against a median of 0 for its
+    children, "so siblings are association rather than decomposition".  Without
+    the token, two sections of one chapter would be exempted from each other on
+    every query in the book.
+
+    The token is read once, over the pool, rather than per candidate — the claim
+    is about the *node*, not about which channel happened to retrieve a given
+    span of it.  Reading it per candidate looked tighter and was wrong: measured
+    on the acceptance book, the best-scoring span of four of the six sections
+    came from the vector channel, which labels nothing, so a per-candidate test
+    exempted the sections that needed it least and none of the ones that
+    needed it most.
+    """
+    return frozenset(
+        hit.toc_path[:-1]
+        for hit in hits
+        if len(hit.toc_path) >= 2 and any(token.startswith(f'{_STRUCTURE_TOC_CHILD}:') for token in hit.provenance)
+    )
+
+
+def _toc_sibling_key(hit: SearchHit, parents: frozenset[tuple[str, ...]]) -> tuple[tuple[str, ...], str] | None:
+    """Which enumerated item this hit is, when it is one at all.
+
+    ``(parent node path, own node title)`` for a hit sitting directly in a child
+    of an enumerated node, and ``None`` for everything else.  Membership is one
+    level and exactly one level, which decides three cases the acceptance book
+    actually contains:
+
+    * a span in the parent node itself — the heading, the framing sentence — is
+      not an item of the list, so it is not a sibling of any item and competes
+      under ordinary cosine;
+    * a span in a *sub-node* of an item is not a seventh item, it is part of the
+      fourth, so it stays penalised against it.  TOC-child expansion never made
+      a claim about it either: ``list_toc_child_concepts`` admits only concepts
+      bound to a *direct* child.  Admitting it would let one item hold two
+      exempt slots;
+    * two spans of the same item share a key exactly, which is what lets the
+      caller treat them as the redundancy they are.
+    """
+    if len(hit.toc_path) < 2:
+        return None
+    parent = hit.toc_path[:-1]
+    return (parent, hit.toc_path[-1]) if parent in parents else None
+
+
 def _mmr_select_fused(
-    ranked: Sequence[tuple[_FusedCandidate, float]], *, limit: int, lambda_value: float
+    ranked: Sequence[tuple[_FusedCandidate, float]],
+    *,
+    limit: int,
+    lambda_value: float,
+    parents: frozenset[tuple[str, ...]] = frozenset(),
+    notices: list[str] | None = None,
 ) -> list[tuple[_FusedCandidate, float]]:
-    """MMR for candidates whose vectors may come from either retrieval path."""
+    """MMR for candidates whose vectors may come from either retrieval path.
+
+    Diversity is cosine, except between two sections of one enumeration, where
+    it is structural.  MMR assumes a candidate resembling an already-selected
+    one is *redundant* with it, and for the children of one TOC node that
+    assumption is simply false: "the fourth stage" is not more of "the third",
+    it is the next item, and a reader who asked what the stages are wants both.
+    On the acceptance book that cost the answer a whole section — six sibling
+    sections reached the candidate pool, five came back, and the fourth was
+    pushed to rank 12 by the presence of its own siblings.
+
+    So inside one such group, structure replaces cosine outright:
+
+    * **different children of the same parent — 0.**  They enumerate different
+      things.  Nothing they share should keep either of them out.
+    * **the same child twice — 1.**  Here cosine is wrong in the other
+      direction, and structure knows better than the embedding does: a section
+      heading and that section's prose are lexically unalike (0.52 on the
+      measured case) while being maximally redundant *as answers*, because the
+      unit an enumeration enumerates is the section, not the span.  Two spans
+      of one section took two of the ten slots the missing section needed.
+
+    Everything else keeps ordinary cosine, so this changes nothing on a query
+    that reached no TOC children.  ``lambda_value`` is untouched: trading
+    diversity away globally would pay for one query shape with every other one.
+
+    The exemption is bounded — see ``_TOC_SIBLING_RESERVED_SLOTS``.  Past the
+    budget a group's candidates fall back to cosine rather than being dropped,
+    and the binding budget is reported through ``notices`` so a shortened
+    enumeration is never a silent one.
+    """
     remaining = list(ranked)
     selected: list[tuple[_FusedCandidate, float]] = []
+    keys = {id(candidate): _toc_sibling_key(candidate.hit, parents) for candidate, _ in ranked}
+    budget = max(1, limit - _TOC_SIBLING_RESERVED_SLOTS)
+    taken: dict[tuple[str, ...], int] = {}
+    reported: set[tuple[str, ...]] = set()
+
+    def diversity(candidate: _FusedCandidate, exempt: bool) -> float:
+        worst = 0.0
+        for existing, _ in selected:
+            key, existing_key = keys[id(candidate)], keys[id(existing)]
+            if exempt and key is not None and existing_key is not None and key[0] == existing_key[0]:
+                penalty = 0.0 if key[1] != existing_key[1] else 1.0
+            else:
+                penalty = _cosine(candidate.vector, existing.vector)
+            worst = max(worst, penalty)
+        return worst
+
     while remaining and len(selected) < limit:
         best_index: int | None = None
         best_mmr = -math.inf
         for index, (candidate, relevance) in enumerate(remaining):
             if any(existing.hit.passage_id == candidate.hit.passage_id for existing, _ in selected):
                 continue
-            diversity = max((_cosine(candidate.vector, existing.vector) for existing, _ in selected), default=0.0)
-            score = lambda_value * relevance - (1.0 - lambda_value) * diversity
+            key = keys[id(candidate)]
+            exempt = key is not None and taken.get(key[0], 0) < budget
+            if key is not None and not exempt and key[0] not in reported:
+                # Reported when the budget is actually *withheld* from a real
+                # candidate, not when it is merely reached: a group that fits
+                # inside its budget has nothing to explain.
+                reported.add(key[0])
+                if notices is not None:
+                    notices.append(
+                        f'{budget} of {limit} results came from the children of one TOC node; '
+                        f'its remaining candidates were ranked without the sibling exemption'
+                    )
+            score = lambda_value * relevance - (1.0 - lambda_value) * diversity(candidate, exempt)
             if score > best_mmr:
                 best_index, best_mmr = index, score
         if best_index is None:
             break
+        chosen_key = keys[id(remaining[best_index][0])]
+        if chosen_key is not None:
+            taken[chosen_key[0]] = taken.get(chosen_key[0], 0) + 1
         selected.append(remaining.pop(best_index))
     return selected
+
+
+def _in_book_order_within_groups(
+    pairs: Sequence[tuple[_FusedCandidate, SearchHit]], *, parents: frozenset[tuple[str, ...]] = frozenset()
+) -> tuple[SearchHit, ...]:
+    """Emit an enumeration's sections in book order — when it *is* the answer.
+
+    MMR's selection order is a relevance order, and for a list of stages that is
+    the wrong order to read: the sections came back first, sixth, second, third,
+    fifth, which is not what anyone who asked what the stages are expects.  Only
+    the *occupants* of one group's slots are permuted among themselves; which
+    ranks the group holds is left exactly as ranking decided.
+
+    **Only when the group is most of the answer.**  This bound is not caution,
+    it is a measured result.  Where one node's sections are a *minority* of the
+    results they are not a list being read, they are supporting evidence sitting
+    among unrelated answers — and reordering them by book position is then
+    actively wrong.  On the acceptance book, one query returned four sections of
+    a single node among six other results; the best of the four scored 0.9734
+    and ranked first, the weakest scored 0.0014 and ranked last, and sorting the
+    four by book position put the 0.0014 one at rank 1.  A presentation rule
+    must not be able to do that.  When the group holds more than half the
+    results the question was answered *by the list*, and a list reads in order.
+
+    A member whose repository did not report a book position keeps its own slot
+    rather than being sorted to an invented one.
+    """
+    groups: dict[tuple[str, ...], list[int]] = {}
+    for index, (candidate, _) in enumerate(pairs):
+        key = _toc_sibling_key(candidate.hit, parents)
+        if key is not None and candidate.book_order is not None:
+            groups.setdefault(key[0], []).append(index)
+    ordered = [hit for _, hit in pairs]
+    for slots in groups.values():
+        if len(slots) < 2 or len(slots) * 2 <= len(pairs):
+            continue
+        members = sorted(slots, key=lambda index: pairs[index][0].book_order or ())
+        for slot, member in zip(slots, members):
+            ordered[slot] = pairs[member][1]
+    return tuple(ordered)
 
 
 def _ascii_word(character: str) -> bool:
