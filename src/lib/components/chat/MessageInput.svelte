@@ -67,6 +67,10 @@
 	import { getFolderById } from '$lib/apis/folders';
 	import { getNoteById } from '$lib/apis/notes';
 	import { getSessionUser } from '$lib/apis/auths';
+	import type {
+		ConversationGlossaryConfig,
+		GlossarySettings
+	} from '$lib/utils/conversation-glossary';
 
 	import { WEBUI_BASE_URL, WEBUI_API_BASE_URL, PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
 	import { initiateOAuthRedirect } from '$lib/apis/configs';
@@ -158,6 +162,9 @@
 	export let webSearchEnabled = false;
 
 	export let showTranslationModeButton = true;
+	export let glossarySettings: GlossarySettings | null = null;
+	export let conversationGlossary: ConversationGlossaryConfig | null = null;
+	export let onConversationGlossaryChange: (value: ConversationGlossaryConfig) => void = () => {};
 
 	export let pendingOAuthTools = [];
 
@@ -1333,6 +1340,8 @@
 					<div class={recording ? '' : 'hidden'}>
 						<VoiceRecording
 							bind:recording
+							{glossarySettings}
+							{conversationGlossary}
 							onCancel={async () => {
 								recording = false;
 
@@ -1814,14 +1823,14 @@
 										</button>
 									</InputMenu>
 
-									{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
+									{#if showTranslationModeButton || showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
 										<div
 											class="flex self-center w-[1px] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50 shrink-0"
 										/>
 									{/if}
 
 									<div class="flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none">
-										{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
+										{#if showTranslationModeButton || showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
 											<IntegrationsMenu
 												selectedModels={selectedModelIds}
 												{toggleFilters}
@@ -1833,6 +1842,9 @@
 												bind:selectedFilterIds
 												bind:webSearchEnabled
 												{onWebSearchToggle}
+												{glossarySettings}
+												{conversationGlossary}
+												{onConversationGlossaryChange}
 												closeOnOutsideClick={integrationsMenuCloseOnOutsideClick}
 												onShowValves={(e) => {
 													const { type, id } = e;

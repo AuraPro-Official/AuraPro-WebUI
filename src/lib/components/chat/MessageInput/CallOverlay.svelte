@@ -8,6 +8,11 @@
 	import { generateEmoji } from '$lib/apis';
 	import { synthesizeOpenAISpeech, transcribeAudio } from '$lib/apis/audio';
 	import { getGlossarySettings } from '$lib/apis/glossary';
+	import {
+		getConversationGlossaryLanguages,
+		type ConversationGlossaryConfig,
+		type GlossarySettings
+	} from '$lib/utils/conversation-glossary';
 
 	import { toast } from 'svelte-sonner';
 
@@ -30,6 +35,8 @@
 	export let files;
 	export let chatId;
 	export let modelId;
+	export let glossarySettings: GlossarySettings | null = null;
+	export let conversationGlossary: ConversationGlossaryConfig | null = null;
 
 	let wakeLock = null;
 
@@ -223,8 +230,8 @@
 
 	const MIN_DECIBELS = -55;
 	const VISUALIZER_BUFFER_LENGTH = 300;
-	let glossarySettingsPromise = null;
-	let glossarySettings = null;
+	let fallbackGlossarySettingsPromise: Promise<GlossarySettings | null> | null = null;
+	let fallbackGlossarySettings: GlossarySettings | null = null;
 
 	const getGlossaryModeLanguageCandidates = async () => {
 		const modeEnabled =
@@ -236,10 +243,10 @@
 			return ['zh'];
 		}
 
-		if (!glossarySettingsPromise) {
-			glossarySettingsPromise = getGlossarySettings(localStorage.token)
+		if (!glossarySettings && !fallbackGlossarySettingsPromise) {
+			fallbackGlossarySettingsPromise = getGlossarySettings(localStorage.token)
 				.then((value) => {
-					glossarySettings = value;
+					fallbackGlossarySettings = value;
 					return value;
 				})
 				.catch((error) => {
@@ -248,12 +255,14 @@
 				});
 		}
 
-		const settings = await glossarySettingsPromise;
-		const targetLang = settings?.target_lang || settings?.glossary_lang || '';
-		const sourceLang = settings?.source_lang || '';
+		const resolvedSettings =
+			glossarySettings ?? fallbackGlossarySettings ?? (await fallbackGlossarySettingsPromise);
+		const languageCandidates = getConversationGlossaryLanguages(
+			conversationGlossary,
+			resolvedSettings
+		);
 
-		const languageCandidates = targetLang ? [sourceLang, targetLang].filter(Boolean) : ['zh'];
-		return languageCandidates;
+		return languageCandidates.length > 0 ? languageCandidates : ['zh'];
 	};
 
 	const transcribeHandler = async (audioBlob) => {

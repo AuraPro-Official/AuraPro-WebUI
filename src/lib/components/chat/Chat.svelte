@@ -82,6 +82,11 @@
 		waitForSocketSession
 	} from '$lib/utils/chat-stream';
 	import { applyDesktopShortcutAction } from '$lib/utils/extension-modes';
+	import {
+		normalizeConversationGlossary,
+		type ConversationGlossaryConfig,
+		type GlossarySettings
+	} from '$lib/utils/conversation-glossary';
 	import { getOutputText } from './Messages/structuredOutput';
 
 	import {
@@ -112,6 +117,7 @@
 	import { uploadFile } from '$lib/apis/files';
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { getFunctions } from '$lib/apis/functions';
+	import { getGlossarySettings } from '$lib/apis/glossary';
 	import { initiateOAuthRedirect } from '$lib/apis/configs';
 	import { updateFolderById } from '$lib/apis/folders';
 
@@ -147,7 +153,7 @@
 		await tick();
 	};
 
-	let messageInput: MessageInput | undefined;
+	let messageInput: MessageInput | null = null;
 	let messagesRef: Messages | undefined;
 
 	let autoScroll = true;
@@ -259,6 +265,55 @@
 	let chatFiles = [];
 	let files = [];
 	let params = {};
+	let glossarySettings: GlossarySettings | null = null;
+	let glossarySettingsPromise: Promise<GlossarySettings | null> | null = null;
+	let conversationGlossary: ConversationGlossaryConfig | null = null;
+	let conversationGlossaryRevision = 0;
+
+	const ensureGlossarySettings = async () => {
+		if (glossarySettings) return glossarySettings;
+		if (!glossarySettingsPromise) {
+			glossarySettingsPromise = getGlossarySettings(localStorage.token)
+				.then((value) => {
+					glossarySettings = value;
+					return value;
+				})
+				.catch((error) => {
+					console.error('Failed to load glossary settings', error);
+					glossarySettingsPromise = null;
+					return null;
+				});
+		}
+		return await glossarySettingsPromise;
+	};
+
+	const loadConversationGlossary = async (value: unknown = null) => {
+		const revision = ++conversationGlossaryRevision;
+		const loadedSettings = await ensureGlossarySettings();
+		if (revision !== conversationGlossaryRevision) return;
+		conversationGlossary = normalizeConversationGlossary(value, loadedSettings);
+	};
+
+	const updateConversationGlossary = async (value: ConversationGlossaryConfig) => {
+		const normalized = normalizeConversationGlossary(value, glossarySettings);
+		if (!normalized) return;
+
+		conversationGlossary = normalized;
+		if (!$chatId || $temporaryChatEnabled) return;
+
+		const activeChatId = $chatId;
+		const updatedChat = await updateChatById(localStorage.token, activeChatId, {
+			glossary: normalized
+		}).catch((error) => {
+			console.error('Failed to save conversation glossary', error);
+			toast.error($i18n.t('Failed to save conversation glossary'));
+			return null;
+		});
+
+		if (updatedChat && $chatId === activeChatId) {
+			chat = updatedChat;
+		}
+	};
 
 	const getErrorMessage = (error) => {
 		if (!error) return '';
@@ -1629,6 +1684,7 @@
 
 		chatFiles = [];
 		params = {};
+		await loadConversationGlossary();
 		taskIds = null;
 		chatTasks = [];
 
@@ -1796,6 +1852,7 @@
 
 				params = structuredClone(chatContent?.params ?? {});
 				chatFiles = structuredClone(chatContent?.files ?? []);
+				await loadConversationGlossary(chatContent?.glossary);
 
 				// Load tasks from chat-level DB field
 				chatTasks = chat?.tasks ?? [];
@@ -2618,7 +2675,8 @@
 			interpretation: $interpretationModeEnabled,
 			learning: $learningModeEnabled,
 			manuscript_translation: $manuscriptTranslationModeEnabled,
-			rag_translation: $ragTranslationModeEnabled
+			rag_translation: $ragTranslationModeEnabled,
+			glossary: conversationGlossary
 		};
 
 		if ($settings?.contextCompaction?.enabled === false) {
@@ -3203,6 +3261,7 @@
 					models: selectedModels,
 					system: $settings.system ?? undefined,
 					params: params,
+					glossary: conversationGlossary,
 					history: history,
 					messages: createMessagesList(history, history.currentId),
 					tags: [],
@@ -3238,6 +3297,7 @@
 					models: selectedModels,
 					history: history,
 					messages: createMessagesList(history, history.currentId),
+					glossary: conversationGlossary,
 					params: params,
 					files: chatFiles
 				});
@@ -3497,6 +3557,7 @@
 										title: title.length > 50 ? `${title.slice(0, 50)}...` : title,
 										models: selectedModels,
 										params: params,
+										glossary: conversationGlossary,
 										history: history,
 										messages: messages,
 										timestamp: Date.now()
@@ -3584,7 +3645,9 @@
 										bind:atSelectedModel
 										bind:showCommands
 										bind:dragged
-										toolServers={$toolServers}
+										{glossarySettings}
+										{conversationGlossary}
+										onConversationGlossaryChange={updateConversationGlossary}
 										{generating}
 										{stopResponse}
 										{createMessagePair}
@@ -3664,7 +3727,9 @@
 									bind:showCommands
 									bind:dragged
 									{pendingOAuthTools}
-									toolServers={$toolServers}
+									{glossarySettings}
+									{conversationGlossary}
+									onConversationGlossaryChange={updateConversationGlossary}
 									{stopResponse}
 									{createMessagePair}
 									{onSelect}
@@ -3706,6 +3771,8 @@
 							}
 							return a;
 						}, [])}
+						{glossarySettings}
+						{conversationGlossary}
 						submitPrompt={submitHandler}
 						{stopResponse}
 						{showMessage}

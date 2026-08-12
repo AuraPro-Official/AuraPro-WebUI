@@ -13,6 +13,11 @@
 
 	import { transcribeAudio } from '$lib/apis/audio';
 	import { getGlossarySettings } from '$lib/apis/glossary';
+	import {
+		getConversationGlossaryLanguages,
+		type ConversationGlossaryConfig,
+		type GlossarySettings
+	} from '$lib/utils/conversation-glossary';
 	import XMark from '$lib/components/icons/XMark.svelte';
 
 	import dayjs from 'dayjs';
@@ -30,6 +35,8 @@
 	export let autoGainControl = true;
 
 	export let className = ' p-2.5 w-full max-w-full';
+	export let glossarySettings: GlossarySettings | null = null;
+	export let conversationGlossary: ConversationGlossaryConfig | null = null;
 
 	export let onCancel = () => {};
 	export let onConfirm = (data) => {};
@@ -50,8 +57,8 @@
 	let streamingSegmentStartedAt = 0;
 	let streamingLastVoiceAt = 0;
 	let streamingHasSpeech = false;
-	let glossarySettings = null;
-	let glossarySettingsPromise = null;
+	let fallbackGlossarySettings: GlossarySettings | null = null;
+	let fallbackGlossarySettingsPromise: Promise<GlossarySettings | null> | null = null;
 
 	const SPEECH_THRESHOLD = 0.035;
 	const SILENCE_SEGMENT_MS = 650;
@@ -135,10 +142,10 @@
 			return ['zh'];
 		}
 
-		if (!glossarySettingsPromise) {
-			glossarySettingsPromise = getGlossarySettings(localStorage.token)
+		if (!glossarySettings && !fallbackGlossarySettingsPromise) {
+			fallbackGlossarySettingsPromise = getGlossarySettings(localStorage.token)
 				.then((value) => {
-					glossarySettings = value;
+					fallbackGlossarySettings = value;
 					return value;
 				})
 				.catch((error) => {
@@ -147,12 +154,14 @@
 				});
 		}
 
-		const settings = glossarySettings ?? (await glossarySettingsPromise);
-		const targetLang = settings?.target_lang || settings?.glossary_lang || '';
-		const sourceLang = settings?.source_lang || '';
+		const resolvedSettings =
+			glossarySettings ?? fallbackGlossarySettings ?? (await fallbackGlossarySettingsPromise);
+		const languageCandidates = getConversationGlossaryLanguages(
+			conversationGlossary,
+			resolvedSettings
+		);
 
-		const languageCandidates = targetLang ? [sourceLang, targetLang].filter(Boolean) : ['zh'];
-		return languageCandidates;
+		return languageCandidates.length > 0 ? languageCandidates : ['zh'];
 	};
 
 	const stopStreamingTranscription = () => {
@@ -415,8 +424,8 @@
 		loading = true;
 
 		try {
-			glossarySettings = null;
-			glossarySettingsPromise = null;
+			fallbackGlossarySettings = null;
+			fallbackGlossarySettingsPromise = null;
 
 			if (displayMedia) {
 				const mediaStream = await navigator.mediaDevices.getDisplayMedia({

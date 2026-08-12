@@ -1,4 +1,10 @@
 {
+	"Current conversation glossary": "Glosario de la conversaci?n actual",
+	"Failed to save conversation glossary": "No se pudo guardar el glosario de la conversaci?n",
+	"Smart glossary": "Glosario inteligente",
+	"Source language": "Idioma de origen",
+	"Target language": "Idioma de destino",
+	"This selection only applies to the current conversation.": "Esta selecci?n solo se aplica a la conversaci?n actual.",
 	"'s', 'm', 'h', 'd', 'w' or '-1' for no expiration.": "'s', 'm', 'h', 'd', 'w' o '-1' para evitar expiración.",
 	"(e.g. `sh webui.sh --api --api-auth username_password`)": "(p.ej. `sh webui.sh --api --api-auth username_password`)",
 	"(e.g. `sh webui.sh --api`)": "(p.ej. `sh webui.sh --api`)",

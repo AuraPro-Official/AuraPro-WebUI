@@ -22,6 +22,10 @@
 		currentChatPage
 	} from '$lib/stores';
 	import { sanitizeResponseContent, extractCurlyBraceWords } from '$lib/utils';
+	import type {
+		ConversationGlossaryConfig,
+		GlossarySettings
+	} from '$lib/utils/conversation-glossary';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
 	import Suggestions from './Suggestions.svelte';
@@ -45,7 +49,7 @@
 
 	export let prompt = '';
 	export let files = [];
-	export let messageInput = null;
+	export let messageInput: MessageInput | null = null;
 
 	export let selectedToolIds = [];
 	export let selectedSkillIds = [];
@@ -59,8 +63,9 @@
 	export let onSelect = (e) => {};
 	export let onChange = (e) => {};
 	export let onWebSearchToggle: Function = () => {};
-
-	export let toolServers = [];
+	export let glossarySettings: GlossarySettings | null = null;
+	export let conversationGlossary: ConversationGlossaryConfig | null = null;
+	export let onConversationGlossaryChange: (value: ConversationGlossaryConfig) => void = () => {};
 
 	export let dragged = false;
 
@@ -235,12 +240,14 @@
 						bind:showCommands
 						bind:dragged
 						{pendingOAuthTools}
-						{toolServers}
 						{stopResponse}
 						{createMessagePair}
 						placeholder={$i18n.t('How can I help you today?')}
 						{onChange}
 						{onUpload}
+						{glossarySettings}
+						{conversationGlossary}
+						{onConversationGlossaryChange}
 						{onWebSearchToggle}
 						on:submit={(e) => {
 							dispatch('submit', e.detail);

@@ -23,6 +23,10 @@
 		user,
 		codeInterpreterEnabled
 	} from '$lib/stores';
+	import type {
+		ConversationGlossaryConfig,
+		GlossarySettings
+	} from '$lib/utils/conversation-glossary';
 
 	import { uploadFile } from '$lib/apis/files';
 	import { toast } from 'svelte-sonner';
@@ -52,6 +56,8 @@
 	export let showMessage: Function;
 	export let files;
 	export let modelId;
+	export let glossarySettings: GlossarySettings | null = null;
+	export let conversationGlossary: ConversationGlossaryConfig | null = null;
 
 	export let pane: Pane | null = null;
 
@@ -291,6 +297,8 @@
 							{modelId}
 							{chatId}
 							{eventTarget}
+							{glossarySettings}
+							{conversationGlossary}
 							on:close={() => showControls.set(false)}
 						/>
 					</div>
@@ -437,6 +445,8 @@
 								{modelId}
 								{chatId}
 								{eventTarget}
+								{glossarySettings}
+								{conversationGlossary}
 								on:close={() => showControls.set(false)}
 							/>
 						</div>

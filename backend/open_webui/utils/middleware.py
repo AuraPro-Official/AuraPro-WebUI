@@ -101,6 +101,7 @@ from open_webui.utils.glossary_translation import (
     apply_manuscript_translation_mode,
     apply_rag_translation_mode,
     apply_translation_mode,
+    resolve_conversation_glossary_settings,
 )
 from open_webui.utils.memory import add_memory_context, review_memory_after_turn
 from open_webui.utils.misc import (
@@ -2680,21 +2681,52 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         features.update(payload_features)
     extra_params['__features__'] = features
     if features:
+        glossary_settings = None
+        if any(
+            features.get(key)
+            for key in (
+                'learning',
+                'learning_mode',
+                'manuscript_translation',
+                'manuscript_translation_mode',
+                'document_translation',
+                'document_translation_mode',
+                'interpretation',
+                'simultaneous',
+                'translation',
+                'rag_translation',
+            )
+        ):
+            glossary_selection = features.get('glossary')
+            if not isinstance(glossary_selection, dict) and chat_id and user:
+                stored_chat = await Chats.get_chat_by_id_and_user_id(
+                    chat_id, user.id
+                )
+                if stored_chat and isinstance(stored_chat.chat, dict):
+                    glossary_selection = stored_chat.chat.get('glossary')
+
+            glossary_settings = await resolve_conversation_glossary_settings(
+                glossary_selection
+            )
         if features.get('learning') or features.get('learning_mode'):
-            form_data = await apply_learning_mode(form_data)
+            form_data = await apply_learning_mode(form_data, glossary_settings)
         elif (
             features.get('manuscript_translation')
             or features.get('manuscript_translation_mode')
             or features.get('document_translation')
             or features.get('document_translation_mode')
         ):
-            form_data = await apply_manuscript_translation_mode(form_data)
+            form_data = await apply_manuscript_translation_mode(
+                form_data, glossary_settings
+            )
         elif features.get('interpretation') or features.get('simultaneous'):
-            form_data = await apply_interpretation_mode(form_data)
+            form_data = await apply_interpretation_mode(form_data, glossary_settings)
         elif features.get('translation'):
-            form_data = await apply_translation_mode(form_data)
+            form_data = await apply_translation_mode(form_data, glossary_settings)
         elif features.get('rag_translation'):
-            form_data, rag_translation_sources = await apply_rag_translation_mode(request, form_data, user)
+            form_data, rag_translation_sources = await apply_rag_translation_mode(
+                request, form_data, user, glossary_settings
+            )
             sources.extend(rag_translation_sources)
 
     if not any(

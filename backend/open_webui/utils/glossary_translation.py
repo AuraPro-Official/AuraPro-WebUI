@@ -29,6 +29,7 @@ from open_webui.utils.glossary_routing import (
     resolve_smart_glossary,
     same_language,
 )
+from open_webui.utils.glossary_selection import apply_conversation_glossary
 from open_webui.utils.lazy_model import LazyModel
 from rapidfuzz import fuzz
 
@@ -885,6 +886,13 @@ async def read_settings() -> dict[str, Any]:
         settings['glossary_path'] = os.environ['GLOSSARY_PATH']
 
     return normalize_settings(settings)
+
+
+async def resolve_conversation_glossary_settings(
+    selection: Any = None,
+) -> dict[str, Any]:
+    settings = await read_settings()
+    return normalize_settings(apply_conversation_glossary(settings, selection))
 
 
 async def write_settings(values: dict[str, Any]) -> dict[str, Any]:
@@ -2947,8 +2955,13 @@ async def apply_context_cleanup(form_data: dict[str, Any]) -> dict[str, Any]:
     return form_data
 
 
-async def apply_rag_translation_mode(request, form_data: dict[str, Any], user) -> tuple[dict[str, Any], Any]:
-    settings = await read_settings()
+async def apply_rag_translation_mode(
+    request,
+    form_data: dict[str, Any],
+    user,
+    settings: Optional[dict[str, Any]] = None,
+) -> tuple[dict[str, Any], Any]:
+    settings = normalize_settings(settings or await read_settings())
     messages = form_data.get('messages') or []
     message, part_index, text = _latest_user_text_ref(messages)
     if message and text.strip():
@@ -2959,8 +2972,10 @@ async def apply_rag_translation_mode(request, form_data: dict[str, Any], user) -
     return form_data, sources
 
 
-async def apply_translation_mode(form_data: dict[str, Any]) -> dict[str, Any]:
-    settings = await read_settings()
+async def apply_translation_mode(
+    form_data: dict[str, Any], settings: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    settings = normalize_settings(settings or await read_settings())
     entries, _updated_at = await read_entries(settings)
     messages = form_data.get('messages') or []
     message, part_index, text = _latest_user_text_ref(messages)
@@ -2975,8 +2990,10 @@ async def apply_translation_mode(form_data: dict[str, Any]) -> dict[str, Any]:
     return form_data
 
 
-async def apply_manuscript_translation_mode(form_data: dict[str, Any]) -> dict[str, Any]:
-    settings = await read_settings()
+async def apply_manuscript_translation_mode(
+    form_data: dict[str, Any], settings: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    settings = normalize_settings(settings or await read_settings())
     entries, _updated_at = await read_entries(settings)
     messages = form_data.get('messages') or []
     message, part_index, text = _latest_user_text_ref(messages)
@@ -2989,8 +3006,10 @@ async def apply_manuscript_translation_mode(form_data: dict[str, Any]) -> dict[s
     return form_data
 
 
-async def apply_interpretation_mode(form_data: dict[str, Any]) -> dict[str, Any]:
-    settings = await read_settings()
+async def apply_interpretation_mode(
+    form_data: dict[str, Any], settings: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    settings = normalize_settings(settings or await read_settings())
     entries, _updated_at = await read_entries(settings)
     messages = form_data.get('messages') or []
     message, part_index, text = _latest_user_text_ref(messages)
@@ -3003,8 +3022,10 @@ async def apply_interpretation_mode(form_data: dict[str, Any]) -> dict[str, Any]
     return form_data
 
 
-async def apply_learning_mode(form_data: dict[str, Any]) -> dict[str, Any]:
-    settings = await read_settings()
+async def apply_learning_mode(
+    form_data: dict[str, Any], settings: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    settings = normalize_settings(settings or await read_settings())
     entries, _updated_at = await read_entries(settings)
     messages = form_data.get('messages') or []
     message, part_index, text = _latest_user_text_ref(messages)

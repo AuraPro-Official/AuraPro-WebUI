@@ -30,6 +30,11 @@
 	import { getKnowledgeBases } from '$lib/apis/knowledge';
 	import { updateUserSettings } from '$lib/apis/users';
 	import { applyExtensionMode, type ExtensionMode } from '$lib/utils/extension-modes';
+	import type {
+		ConversationGlossaryConfig,
+		GlossarySettings
+	} from '$lib/utils/conversation-glossary';
+	import ConversationGlossaryPicker from './ConversationGlossaryPicker.svelte';
 
 	import { toast } from 'svelte-sonner';
 
@@ -72,6 +77,9 @@
 	export let showImageGenerationButton = true;
 	export let showCodeInterpreterButton = true;
 	export let showTranslationModeButton = true;
+	export let glossarySettings: GlossarySettings | null = null;
+	export let conversationGlossary: ConversationGlossaryConfig | null = null;
+	export let onConversationGlossaryChange: (value: ConversationGlossaryConfig) => void = () => {};
 
 	export let onShowValves: Function;
 	export let onClose: Function;
@@ -709,6 +717,14 @@
 								</div>
 							</button>
 						</Tooltip>
+					{/if}
+
+					{#if $translationModeEnabled || $manuscriptTranslationModeEnabled || $interpretationModeEnabled || $learningModeEnabled || $ragTranslationModeEnabled}
+						<ConversationGlossaryPicker
+							{glossarySettings}
+							{conversationGlossary}
+							onChange={onConversationGlossaryChange}
+						/>
 					{/if}
 
 					{#if showImageGenerationButton}
