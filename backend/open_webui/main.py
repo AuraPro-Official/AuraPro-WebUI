@@ -224,6 +224,7 @@ from open_webui.utils.chat import (
 from open_webui.utils.chat import (
     generate_chat_completion as chat_completion_handler,
 )
+from open_webui.utils.glossary_translation import apply_translation_mode
 from open_webui.utils.embeddings import generate_embeddings
 from open_webui.utils.logger import start_logger
 from open_webui.utils.middleware import (
@@ -1828,6 +1829,61 @@ generate_chat_completion = chat_completion
 # Expose as app.state so internal callers (e.g. automations) can
 # use the full pipeline without importing from main.py (avoids circular deps).
 app.state.CHAT_COMPLETION_HANDLER = chat_completion
+
+
+@app.post('/api/translate')
+@app.post('/api/v1/translate')  # Experimental: Compatibility with OpenAI API
+async def translate(
+    request: Request,
+    form_data: dict,
+    user=Depends(get_verified_user),
+):
+    """
+    Translate text through the app's translation mode.
+
+    Accepts an OpenAI Chat Completions body with `features.translation: true`.
+    The last user message is the text to translate. Runs the same prompt
+    pipeline as the UI (glossary-aware, language detection) without persisting
+    chats or running memory/filters.
+
+    Optional `features.source_lang` / `features.target_lang` override the saved
+    glossary language pair for this request; glossary entries are auto-selected
+    by the effective language pair. `model` defaults to the server default
+    model. `stream: true` returns OpenAI-style SSE chunks.
+    """
+    features = form_data.pop('features', None) or {}
+    if not features.get('translation'):
+        raise HTTPException(status_code=400, detail='features.translation is required')
+
+    source_lang = features.get('source_lang')
+    target_lang = features.get('target_lang')
+    source_lang = source_lang.strip() if isinstance(source_lang, str) and source_lang.strip() else None
+    target_lang = target_lang.strip() if isinstance(target_lang, str) and target_lang.strip() else None
+
+    messages = form_data.get('messages') or []
+    if not any(isinstance(message, dict) and message.get('role') == 'user' for message in messages):
+        raise HTTPException(status_code=400, detail='messages must contain at least one user message')
+
+    if not request.app.state.MODELS:
+        await get_all_models(request, user=user)
+
+    if not form_data.get('model'):
+        default_models = ((await Config.get('ui.default_models')) or '').split(',')
+        model_id = default_models[0].strip() if default_models and default_models[0] else None
+        if not model_id:    
+            raise HTTPException(status_code=400, detail='model is required')
+        form_data['model'] = model_id
+
+    if form_data['model'] not in request.app.state.MODELS:
+        raise HTTPException(status_code=404, detail=f'Model "{form_data["model"]}" not found')
+
+    form_data = await apply_translation_mode(
+        form_data,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+
+    return await chat_completion_handler(request, form_data, user=user)
 
 
 ##################################

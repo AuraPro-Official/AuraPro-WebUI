@@ -2973,18 +2973,40 @@ async def apply_rag_translation_mode(
 
 
 async def apply_translation_mode(
-    form_data: dict[str, Any], settings: Optional[dict[str, Any]] = None
+    form_data: dict[str, Any],
+    settings: Optional[dict[str, Any]] = None,
+    source_lang: Optional[str] = None,
+    target_lang: Optional[str] = None,
 ) -> dict[str, Any]:
     settings = normalize_settings(settings or await read_settings())
-    entries, _updated_at = await read_entries(settings)
+
+    # Per-call language overrides (used by the /api/translate endpoint).
+    # Both the fixed and smart glossary modes read a different pair of keys,
+    # so set every relevant field; glossary entries are still auto-selected by
+    # the effective language pair via normal glossary routing.
+    overrides = {}
+    if source_lang:
+        overrides['source_lang'] = source_lang
+        overrides['smart_source_lang'] = source_lang
+    if target_lang:
+        overrides['target_lang'] = target_lang
+        overrides['glossary_lang'] = target_lang
+        overrides['smart_target_lang'] = target_lang
+
+    entry_settings = {**settings, **overrides} if overrides else settings
+    entries, _updated_at = await read_entries(entry_settings)
+
+    # read_entries() normalizes in place, so rebuild the settings used for the
+    # prompt from the original (already-normalized) base to keep overrides.
+    prompt_settings = {**settings, **overrides} if overrides else settings
     messages = form_data.get('messages') or []
     message, part_index, text = _latest_user_text_ref(messages)
     if _message_has_audio(message):
         # Voice input: the spoken content is what needs translating; any typed
         # text rides along as a supplementary note.
-        _set_message_text(message, build_translation_audio_prompt(text, entries, settings), part_index)
+        _set_message_text(message, build_translation_audio_prompt(text, entries, prompt_settings), part_index)
     elif message and text.strip():
-        _set_message_text(message, build_translation_prompt(text, entries, settings), part_index)
+        _set_message_text(message, build_translation_prompt(text, entries, prompt_settings), part_index)
 
     form_data['messages'] = _truncate_messages(messages, settings)
     return form_data
