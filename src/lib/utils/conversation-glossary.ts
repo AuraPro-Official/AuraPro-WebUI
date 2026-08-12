@@ -24,9 +24,39 @@ export type ConversationGlossaryConfig = {
 	target_lang?: string;
 };
 
+export const MAX_RECENT_GLOSSARY_LANGUAGES = 10;
+
 const cleanLanguage = (value: unknown, fallback: string) => {
 	const language = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
 	return language && language.length <= 80 ? language : fallback;
+};
+
+export const mergeRecentGlossaryLanguages = (
+	history: unknown,
+	recentlyUsed: unknown,
+	limit = MAX_RECENT_GLOSSARY_LANGUAGES
+) => {
+	const maxLanguages = Math.max(0, Math.trunc(limit));
+	if (maxLanguages === 0) return [];
+
+	const languages = [
+		...(Array.isArray(recentlyUsed) ? recentlyUsed : []),
+		...(Array.isArray(history) ? history : [])
+	];
+	const seen = new Set<string>();
+	const merged: string[] = [];
+
+	for (const value of languages) {
+		const language = cleanLanguage(value, '');
+		const key = language.toLocaleLowerCase();
+		if (!language || seen.has(key)) continue;
+
+		seen.add(key);
+		merged.push(language);
+		if (merged.length >= maxLanguages) break;
+	}
+
+	return merged;
 };
 
 const getSmartLanguages = (settings: GlossarySettings | null | undefined) => ({

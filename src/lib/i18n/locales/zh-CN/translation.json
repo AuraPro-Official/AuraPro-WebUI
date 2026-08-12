@@ -1,8 +1,8 @@
 {
-	"Current conversation glossary": "??????",
-	"Failed to save conversation glossary": "????????",
-	"Source language": "???",
-	"This selection only applies to the current conversation.": "????????????",
+	"Current conversation glossary": "当前对话词典",
+	"Failed to save conversation glossary": "保存当前对话词典失败",
+	"Source language": "源语言",
+	"This selection only applies to the current conversation.": "此设置仅对当前对话生效。",
 	"'s', 'm', 'h', 'd', 'w' or '-1' for no expiration.": "'s'(秒), 'm'(分), 'h'(时), 'd'(天), 'w'(周) 或 '-1' 表示无过期时间",
 	"(e.g. `sh webui.sh --api --api-auth username_password`)": "（例如：`sh webui.sh --api --api-auth username_password`）",
 	"(e.g. `sh webui.sh --api`)": "（例如：`sh webui.sh --api`）",

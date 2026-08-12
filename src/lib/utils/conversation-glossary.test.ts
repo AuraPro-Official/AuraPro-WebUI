@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	getConversationGlossaryLanguages,
 	getDefaultConversationGlossary,
+	mergeRecentGlossaryLanguages,
 	normalizeConversationGlossary,
 	type GlossarySettings
 } from './conversation-glossary';
@@ -56,5 +57,26 @@ describe('conversation glossary', () => {
 				settings
 			)
 		).toEqual(['Spanish', 'French']);
+	});
+
+	it('keeps the ten most recently used languages without duplicates', () => {
+		expect(
+			mergeRecentGlossaryLanguages(
+				['English', 'French', 'German', 'Italian', 'Japanese', 'Korean', 'Portuguese'],
+				[' Spanish ', 'english', 'Chinese', 'Dutch']
+			)
+		).toEqual([
+			'Spanish',
+			'english',
+			'Chinese',
+			'Dutch',
+			'French',
+			'German',
+			'Italian',
+			'Japanese',
+			'Korean',
+			'Portuguese'
+		]);
+		expect(mergeRecentGlossaryLanguages([], ['English'], 0)).toEqual([]);
 	});
 });
