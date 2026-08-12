@@ -1870,7 +1870,7 @@ async def translate(
     if not form_data.get('model'):
         default_models = ((await Config.get('ui.default_models')) or '').split(',')
         model_id = default_models[0].strip() if default_models and default_models[0] else None
-        if not model_id:    
+        if not model_id:
             raise HTTPException(status_code=400, detail='model is required')
         form_data['model'] = model_id
 

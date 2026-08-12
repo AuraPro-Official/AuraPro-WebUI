@@ -2699,15 +2699,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         ):
             glossary_selection = features.get('glossary')
             if not isinstance(glossary_selection, dict) and chat_id and user:
-                stored_chat = await Chats.get_chat_by_id_and_user_id(
-                    chat_id, user.id
-                )
+                stored_chat = await Chats.get_chat_by_id_and_user_id(chat_id, user.id)
                 if stored_chat and isinstance(stored_chat.chat, dict):
                     glossary_selection = stored_chat.chat.get('glossary')
 
-            glossary_settings = await resolve_conversation_glossary_settings(
-                glossary_selection
-            )
+            glossary_settings = await resolve_conversation_glossary_settings(glossary_selection)
         if features.get('learning') or features.get('learning_mode'):
             form_data = await apply_learning_mode(form_data, glossary_settings)
         elif (
@@ -2716,9 +2712,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             or features.get('document_translation')
             or features.get('document_translation_mode')
         ):
-            form_data = await apply_manuscript_translation_mode(
-                form_data, glossary_settings
-            )
+            form_data = await apply_manuscript_translation_mode(form_data, glossary_settings)
         elif features.get('interpretation') or features.get('simultaneous'):
             form_data = await apply_interpretation_mode(form_data, glossary_settings)
         elif features.get('translation'):

@@ -3044,9 +3044,7 @@ async def apply_interpretation_mode(
     return form_data
 
 
-async def apply_learning_mode(
-    form_data: dict[str, Any], settings: Optional[dict[str, Any]] = None
-) -> dict[str, Any]:
+async def apply_learning_mode(form_data: dict[str, Any], settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     settings = normalize_settings(settings or await read_settings())
     entries, _updated_at = await read_entries(settings)
     messages = form_data.get('messages') or []
