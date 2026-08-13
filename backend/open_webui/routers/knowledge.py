@@ -50,6 +50,19 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
+BILINGUAL_VECTOR_EXPORT_ERROR = 'Only bilingual knowledge bases support vector export.'
+BILINGUAL_VECTOR_IMPORT_ERROR = 'Only bilingual knowledge bases support vector import.'
+
+
+def _require_bilingual_knowledge(knowledge, message: str) -> None:
+    from open_webui.utils.knowledge_export_import import is_bilingual_knowledge
+
+    if not is_bilingual_knowledge(knowledge):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=message,
+        )
+
 ############################
 # getKnowledgeBases
 ############################
@@ -2160,6 +2173,8 @@ async def export_knowledge_with_vectors(
     if is_external_knowledge(knowledge):
         external_knowledge_error()
 
+    _require_bilingual_knowledge(knowledge, BILINGUAL_VECTOR_EXPORT_ERROR)
+
     event_emitter = None
     if request_id:
         try:
@@ -2209,12 +2224,14 @@ async def export_knowledge_with_vectors(
     )
 
 
-@router.post('/import-with-vectors', response_model=KnowledgeResponse)
+@router.post('/import-with-vectors')
 async def import_knowledge_with_vectors(
     request: Request,
+    stream: bool = Query(False),
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    from open_webui.routers.retrieval import _knowledge_progress_stream
     from open_webui.utils.knowledge_export_import import (
         KnowledgeImportError,
         get_knowledge_import_max_archive_bytes,
@@ -2262,47 +2279,72 @@ async def import_knowledge_with_vectors(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
+    _require_bilingual_knowledge(knowledge, BILINGUAL_VECTOR_IMPORT_ERROR)
+
     archive_limit = get_knowledge_import_max_archive_bytes()
     configured_file_limit = await Config.get('rag.file.max_size')
     if configured_file_limit:
         archive_limit = min(archive_limit, int(configured_file_limit) * 1024 * 1024)
 
-    zip_buffer = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode='w+b')
-    try:
-        uploaded_bytes = 0
-        while chunk := await file.read(1024 * 1024):
-            uploaded_bytes += len(chunk)
-            if uploaded_bytes > archive_limit:
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=ERROR_MESSAGES.FILE_TOO_LARGE(size=f'{archive_limit // (1024 * 1024)} MB'),
-                )
-            zip_buffer.write(chunk)
-        zip_buffer.seek(0)
+    async def _run_import(progress_callback=None) -> dict:
+        async def adapter(percent: int, message: str) -> None:
+            if progress_callback is None:
+                return
+            if percent >= 100:
+                stage = 'done'
+            elif percent >= 40:
+                stage = 'importing_records'
+            else:
+                stage = 'loading_vectors'
+            await progress_callback(
+                {
+                    'stage': stage,
+                    'progress': percent,
+                    'message': message,
+                }
+            )
 
-        await import_knowledge_from_zip(
-            knowledge_id,
-            zip_buffer,
-        )
-        restored = await Knowledges.get_knowledge_by_id(knowledge_id, db=db)
-        if not restored:
-            raise ValueError('Imported knowledge base could not be restored.')
-        return KnowledgeResponse(**restored.model_dump())
-    except HTTPException:
-        raise
-    except KnowledgeImportError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-    except Exception as exc:
-        log.exception('Failed to import knowledge base %s', knowledge_id)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='The knowledge archive could not be imported.',
-        ) from exc
-    finally:
-        zip_buffer.close()
+        zip_buffer = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode='w+b')
+        try:
+            uploaded_bytes = 0
+            while chunk := await file.read(1024 * 1024):
+                uploaded_bytes += len(chunk)
+                if uploaded_bytes > archive_limit:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=ERROR_MESSAGES.FILE_TOO_LARGE(size=f'{archive_limit // (1024 * 1024)} MB'),
+                    )
+                zip_buffer.write(chunk)
+            zip_buffer.seek(0)
+
+            await import_knowledge_from_zip(
+                knowledge_id,
+                zip_buffer,
+                progress_callback=adapter if progress_callback is not None else None,
+            )
+            restored = await Knowledges.get_knowledge_by_id(knowledge_id, db=db)
+            if not restored:
+                raise ValueError('Imported knowledge base could not be restored.')
+            return KnowledgeResponse(**restored.model_dump()).model_dump(mode='json')
+        except HTTPException:
+            raise
+        except KnowledgeImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        except Exception as exc:
+            log.exception('Failed to import knowledge base %s', knowledge_id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='The knowledge archive could not be imported.',
+            ) from exc
+        finally:
+            zip_buffer.close()
+
+    if stream:
+        return _knowledge_progress_stream(_run_import)
+    return await _run_import()
 
 
 ############################

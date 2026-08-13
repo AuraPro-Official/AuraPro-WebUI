@@ -75,6 +75,11 @@
 	let exportRequestId: string | null = null;
 	let exportController: AbortController | null = null;
 
+	let importProgress = false;
+	let importProgressPercent = 0;
+	let importProgressMessage = '';
+	let importError: string | null = null;
+
 	let page = 1;
 	let query = '';
 	let searchDebounceTimer: ReturnType<typeof setTimeout>;
@@ -261,17 +266,42 @@
 		const el = e.target as HTMLInputElement;
 		const file = el?.files?.[0];
 		if (!file) return;
+		el.value = '';
+
+		importError = null;
+		importProgress = true;
+		importProgressPercent = 0;
+		importProgressMessage = $i18n.t('Uploading archive...') ?? '正在上传压缩包...';
+
 		try {
-			const res = await importKnowledgeWithVectors(localStorage.token, file, importTarget.id);
+			const res = await importKnowledgeWithVectors(
+				localStorage.token,
+				file,
+				importTarget.id,
+				(progress) => {
+					if (typeof progress?.progress === 'number') {
+						importProgressPercent = progress.progress;
+					}
+					if (progress?.message) {
+						importProgressMessage = progress.message;
+					}
+				}
+			);
+			importProgressPercent = 100;
 			toast.success($i18n.t('Knowledge imported successfully'));
 			init();
 			if (res && res.id) {
 				goto(`/workspace/knowledge/${res.id}`);
 			}
 		} catch (err) {
-			toast.error(`${err}`);
+			importError = `${err}`;
+			toast.error(importError);
 		} finally {
-			el.value = '';
+			if (!importError) {
+				setTimeout(() => {
+					importProgress = false;
+				}, 500);
+			}
 		}
 	};
 
@@ -346,6 +376,54 @@
 					</div>
 					<div class="mt-2 text-xs text-gray-500 dark:text-gray-400 truncate">
 						{exportProgressMessage}
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
+	{#if importProgress}
+		<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+			<div
+				class="w-full max-w-sm rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-6 shadow-xl"
+			>
+				{#if importError}
+					<div class="flex items-center justify-between mb-3">
+						<div class="text-sm font-medium text-red-500">
+							{$i18n.t('Import failed')}
+						</div>
+					</div>
+					<div
+						class="text-xs text-gray-500 dark:text-gray-400 break-words max-h-24 overflow-y-auto mb-4"
+					>
+						{importError}
+					</div>
+					<button
+						class="w-full py-2 rounded-xl bg-gray-100 dark:bg-gray-800 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700 transition"
+						on:click={() => {
+							importError = null;
+							importProgress = false;
+						}}
+					>
+						{$i18n.t('Close')}
+					</button>
+				{:else}
+					<div class="flex items-center justify-between mb-3">
+						<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
+							{$i18n.t('Importing knowledge...') ?? '正在导入知识库...'}
+						</div>
+						<div class="text-xs font-semibold text-gray-500 dark:text-gray-400">
+							{importProgressPercent}%
+						</div>
+					</div>
+					<div class="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+						<div
+							class="h-1.5 bg-blue-500 rounded-full transition-all duration-300"
+							style="width: {importProgressPercent}%"
+						></div>
+					</div>
+					<div class="mt-2 text-xs text-gray-500 dark:text-gray-400 truncate">
+						{importProgressMessage}
 					</div>
 				{/if}
 			</div>
@@ -508,12 +586,14 @@
 											<div class="flex items-center gap-2">
 												<div class=" flex self-center">
 													<ItemMenu
-														onExport={$user?.role === 'admin'
+														onExport={$user?.role === 'admin' &&
+														item?.meta?.knowledge_type === 'bilingual'
 															? () => {
 																	exportHandler(item);
 																}
 															: null}
-														onImport={$user?.role === 'admin'
+														onImport={$user?.role === 'admin' &&
+														item?.meta?.knowledge_type === 'bilingual'
 															? () => {
 																	importHandler(item);
 																}

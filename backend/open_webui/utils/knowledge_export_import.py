@@ -64,6 +64,17 @@ def get_knowledge_import_max_archive_bytes() -> int:
     return _MAX_ARCHIVE_BYTES
 
 
+def is_bilingual_knowledge(knowledge: Any) -> bool:
+    """Return True when the knowledge base is of bilingual type.
+
+    Bilingual knowledge bases carry ``meta.knowledge_type == 'bilingual'``;
+    everything else (general collections, missing/empty meta, or a missing
+    knowledge_type key) is treated as non-bilingual.
+    """
+    meta = getattr(knowledge, 'meta', None) or {}
+    return meta.get('knowledge_type') == 'bilingual'
+
+
 def _validate_archive(zf: zipfile.ZipFile) -> None:
     infos = zf.infolist()
     if len(infos) > _MAX_ARCHIVE_ENTRIES:
@@ -375,6 +386,8 @@ async def _import_v2_vectors(
                     await progress_callback(40 + int(55 * row_index / count), f'已导入 {row_index}/{count} 条记录...')
 
     await _insert_batch(knowledge_id, batch)
+    if progress_callback and batch:
+        await progress_callback(40 + int(55 * row_index / count), f'已导入 {row_index}/{count} 条记录...')
 
     if row_index != count:
         raise KnowledgeImportError('records.jsonl row count does not match the manifest.')

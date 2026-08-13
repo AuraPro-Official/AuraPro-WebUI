@@ -1,4 +1,5 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
+import { readKnowledgeImportProgress } from '$lib/apis/retrieval';
 
 export const createNewKnowledge = async (
 	token: string,
@@ -974,35 +975,43 @@ export const exportKnowledgeById = async (
 
 // ── Directory API ───────────────────────────────────────────────────
 
-export const importKnowledgeWithVectors = async (token: string, file: File, id: string) => {
+export const importKnowledgeWithVectors = async (
+	token: string,
+	file: File,
+	id: string,
+	onProgress?: (progress: { stage?: string; progress?: number; message?: string }) => void
+) => {
 	let error = null;
 
 	const form = new FormData();
 	form.append('file', file);
 	form.append('knowledge_id', id);
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/knowledge/import-with-vectors`, {
-		method: 'POST',
-		headers: {
-			authorization: `Bearer ${token}`
-		},
-		body: form
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			error = err.detail || err;
-			console.error(err);
-			return null;
-		});
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/knowledge/import-with-vectors${onProgress ? '?stream=true' : ''}`,
+		{
+			method: 'POST',
+			headers: {
+				Accept: onProgress ? 'application/x-ndjson' : 'application/json',
+				authorization: `Bearer ${token}`
+			},
+			body: form
+		}
+	);
 
-	if (error) {
+	if (!res.ok) {
+		const err = await res.json().catch(() => ({}));
+		error = err?.detail ?? `HTTP ${res.status}`;
 		throw error;
 	}
 
-	return res;
+	if (!onProgress) {
+		return await res.json();
+	}
+
+	return await readKnowledgeImportProgress(res, (event) => {
+		onProgress(event as { stage?: string; progress?: number; message?: string });
+	});
 };
 
 export const createKnowledgeDirectory = async (
