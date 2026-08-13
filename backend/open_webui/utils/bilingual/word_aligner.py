@@ -143,6 +143,53 @@ class POSFilter:
         lemmas = [w.lemma or tok for w, tok in zip(words, tokens)]
         return tags, lemmas
 
+    @classmethod
+    def tag_and_lemmatize_batch(
+        cls, tokens_list: list[list[str]], lang: str, batch_size: int = 200
+    ) -> list[tuple[list[str] | None, list[str] | None]]:
+        """批量同时返回 (pos_tags, lemmas)，与 tokens_list 逐项对应。
+
+        以 `tokenize_pretokenized=True` 的 pipeline 一次处理多行（每行一个句
+        子）构成的文档，把 N 次神经前向推理合并为一次；条目缺失返回 (None, None)。
+        """
+        if not tokens_list:
+            return []
+        pipeline = cls._get_pipeline(lang)
+        if pipeline is None:
+            return [(None, None) for _ in tokens_list]
+
+        results: list[tuple[list[str] | None, list[str] | None]] = []
+
+        def process_chunk(indices: list[int]) -> bool:
+            lines = [' '.join(tokens_list[i]) for i in indices]
+            text = '\n'.join(lines)
+            doc = pipeline(text)
+            sents = doc.sentences
+            if len(sents) != len(indices):
+                return False
+            chunk_results: list[tuple] = []
+            for idx, sent in zip(indices, sents):
+                words = [w for w in sent.words]
+                toks = tokens_list[idx]
+                if len(words) != len(toks):
+                    return False
+                chunk_results.append(
+                    (
+                        [w.upos for w in words],
+                        [w.lemma or tok for w, tok in zip(words, toks)],
+                    )
+                )
+            results.extend(chunk_results)
+            return True
+
+        for start in range(0, len(tokens_list), batch_size):
+            indices = list(range(start, min(start + batch_size, len(tokens_list))))
+            if not process_chunk(indices):
+                for i in indices:
+                    results.append(cls.tag_and_lemmatize(tokens_list[i], lang))
+
+        return results
+
 
 class CandidateGenerator:
     ALLOW = {'NOUN', 'PROPN', 'ADJ', 'VERB'}
@@ -320,8 +367,58 @@ class WordAligner:
         alignments = self._aligner.get_word_aligns(src_tokens, tgt_tokens)
         return sorted(alignments.get(self._matching_key, []))
 
-    def align_batch(self, pairs: list[tuple[list, list]]) -> list[list[tuple[int, int]]]:
-        return [self.align(src, tgt) for src, tgt in pairs]
+    def align_batch(
+        self, pairs: list[tuple[list, list]], embedding_batch_size: int = 64
+    ) -> list[list[tuple[int, int]]]:
+        if not pairs:
+            return []
+
+        a = self._aligner
+        tokenizer = a.embed_loader.tokenizer
+        token_type = a.token_type
+        results: list[list[tuple[int, int]]] = [None] * len(pairs)  # type: ignore[list-item]
+
+        active = [(i, src, tgt) for i, (src, tgt) in enumerate(pairs) if src and tgt]
+
+        for start in range(0, len(active), embedding_batch_size):
+            chunk = active[start : start + embedding_batch_size]
+            infos = []
+            all_sents = []
+            for _i, src_tokens, tgt_tokens in chunk:
+                l1 = [tokenizer.tokenize(w) for w in src_tokens]
+                l2 = [tokenizer.tokenize(w) for w in tgt_tokens]
+                bpe1 = [bpe for w in l1 for bpe in w]
+                bpe2 = [bpe for w in l2 for bpe in w]
+                b2w1 = [i for i, w in enumerate(l1) for _ in w]
+                b2w2 = [i for i, w in enumerate(l2) for _ in w]
+                infos.append((bpe1, bpe2, b2w1, b2w2, l1, l2))
+                all_sents.append(src_tokens)
+                all_sents.append(tgt_tokens)
+
+            vectors = a.embed_loader.get_embed_list(all_sents).cpu().detach().numpy()
+
+            for k, (info, (i, src, tgt)) in enumerate(zip(infos, chunk)):
+                bpe1, bpe2, b2w1, b2w2, l1, l2 = info
+                v1 = vectors[2 * k, : len(bpe1)]
+                v2 = vectors[2 * k + 1, : len(bpe2)]
+                if token_type == 'word':
+                    v1, v2 = a.average_embeds_over_words([v1, v2], [l1, l2])
+                sim = a.get_similarity(v1, v2)
+                sim = a.apply_distortion(sim, a.distortion)
+                fwd, rev = a.get_alignment_matrix(sim)
+                inter = fwd * rev
+
+                aligns = set()
+                for r in range(len(v1)):
+                    for c in range(len(v2)):
+                        if inter[r, c] > 0:
+                            if token_type == 'bpe':
+                                aligns.add((b2w1[r], b2w2[c]))
+                            else:
+                                aligns.add((r, c))
+                results[i] = sorted(aligns)
+
+        return [r or [] for r in results]
 
 
 @dataclass
@@ -481,12 +578,22 @@ class GlossaryBuilder:
 
         filtered_pairs, filtered_pos, filtered_lemmas = [], [], []
         self._emit_progress('开始词库词对齐...', step='wordalign', current=0, total=max(1, len(tok_pairs)))
-        for idx, (tok_src_tokens, tok_tgt_tokens) in enumerate(tok_pairs):
-            src_pos, src_lemmas = POSFilter.tag_and_lemmatize(tok_src_tokens, self.src_lang)
+
+        src_tokens_list = [s for s, _ in tok_pairs]
+        src_results = POSFilter.tag_and_lemmatize_batch(src_tokens_list, self.src_lang)
+
+        survivor_indices = []
+        for idx, (src_pos, _src_lemmas) in enumerate(src_results):
             if src_pos is not None and not any(t in POSFilter.CONTENT_TAGS for t in src_pos):
                 continue
-            tgt_pos, tgt_lemmas = POSFilter.tag_and_lemmatize(tok_tgt_tokens, self.tgt_lang)
-            filtered_pairs.append((tok_src_tokens, tok_tgt_tokens))
+            survivor_indices.append(idx)
+
+        tgt_tokens_list = [tok_pairs[i][1] for i in survivor_indices]
+        tgt_results = POSFilter.tag_and_lemmatize_batch(tgt_tokens_list, self.tgt_lang)
+
+        for idx, (tgt_pos, tgt_lemmas) in zip(survivor_indices, tgt_results):
+            src_pos, src_lemmas = src_results[idx]
+            filtered_pairs.append(tok_pairs[idx])
             filtered_pos.append((src_pos, tgt_pos))
             filtered_lemmas.append((src_lemmas, tgt_lemmas))
         if not filtered_pairs:

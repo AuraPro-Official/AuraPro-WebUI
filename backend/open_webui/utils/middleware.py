@@ -2716,7 +2716,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         elif features.get('interpretation') or features.get('simultaneous'):
             form_data = await apply_interpretation_mode(form_data, glossary_settings)
         elif features.get('translation'):
-            form_data = await apply_translation_mode(form_data, glossary_settings)
+            form_data = await apply_translation_mode(form_data=form_data, settings=glossary_settings)
         elif features.get('rag_translation'):
             form_data, rag_translation_sources = await apply_rag_translation_mode(
                 request, form_data, user, glossary_settings

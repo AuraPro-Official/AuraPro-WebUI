@@ -1878,7 +1878,7 @@ async def translate(
         raise HTTPException(status_code=404, detail=f'Model "{form_data["model"]}" not found')
 
     form_data = await apply_translation_mode(
-        form_data,
+        form_data=form_data,
         source_lang=source_lang,
         target_lang=target_lang,
     )

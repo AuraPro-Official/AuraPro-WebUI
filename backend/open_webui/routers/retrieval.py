@@ -2826,6 +2826,10 @@ async def _process_bilingual(
     async def alignment_progress(event: dict) -> None:
         if event.get('stage') == 'alignment_embeddings':
             event = {**event, 'cold_start': embedding_model_cold}
+
+        pct = event.get('progress')
+        if isinstance(pct, (int, float)):
+            event = {**event, 'progress': 6 + round(float(pct) * 0.59)}
         if progress_callback is not None:
             await progress_callback(event)
 

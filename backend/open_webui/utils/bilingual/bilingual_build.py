@@ -304,6 +304,7 @@ class BilingualAligner:
         self._split_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='sat-split')
         self._dp_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='dp-align')
         self._event_emitter = None
+        self._progress_callback = None
 
     def set_embed_fn(self, embed_fn, user, request):
         self._embed_fn = embed_fn
@@ -313,22 +314,58 @@ class BilingualAligner:
     def set_event_emitter(self, event_emitter):
         self._event_emitter = event_emitter
 
+    def set_progress_callback(self, progress_callback):
+        self._progress_callback = progress_callback
+
+    # Mapping of the aligner's phase steps to the NDJSON progress stream
+    # (drives the import progress bar) and their intra-alignment progress
+    # slices, which together span 0-100.  The outer handler re-maps this into
+    # the import's overall 0-100 band.
+    _NDJSON_STEP_MAP = {
+        'split': ('splitting', 0, 15),
+        'split-done': ('splitting', 15, 15),
+        'embed': ('alignment_embeddings', 15, 50),
+        'align': ('aligning_paragraphs', 50, 80),
+        'build': ('assembling_chunks', 80, 100),
+    }
+
     async def _emit_progress(self, message: str, step: str | None = None, **extra):
-        if self._event_emitter is None:
-            return
+        if self._event_emitter is not None:
+            payload = {
+                'type': 'bilingual:progress',
+                'data': {
+                    'message': message,
+                    'step': step,
+                    **extra,
+                },
+            }
 
-        payload = {
-            'type': 'bilingual:progress',
-            'data': {
+            result = self._event_emitter(payload)
+            if inspect.isawaitable(result):
+                await result
+
+        if self._progress_callback is not None and step in self._NDJSON_STEP_MAP:
+            stage, lo, hi = self._NDJSON_STEP_MAP[step]
+            current = extra.get('current')
+            total = extra.get('total')
+            if (
+                isinstance(current, (int, float))
+                and isinstance(total, (int, float))
+                and total > 0
+            ):
+                pct = lo + round((float(current) / float(total)) * (hi - lo))
+            else:
+                pct = lo
+            event = {
+                'stage': stage,
+                'progress': pct,
+                'current': current,
+                'total': total,
                 'message': message,
-                'step': step,
-                **extra,
-            },
-        }
-
-        result = self._event_emitter(payload)
-        if inspect.isawaitable(result):
-            await result
+            }
+            event_result = self._progress_callback(event)
+            if inspect.isawaitable(event_result):
+                await event_result
 
     def split(self, text: str, lang: str) -> list[str]:
         return self.splitter.split(text, lang=lang)
@@ -496,6 +533,7 @@ class BilingualAligner:
         if n == 0:
             return []
 
+        self._progress_callback = progress_callback
         self.splitter.reload()
 
         with StageTimer(f'分段+切句(批量,{n}个文件)'):

@@ -78,6 +78,7 @@
 	let importProgress = false;
 	let importProgressPercent = 0;
 	let importProgressMessage = '';
+	let importUploading = false;
 	let importError: string | null = null;
 
 	let page = 1;
@@ -272,6 +273,7 @@
 		importProgress = true;
 		importProgressPercent = 0;
 		importProgressMessage = $i18n.t('Uploading archive...') ?? '正在上传压缩包...';
+		importUploading = true;
 
 		try {
 			const res = await importKnowledgeWithVectors(
@@ -285,9 +287,13 @@
 					if (progress?.message) {
 						importProgressMessage = progress.message;
 					}
+					if (progress?.progress != null) {
+						importUploading = false;
+					}
 				}
 			);
 			importProgressPercent = 100;
+			importUploading = false;
 			toast.success($i18n.t('Knowledge imported successfully'));
 			init();
 			if (res && res.id) {
@@ -413,14 +419,20 @@
 							{$i18n.t('Importing knowledge...') ?? '正在导入知识库...'}
 						</div>
 						<div class="text-xs font-semibold text-gray-500 dark:text-gray-400">
-							{importProgressPercent}%
+							{importUploading ? '' : `${importProgressPercent}%`}
 						</div>
 					</div>
 					<div class="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-						<div
-							class="h-1.5 bg-blue-500 rounded-full transition-all duration-300"
-							style="width: {importProgressPercent}%"
-						></div>
+						{#if importUploading}
+							<div
+								class="h-1.5 bg-blue-500 rounded-full w-1/2 animate-pulse"
+							></div>
+						{:else}
+							<div
+								class="h-1.5 bg-blue-500 rounded-full transition-all duration-300"
+								style="width: {importProgressPercent}%"
+							></div>
+						{/if}
 					</div>
 					<div class="mt-2 text-xs text-gray-500 dark:text-gray-400 truncate">
 						{importProgressMessage}
