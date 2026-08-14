@@ -5,13 +5,17 @@
 	import { toast } from 'svelte-sonner';
 	import Switch from '$lib/components/common/Switch.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import {
+		groupAudioDevices,
+		hasAnonymousAudioDevices,
+		reconcileAudioDeviceId
+	} from '$lib/utils/audio-devices';
 
 	const dispatch = createEventDispatcher();
 	const i18n = getContext('i18n');
 
-	export let saveSettings: Function;
+	export let saveSettings: (settings: Record<string, unknown>) => void | Promise<void>;
 
-	let conversationMode = false;
 	let speechAutoSend = false;
 	let responseAutoPlayback = false;
 	let nonLocalVoices = false;
@@ -27,29 +31,56 @@
 	let simultaneousMode = 'off';
 	let audioInputDevices: MediaDeviceInfo[] = [];
 	let audioOutputDevices: MediaDeviceInfo[] = [];
+	let audioDevicesLoading = false;
+	let audioDeviceStatus: 'ready' | 'permission' | 'empty' | 'unavailable' | 'error' = 'ready';
 	const supportsOutputDeviceSelection =
 		typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
 
-	const refreshAudioDevices = async () => {
-		if (!navigator.mediaDevices?.enumerateDevices) return;
+	const refreshAudioDevices = async (requestPermission = false, reportError = false) => {
+		const mediaDevices = navigator.mediaDevices;
+		if (!mediaDevices?.enumerateDevices) {
+			audioDeviceStatus = 'unavailable';
+			return;
+		}
+
+		audioDevicesLoading = true;
+		let permissionError: unknown = null;
 		try {
-			const devices = await navigator.mediaDevices.enumerateDevices();
-			audioInputDevices = devices.filter((device) => device.kind === 'audioinput');
-			audioOutputDevices = devices.filter((device) => device.kind === 'audiooutput');
+			if (requestPermission) {
+				try {
+					const stream = await mediaDevices.getUserMedia({ audio: true });
+					stream.getTracks().forEach((track) => track.stop());
+				} catch (error) {
+					permissionError = error;
+				}
+			}
+
+			const groupedDevices = groupAudioDevices(await mediaDevices.enumerateDevices());
+			audioInputDevices = groupedDevices.inputs;
+			audioOutputDevices = groupedDevices.outputs;
+			audioInputDeviceId = reconcileAudioDeviceId(audioInputDeviceId, audioInputDevices);
+			audioOutputDeviceId = reconcileAudioDeviceId(audioOutputDeviceId, audioOutputDevices);
+
+			if (audioInputDevices.length === 0 && audioOutputDevices.length === 0) {
+				audioDeviceStatus = permissionError ? 'permission' : 'empty';
+			} else {
+				audioDeviceStatus = hasAnonymousAudioDevices(groupedDevices) ? 'permission' : 'ready';
+			}
+
+			if (permissionError && reportError) {
+				toast.error($i18n.t('Permission denied when accessing microphone'));
+			}
 		} catch (error) {
 			console.error('Error enumerating audio devices', error);
+			audioDeviceStatus = 'error';
+			if (reportError) toast.error($i18n.t('Unable to access audio devices'));
+		} finally {
+			audioDevicesLoading = false;
 		}
 	};
 
-	const requestAudioDeviceLabels = async () => {
-		try {
-			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-			stream.getTracks().forEach((track) => track.stop());
-			await refreshAudioDevices();
-		} catch (error) {
-			toast.error($i18n.t('Permission denied when accessing microphone'));
-		}
-	};
+	const requestAudioDeviceLabels = () => refreshAudioDevices(true, true);
+	const handleAudioDeviceChange = () => void refreshAudioDevices();
 
 	const getVoices = async () => {
 		if (($settings?.audio?.tts?.engine ?? '') !== '') {
@@ -74,9 +105,8 @@
 		saveSettings({ speechAutoSend });
 	};
 
-	onMount(async () => {
+	onMount(() => {
 		playbackRate = $settings.audio?.tts?.playbackRate ?? 1;
-		conversationMode = $settings.conversationMode ?? false;
 		speechAutoSend = $settings.speechAutoSend ?? false;
 		responseAutoPlayback = $settings.responseAutoPlayback ?? false;
 		STTEngine = $settings?.audio?.stt?.engine ?? '';
@@ -96,8 +126,21 @@
 		}
 
 		nonLocalVoices = $settings.audio?.tts?.nonLocalVoices ?? false;
-		await refreshAudioDevices();
-		await getVoices();
+
+		const initializeAudio = async () => {
+			await refreshAudioDevices();
+			if (audioDeviceStatus === 'permission' || audioDeviceStatus === 'empty') {
+				await refreshAudioDevices(true);
+			}
+			await getVoices();
+		};
+
+		navigator.mediaDevices?.addEventListener('devicechange', handleAudioDeviceChange);
+		void initializeAudio();
+
+		return () => {
+			navigator.mediaDevices?.removeEventListener('devicechange', handleAudioDeviceChange);
+		};
 	});
 </script>
 
@@ -136,10 +179,11 @@
 			<div class="py-0.5 flex w-full justify-between gap-3">
 				<div class="self-center text-xs font-medium">{$i18n.t('Microphone')}</div>
 				<select
-					class="min-w-0 w-56 pr-8 rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
+					class="min-w-0 w-56 rounded-md border border-gray-200 bg-transparent px-2 py-1.5 pr-8 text-right text-xs outline-hidden dark:border-gray-700"
 					bind:value={audioInputDeviceId}
 					aria-label={$i18n.t('Microphone')}
-					on:focus={refreshAudioDevices}
+					on:focus={() => refreshAudioDevices()}
+					disabled={audioDevicesLoading || audioDeviceStatus === 'unavailable'}
 				>
 					<option value="">{$i18n.t('Default')}</option>
 					{#each audioInputDevices as device}
@@ -156,11 +200,13 @@
 			<div class="py-0.5 flex w-full justify-between gap-3">
 				<div class="self-center text-xs font-medium">{$i18n.t('Speaker')}</div>
 				<select
-					class="min-w-0 w-56 pr-8 rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
+					class="min-w-0 w-56 rounded-md border border-gray-200 bg-transparent px-2 py-1.5 pr-8 text-right text-xs outline-hidden dark:border-gray-700"
 					bind:value={audioOutputDeviceId}
 					aria-label={$i18n.t('Speaker')}
-					on:focus={refreshAudioDevices}
-					disabled={!supportsOutputDeviceSelection}
+					on:focus={() => refreshAudioDevices()}
+					disabled={!supportsOutputDeviceSelection ||
+						audioDevicesLoading ||
+						audioDeviceStatus === 'unavailable'}
 				>
 					<option value="">{$i18n.t('Default')}</option>
 					{#each audioOutputDevices as device}
@@ -175,12 +221,27 @@
 			</div>
 
 			<button
-				class="text-xs opacity-60 hover:opacity-90 transition"
+				class="text-xs opacity-60 transition hover:opacity-90 disabled:cursor-wait disabled:opacity-30"
 				type="button"
 				on:click={requestAudioDeviceLabels}
+				disabled={audioDevicesLoading || audioDeviceStatus === 'unavailable'}
 			>
-				{$i18n.t('Refresh audio devices')}
+				{$i18n.t(audioDevicesLoading ? 'Refreshing audio devices...' : 'Refresh audio devices')}
 			</button>
+
+			{#if audioDeviceStatus !== 'ready'}
+				<p class="mt-1 text-[11px] leading-4 text-gray-500 dark:text-gray-400" aria-live="polite">
+					{#if audioDeviceStatus === 'permission'}
+						{$i18n.t('Allow microphone access to display audio device names.')}
+					{:else if audioDeviceStatus === 'empty'}
+						{$i18n.t('No audio devices found. Check the system settings and reconnect the device.')}
+					{:else if audioDeviceStatus === 'unavailable'}
+						{$i18n.t('Audio device access requires HTTPS or localhost.')}
+					{:else}
+						{$i18n.t('Unable to access audio devices')}
+					{/if}
+				</p>
+			{/if}
 		</div>
 
 		<div>

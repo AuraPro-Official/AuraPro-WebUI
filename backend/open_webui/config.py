@@ -2368,12 +2368,15 @@ ENABLE_API_KEYS = os.getenv('ENABLE_API_KEYS', 'False').lower() == 'true'
 ENABLE_API_KEYS_ENDPOINT_RESTRICTIONS = (
     os.getenv(
         'ENABLE_API_KEYS_ENDPOINT_RESTRICTIONS',
-        os.getenv('ENABLE_API_KEY_ENDPOINT_RESTRICTIONS', 'False'),
+        os.getenv('ENABLE_API_KEY_ENDPOINT_RESTRICTIONS', 'True'),
     ).lower()
     == 'true'
 )
 
-API_KEYS_ALLOWED_ENDPOINTS = os.getenv('API_KEYS_ALLOWED_ENDPOINTS', os.getenv('API_KEY_ALLOWED_ENDPOINTS', ''))
+API_KEYS_ALLOWED_ENDPOINTS = os.getenv(
+    'API_KEYS_ALLOWED_ENDPOINTS',
+    os.getenv('API_KEY_ALLOWED_ENDPOINTS', '/api/v1/models,/api/v1/chat/completions'),
+)
 
 JWT_EXPIRES_IN = os.getenv('JWT_EXPIRES_IN', '4w')
 

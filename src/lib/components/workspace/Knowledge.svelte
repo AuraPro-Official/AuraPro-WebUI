@@ -424,9 +424,7 @@
 					</div>
 					<div class="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
 						{#if importUploading}
-							<div
-								class="h-1.5 bg-blue-500 rounded-full w-1/2 animate-pulse"
-							></div>
+							<div class="h-1.5 bg-blue-500 rounded-full w-1/2 animate-pulse"></div>
 						{:else}
 							<div
 								class="h-1.5 bg-blue-500 rounded-full transition-all duration-300"

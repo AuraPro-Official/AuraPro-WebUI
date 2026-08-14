@@ -454,7 +454,15 @@ async def get_current_user_by_api_key(request, api_key: str):
     if enable_endpoint_restrictions:
         allowed_paths = [path.strip() for path in str(allowed_endpoints).split(',') if path.strip()]
         request_path = request.scope['path']  # Use raw ASGI path — not spoofable via Host header (CVE-2026-48710)
-        is_allowed = any(request_path == allowed or request_path.startswith(allowed + '/') for allowed in allowed_paths)
+        exact_openai_paths = {
+            '/api/v1/models',
+            '/api/v1/chat/completions',
+        }
+        is_allowed = any(
+            request_path == allowed
+            or (allowed not in exact_openai_paths and request_path.startswith(allowed + '/'))
+            for allowed in allowed_paths
+        )
         if not is_allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

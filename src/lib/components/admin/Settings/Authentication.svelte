@@ -179,7 +179,7 @@
 							<input
 								class="w-full mt-1 text-sm dark:text-gray-300 bg-transparent outline-hidden"
 								type="text"
-								placeholder={`e.g.) /api/v1/messages, /api/v1/channels`}
+								placeholder="/api/v1/models,/api/v1/chat/completions"
 								bind:value={adminConfig.API_KEYS_ALLOWED_ENDPOINTS}
 							/>
 
