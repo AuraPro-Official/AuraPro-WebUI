@@ -33,8 +33,31 @@
 	let audioOutputDevices: MediaDeviceInfo[] = [];
 	let audioDevicesLoading = false;
 	let audioDeviceStatus: 'ready' | 'permission' | 'empty' | 'unavailable' | 'error' = 'ready';
+	const audioPermissionTimeoutMs = 15_000;
 	const supportsOutputDeviceSelection =
 		typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+
+	const requestMicrophoneAccess = async (mediaDevices: MediaDevices) => {
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const permissionRequest = mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+			stream.getTracks().forEach((track) => track.stop());
+		});
+
+		try {
+			await Promise.race([
+				permissionRequest,
+				new Promise<void>((_, reject) => {
+					timeout = setTimeout(
+						() =>
+							reject(new DOMException('Microphone permission request timed out', 'TimeoutError')),
+						audioPermissionTimeoutMs
+					);
+				})
+			]);
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
+	};
 
 	const refreshAudioDevices = async (requestPermission = false, reportError = false) => {
 		const mediaDevices = navigator.mediaDevices;
@@ -48,8 +71,7 @@
 		try {
 			if (requestPermission) {
 				try {
-					const stream = await mediaDevices.getUserMedia({ audio: true });
-					stream.getTracks().forEach((track) => track.stop());
+					await requestMicrophoneAccess(mediaDevices);
 				} catch (error) {
 					permissionError = error;
 				}
@@ -128,11 +150,7 @@
 		nonLocalVoices = $settings.audio?.tts?.nonLocalVoices ?? false;
 
 		const initializeAudio = async () => {
-			await refreshAudioDevices();
-			if (audioDeviceStatus === 'permission' || audioDeviceStatus === 'empty') {
-				await refreshAudioDevices(true);
-			}
-			await getVoices();
+			await Promise.all([refreshAudioDevices(), getVoices()]);
 		};
 
 		navigator.mediaDevices?.addEventListener('devicechange', handleAudioDeviceChange);
@@ -182,8 +200,7 @@
 					class="min-w-0 w-56 rounded-md border border-gray-200 bg-transparent px-2 py-1.5 pr-8 text-right text-xs outline-hidden dark:border-gray-700"
 					bind:value={audioInputDeviceId}
 					aria-label={$i18n.t('Microphone')}
-					on:focus={() => refreshAudioDevices()}
-					disabled={audioDevicesLoading || audioDeviceStatus === 'unavailable'}
+					disabled={audioDeviceStatus === 'unavailable'}
 				>
 					<option value="">{$i18n.t('Default')}</option>
 					{#each audioInputDevices as device}
@@ -203,10 +220,7 @@
 					class="min-w-0 w-56 rounded-md border border-gray-200 bg-transparent px-2 py-1.5 pr-8 text-right text-xs outline-hidden dark:border-gray-700"
 					bind:value={audioOutputDeviceId}
 					aria-label={$i18n.t('Speaker')}
-					on:focus={() => refreshAudioDevices()}
-					disabled={!supportsOutputDeviceSelection ||
-						audioDevicesLoading ||
-						audioDeviceStatus === 'unavailable'}
+					disabled={!supportsOutputDeviceSelection || audioDeviceStatus === 'unavailable'}
 				>
 					<option value="">{$i18n.t('Default')}</option>
 					{#each audioOutputDevices as device}

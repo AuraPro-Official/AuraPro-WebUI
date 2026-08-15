@@ -11,6 +11,7 @@
 	import { generateInitialsImage, canvasPixelTest } from '$lib/utils';
 	import { copyToClipboard } from '$lib/utils';
 	import Plus from '$lib/components/icons/Plus.svelte';
+	import LockClosed from '$lib/components/icons/LockClosed.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
@@ -39,7 +40,22 @@
 
 	let APIKey = '';
 	let APIKeyCopied = false;
+	let installingLocalCertificate = false;
+	let desktopCertificateInstallerAvailable = false;
 	let profileImageInputElement: HTMLInputElement;
+
+	type DesktopCertificateInstallResult = {
+		success?: boolean;
+		error?: string;
+	};
+
+	type DesktopBridgeWindow = Window & {
+		electronAPI?: {
+			send: (data: Record<string, unknown>) => Promise<unknown>;
+		};
+	};
+
+	const getDesktopBridge = () => (window as DesktopBridgeWindow).electronAPI;
 
 	const submitHandler = async () => {
 		if (name !== $user?.name) {
@@ -89,7 +105,53 @@
 		}
 	};
 
+	const installLocalCertificateHandler = async () => {
+		const bridge = getDesktopBridge();
+		if (!bridge?.send) {
+			toast.error(
+				$i18n.t('Open this setting in AuraPro Desktop to install the local security certificate.')
+			);
+			return;
+		}
+
+		if (
+			!window.confirm(
+				$i18n.t(
+					"Install AuraPro's local HTTPS certificate into your current user's trusted certificate store?"
+				)
+			)
+		) {
+			return;
+		}
+
+		installingLocalCertificate = true;
+		try {
+			const result = (await Promise.race([
+				bridge.send({ type: 'installLocalCertificate' }),
+				new Promise<never>((_, reject) => {
+					setTimeout(() => reject(new Error('Certificate installation timed out.')), 60_000);
+				})
+			])) as DesktopCertificateInstallResult;
+
+			if (!result?.success) {
+				throw new Error(result?.error || $i18n.t('Failed to install local security certificate.'));
+			}
+
+			toast.success(
+				$i18n.t(
+					'Local security certificate installed. Restart your browser if it still shows a certificate warning.'
+				)
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			toast.error($i18n.t('Failed to install local security certificate.') + ' ' + message);
+		} finally {
+			installingLocalCertificate = false;
+		}
+	};
+
 	onMount(async () => {
+		desktopCertificateInstallerAvailable = Boolean(getDesktopBridge()?.send);
 		const user = await getSessionUser(localStorage.token).catch((error) => {
 			toast.error(`${error}`);
 			return null;
@@ -420,6 +482,42 @@
 							</div>
 						</div>
 					{/if}
+
+					<div
+						class="mt-4 flex items-start justify-between gap-4 border-t border-gray-100 pt-4 dark:border-gray-850"
+					>
+						<div class="flex min-w-0 gap-2.5">
+							<LockClosed className="mt-0.5 size-4 shrink-0 text-gray-500" />
+							<div class="min-w-0">
+								<div class="text-xs font-medium">
+									{$i18n.t('Install local security certificate')}
+								</div>
+								<p class="mt-1 text-xs text-gray-500">
+									{$i18n.t(
+										"Trust AuraPro's local HTTPS certificate so browser extensions and local API clients can connect securely."
+									)}
+								</p>
+								{#if !desktopCertificateInstallerAvailable}
+									<p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+										{$i18n.t(
+											'Open this setting in AuraPro Desktop to install the local security certificate.'
+										)}
+									</p>
+								{/if}
+							</div>
+						</div>
+						<button
+							type="button"
+							class="shrink-0 whitespace-nowrap rounded-lg bg-gray-100/70 px-3 py-1.5 text-xs font-medium transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-850 dark:hover:bg-gray-800"
+							disabled={!desktopCertificateInstallerAvailable || installingLocalCertificate}
+							aria-busy={installingLocalCertificate}
+							on:click={installLocalCertificateHandler}
+						>
+							{installingLocalCertificate
+								? $i18n.t('Installing certificate...')
+								: $i18n.t('Install')}
+						</button>
+					</div>
 				</div>
 			{/if}
 		{/if}

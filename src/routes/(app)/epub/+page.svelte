@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
-	import { user, WEBUI_NAME } from '$lib/stores';
+	import { user, WEBUI_NAME, showSidebar } from '$lib/stores';
 	import {
 		getEpubBook,
 		getEpubBooks,
@@ -113,7 +113,11 @@
 	<title>EPUB 概念图书馆 • {$WEBUI_NAME}</title>
 </svelte:head>
 
-<main class="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6">
+<main
+	class="ml-auto flex w-full max-w-full flex-col gap-6 px-4 py-6 transition-width duration-200 ease-in-out sm:px-6 {$showSidebar
+		? 'md:max-w-[calc(100%-var(--sidebar-width))]'
+		: ''}"
+>
 	<header class="flex flex-wrap items-start justify-between gap-3">
 		<div>
 			<h1 class="text-xl font-semibold text-gray-900 dark:text-gray-100">EPUB 概念图书馆</h1>

@@ -32,6 +32,15 @@ from open_webui.constants import ERROR_MESSAGES
 
 log = logging.getLogger(__name__)
 _COPY_CHUNK_SIZE = 1024 * 1024
+_WINDOWS_INVALID_FILENAME_CHARS = frozenset('<>:"/|?*') | {chr(92)}
+_WINDOWS_RESERVED_FILENAME_STEMS = {
+    'CON',
+    'PRN',
+    'AUX',
+    'NUL',
+    *(f'COM{index}' for index in range(1, 10)),
+    *(f'LPT{index}' for index in range(1, 10)),
+}
 
 
 @dataclass(frozen=True)
@@ -47,11 +56,27 @@ class FileTooLargeError(ValueError):
         self.max_bytes = max_bytes
 
 
-def _safe_local_path(filename: str) -> Path:
-    normalized = filename.replace('\\', '/')
+def _portable_storage_name(filename: str) -> str:
+    normalized = filename.replace(chr(92), '/')
     safe_name = Path(normalized).name
     if not safe_name or safe_name != normalized or safe_name in {'.', '..'}:
         raise ValueError('Invalid storage filename')
+
+    portable_name = ''.join(
+        '_' if ord(character) < 32 or character in _WINDOWS_INVALID_FILENAME_CHARS else character
+        for character in safe_name
+    ).rstrip(' .')
+    if not portable_name:
+        raise ValueError('Invalid storage filename')
+
+    stem = portable_name.split('.', 1)[0].upper()
+    if stem in _WINDOWS_RESERVED_FILENAME_STEMS:
+        portable_name = f'_{portable_name}'
+    return portable_name
+
+
+def _safe_local_path(filename: str) -> Path:
+    safe_name = _portable_storage_name(filename)
 
     upload_dir = Path(UPLOAD_DIR).resolve()
     upload_dir.mkdir(parents=True, exist_ok=True)

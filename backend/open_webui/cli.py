@@ -92,48 +92,82 @@ def serve(
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
 
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        names = {'localhost', '127.0.0.1', '::1', host}
-        names.update(item.strip() for item in ssl_hosts.split(',') if item.strip())
+        key_path = Path(ssl_keyfile)
+        cert_path = Path(ssl_certfile)
+        should_generate = not key_path.is_file() or not cert_path.is_file()
+        now = datetime.datetime.now(datetime.timezone.utc)
 
-        alt_names = []
-        for name in names:
-            if not name:
-                continue
+        if not should_generate:
             try:
-                ip_address = ipaddress.ip_address(name)
-                if not ip_address.is_unspecified:
-                    alt_names.append(x509.IPAddress(ip_address))
-            except ValueError:
-                alt_names.append(x509.DNSName(name))
+                existing_cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+                existing_key = serialization.load_pem_private_key(
+                    key_path.read_bytes(), password=None
+                )
+                cert_public_key = existing_cert.public_key().public_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+                private_public_key = existing_key.public_key().public_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+                expires_at = getattr(existing_cert, 'not_valid_after_utc', None)
+                if expires_at is None:
+                    expires_at = existing_cert.not_valid_after.replace(
+                        tzinfo=datetime.timezone.utc
+                    )
+                should_generate = (
+                    cert_public_key != private_public_key
+                    or expires_at <= now + datetime.timedelta(days=30)
+                )
+            except (OSError, TypeError, ValueError):
+                should_generate = True
 
-        subject = issuer = x509.Name(
-            [
-                x509.NameAttribute(NameOID.COMMON_NAME, 'AuraPro Local Network'),
-                x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'AuraPro'),
-            ]
-        )
-        cert = (
-            x509.CertificateBuilder()
-            .subject_name(subject)
-            .issuer_name(issuer)
-            .public_key(key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
-            .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=825))
-            .add_extension(x509.SubjectAlternativeName(alt_names), critical=False)
-            .sign(key, hashes.SHA256())
-        )
+        if not should_generate:
+            typer.echo(f'Reusing local HTTPS certificate: {ssl_certfile}')
+        else:
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            names = {'localhost', '127.0.0.1', '::1', host}
+            names.update(item.strip() for item in ssl_hosts.split(',') if item.strip())
 
-        Path(ssl_keyfile).write_bytes(
-            key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption(),
+            alt_names = []
+            for name in names:
+                if not name:
+                    continue
+                try:
+                    ip_address = ipaddress.ip_address(name)
+                    if not ip_address.is_unspecified:
+                        alt_names.append(x509.IPAddress(ip_address))
+                except ValueError:
+                    alt_names.append(x509.DNSName(name))
+
+            subject = issuer = x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COMMON_NAME, 'AuraPro Local Network'),
+                    x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'AuraPro'),
+                ]
             )
-        )
-        Path(ssl_certfile).write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+            cert = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(issuer)
+                .public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(now - datetime.timedelta(days=1))
+                .not_valid_after(now + datetime.timedelta(days=825))
+                .add_extension(x509.SubjectAlternativeName(alt_names), critical=False)
+                .sign(key, hashes.SHA256())
+            )
 
+            key_path.write_bytes(
+                key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.TraditionalOpenSSL,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+            )
+            cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+            typer.echo(f'Generated local HTTPS certificate: {ssl_certfile}')
     uvicorn.run(
         'open_webui.main:app',
         host=host,

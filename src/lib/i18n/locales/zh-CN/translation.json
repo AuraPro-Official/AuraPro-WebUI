@@ -2667,5 +2667,12 @@
 	"{{count}} min": "{{count}} 分钟",
 	"{{hours}} hr {{minutes}} min": "{{hours}} 小时 {{minutes}} 分钟",
 	"{{count}} sec_other": "{{count}} 秒",
-	"{{count}} min_other": "{{count}} 分钟"
+	"{{count}} min_other": "{{count}} 分钟",
+	"Install local security certificate": "安装本地安全证书",
+	"Trust AuraPro's local HTTPS certificate so browser extensions and local API clients can connect securely.": "信任 AuraPro 的本地 HTTPS 证书，使浏览器扩展和本地 API 客户端能够安全连接。",
+	"Install AuraPro's local HTTPS certificate into your current user's trusted certificate store?": "是否将 AuraPro 本地 HTTPS 证书安装到当前用户的受信任证书库？",
+	"Installing certificate...": "正在安装证书...",
+	"Local security certificate installed. Restart your browser if it still shows a certificate warning.": "本地安全证书已安装。如果浏览器仍提示证书问题，请重启浏览器。",
+	"Failed to install local security certificate.": "安装本地安全证书失败。",
+	"Open this setting in AuraPro Desktop to install the local security certificate.": "请在 AuraPro 桌面端中打开此设置以安装本地安全证书。"
 }

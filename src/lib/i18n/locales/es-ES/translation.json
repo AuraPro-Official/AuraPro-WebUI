@@ -2567,5 +2567,12 @@
 	"{{count}} sec_other": "{{count}} s",
 	"{{count}} min_one": "{{count}} min",
 	"{{count}} min_many": "{{count}} min",
-	"{{count}} min_other": "{{count}} min"
+	"{{count}} min_other": "{{count}} min",
+	"Install local security certificate": "Instalar certificado de seguridad local",
+	"Trust AuraPro's local HTTPS certificate so browser extensions and local API clients can connect securely.": "Confía en el certificado HTTPS local de AuraPro para que las extensiones del navegador y los clientes API locales puedan conectarse de forma segura.",
+	"Install AuraPro's local HTTPS certificate into your current user's trusted certificate store?": "¿Instalar el certificado HTTPS local de AuraPro en el almacén de certificados de confianza del usuario actual?",
+	"Installing certificate...": "Instalando certificado...",
+	"Local security certificate installed. Restart your browser if it still shows a certificate warning.": "El certificado de seguridad local se ha instalado. Reinicia el navegador si todavía muestra una advertencia de certificado.",
+	"Failed to install local security certificate.": "No se pudo instalar el certificado de seguridad local.",
+	"Open this setting in AuraPro Desktop to install the local security certificate.": "Abre este ajuste en AuraPro Desktop para instalar el certificado de seguridad local."
 }

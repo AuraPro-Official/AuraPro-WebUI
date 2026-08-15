@@ -380,7 +380,7 @@
 		// Create a blob from the audio chunks
 
 		await tick();
-		const file = blobToFile(audioBlob, `Recording-${dayjs().format('L LT')}.${ext}`);
+		const file = blobToFile(audioBlob, `Recording-${dayjs().format('YYYYMMDDHHmmss')}.${ext}`);
 
 		if (transcribe) {
 			if (getMultimodalSttEnabled()) {
