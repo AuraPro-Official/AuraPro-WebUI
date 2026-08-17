@@ -63,6 +63,7 @@ def _require_bilingual_knowledge(knowledge, message: str) -> None:
             detail=message,
         )
 
+
 ############################
 # getKnowledgeBases
 ############################

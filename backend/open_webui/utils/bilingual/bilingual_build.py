@@ -348,11 +348,7 @@ class BilingualAligner:
             stage, lo, hi = self._NDJSON_STEP_MAP[step]
             current = extra.get('current')
             total = extra.get('total')
-            if (
-                isinstance(current, (int, float))
-                and isinstance(total, (int, float))
-                and total > 0
-            ):
+            if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
                 pct = lo + round((float(current) / float(total)) * (hi - lo))
             else:
                 pct = lo

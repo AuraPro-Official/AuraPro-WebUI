@@ -2533,7 +2533,7 @@ TRANSLATION_RULES = (
 
 
 def _translation_name_rules_for_target(target_lang: str) -> str:
-    if "en" in target_lang.lower():
+    if 'en' in target_lang.lower():
         return TRANSLATION_RULES
 
     if not _is_chinese_language(target_lang):

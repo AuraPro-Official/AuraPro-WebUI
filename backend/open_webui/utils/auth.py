@@ -459,8 +459,7 @@ async def get_current_user_by_api_key(request, api_key: str):
             '/api/v1/chat/completions',
         }
         is_allowed = any(
-            request_path == allowed
-            or (allowed not in exact_openai_paths and request_path.startswith(allowed + '/'))
+            request_path == allowed or (allowed not in exact_openai_paths and request_path.startswith(allowed + '/'))
             for allowed in allowed_paths
         )
         if not is_allowed:

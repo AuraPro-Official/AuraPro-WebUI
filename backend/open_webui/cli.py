@@ -100,9 +100,7 @@ def serve(
         if not should_generate:
             try:
                 existing_cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
-                existing_key = serialization.load_pem_private_key(
-                    key_path.read_bytes(), password=None
-                )
+                existing_key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
                 cert_public_key = existing_cert.public_key().public_bytes(
                     serialization.Encoding.DER,
                     serialization.PublicFormat.SubjectPublicKeyInfo,
@@ -113,12 +111,9 @@ def serve(
                 )
                 expires_at = getattr(existing_cert, 'not_valid_after_utc', None)
                 if expires_at is None:
-                    expires_at = existing_cert.not_valid_after.replace(
-                        tzinfo=datetime.timezone.utc
-                    )
-                should_generate = (
-                    cert_public_key != private_public_key
-                    or expires_at <= now + datetime.timedelta(days=30)
+                    expires_at = existing_cert.not_valid_after.replace(tzinfo=datetime.timezone.utc)
+                should_generate = cert_public_key != private_public_key or expires_at <= now + datetime.timedelta(
+                    days=30
                 )
             except (OSError, TypeError, ValueError):
                 should_generate = True
