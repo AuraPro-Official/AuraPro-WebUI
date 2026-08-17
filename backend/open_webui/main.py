@@ -1852,6 +1852,9 @@ async def translate(
     model. `stream: true` returns OpenAI-style SSE chunks.
     """
     features = form_data.pop('features', None) or {}
+    if not features:
+        return await chat_completion_handler(request, form_data, user=user)
+
     if not features.get('translation'):
         raise HTTPException(status_code=400, detail='features.translation is required')
 

@@ -2523,7 +2523,19 @@ TRANSLATION_NAME_RULES = (
 )
 
 
+TRANSLATION_RULES = (
+    '\n\n严格要求：\n'
+    '1. 原文有几句话，译文就必须有几句对应内容，禁止合并、省略、跳过任何一句或任何从句。\n'
+    '2. 如原文有错别字或语序问题，请结合上下文自动纠正，并翻译得通顺自然。\n'
+    '3. 翻译完成后，请在心里默默核对一遍：译文是否覆盖了原文的每一句话、每一个信息点，语法、代称是否正确。如有遗漏，请补全后再输出最终结果。\n'
+    '4. 代词规则：按照原文提供的代称翻译，不要自己猜测\n'
+)
+
+
 def _translation_name_rules_for_target(target_lang: str) -> str:
+    if "en" in target_lang.lower():
+        return TRANSLATION_RULES
+
     if not _is_chinese_language(target_lang):
         return ''
     return f'{TRANSLATION_NAME_RULES}\n'
