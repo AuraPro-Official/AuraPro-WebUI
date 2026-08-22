@@ -48,6 +48,7 @@
 	import { flyAndScale } from '$lib/utils/transitions';
 	import RegenerateMenu from './ResponseMessage/RegenerateMenu.svelte';
 	import StatusHistory from './ResponseMessage/StatusHistory.svelte';
+	import OpenCodeChanges from './ResponseMessage/OpenCodeChanges.svelte';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
 	import OutputEditView from './OutputEditView.svelte';
 	import { getOutputText, replaceOutputMessageText, type OutputItem } from './structuredOutput';
@@ -102,6 +103,16 @@
 			usage?: unknown;
 		};
 		annotation?: { type: string };
+		opencode?: {
+			session_id?: string;
+			message_id?: string | null;
+			directory?: string;
+			agent?: string;
+			model?: string;
+			diff_count?: number;
+			todos?: { id: string; content: string; status: string; priority: string }[];
+			vcs?: { branch: string; root: string };
+		};
 	}
 
 	export let chatId = '';
@@ -817,6 +828,18 @@
 
 										updateChat();
 									}}
+								/>
+							{/if}
+
+							{#if message?.opencode}
+								<OpenCodeChanges
+									{chatId}
+									messageId={message.opencode.message_id ?? ''}
+									count={message.opencode.diff_count ?? 0}
+									agent={message.opencode.agent ?? ''}
+									model={message.opencode.model ?? ''}
+									todos={message.opencode.todos ?? []}
+									vcs={message.opencode.vcs ?? { branch: '', root: '' }}
 								/>
 							{/if}
 

@@ -9,6 +9,7 @@ node_modules
 test*.py
 
 backend/tests/*
+!backend/tests/test_opencode_agent.py
 launch.json
 *.json
 .gitignore

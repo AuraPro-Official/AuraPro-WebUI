@@ -161,6 +161,7 @@ from open_webui.routers import (
     models,
     notes,
     ollama,
+    opencode,
     openai,
     pipelines,
     prompts,
@@ -179,6 +180,7 @@ from open_webui.routers.retrieval import (
     get_reranking_function,
     get_rf,
 )
+from open_webui.services.opencode_agent import run_agent_chat
 from open_webui.socket.main import (
     MODELS,
     get_event_emitter,
@@ -829,6 +831,7 @@ app.mount('/ws', socket_app)
 
 app.include_router(ollama.router, prefix='/ollama', tags=['ollama'])
 app.include_router(openai.router, prefix='/openai', tags=['openai'])
+app.include_router(opencode.router, prefix='/api/v1/opencode', tags=['opencode'])
 
 
 app.include_router(pipelines.router, prefix='/api/v1/pipelines', tags=['pipelines'])
@@ -1601,6 +1604,10 @@ async def chat_completion(
         metadata = metadata if isinstance(metadata, dict) else {}
 
         try:
+            opencode_feature = (metadata.get('features') or {}).get('opencode')
+            if isinstance(opencode_feature, dict) and opencode_feature.get('enabled'):
+                return await run_agent_chat(request, form_data, user, metadata)
+
             form_data, metadata, events = await process_chat_payload(request, form_data, user, metadata, model)
             metadata = metadata if isinstance(metadata, dict) else {}
 

@@ -20,6 +20,8 @@
 		manuscriptTranslationModeEnabled,
 		ragTranslationModeEnabled,
 		imageGenerationEnabled,
+		openCodeModeEnabled,
+		temporaryChatEnabled,
 		codeInterpreterEnabled
 	} from '$lib/stores';
 
@@ -29,6 +31,15 @@
 	import { getSkills } from '$lib/apis/skills';
 	import { getKnowledgeBases } from '$lib/apis/knowledge';
 	import { updateUserSettings } from '$lib/apis/users';
+	import {
+		getOpenCodeCapabilities,
+		getOpenCodeStatus,
+		resetOpenCodeSession,
+		validateOpenCodeDirectory,
+		type OpenCodeCapabilities,
+		type OpenCodeChatConfig,
+		type OpenCodeStatus
+	} from '$lib/apis/opencode';
 	import { applyExtensionMode, type ExtensionMode } from '$lib/utils/extension-modes';
 	import type {
 		ConversationGlossaryConfig,
@@ -54,9 +65,11 @@
 	import BookOpen from '$lib/components/icons/BookOpen.svelte';
 	import Bolt from '$lib/components/icons/Bolt.svelte';
 	import Document from '$lib/components/icons/Document.svelte';
+	import FolderOpen from '$lib/components/icons/FolderOpen.svelte';
 
 	const i18n: Writable<i18nType> = getContext('i18n');
 
+	export let chatId = '';
 	export let selectedToolIds: string[] = [];
 	export let selectedSkillIds: string[] = [];
 
@@ -80,6 +93,14 @@
 	export let glossarySettings: GlossarySettings | null = null;
 	export let conversationGlossary: ConversationGlossaryConfig | null = null;
 	export let onConversationGlossaryChange: (value: ConversationGlossaryConfig) => void = () => {};
+	export let openCodeConfig: OpenCodeChatConfig = {
+		enabled: false,
+		directory: '',
+		agent: 'build',
+		model: ''
+	};
+	export let onOpenCodeConfigChange: (value: OpenCodeChatConfig) => void | Promise<void> = () => {};
+	export let onOpenCodeSessionReset: () => void | Promise<void> = () => {};
 
 	export let onShowValves: Function;
 	export let onClose: Function;
@@ -93,6 +114,13 @@
 
 	let knowledgeBases: { id: string; name: string; type: string }[] = [];
 	let knowledgeLoading = false;
+	let openCodeStatus: OpenCodeStatus | null = null;
+	let openCodeLoading = false;
+	let openCodeError = '';
+	let openCodeDirectoryDraft = '';
+	let openCodeCapabilities: OpenCodeCapabilities | null = null;
+	let openCodeCapabilityLoading = false;
+	let openCodeSessionResetting = false;
 
 	$: if (show) {
 		init();
@@ -102,6 +130,65 @@
 	$: fileUploadEnabled =
 		fileUploadCapableModels.length === selectedModels.length &&
 		($user?.role === 'admin' || $user?.permissions?.chat?.file_upload);
+
+	const getOpenCodeError = (error: unknown): string => {
+		if (typeof error === 'string') return error;
+		if (error instanceof Error) return error.message;
+		if (error && typeof error === 'object' && 'detail' in error) return String(error.detail);
+		return $i18n.t('OpenCode request failed');
+	};
+
+	const loadOpenCodeCapabilities = async (directory: string, force = false) => {
+		const candidate = directory.trim();
+		if (
+			!candidate ||
+			openCodeCapabilityLoading ||
+			(!force && openCodeCapabilities?.directory === candidate)
+		)
+			return;
+		openCodeCapabilityLoading = true;
+		try {
+			const capabilities = await getOpenCodeCapabilities(localStorage.token, candidate);
+			openCodeCapabilities = capabilities;
+			const agent = capabilities.agents.some((item) => item.id === openCodeConfig.agent)
+				? openCodeConfig.agent
+				: (capabilities.agents[0]?.id ?? 'build');
+			const model =
+				!openCodeConfig.model ||
+				capabilities.models.some((item) => item.id === openCodeConfig.model)
+					? openCodeConfig.model
+					: '';
+			if (agent !== openCodeConfig.agent || model !== openCodeConfig.model) {
+				await persistOpenCodeConfig({ ...openCodeConfig, agent, model });
+			}
+		} catch (error) {
+			openCodeError = getOpenCodeError(error);
+		} finally {
+			openCodeCapabilityLoading = false;
+		}
+	};
+
+	const refreshOpenCodeStatus = async () => {
+		if (openCodeLoading) return;
+		openCodeLoading = true;
+		openCodeError = '';
+		try {
+			const status = await getOpenCodeStatus(localStorage.token, chatId || undefined);
+			openCodeStatus = status;
+			openCodeDirectoryDraft =
+				openCodeConfig.directory || status.session?.directory || status.default_directory || '';
+			if (!status.available) {
+				openCodeError = status.error || $i18n.t('OpenCode is not running');
+			} else if (openCodeDirectoryDraft) {
+				await loadOpenCodeCapabilities(openCodeDirectoryDraft);
+			}
+		} catch (error) {
+			openCodeStatus = { available: false };
+			openCodeError = getOpenCodeError(error);
+		} finally {
+			openCodeLoading = false;
+		}
+	};
 
 	const init = async () => {
 		if ($_tools === null) {
@@ -156,6 +243,9 @@
 		}
 
 		selectedSkillIds = selectedSkillIds.filter((id) => Object.keys(skills ?? {}).includes(id));
+		if ($user?.role === 'admin') {
+			await refreshOpenCodeStatus();
+		}
 	};
 
 	const loadKnowledgeBases = async () => {
@@ -203,9 +293,138 @@
 		}
 	};
 
+	const persistOpenCodeConfig = async (value: OpenCodeChatConfig) => {
+		openCodeConfig = value;
+		await onOpenCodeConfigChange(value);
+	};
+
+	const validateAndSaveOpenCodeDirectory = async (
+		directory: string,
+		enabled = openCodeConfig.enabled
+	): Promise<string | null> => {
+		const candidate = directory.trim();
+		if (!candidate) {
+			openCodeError = $i18n.t('Select a project directory');
+			toast.error(openCodeError);
+			return null;
+		}
+		openCodeLoading = true;
+		openCodeError = '';
+		try {
+			const result = await validateOpenCodeDirectory(localStorage.token, candidate);
+			const nextConfig: OpenCodeChatConfig = {
+				...openCodeConfig,
+				directory: result.directory,
+				enabled
+			};
+			await persistOpenCodeConfig(nextConfig);
+			openCodeDirectoryDraft = result.directory;
+			await loadOpenCodeCapabilities(result.directory, true);
+			return result.directory;
+		} catch (error) {
+			openCodeError = getOpenCodeError(error);
+			toast.error(openCodeError);
+			return null;
+		} finally {
+			openCodeLoading = false;
+		}
+	};
+
+	const pickOpenCodeDirectory = async (): Promise<string | null> => {
+		if (!window.electronAPI?.send) {
+			toast.info($i18n.t('Enter the project directory path'));
+			document.getElementById('opencode-project-directory')?.focus();
+			return null;
+		}
+		try {
+			const directory = await window.electronAPI.send({ type: 'selectFolder' });
+			if (typeof directory === 'string' && directory) {
+				openCodeDirectoryDraft = directory;
+				return directory;
+			}
+		} catch (error) {
+			openCodeError = getOpenCodeError(error);
+			toast.error(openCodeError);
+		}
+		return null;
+	};
+
+	const toggleOpenCode = async () => {
+		if ($openCodeModeEnabled || openCodeConfig.enabled) {
+			applyExtensionMode('');
+			await persistOpenCodeConfig({ ...openCodeConfig, enabled: false });
+			return;
+		}
+
+		if ($temporaryChatEnabled) {
+			toast.error($i18n.t('Code mode requires a saved conversation'));
+			return;
+		}
+
+		if (openCodeStatus === null) {
+			await refreshOpenCodeStatus();
+		}
+		if (!openCodeStatus?.available) {
+			toast.error(openCodeError || $i18n.t('OpenCode is not running'));
+			return;
+		}
+
+		let directory =
+			openCodeDirectoryDraft || openCodeConfig.directory || openCodeStatus.default_directory || '';
+		if (!directory) {
+			directory = (await pickOpenCodeDirectory()) || '';
+		}
+		if (!directory) return;
+
+		const validatedDirectory = await validateAndSaveOpenCodeDirectory(directory, true);
+		if (!validatedDirectory) return;
+		applyExtensionMode('code');
+	};
+
+	const setOpenCodeAgent = async (agent: OpenCodeChatConfig['agent']) => {
+		await persistOpenCodeConfig({
+			...openCodeConfig,
+			agent
+		});
+	};
+
+	const setOpenCodeModel = async (model: string) => {
+		await persistOpenCodeConfig({
+			...openCodeConfig,
+			model
+		});
+	};
+
+	const resetOpenCodeAgentSession = async () => {
+		if (!chatId || !openCodeStatus?.session?.id || openCodeSessionResetting) return;
+		if (!confirm($i18n.t('Start a new Agent session?'))) return;
+		openCodeSessionResetting = true;
+		try {
+			const result = await resetOpenCodeSession(localStorage.token, chatId);
+			if (!result.reset) throw new Error($i18n.t('Failed to reset Agent session'));
+			await onOpenCodeSessionReset();
+			openCodeStatus = {
+				...openCodeStatus,
+				session: { ...openCodeStatus.session, id: null }
+			};
+			toast.success($i18n.t('Agent session reset'));
+		} catch (error) {
+			toast.error(getOpenCodeError(error));
+		} finally {
+			openCodeSessionResetting = false;
+		}
+	};
+
+	const disableOpenCode = async () => {
+		if (!$openCodeModeEnabled && !openCodeConfig.enabled) return;
+		openCodeModeEnabled.set(false);
+		await persistOpenCodeConfig({ ...openCodeConfig, enabled: false });
+	};
+
 	const disableGlossaryModesExcept = (
 		mode: 'translation' | 'manuscript' | 'interpretation' | 'learning' | 'rag'
 	) => {
+		void disableOpenCode();
 		if (mode !== 'translation') translationModeEnabled.set(false);
 		if (mode !== 'manuscript') manuscriptTranslationModeEnabled.set(false);
 		if (mode !== 'interpretation') interpretationModeEnabled.set(false);
@@ -358,6 +577,143 @@
 								</button>
 							</Tooltip>
 						{/each}
+					{/if}
+
+					{#if $user?.role === 'admin'}
+						<Tooltip content={$i18n.t('Use OpenCode as a coding agent')} placement="top-start">
+							<button
+								class="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/50"
+								aria-pressed={$openCodeModeEnabled}
+								disabled={openCodeLoading}
+								on:click={() => void toggleOpenCode()}
+							>
+								<div class="flex min-w-0 flex-1 items-center gap-2">
+									<Terminal className="size-3.5 shrink-0" strokeWidth="1.75" />
+									<span class="truncate">{$i18n.t('Code Mode')}</span>
+									<span
+										class="truncate text-[10px] {openCodeStatus?.available
+											? 'text-green-600 dark:text-green-400'
+											: 'text-gray-400 dark:text-gray-500'}"
+									>
+										{openCodeStatus?.available
+											? (openCodeStatus.version ?? $i18n.t('Ready'))
+											: $i18n.t('Not running')}
+									</span>
+								</div>
+								{#if openCodeLoading}
+									<Spinner className="size-4" />
+								{:else}
+									<Switch state={$openCodeModeEnabled} on:change={async () => await tick()} />
+								{/if}
+							</button>
+						</Tooltip>
+
+						{#if $openCodeModeEnabled}
+							<div
+								class="mx-2 mb-2 space-y-2 border-l-2 border-gray-200 px-3 py-1.5 dark:border-gray-700"
+							>
+								{#if openCodeError}
+									<div class="text-xs text-red-600 dark:text-red-400">{openCodeError}</div>
+								{/if}
+								<label
+									class="block text-[11px] font-medium text-gray-500 dark:text-gray-400"
+									for="opencode-project-directory">{$i18n.t('Project directory')}</label
+								>
+								<div class="flex items-center gap-1.5">
+									<input
+										id="opencode-project-directory"
+										class="min-w-0 flex-1 rounded-md border border-gray-200 bg-transparent px-2 py-1.5 text-xs outline-hidden focus:border-gray-400 dark:border-gray-700"
+										bind:value={openCodeDirectoryDraft}
+										placeholder={$i18n.t('Select a project directory')}
+										on:keydown={(event) => {
+											if (event.key === 'Enter') {
+												event.preventDefault();
+												void validateAndSaveOpenCodeDirectory(openCodeDirectoryDraft);
+											}
+										}}
+										on:blur={() => {
+											if (openCodeDirectoryDraft.trim() !== openCodeConfig.directory)
+												void validateAndSaveOpenCodeDirectory(openCodeDirectoryDraft);
+										}}
+									/>
+									<Tooltip content={$i18n.t('Choose project folder')}>
+										<button
+											type="button"
+											class="flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-gray-100 dark:hover:bg-gray-800"
+											on:click={async () => {
+												const directory = await pickOpenCodeDirectory();
+												if (directory) await validateAndSaveOpenCodeDirectory(directory);
+											}}
+										>
+											<FolderOpen className="size-4" strokeWidth="1.75" />
+										</button>
+									</Tooltip>
+								</div>
+								<div class="grid grid-cols-2 gap-2">
+									<label class="min-w-0 text-[11px] text-gray-500 dark:text-gray-400">
+										<span>{$i18n.t('Coding agent')}</span>
+										<select
+											class="mt-1 w-full rounded-md border border-gray-200 bg-transparent px-2 py-1.5 text-xs text-gray-900 outline-hidden focus:border-gray-400 dark:border-gray-700 dark:text-gray-100"
+											value={openCodeConfig.agent}
+											on:change={(event) =>
+												void setOpenCodeAgent((event.currentTarget as HTMLSelectElement).value)}
+										>
+											{#if !openCodeCapabilities?.agents.some((item) => item.id === openCodeConfig.agent)}
+												<option value={openCodeConfig.agent}>{openCodeConfig.agent}</option>
+											{/if}
+											{#each openCodeCapabilities?.agents ?? [{ id: 'build', name: 'build' }, { id: 'plan', name: 'plan' }] as agent}
+												<option value={agent.id}>{agent.name}</option>
+											{/each}
+										</select>
+									</label>
+									<label class="min-w-0 text-[11px] text-gray-500 dark:text-gray-400">
+										<span>{$i18n.t('Model')}</span>
+										<select
+											class="mt-1 w-full rounded-md border border-gray-200 bg-transparent px-2 py-1.5 text-xs text-gray-900 outline-hidden focus:border-gray-400 dark:border-gray-700 dark:text-gray-100"
+											value={openCodeConfig.model}
+											on:change={(event) =>
+												void setOpenCodeModel((event.currentTarget as HTMLSelectElement).value)}
+										>
+											<option value="">{$i18n.t('OpenCode default')}</option>
+											{#if openCodeConfig.model && !openCodeCapabilities?.models.some((item) => item.id === openCodeConfig.model)}
+												<option value={openCodeConfig.model}>{openCodeConfig.model}</option>
+											{/if}
+											{#each openCodeCapabilities?.models ?? [] as model}
+												<option value={model.id}>{model.provider_name} · {model.name}</option>
+											{/each}
+										</select>
+									</label>
+								</div>
+								{#if openCodeCapabilityLoading}
+									<div class="flex items-center gap-2 text-[11px] text-gray-500">
+										<Spinner className="size-3.5" />
+										<span>{$i18n.t('Loading coding models')}</span>
+									</div>
+								{:else if openCodeCapabilities && openCodeCapabilities.models.length === 0}
+									<div class="text-[11px] text-gray-500 dark:text-gray-400">
+										{$i18n.t('No connected coding models')}
+									</div>
+								{/if}
+								{#if openCodeCapabilities?.vcs.branch}
+									<div class="truncate text-[11px] text-gray-500 dark:text-gray-400">
+										{$i18n.t('Branch')}:
+										<span class="font-mono">{openCodeCapabilities.vcs.branch}</span>
+									</div>
+								{/if}
+								{#if openCodeStatus?.session?.id}
+									<button
+										type="button"
+										class="text-left text-xs text-gray-600 hover:text-gray-900 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-100"
+										disabled={openCodeSessionResetting}
+										on:click={() => void resetOpenCodeAgentSession()}
+									>
+										{openCodeSessionResetting
+											? $i18n.t('Resetting Agent session')
+											: $i18n.t('New Agent session')}
+									</button>
+								{/if}
+							</div>
+						{/if}
 					{/if}
 
 					<Tooltip

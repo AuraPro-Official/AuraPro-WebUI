@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "totalErrors": 4915,
+  "totalErrors": 4911,
   "groups": [
     {
       "file": "src/lib/apis/chats/index.ts",
@@ -4571,8 +4571,8 @@
       "message": "'$tools' is possibly 'null'.",
       "count": 2,
       "lines": [
-        561,
-        570
+        608,
+        617
       ]
     },
     {
@@ -4580,7 +4580,7 @@
       "message": "'e' is of type 'unknown'.",
       "count": 1,
       "lines": [
-        1385
+        1432
       ]
     },
     {
@@ -4588,8 +4588,8 @@
       "message": "'model' is possibly 'undefined'.",
       "count": 3,
       "lines": [
-        2218,
-        2219
+        2269,
+        2270
       ]
     },
     {
@@ -4597,7 +4597,7 @@
       "message": "Argument of type 'any[]' is not assignable to parameter of type 'null'.",
       "count": 1,
       "lines": [
-        1546
+        1593
       ]
     },
     {
@@ -4605,7 +4605,7 @@
       "message": "Argument of type 'HTMLElement | null' is not assignable to parameter of type 'HTMLAudioElement'.\n  Type 'null' is not assignable to type 'HTMLAudioElement'.",
       "count": 1,
       "lines": [
-        1141
+        1188
       ]
     },
     {
@@ -4613,7 +4613,7 @@
       "message": "Argument of type 'never[]' is not assignable to parameter of type 'null'.",
       "count": 1,
       "lines": [
-        1456
+        1503
       ]
     },
     {
@@ -4621,7 +4621,7 @@
       "message": "Binding element 'messages' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2187
+        2238
       ]
     },
     {
@@ -4629,7 +4629,7 @@
       "message": "Binding element 'modelId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2187
+        2238
       ]
     },
     {
@@ -4637,7 +4637,7 @@
       "message": "Binding element 'parentId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2187
+        2238
       ]
     },
     {
@@ -4645,7 +4645,7 @@
       "message": "Element implicitly has an 'any' type because expression of type '\"code_interpreter\"' can't be used to index type '{}'.\n  Property 'code_interpreter' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        631
+        678
       ]
     },
     {
@@ -4653,7 +4653,7 @@
       "message": "Element implicitly has an 'any' type because expression of type '\"image_generation\"' can't be used to index type '{}'.\n  Property 'image_generation' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        613
+        660
       ]
     },
     {
@@ -4661,7 +4661,7 @@
       "message": "Element implicitly has an 'any' type because expression of type '\"web_search\"' can't be used to index type '{}'.\n  Property 'web_search' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        623
+        670
       ]
     },
     {
@@ -4669,40 +4669,40 @@
       "message": "Element implicitly has an 'any' type because expression of type 'any' can't be used to index type '{}'.",
       "count": 35,
       "lines": [
-        356,
-        357,
-        362,
-        664,
-        669,
-        781,
-        799,
-        800,
-        840,
-        841,
-        843,
-        933,
-        2086,
-        2087,
-        2088,
-        2089,
-        2166,
-        2190,
-        2206,
-        2227,
-        2307,
-        2334,
-        2977,
-        3057,
-        3080,
+        403,
+        404,
+        409,
+        711,
+        716,
+        828,
+        846,
+        847,
+        887,
+        888,
+        890,
+        980,
+        2137,
+        2138,
+        2139,
+        2140,
+        2217,
+        2241,
+        2257,
+        2278,
+        2382,
+        2409,
         3081,
-        3082,
-        3121,
-        3122,
-        3143,
-        3200,
-        3206,
-        3213,
-        3235
+        3161,
+        3191,
+        3192,
+        3193,
+        3232,
+        3233,
+        3254,
+        3311,
+        3317,
+        3324,
+        3346
       ]
     },
     {
@@ -4710,17 +4710,17 @@
       "message": "Element implicitly has an 'any' type because expression of type 'string' can't be used to index type '{}'.\n  No index signature with a parameter of type 'string' was found on type '{}'.",
       "count": 11,
       "lines": [
-        661,
-        2168,
-        2169,
-        2209,
-        2230,
-        2409,
-        2582,
-        2586,
-        2587,
-        2588,
-        3127
+        708,
+        2219,
+        2220,
+        2260,
+        2281,
+        2487,
+        2678,
+        2682,
+        2683,
+        2684,
+        3238
       ]
     },
     {
@@ -4728,7 +4728,7 @@
       "message": "Object literal may only specify known properties, and '\"title\"' does not exist in type '{ initNewChat: Function; readOnly?: boolean | undefined; shareEnabled?: boolean | undefined; scrollTop?: number | undefined; scrollToTop?: (() => void) | null | undefined; chat: any; ... 6 more ...; moveChatHandler: (id: string, folderId: string) => void; }'.",
       "count": 1,
       "lines": [
-        3535
+        3648
       ]
     },
     {
@@ -4736,7 +4736,7 @@
       "message": "Object literal may only specify known properties, and 'terminalServers' does not exist in type 'Settings'.",
       "count": 1,
       "lines": [
-        1149
+        1196
       ]
     },
     {
@@ -4744,11 +4744,11 @@
       "message": "Parameter '_chatId' implicitly has an 'any' type.",
       "count": 5,
       "lines": [
-        2050,
-        2059,
-        2731,
-        3198,
-        3293
+        2101,
+        2110,
+        2835,
+        3309,
+        3405
       ]
     },
     {
@@ -4756,8 +4756,8 @@
       "message": "Parameter '_history' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        2530,
-        2729
+        2623,
+        2833
       ]
     },
     {
@@ -4765,7 +4765,7 @@
       "message": "Parameter '_messages' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2728
+        2832
       ]
     },
     {
@@ -4773,7 +4773,7 @@
       "message": "Parameter 'actionId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2059
+        2110
       ]
     },
     {
@@ -4781,7 +4781,7 @@
       "message": "Parameter 'cb' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        748
+        795
       ]
     },
     {
@@ -4789,8 +4789,8 @@
       "message": "Parameter 'chatId' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        2250,
-        3351
+        2301,
+        3464
       ]
     },
     {
@@ -4798,8 +4798,8 @@
       "message": "Parameter 'data' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        2250,
-        3691
+        2301,
+        3806
       ]
     },
     {
@@ -4807,7 +4807,7 @@
       "message": "Parameter 'e' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        452
+        499
       ]
     },
     {
@@ -4815,9 +4815,9 @@
       "message": "Parameter 'error' implicitly has an 'any' type.",
       "count": 3,
       "lines": [
-        318,
-        329,
-        3033
+        365,
+        376,
+        3137
       ]
     },
     {
@@ -4825,8 +4825,8 @@
       "message": "Parameter 'event' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        748,
-        1438
+        795,
+        1485
       ]
     },
     {
@@ -4834,7 +4834,7 @@
       "message": "Parameter 'execution' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        871
+        918
       ]
     },
     {
@@ -4842,7 +4842,7 @@
       "message": "Parameter 'f' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        606
+        653
       ]
     },
     {
@@ -4850,13 +4850,13 @@
       "message": "Parameter 'file' implicitly has an 'any' type.",
       "count": 7,
       "lines": [
-        2625,
-        2805,
-        2808,
-        2811,
-        2818,
-        2819,
-        2840
+        2721,
+        2909,
+        2912,
+        2915,
+        2922,
+        2923,
+        2944
       ]
     },
     {
@@ -4864,7 +4864,7 @@
       "message": "Parameter 'fileData' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1275
+        1322
       ]
     },
     {
@@ -4872,7 +4872,7 @@
       "message": "Parameter 'folderId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        3351
+        3464
       ]
     },
     {
@@ -4880,7 +4880,7 @@
       "message": "Parameter 'group' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1509
+        1556
       ]
     },
     {
@@ -4888,9 +4888,9 @@
       "message": "Parameter 'history' implicitly has an 'any' type.",
       "count": 3,
       "lines": [
-        1448,
-        3252,
-        3293
+        1495,
+        3363,
+        3405
       ]
     },
     {
@@ -4898,9 +4898,9 @@
       "message": "Parameter 'id' implicitly has an 'any' type.",
       "count": 3,
       "lines": [
-        358,
-        605,
-        692
+        405,
+        652,
+        739
       ]
     },
     {
@@ -4908,7 +4908,7 @@
       "message": "Parameter 'inputContent' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2385
+        2460
       ]
     },
     {
@@ -4916,7 +4916,7 @@
       "message": "Parameter 'inputFiles' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2385
+        2460
       ]
     },
     {
@@ -4924,10 +4924,10 @@
       "message": "Parameter 'item' implicitly has an 'any' type.",
       "count": 4,
       "lines": [
-        2376,
-        2379,
-        2389,
-        2756
+        2451,
+        2454,
+        2467,
+        2860
       ]
     },
     {
@@ -4935,13 +4935,13 @@
       "message": "Parameter 'message' implicitly has an 'any' type.",
       "count": 7,
       "lines": [
-        654,
-        1462,
-        2250,
-        2746,
-        2747,
-        2794,
-        3139
+        701,
+        1509,
+        2301,
+        2850,
+        2851,
+        2898,
+        3250
       ]
     },
     {
@@ -4949,7 +4949,7 @@
       "message": "Parameter 'messageFile' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2751
+        2855
       ]
     },
     {
@@ -4957,7 +4957,7 @@
       "message": "Parameter 'messageId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        3198
+        3309
       ]
     },
     {
@@ -4965,7 +4965,7 @@
       "message": "Parameter 'messages' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2050
+        2101
       ]
     },
     {
@@ -4973,7 +4973,7 @@
       "message": "Parameter 'model' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2727
+        2831
       ]
     },
     {
@@ -4981,8 +4981,8 @@
       "message": "Parameter 'modelId' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        2050,
-        2059
+        2101,
+        2110
       ]
     },
     {
@@ -4990,7 +4990,7 @@
       "message": "Parameter 'parentId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        3106
+        3217
       ]
     },
     {
@@ -4998,7 +4998,7 @@
       "message": "Parameter 'prompt' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        3106
+        3217
       ]
     },
     {
@@ -5006,7 +5006,7 @@
       "message": "Parameter 'responseMessage' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        3033
+        3137
       ]
     },
     {
@@ -5014,9 +5014,9 @@
       "message": "Parameter 'responseMessageId' implicitly has an 'any' type.",
       "count": 3,
       "lines": [
-        2050,
-        2059,
-        2730
+        2101,
+        2110,
+        2834
       ]
     },
     {
@@ -5024,7 +5024,7 @@
       "message": "Parameter 'responses' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        3198
+        3309
       ]
     },
     {
@@ -5032,9 +5032,9 @@
       "message": "Parameter 's' implicitly has an 'any' type.",
       "count": 3,
       "lines": [
-        531,
-        1149,
-        2719
+        578,
+        1196,
+        2823
       ]
     },
     {
@@ -5042,8 +5042,8 @@
       "message": "Parameter 'status' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        718,
-        3053
+        765,
+        3157
       ]
     },
     {
@@ -5051,7 +5051,7 @@
       "message": "Parameter 'text' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        3604
+        3717
       ]
     },
     {
@@ -5059,7 +5059,7 @@
       "message": "Parameter 'token' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2723
+        2827
       ]
     },
     {
@@ -5067,7 +5067,7 @@
       "message": "Parameter 'url' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1402
+        1449
       ]
     },
     {
@@ -5075,7 +5075,7 @@
       "message": "Parameter 'urls' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1391
+        1438
       ]
     },
     {
@@ -5083,8 +5083,8 @@
       "message": "Parameter 'userPrompt' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        2122,
-        2429
+        2173,
+        2507
       ]
     },
     {
@@ -5092,7 +5092,7 @@
       "message": "Property 'audio' does not exist on type 'Config'.",
       "count": 1,
       "lines": [
-        1469
+        1516
       ]
     },
     {
@@ -5100,8 +5100,8 @@
       "message": "Property 'body' does not exist on type 'Response | AbortController'.\n  Property 'body' does not exist on type 'AbortController'.",
       "count": 2,
       "lines": [
-        3217,
-        3220
+        3328,
+        3331
       ]
     },
     {
@@ -5109,7 +5109,7 @@
       "message": "Property 'childrenIds' does not exist on type 'never'.",
       "count": 1,
       "lines": [
-        2413
+        2491
       ]
     },
     {
@@ -5117,7 +5117,7 @@
       "message": "Property 'codeBlocks' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        1505
+        1552
       ]
     },
     {
@@ -5125,8 +5125,8 @@
       "message": "Property 'content' does not exist on type 'never'.",
       "count": 2,
       "lines": [
-        353,
-        2514
+        400,
+        2607
       ]
     },
     {
@@ -5134,11 +5134,11 @@
       "message": "Property 'data' does not exist on type 'never'.",
       "count": 6,
       "lines": [
-        1039,
-        1196,
-        1197,
-        1622,
-        1624
+        1086,
+        1243,
+        1244,
+        1669,
+        1671
       ]
     },
     {
@@ -5146,10 +5146,10 @@
       "message": "Property 'defaultFeatureIds' does not exist on type 'ModelMeta'.",
       "count": 4,
       "lines": [
-        611,
-        618,
-        627,
-        636
+        658,
+        665,
+        674,
+        683
       ]
     },
     {
@@ -5157,8 +5157,8 @@
       "message": "Property 'defaultFilterIds' does not exist on type 'ModelMeta'.",
       "count": 2,
       "lines": [
-        604,
-        605
+        651,
+        652
       ]
     },
     {
@@ -5166,8 +5166,8 @@
       "message": "Property 'done' does not exist on type '{}'.",
       "count": 2,
       "lines": [
-        1870,
-        1872
+        1921,
+        1923
       ]
     },
     {
@@ -5175,12 +5175,12 @@
       "message": "Property 'done' does not exist on type 'never'.",
       "count": 6,
       "lines": [
-        417,
-        1885,
-        1895,
-        1896,
-        3176,
-        3178
+        464,
+        1936,
+        1946,
+        1947,
+        3287,
+        3289
       ]
     },
     {
@@ -5188,8 +5188,8 @@
       "message": "Property 'enable_code_interpreter' does not exist on type '{ auth: boolean; auth_trusted_header: boolean; enable_api_keys: boolean; enable_signup: boolean; enable_login_form: boolean; enable_web_search?: boolean | undefined; enable_web_search_confirmation?: boolean | undefined; ... 12 more ...; folder_max_file_count?: number | undefined; }'.",
       "count": 2,
       "lines": [
-        632,
-        2696
+        679,
+        2800
       ]
     },
     {
@@ -5197,7 +5197,7 @@
       "message": "Property 'enableMessageQueue' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        2490
+        2583
       ]
     },
     {
@@ -5205,8 +5205,8 @@
       "message": "Property 'error' does not exist on type 'never'.",
       "count": 2,
       "lines": [
-        353,
-        2514
+        400,
+        2607
       ]
     },
     {
@@ -5214,9 +5214,9 @@
       "message": "Property 'file' does not exist on type 'Config'.",
       "count": 3,
       "lines": [
-        2462,
-        2463,
-        2467
+        2555,
+        2556,
+        2560
       ]
     },
     {
@@ -5224,7 +5224,7 @@
       "message": "Property 'filters' does not exist on type 'Model'.\n  Property 'filters' does not exist on type 'OpenAIModel'.",
       "count": 1,
       "lines": [
-        606
+        653
       ]
     },
     {
@@ -5232,7 +5232,7 @@
       "message": "Property 'hidden' does not exist on type 'ModelMeta'.",
       "count": 1,
       "lines": [
-        1581
+        1628
       ]
     },
     {
@@ -5240,7 +5240,7 @@
       "message": "Property 'htmlGroups' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        1505
+        1552
       ]
     },
     {
@@ -5248,7 +5248,7 @@
       "message": "Property 'id' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        1869
+        1920
       ]
     },
     {
@@ -5256,13 +5256,13 @@
       "message": "Property 'id' does not exist on type 'never'.",
       "count": 7,
       "lines": [
-        358,
-        362,
-        1041,
-        2933,
-        3188,
-        3190,
-        3270
+        405,
+        409,
+        1088,
+        3037,
+        3299,
+        3301,
+        3382
       ]
     },
     {
@@ -5270,7 +5270,7 @@
       "message": "Property 'insertSuggestionPrompt' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        458
+        505
       ]
     },
     {
@@ -5278,8 +5278,8 @@
       "message": "Property 'meta' does not exist on type 'never'.",
       "count": 2,
       "lines": [
-        3497,
-        3500
+        3610,
+        3613
       ]
     },
     {
@@ -5287,7 +5287,7 @@
       "message": "Property 'model' does not exist on type 'never'.",
       "count": 1,
       "lines": [
-        3182
+        3293
       ]
     },
     {
@@ -5295,7 +5295,7 @@
       "message": "Property 'ok' does not exist on type 'Response | AbortController'.\n  Property 'ok' does not exist on type 'AbortController'.",
       "count": 1,
       "lines": [
-        3217
+        3328
       ]
     },
     {
@@ -5303,7 +5303,7 @@
       "message": "Property 'parentId' does not exist on type 'never'.",
       "count": 1,
       "lines": [
-        355
+        402
       ]
     },
     {
@@ -5311,7 +5311,7 @@
       "message": "Property 'role' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        1868
+        1919
       ]
     },
     {
@@ -5319,9 +5319,9 @@
       "message": "Property 'role' does not exist on type 'never'.",
       "count": 3,
       "lines": [
-        417,
-        1885,
-        1895
+        464,
+        1936,
+        1946
       ]
     },
     {
@@ -5329,7 +5329,7 @@
       "message": "Property 'selectedModelId' does not exist on type 'never'.",
       "count": 1,
       "lines": [
-        3182
+        3293
       ]
     },
     {
@@ -5337,8 +5337,8 @@
       "message": "Property 'skillIds' does not exist on type 'ModelMeta'.",
       "count": 2,
       "lines": [
-        591,
-        594
+        638,
+        641
       ]
     },
     {
@@ -5346,7 +5346,7 @@
       "message": "Property 'split' does not exist on type 'never'.",
       "count": 1,
       "lines": [
-        572
+        619
       ]
     },
     {
@@ -5354,8 +5354,8 @@
       "message": "Property 'state' does not exist on type '{ messages: {}; currentId: null; }'.",
       "count": 2,
       "lines": [
-        1671,
-        3009
+        1718,
+        3113
       ]
     },
     {
@@ -5363,7 +5363,7 @@
       "message": "Property 'stop' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        2716
+        2820
       ]
     },
     {
@@ -5371,7 +5371,7 @@
       "message": "Property 'stream_response' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        2781
+        2885
       ]
     },
     {
@@ -5379,8 +5379,8 @@
       "message": "Property 'system' does not exist on type '{}'.",
       "count": 2,
       "lines": [
-        2786,
-        2787
+        2890,
+        2891
       ]
     },
     {
@@ -5388,7 +5388,7 @@
       "message": "Property 'temporaryChatByDefault' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        1567
+        1614
       ]
     },
     {
@@ -5396,8 +5396,8 @@
       "message": "Property 'terminalId' does not exist on type 'ModelMeta'.",
       "count": 2,
       "lines": [
-        642,
-        643
+        689,
+        690
       ]
     },
     {
@@ -5405,9 +5405,9 @@
       "message": "Property 'terminalServers' does not exist on type 'Settings'.",
       "count": 3,
       "lines": [
-        531,
-        1146,
-        1149
+        578,
+        1193,
+        1196
       ]
     },
     {
@@ -5415,8 +5415,8 @@
       "message": "Property 'tools' does not exist on type 'Settings'.",
       "count": 2,
       "lines": [
-        584,
-        585
+        631,
+        632
       ]
     },
     {
@@ -5424,7 +5424,7 @@
       "message": "Property 'value' does not exist on type 'HTMLElement'.",
       "count": 1,
       "lines": [
-        1604
+        1651
       ]
     },
     {
@@ -5432,7 +5432,7 @@
       "message": "Property 'vision' does not exist on type 'object'.",
       "count": 1,
       "lines": [
-        2631
+        2727
       ]
     },
     {
@@ -5440,7 +5440,7 @@
       "message": "Property 'web_search' does not exist on type 'object'.",
       "count": 1,
       "lines": [
-        202
+        204
       ]
     },
     {
@@ -5448,7 +5448,7 @@
       "message": "Type '{ sources?: any; id: any; role: any; content: any; info: any; timestamp: any; }[]' is not assignable to type 'string[]'.\n  Type '{ sources?: any; id: any; role: any; content: any; info: any; timestamp: any; }' is not assignable to type 'string'.",
       "count": 1,
       "lines": [
-        2064
+        2115
       ]
     },
     {
@@ -5456,8 +5456,8 @@
       "message": "Type 'null' cannot be used as an index type.",
       "count": 2,
       "lines": [
-        3078,
-        3086
+        3189,
+        3197
       ]
     },
     {
@@ -5465,7 +5465,7 @@
       "message": "Type 'string' is not assignable to type 'null | undefined'.",
       "count": 1,
       "lines": [
-        3765
+        3882
       ]
     },
     {
@@ -5473,10 +5473,10 @@
       "message": "Type 'string' is not assignable to type 'null'.",
       "count": 4,
       "lines": [
-        2171,
-        2416,
-        2583,
-        3128
+        2222,
+        2494,
+        2679,
+        3239
       ]
     },
     {
@@ -5484,9 +5484,9 @@
       "message": "Type 'string' is not assignable to type 'ScrollBehavior | undefined'.",
       "count": 3,
       "lines": [
-        1915,
-        1928,
-        1934
+        1966,
+        1979,
+        1985
       ]
     },
     {
@@ -5494,8 +5494,8 @@
       "message": "Type 'string[] | undefined' is not assignable to type 'any[]'.\n  Type 'undefined' is not assignable to type 'any[]'.",
       "count": 2,
       "lines": [
-        1708,
-        1714
+        1757,
+        1763
       ]
     },
     {
@@ -5503,8 +5503,8 @@
       "message": "Type 'string[]' is not assignable to type '[\"\"]'.\n  Target requires 1 element(s) but source may have fewer.",
       "count": 2,
       "lines": [
-        3636,
-        3718
+        3749,
+        3833
       ]
     },
     {
@@ -5512,7 +5512,7 @@
       "message": "Variable 'authed' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        581
+        628
       ]
     },
     {
@@ -5520,24 +5520,7 @@
       "message": "Variable 'authed' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        568
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Chat.svelte",
-      "message": "Variable 'chat' implicitly has an 'any' type.",
-      "count": 3,
-      "lines": [
-        248,
-        3310
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Chat.svelte",
-      "message": "Variable 'chat' implicitly has type 'any' in some locations where its type cannot be determined.",
-      "count": 1,
-      "lines": [
-        244
+        615
       ]
     },
     {
@@ -5545,14 +5528,14 @@
       "message": "Variable 'chatFiles' implicitly has an 'any[]' type.",
       "count": 8,
       "lines": [
-        374,
-        2103,
-        2390,
-        2750,
-        3302,
-        3311,
-        3315,
-        3761
+        421,
+        2154,
+        2468,
+        2854,
+        3415,
+        3424,
+        3428,
+        3878
       ]
     },
     {
@@ -5560,7 +5543,7 @@
       "message": "Variable 'chatFiles' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        265
+        267
       ]
     },
     {
@@ -5568,7 +5551,7 @@
       "message": "Variable 'chatTasks' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        3656
+        3771
       ]
     },
     {
@@ -5576,7 +5559,7 @@
       "message": "Variable 'chatTasks' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        250
+        252
       ]
     },
     {
@@ -5584,9 +5567,9 @@
       "message": "Variable 'contents' implicitly has an 'any[]' type.",
       "count": 3,
       "lines": [
-        1533,
-        1539,
-        1546
+        1580,
+        1586,
+        1593
       ]
     },
     {
@@ -5594,7 +5577,7 @@
       "message": "Variable 'contents' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        1496
+        1543
       ]
     },
     {
@@ -5602,7 +5585,7 @@
       "message": "Variable 'contentsRAF' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1450
+        1497
       ]
     },
     {
@@ -5610,7 +5593,7 @@
       "message": "Variable 'contentsRAF' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        1948
+        1999
       ]
     },
     {
@@ -5618,12 +5601,12 @@
       "message": "Variable 'contextCompactionToastId' implicitly has an 'any' type.",
       "count": 6,
       "lines": [
-        712,
-        713,
-        724,
-        727,
-        732,
-        741
+        759,
+        760,
+        771,
+        774,
+        779,
+        788
       ]
     },
     {
@@ -5631,7 +5614,7 @@
       "message": "Variable 'contextCompactionToastId' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        242
+        244
       ]
     },
     {
@@ -5639,10 +5622,10 @@
       "message": "Variable 'eventCallback' implicitly has an 'any' type.",
       "count": 4,
       "lines": [
-        3477,
-        3479,
-        3481,
-        3485
+        3590,
+        3592,
+        3594,
+        3598
       ]
     },
     {
@@ -5650,7 +5633,7 @@
       "message": "Variable 'eventCallback' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        175
+        177
       ]
     },
     {
@@ -5658,16 +5641,16 @@
       "message": "Variable 'files' implicitly has an 'any[]' type.",
       "count": 10,
       "lines": [
-        1296,
-        1382,
-        1413,
-        1760,
-        2453,
-        2492,
-        2522,
-        3637,
-        3720,
-        3763
+        1343,
+        1429,
+        1460,
+        1809,
+        2546,
+        2585,
+        2615,
+        3750,
+        3835,
+        3880
       ]
     },
     {
@@ -5675,7 +5658,7 @@
       "message": "Variable 'files' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        266
+        268
       ]
     },
     {
@@ -5683,7 +5666,7 @@
       "message": "Variable 'generationController' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        3095
+        3206
       ]
     },
     {
@@ -5691,7 +5674,7 @@
       "message": "Variable 'generationController' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        241
+        243
       ]
     },
     {
@@ -5699,9 +5682,9 @@
       "message": "Variable 'pendingOAuthTools' implicitly has an 'any[]' type.",
       "count": 3,
       "lines": [
-        493,
-        3643,
-        3729
+        540,
+        3756,
+        3844
       ]
     },
     {
@@ -5709,7 +5692,7 @@
       "message": "Variable 'pendingOAuthTools' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        189
+        191
       ]
     },
     {
@@ -5717,9 +5700,9 @@
       "message": "Variable 'saveControlsTimer' implicitly has an 'any' type.",
       "count": 3,
       "lines": [
-        375,
-        387,
-        1247
+        422,
+        434,
+        1294
       ]
     },
     {
@@ -5727,7 +5710,7 @@
       "message": "Variable 'saveControlsTimer' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        373
+        420
       ]
     },
     {
@@ -5735,7 +5718,7 @@
       "message": "Variable 'scrollRAF' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1950
+        2001
       ]
     },
     {
@@ -5743,7 +5726,7 @@
       "message": "Variable 'scrollRAF' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        1947
+        1998
       ]
     },
     {
@@ -5751,9 +5734,9 @@
       "message": "Variable 'selectedFilterIds' implicitly has an 'any[]' type.",
       "count": 3,
       "lines": [
-        2910,
-        3642,
-        3725
+        3014,
+        3755,
+        3840
       ]
     },
     {
@@ -5761,7 +5744,7 @@
       "message": "Variable 'selectedFilterIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        188
+        190
       ]
     },
     {
@@ -5769,11 +5752,11 @@
       "message": "Variable 'selectedModelIds' implicitly has an 'any[]' type.",
       "count": 5,
       "lines": [
-        505,
-        511,
-        520,
-        3766,
-        3767
+        552,
+        558,
+        567,
+        3883,
+        3884
       ]
     },
     {
@@ -5781,7 +5764,7 @@
       "message": "Variable 'selectedModelIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        179
+        181
       ]
     },
     {
@@ -5789,9 +5772,9 @@
       "message": "Variable 'selectedSkillIds' implicitly has an 'any[]' type.",
       "count": 3,
       "lines": [
-        2880,
-        3641,
-        3724
+        2984,
+        3754,
+        3839
       ]
     },
     {
@@ -5799,7 +5782,7 @@
       "message": "Variable 'selectedSkillIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        187
+        189
       ]
     },
     {
@@ -5807,12 +5790,12 @@
       "message": "Variable 'selectedToolIds' implicitly has an 'any[]' type.",
       "count": 6,
       "lines": [
-        587,
-        1725,
-        1726,
-        2864,
-        3640,
-        3723
+        634,
+        1774,
+        1775,
+        2968,
+        3753,
+        3838
       ]
     },
     {
@@ -5820,7 +5803,7 @@
       "message": "Variable 'selectedToolIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        186
+        188
       ]
     },
     {
@@ -5828,11 +5811,11 @@
       "message": "Variable 'taskIds' implicitly has an 'any' type.",
       "count": 5,
       "lines": [
-        1880,
-        1889,
-        2999,
-        3061,
-        3635
+        1931,
+        1940,
+        3103,
+        3172,
+        3748
       ]
     },
     {
@@ -5840,7 +5823,7 @@
       "message": "Variable 'taskIds' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        257
+        259
       ]
     },
     {
@@ -5848,7 +5831,7 @@
       "message": "Variable 'toolServerIds' implicitly has an 'any[]' type.",
       "count": 2,
       "lines": [
-        2916
+        3020
       ]
     },
     {
@@ -5856,7 +5839,7 @@
       "message": "Variable 'toolServerIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        2862
+        2966
       ]
     },
     {
@@ -6340,9 +6323,9 @@
       "message": "'$_user' is possibly 'undefined'.",
       "count": 3,
       "lines": [
-        569,
-        575,
-        582
+        572,
+        578,
+        585
       ]
     },
     {
@@ -6350,7 +6333,7 @@
       "message": "'atSelectedModel' is possibly 'undefined'.",
       "count": 1,
       "lines": [
-        1437
+        1440
       ]
     },
     {
@@ -6358,7 +6341,7 @@
       "message": "'context' is possibly 'null'.",
       "count": 1,
       "lines": [
-        620
+        623
       ]
     },
     {
@@ -6366,8 +6349,8 @@
       "message": "'element' is possibly 'null'.",
       "count": 2,
       "lines": [
-        596,
-        597
+        599,
+        600
       ]
     },
     {
@@ -6375,7 +6358,7 @@
       "message": "'error' is of type 'unknown'.",
       "count": 1,
       "lines": [
-        1788
+        1791
       ]
     },
     {
@@ -6383,7 +6366,7 @@
       "message": "'event.target' is possibly 'null'.",
       "count": 1,
       "lines": [
-        853
+        856
       ]
     },
     {
@@ -6391,7 +6374,7 @@
       "message": "Argument of type 'string | undefined' is not assignable to parameter of type 'string'.\n  Type 'undefined' is not assignable to type 'string'.",
       "count": 1,
       "lines": [
-        1630
+        1633
       ]
     },
     {
@@ -6399,7 +6382,7 @@
       "message": "Binding element 'editor' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1177
+        1180
       ]
     },
     {
@@ -6407,7 +6390,7 @@
       "message": "Binding element 'props' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1177
+        1180
       ]
     },
     {
@@ -6415,7 +6398,7 @@
       "message": "Binding element 'range' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1177
+        1180
       ]
     },
     {
@@ -6423,7 +6406,7 @@
       "message": "No overload matches this call.\n  Overload 1 of 2, '(input: string | URL | Request, init?: RequestInit | undefined): Promise<Response>', gave the following error.\n    Argument of type 'string | ArrayBuffer | null' is not assignable to parameter of type 'string | URL | Request'.\n      Type 'null' is not assignable to type 'string | URL | Request'.\n  Overload 2 of 2, '(input: URL | RequestInfo, init?: RequestInit | undefined): Promise<Response>', gave the following error.\n    Argument of type 'string | ArrayBuffer | null' is not assignable to parameter of type 'URL | RequestInfo'.\n      Type 'null' is not assignable to type 'URL | RequestInfo'.",
       "count": 1,
       "lines": [
-        867
+        870
       ]
     },
     {
@@ -6431,7 +6414,7 @@
       "message": "Object is possibly 'undefined'.",
       "count": 1,
       "lines": [
-        1437
+        1440
       ]
     },
     {
@@ -6439,7 +6422,7 @@
       "message": "Object literal may only specify known properties, and 'cursor' does not exist in type 'MediaTrackConstraints'.",
       "count": 1,
       "lines": [
-        606
+        609
       ]
     },
     {
@@ -6447,7 +6430,7 @@
       "message": "Parameter 'authorityType' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1793
+        1796
       ]
     },
     {
@@ -6455,7 +6438,7 @@
       "message": "Parameter 'content' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1266
+        1269
       ]
     },
     {
@@ -6463,16 +6446,16 @@
       "message": "Parameter 'e' implicitly has an 'any' type.",
       "count": 10,
       "lines": [
-        126,
-        1052,
-        1063,
-        1090,
-        1101,
-        1128,
-        1139,
-        1166,
-        1185,
-        1849
+        127,
+        1055,
+        1066,
+        1093,
+        1104,
+        1131,
+        1142,
+        1169,
+        1188,
+        1854
       ]
     },
     {
@@ -6480,7 +6463,7 @@
       "message": "Parameter 'f' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2083
+        2088
       ]
     },
     {
@@ -6488,7 +6471,7 @@
       "message": "Parameter 'f1' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        557
+        560
       ]
     },
     {
@@ -6496,7 +6479,7 @@
       "message": "Parameter 'f2' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        557
+        560
       ]
     },
     {
@@ -6504,8 +6487,8 @@
       "message": "Parameter 'file' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        640,
-        784
+        643,
+        787
       ]
     },
     {
@@ -6513,7 +6496,7 @@
       "message": "Parameter 'imageUrl' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        814
+        817
       ]
     },
     {
@@ -6521,7 +6504,7 @@
       "message": "Parameter 'inputFiles' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        769
+        772
       ]
     },
     {
@@ -6529,7 +6512,7 @@
       "message": "Parameter 's' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        2276
+        2281
       ]
     },
     {
@@ -6537,8 +6520,8 @@
       "message": "Parameter 'text' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        398,
-        1623
+        401,
+        1626
       ]
     },
     {
@@ -6546,7 +6529,7 @@
       "message": "Parameter 'variableValues' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        183
+        186
       ]
     },
     {
@@ -6554,7 +6537,7 @@
       "message": "Property 'audio' does not exist on type 'Config'.",
       "count": 1,
       "lines": [
-        145
+        146
       ]
     },
     {
@@ -6562,8 +6545,8 @@
       "message": "Property 'blob' does not exist on type '{}'.",
       "count": 2,
       "lines": [
-        1777,
-        1778
+        1780,
+        1781
       ]
     },
     {
@@ -6571,7 +6554,7 @@
       "message": "Property 'click' does not exist on type 'Element'.",
       "count": 1,
       "lines": [
-        1674
+        1677
       ]
     },
     {
@@ -6579,7 +6562,7 @@
       "message": "Property 'clipboardData' does not exist on type 'CustomEvent<any>'.",
       "count": 1,
       "lines": [
-        1723
+        1726
       ]
     },
     {
@@ -6587,8 +6570,8 @@
       "message": "Property 'content_type' does not exist on type '{ type: string; file: string; id: null; url: string; name: any; collection_name: string; status: string; size: any; error: string; itemId: string; }'.",
       "count": 2,
       "lines": [
-        706,
-        733
+        709,
+        736
       ]
     },
     {
@@ -6596,7 +6579,7 @@
       "message": "Property 'content' does not exist on type '{ type: string; file: string; id: null; url: string; name: any; collection_name: string; status: string; size: any; error: string; itemId: string; }'.",
       "count": 1,
       "lines": [
-        760
+        763
       ]
     },
     {
@@ -6604,7 +6587,7 @@
       "message": "Property 'ctrlKey' does not exist on type 'CustomEvent<any>'.",
       "count": 1,
       "lines": [
-        1653
+        1656
       ]
     },
     {
@@ -6612,7 +6595,7 @@
       "message": "Property 'enable_code_interpreter' does not exist on type '{ auth: boolean; auth_trusted_header: boolean; enable_api_keys: boolean; enable_signup: boolean; enable_login_form: boolean; enable_web_search?: boolean | undefined; enable_web_search_confirmation?: boolean | undefined; ... 12 more ...; folder_max_file_count?: number | undefined; }'.",
       "count": 1,
       "lines": [
-        581
+        584
       ]
     },
     {
@@ -6620,7 +6603,7 @@
       "message": "Property 'enable_notes' does not exist on type '{ auth: boolean; auth_trusted_header: boolean; enable_api_keys: boolean; enable_signup: boolean; enable_login_form: boolean; enable_web_search?: boolean | undefined; enable_web_search_confirmation?: boolean | undefined; ... 12 more ...; folder_max_file_count?: number | undefined; }'.",
       "count": 1,
       "lines": [
-        2254
+        2259
       ]
     },
     {
@@ -6628,8 +6611,8 @@
       "message": "Property 'file' does not exist on type '{}'.",
       "count": 2,
       "lines": [
-        817,
-        818
+        820,
+        821
       ]
     },
     {
@@ -6637,13 +6620,13 @@
       "message": "Property 'file' does not exist on type 'Config'.",
       "count": 7,
       "lines": [
-        773,
-        774,
-        778,
-        793,
-        794,
-        798,
-        802
+        776,
+        777,
+        781,
+        796,
+        797,
+        801,
+        805
       ]
     },
     {
@@ -6651,7 +6634,7 @@
       "message": "Property 'filters' does not exist on type 'Model | {}'.\n  Property 'filters' does not exist on type 'OpenAIModel'.",
       "count": 1,
       "lines": [
-        556
+        559
       ]
     },
     {
@@ -6659,7 +6642,7 @@
       "message": "Property 'has_user_valves' does not exist on type 'Model'.\n  Property 'has_user_valves' does not exist on type 'OpenAIModel'.",
       "count": 1,
       "lines": [
-        1874
+        1879
       ]
     },
     {
@@ -6667,7 +6650,7 @@
       "message": "Property 'imageCompression' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        816
+        819
       ]
     },
     {
@@ -6675,8 +6658,8 @@
       "message": "Property 'imageCompressionSize' does not exist on type '{}'.",
       "count": 2,
       "lines": [
-        831,
-        832
+        834,
+        835
       ]
     },
     {
@@ -6684,7 +6667,7 @@
       "message": "Property 'insertPromptAsRichText' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        1611
+        1614
       ]
     },
     {
@@ -6692,11 +6675,11 @@
       "message": "Property 'key' does not exist on type 'CustomEvent<any>'.",
       "count": 5,
       "lines": [
-        1657,
-        1661,
-        1697,
-        1698,
-        1709
+        1660,
+        1664,
+        1700,
+        1701,
+        1712
       ]
     },
     {
@@ -6704,8 +6687,8 @@
       "message": "Property 'keyCode' does not exist on type 'CustomEvent<any>'.",
       "count": 2,
       "lines": [
-        1697,
-        1698
+        1700,
+        1701
       ]
     },
     {
@@ -6713,7 +6696,7 @@
       "message": "Property 'length' does not exist on type 'never'.",
       "count": 1,
       "lines": [
-        152
+        153
       ]
     },
     {
@@ -6721,7 +6704,7 @@
       "message": "Property 'metaKey' does not exist on type 'CustomEvent<any>'.",
       "count": 1,
       "lines": [
-        1653
+        1656
       ]
     },
     {
@@ -6729,8 +6712,8 @@
       "message": "Property 'msMaxTouchPoints' does not exist on type 'Navigator'. Did you mean 'maxTouchPoints'?",
       "count": 2,
       "lines": [
-        1617,
-        1684
+        1620,
+        1687
       ]
     },
     {
@@ -6738,7 +6721,7 @@
       "message": "Property 'name' does not exist on type '{}'.",
       "count": 1,
       "lines": [
-        1777
+        1780
       ]
     },
     {
@@ -6746,7 +6729,7 @@
       "message": "Property 'shiftKey' does not exist on type 'CustomEvent<any>'.",
       "count": 1,
       "lines": [
-        1698
+        1701
       ]
     },
     {
@@ -6754,8 +6737,8 @@
       "message": "Property 'showFormattingToolbar' does not exist on type 'Settings'.",
       "count": 2,
       "lines": [
-        1596,
-        1609
+        1599,
+        1612
       ]
     },
     {
@@ -6763,7 +6746,7 @@
       "message": "Property 'terminalServers' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        2276
+        2281
       ]
     },
     {
@@ -6771,8 +6754,8 @@
       "message": "Type '\"LTR\" | \"RTL\" | \"auto\"' is not assignable to type '\"auto\" | \"ltr\" | \"rtl\" | null | undefined'.\n  Type '\"LTR\"' is not assignable to type '\"auto\" | \"ltr\" | \"rtl\" | null | undefined'. Did you mean '\"ltr\"'?",
       "count": 2,
       "lines": [
-        1428,
-        1460
+        1431,
+        1463
       ]
     },
     {
@@ -6780,7 +6763,7 @@
       "message": "Type '(content: any) => void' is not assignable to type '() => void'.\n  Target signature provides too few arguments. Expected 1 or more, but got 0.",
       "count": 1,
       "lines": [
-        1266
+        1269
       ]
     },
     {
@@ -6788,8 +6771,8 @@
       "message": "Type 'null' is not assignable to type 'MediaStream'.",
       "count": 2,
       "lines": [
-        2356,
-        2390
+        2361,
+        2395
       ]
     },
     {
@@ -6797,7 +6780,7 @@
       "message": "Type 'string' is not assignable to type 'null | undefined'.",
       "count": 1,
       "lines": [
-        1264
+        1267
       ]
     },
     {
@@ -6805,8 +6788,8 @@
       "message": "Type 'string' is not assignable to type 'null'.",
       "count": 2,
       "lines": [
-        734,
-        761
+        737,
+        764
       ]
     },
     {
@@ -6814,7 +6797,7 @@
       "message": "Type 'unknown' is not assignable to type 'string'.",
       "count": 1,
       "lines": [
-        732
+        735
       ]
     },
     {
@@ -6822,15 +6805,15 @@
       "message": "Variable 'chatInputElement' implicitly has an 'any' type.",
       "count": 9,
       "lines": [
-        360,
-        361,
-        373,
-        375,
-        392,
-        402,
-        414,
-        1268,
-        1272
+        363,
+        364,
+        376,
+        378,
+        395,
+        405,
+        417,
+        1271,
+        1275
       ]
     },
     {
@@ -6838,7 +6821,7 @@
       "message": "Variable 'chatInputElement' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        481
+        484
       ]
     },
     {
@@ -6846,7 +6829,7 @@
       "message": "Variable 'chatTasks' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        1401
+        1404
       ]
     },
     {
@@ -6854,7 +6837,7 @@
       "message": "Variable 'chatTasks' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        178
+        181
       ]
     },
     {
@@ -6862,32 +6845,32 @@
       "message": "Variable 'files' implicitly has an 'any[]' type.",
       "count": 26,
       "lines": [
-        198,
-        671,
-        860,
-        943,
-        944,
-        960,
-        961,
-        977,
-        978,
-        1067,
-        1071,
-        1078,
-        1105,
-        1109,
-        1116,
-        1143,
-        1147,
-        1154,
-        1462,
-        1509,
-        1510,
-        1538,
-        1539,
-        1555,
-        1556,
-        1765
+        201,
+        674,
+        863,
+        946,
+        947,
+        963,
+        964,
+        980,
+        981,
+        1070,
+        1074,
+        1081,
+        1108,
+        1112,
+        1119,
+        1146,
+        1150,
+        1157,
+        1465,
+        1512,
+        1513,
+        1541,
+        1542,
+        1558,
+        1559,
+        1768
       ]
     },
     {
@@ -6895,7 +6878,7 @@
       "message": "Variable 'files' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        157
+        158
       ]
     },
     {
@@ -6903,8 +6886,8 @@
       "message": "Variable 'filesInputElement' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        1336,
-        1771
+        1339,
+        1774
       ]
     },
     {
@@ -6912,7 +6895,7 @@
       "message": "Variable 'filesInputElement' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        483
+        486
       ]
     },
     {
@@ -6920,10 +6903,10 @@
       "message": "Variable 'inputContent' implicitly has an 'any' type.",
       "count": 4,
       "lines": [
-        882,
-        889,
-        890,
-        1265
+        885,
+        892,
+        893,
+        1268
       ]
     },
     {
@@ -6931,7 +6914,7 @@
       "message": "Variable 'inputContent' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        180
+        183
       ]
     },
     {
@@ -6939,8 +6922,8 @@
       "message": "Variable 'inputFiles' implicitly has an 'any' type.",
       "count": 2,
       "lines": [
-        1324,
-        1329
+        1327,
+        1332
       ]
     },
     {
@@ -6948,7 +6931,7 @@
       "message": "Variable 'inputFiles' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        486
+        489
       ]
     },
     {
@@ -6956,7 +6939,7 @@
       "message": "Variable 'pendingOAuthTools' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        2160
+        2165
       ]
     },
     {
@@ -6964,7 +6947,7 @@
       "message": "Variable 'pendingOAuthTools' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        169
+        172
       ]
     },
     {
@@ -6972,12 +6955,12 @@
       "message": "Variable 'selectedFilterIds' implicitly has an 'any[]' type.",
       "count": 6,
       "lines": [
-        209,
-        1842,
-        2082,
-        2097,
-        2103,
-        2130
+        212,
+        1845,
+        2087,
+        2102,
+        2108,
+        2135
       ]
     },
     {
@@ -6985,7 +6968,7 @@
       "message": "Variable 'selectedFilterIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        161
+        162
       ]
     },
     {
@@ -6993,12 +6976,12 @@
       "message": "Variable 'selectedSkillIds' implicitly has an 'any[]' type.",
       "count": 6,
       "lines": [
-        208,
-        1241,
-        1841,
-        2059,
-        2062,
-        2076
+        211,
+        1244,
+        1844,
+        2064,
+        2067,
+        2081
       ]
     },
     {
@@ -7006,7 +6989,7 @@
       "message": "Variable 'selectedSkillIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        160
+        161
       ]
     },
     {
@@ -7014,12 +6997,12 @@
       "message": "Variable 'selectedToolIds' implicitly has an 'any[]' type.",
       "count": 6,
       "lines": [
-        207,
-        1240,
-        1840,
-        2036,
-        2039,
-        2053
+        210,
+        1243,
+        1843,
+        2041,
+        2044,
+        2058
       ]
     },
     {
@@ -7027,7 +7010,7 @@
       "message": "Variable 'selectedToolIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        159
+        160
       ]
     },
     {
@@ -7035,7 +7018,7 @@
       "message": "Variable 'selectedValvesItemId' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1253
+        1256
       ]
     },
     {
@@ -7043,7 +7026,7 @@
       "message": "Variable 'selectedValvesItemId' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        189
+        192
       ]
     },
     {
@@ -7051,7 +7034,7 @@
       "message": "Variable 'suggestions' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        1594
+        1597
       ]
     },
     {
@@ -7059,7 +7042,7 @@
       "message": "Variable 'suggestions' implicitly has type 'any' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        446
+        449
       ]
     },
     {
@@ -9870,10 +9853,10 @@
       "message": "'$audioQueue' is possibly 'null'.",
       "count": 4,
       "lines": [
-        350,
-        351,
-        352,
-        390
+        358,
+        359,
+        360,
+        398
       ]
     },
     {
@@ -9881,8 +9864,8 @@
       "message": "'$config' is possibly 'undefined'.",
       "count": 2,
       "lines": [
-        307,
-        324
+        315,
+        332
       ]
     },
     {
@@ -9890,11 +9873,11 @@
       "message": "'e.target' is possibly 'null'.",
       "count": 6,
       "lines": [
-        696,
-        697,
-        887,
-        890,
-        895
+        704,
+        705,
+        899,
+        902,
+        907
       ]
     },
     {
@@ -9902,8 +9885,8 @@
       "message": "'selection' is possibly 'null'.",
       "count": 2,
       "lines": [
-        517,
-        536
+        525,
+        544
       ]
     },
     {
@@ -9911,9 +9894,9 @@
       "message": "Parameter 'action' implicitly has an 'any' type.",
       "count": 3,
       "lines": [
-        1186,
-        1204,
-        1253
+        1198,
+        1216,
+        1265
       ]
     },
     {
@@ -9921,7 +9904,7 @@
       "message": "Parameter 'e' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        512
+        520
       ]
     },
     {
@@ -9929,7 +9912,7 @@
       "message": "Parameter 'text' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        194
+        202
       ]
     },
     {
@@ -9937,10 +9920,10 @@
       "message": "Property 'actions' does not exist on type 'Model'.\n  Property 'actions' does not exist on type 'OpenAIModel'.",
       "count": 4,
       "lines": [
-        1186,
-        1204,
-        1253,
-        1324
+        1198,
+        1216,
+        1265,
+        1336
       ]
     },
     {
@@ -9948,11 +9931,11 @@
       "message": "Property 'audio' does not exist on type 'Config'.",
       "count": 5,
       "lines": [
-        307,
-        308,
-        309,
-        324,
-        360
+        315,
+        316,
+        317,
+        332,
+        368
       ]
     },
     {
@@ -9960,7 +9943,7 @@
       "message": "Property 'chatFadeStreamingText' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        778
+        786
       ]
     },
     {
@@ -9968,8 +9951,8 @@
       "message": "Property 'citations' does not exist on type 'MessageType'.",
       "count": 2,
       "lines": [
-        827,
-        832
+        839,
+        844
       ]
     },
     {
@@ -9977,7 +9960,7 @@
       "message": "Property 'citations' does not exist on type 'object'.",
       "count": 1,
       "lines": [
-        827
+        839
       ]
     },
     {
@@ -9985,7 +9968,7 @@
       "message": "Property 'content_type' does not exist on type '{ type: string; url: string; }'.",
       "count": 1,
       "lines": [
-        639
+        647
       ]
     },
     {
@@ -9993,7 +9976,7 @@
       "message": "Property 'content' does not exist on type 'true | { content: string; }'.\n  Property 'content' does not exist on type 'true'.",
       "count": 1,
       "lines": [
-        824
+        836
       ]
     },
     {
@@ -10001,8 +9984,8 @@
       "message": "Property 'embeds' does not exist on type 'MessageType'.",
       "count": 3,
       "lines": [
-        656,
-        661
+        664,
+        669
       ]
     },
     {
@@ -10010,8 +9993,8 @@
       "message": "Property 'followUps' does not exist on type 'MessageType'.",
       "count": 2,
       "lines": [
-        1359,
-        1362
+        1371,
+        1374
       ]
     },
     {
@@ -10019,7 +10002,7 @@
       "message": "Property 'hidden' does not exist on type '{ done: boolean; action: string; description: string; urls?: string[] | undefined; query?: string | undefined; }'.",
       "count": 1,
       "lines": [
-        168
+        176
       ]
     },
     {
@@ -10027,7 +10010,7 @@
       "message": "Property 'insertFollowUpPrompt' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        1364
+        1376
       ]
     },
     {
@@ -10035,7 +10018,7 @@
       "message": "Property 'keepFollowUpPrompts' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        1359
+        1371
       ]
     },
     {
@@ -10043,7 +10026,7 @@
       "message": "Property 'name' does not exist on type '{ type: string; url: string; }'.",
       "count": 1,
       "lines": [
-        645
+        653
       ]
     },
     {
@@ -10051,7 +10034,7 @@
       "message": "Property 'regenerateMenu' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        1179
+        1191
       ]
     },
     {
@@ -10059,8 +10042,8 @@
       "message": "Property 'response_watermark' does not exist on type '{ pending_user_overlay_title?: string | undefined; pending_user_overlay_content?: string | undefined; iframe_csp?: string | undefined; }'.",
       "count": 2,
       "lines": [
-        197,
-        198
+        205,
+        206
       ]
     },
     {
@@ -10068,7 +10051,7 @@
       "message": "Property 'scrollHeight' does not exist on type 'EventTarget'.",
       "count": 1,
       "lines": [
-        697
+        705
       ]
     },
     {
@@ -10076,7 +10059,7 @@
       "message": "Property 'select' does not exist on type 'EventTarget'.",
       "count": 1,
       "lines": [
-        887
+        899
       ]
     },
     {
@@ -10084,7 +10067,7 @@
       "message": "Property 'select' does not exist on type 'HTMLElement'. Did you mean 'onselect'?",
       "count": 1,
       "lines": [
-        913
+        925
       ]
     },
     {
@@ -10092,7 +10075,7 @@
       "message": "Property 'showFloatingActionButtons' does not exist on type 'Settings'.",
       "count": 1,
       "lines": [
-        773
+        781
       ]
     },
     {
@@ -10100,7 +10083,7 @@
       "message": "Property 'showSourceModal' does not exist on type 'HTMLDivElement'.",
       "count": 1,
       "lines": [
-        789
+        797
       ]
     },
     {
@@ -10108,7 +10091,7 @@
       "message": "Property 'size' does not exist on type '{ type: string; url: string; }'.",
       "count": 1,
       "lines": [
-        647
+        655
       ]
     },
     {
@@ -10116,8 +10099,8 @@
       "message": "Property 'status_updates' does not exist on type 'object'.",
       "count": 2,
       "lines": [
-        166,
-        628
+        174,
+        636
       ]
     },
     {
@@ -10125,8 +10108,8 @@
       "message": "Property 'style' does not exist on type 'EventTarget'.",
       "count": 2,
       "lines": [
-        696,
-        697
+        704,
+        705
       ]
     },
     {
@@ -10134,7 +10117,7 @@
       "message": "Property 'tts' does not exist on type 'ModelMeta'.",
       "count": 1,
       "lines": [
-        306
+        314
       ]
     },
     {
@@ -10142,9 +10125,9 @@
       "message": "Property 'usage' does not exist on type 'MessageType'.",
       "count": 3,
       "lines": [
-        1096,
-        1098,
-        1100
+        1108,
+        1110,
+        1112
       ]
     },
     {
@@ -10152,8 +10135,8 @@
       "message": "Property 'value' does not exist on type 'EventTarget'.",
       "count": 2,
       "lines": [
-        890,
-        895
+        902,
+        907
       ]
     },
     {
@@ -10161,7 +10144,7 @@
       "message": "Type '\"LTR\" | \"RTL\" | \"auto\" | undefined' is not assignable to type '\"auto\" | \"ltr\" | \"rtl\" | null | undefined'.\n  Type '\"LTR\"' is not assignable to type '\"auto\" | \"ltr\" | \"rtl\" | null | undefined'. Did you mean '\"ltr\"'?",
       "count": 1,
       "lines": [
-        588
+        596
       ]
     },
     {
@@ -10169,7 +10152,7 @@
       "message": "Type '\"LTR\" | \"RTL\" | \"auto\"' is not assignable to type '\"auto\" | \"ltr\" | \"rtl\" | null | undefined'.\n  Type '\"LTR\"' is not assignable to type '\"auto\" | \"ltr\" | \"rtl\" | null | undefined'. Did you mean '\"ltr\"'?",
       "count": 1,
       "lines": [
-        635
+        643
       ]
     },
     {
@@ -10177,7 +10160,7 @@
       "message": "Type '{ type: string; url: string; }' is not assignable to type 'null | undefined'.",
       "count": 1,
       "lines": [
-        643
+        651
       ]
     },
     {
@@ -10185,7 +10168,7 @@
       "message": "Type 'Model | undefined' is not assignable to type 'null | undefined'.\n  Type 'OpenAIModel' is not assignable to type 'null | undefined'.",
       "count": 1,
       "lines": [
-        781
+        789
       ]
     },
     {
@@ -10193,8 +10176,8 @@
       "message": "Type 'number | undefined' is not assignable to type 'number'.\n  Type 'undefined' is not assignable to type 'number'.",
       "count": 2,
       "lines": [
-        444,
-        699
+        452,
+        707
       ]
     },
     {
@@ -10202,7 +10185,7 @@
       "message": "Type 'string[] | undefined' is not assignable to type 'null | undefined'.\n  Type 'string[]' is not assignable to type 'null | undefined'.",
       "count": 1,
       "lines": [
-        770
+        778
       ]
     },
     {
@@ -10210,7 +10193,7 @@
       "message": "Type 'SvelteComponent<{ id?: string | undefined; chatId?: string | undefined; sources?: any[] | undefined; readOnly?: boolean | undefined; showSourceModal?: ((sourceId: any) => void) | undefined; }, { [evt: string]: CustomEvent<...>; }, {}> & { ...; } & { ...; }' is missing the following properties from type 'HTMLDivElement': align, addEventListener, removeEventListener, accessKey, and 315 more.",
       "count": 1,
       "lines": [
-        829
+        841
       ]
     },
     {
@@ -10218,7 +10201,7 @@
       "message": "Variable 'detailsBlocks' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        410
+        418
       ]
     },
     {
@@ -10226,7 +10209,7 @@
       "message": "Variable 'detailsBlocks' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        401
+        409
       ]
     },
     {
@@ -10234,7 +10217,7 @@
       "message": "Variable 'preprocessedDetailsCache' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        418
+        426
       ]
     },
     {
@@ -10242,7 +10225,7 @@
       "message": "Variable 'preprocessedDetailsCache' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        397
+        405
       ]
     },
     {
@@ -10250,7 +10233,7 @@
       "message": "Variable 'selectedModels' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        110
+        118
       ]
     },
     {
@@ -10878,9 +10861,9 @@
       "message": "Parameter 'e' implicitly has an 'any' type.",
       "count": 3,
       "lines": [
-        62,
         63,
-        64
+        64,
+        65
       ]
     },
     {
@@ -10888,7 +10871,7 @@
       "message": "Parameter 'folder' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        112
+        115
       ]
     },
     {
@@ -10896,7 +10879,7 @@
       "message": "Parameter 'tag' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        130
+        133
       ]
     },
     {
@@ -10904,7 +10887,7 @@
       "message": "Property 'permission' does not exist on type 'never'.",
       "count": 1,
       "lines": [
-        85
+        88
       ]
     },
     {
@@ -10912,7 +10895,7 @@
       "message": "Property 'src' does not exist on type 'EventTarget & Element'.",
       "count": 1,
       "lines": [
-        149
+        152
       ]
     },
     {
@@ -10920,8 +10903,8 @@
       "message": "Property 'suggestion_prompts' does not exist on type 'ModelMeta'.",
       "count": 2,
       "lines": [
-        272,
-        273
+        277,
+        278
       ]
     },
     {
@@ -10929,7 +10912,7 @@
       "message": "Property 'tags' does not exist on type 'ModelMeta'.",
       "count": 1,
       "lines": [
-        129
+        132
       ]
     },
     {
@@ -10937,8 +10920,8 @@
       "message": "Property 'user_id' does not exist on type 'never'.",
       "count": 2,
       "lines": [
-        84,
-        88
+        87,
+        91
       ]
     },
     {
@@ -10946,13 +10929,13 @@
       "message": "Property 'user' does not exist on type 'ModelMeta'.",
       "count": 7,
       "lines": [
-        205,
         208,
-        210,
-        212,
+        211,
         213,
-        214,
-        217
+        215,
+        216,
+        217,
+        220
       ]
     },
     {
@@ -10960,7 +10943,7 @@
       "message": "Variable 'files' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        232
+        235
       ]
     },
     {
@@ -10968,7 +10951,7 @@
       "message": "Variable 'files' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        51
+        52
       ]
     },
     {
@@ -10976,7 +10959,7 @@
       "message": "Variable 'pendingOAuthTools' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        242
+        245
       ]
     },
     {
@@ -10984,7 +10967,7 @@
       "message": "Variable 'pendingOAuthTools' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        57
+        58
       ]
     },
     {
@@ -10992,7 +10975,7 @@
       "message": "Variable 'selectedFilterIds' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        237
+        240
       ]
     },
     {
@@ -11000,7 +10983,7 @@
       "message": "Variable 'selectedFilterIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        56
+        57
       ]
     },
     {
@@ -11008,7 +10991,7 @@
       "message": "Variable 'selectedSkillIds' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        236
+        239
       ]
     },
     {
@@ -11016,7 +10999,7 @@
       "message": "Variable 'selectedSkillIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        55
+        56
       ]
     },
     {
@@ -11024,7 +11007,7 @@
       "message": "Variable 'selectedToolIds' implicitly has an 'any[]' type.",
       "count": 1,
       "lines": [
-        235
+        238
       ]
     },
     {
@@ -11032,7 +11015,7 @@
       "message": "Variable 'selectedToolIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        54
+        55
       ]
     },
     {
@@ -11208,7 +11191,7 @@
       "message": "Property 'enable_password_change_form' does not exist on type '{ auth: boolean; auth_trusted_header: boolean; enable_api_keys: boolean; enable_signup: boolean; enable_login_form: boolean; enable_web_search?: boolean | undefined; enable_web_search_confirmation?: boolean | undefined; ... 12 more ...; folder_max_file_count?: number | undefined; }'.",
       "count": 1,
       "lines": [
-        251
+        313
       ]
     },
     {
@@ -11216,7 +11199,7 @@
       "message": "Property 'enable_user_webhooks' does not exist on type '{ auth: boolean; auth_trusted_header: boolean; enable_api_keys: boolean; enable_signup: boolean; enable_login_form: boolean; enable_web_search?: boolean | undefined; enable_web_search_confirmation?: boolean | undefined; ... 12 more ...; folder_max_file_count?: number | undefined; }'.",
       "count": 1,
       "lines": [
-        230
+        292
       ]
     },
     {
@@ -11224,7 +11207,7 @@
       "message": "Type 'number' is not assignable to type 'null | undefined'.",
       "count": 1,
       "lines": [
-        166
+        228
       ]
     },
     {
@@ -11232,7 +11215,7 @@
       "message": "Type 'SessionUser | undefined' is not assignable to type 'null | undefined'.\n  Type 'SessionUser' is not assignable to type 'null | undefined'.",
       "count": 1,
       "lines": [
-        141
+        203
       ]
     },
     {
@@ -11240,7 +11223,7 @@
       "message": "Type 'string' is not assignable to type 'null | undefined'.",
       "count": 1,
       "lines": [
-        168
+        230
       ]
     },
     {
@@ -11618,12 +11601,12 @@
       "message": "'$config' is possibly 'undefined'.",
       "count": 6,
       "lines": [
-        92,
-        93,
-        95,
-        125,
-        220,
-        337
+        144,
+        145,
+        147,
+        186,
+        295,
+        412
       ]
     },
     {
@@ -11631,13 +11614,13 @@
       "message": "Property 'audio' does not exist on type 'Config'.",
       "count": 7,
       "lines": [
-        92,
-        93,
-        95,
-        124,
-        125,
-        220,
-        337
+        144,
+        145,
+        147,
+        185,
+        186,
+        295,
+        412
       ]
     },
     {
@@ -11645,7 +11628,7 @@
       "message": "Property 'simultaneous' does not exist on type 'AudioSettings'.",
       "count": 1,
       "lines": [
-        90
+        142
       ]
     },
     {
@@ -11653,8 +11636,8 @@
       "message": "Variable 'voices' implicitly has an 'any[]' type.",
       "count": 2,
       "lines": [
-        346,
-        368
+        421,
+        443
       ]
     },
     {
@@ -11662,7 +11645,7 @@
       "message": "Variable 'voices' implicitly has type 'any[]' in some locations where its type cannot be determined.",
       "count": 1,
       "lines": [
-        22
+        26
       ]
     },
     {
@@ -17295,7 +17278,7 @@
       "message": "'importTarget' is possibly 'null'.",
       "count": 1,
       "lines": [
-        265
+        282
       ]
     },
     {
@@ -17303,7 +17286,7 @@
       "message": "Parameter 'item' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
-        255
+        261
       ]
     },
     {

@@ -26,6 +26,7 @@
 		ConversationGlossaryConfig,
 		GlossarySettings
 	} from '$lib/utils/conversation-glossary';
+	import type { OpenCodeChatConfig } from '$lib/apis/opencode';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
 	import Suggestions from './Suggestions.svelte';
@@ -66,6 +67,13 @@
 	export let glossarySettings: GlossarySettings | null = null;
 	export let conversationGlossary: ConversationGlossaryConfig | null = null;
 	export let onConversationGlossaryChange: (value: ConversationGlossaryConfig) => void = () => {};
+	export let openCodeConfig: OpenCodeChatConfig = {
+		enabled: false,
+		directory: '',
+		agent: 'build',
+		model: ''
+	};
+	export let onOpenCodeConfigChange: (value: OpenCodeChatConfig) => void = () => {};
 
 	export let dragged = false;
 
@@ -248,6 +256,8 @@
 						{glossarySettings}
 						{conversationGlossary}
 						{onConversationGlossaryChange}
+						{openCodeConfig}
+						{onOpenCodeConfigChange}
 						{onWebSearchToggle}
 						on:submit={(e) => {
 							dispatch('submit', e.detail);

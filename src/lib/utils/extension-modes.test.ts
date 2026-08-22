@@ -3,6 +3,7 @@ import { get } from 'svelte/store';
 
 import {
 	codeInterpreterEnabled,
+	openCodeModeEnabled,
 	interpretationModeEnabled,
 	learningModeEnabled,
 	manuscriptTranslationModeEnabled,
@@ -20,6 +21,7 @@ const modeStores = {
 	manuscript_translation: manuscriptTranslationModeEnabled,
 	interpretation: interpretationModeEnabled,
 	learning: learningModeEnabled,
+	code: openCodeModeEnabled,
 	rag_translation: ragTranslationModeEnabled
 };
 
@@ -32,6 +34,7 @@ describe('extension modes', () => {
 	it('normalizes persisted values and rejects unknown values', () => {
 		expect(normalizeExtensionMode('translation')).toBe('translation');
 		expect(normalizeExtensionMode('rag_translation')).toBe('rag_translation');
+		expect(normalizeExtensionMode('code')).toBe('');
 		expect(normalizeExtensionMode('unknown')).toBe('');
 		expect(normalizeExtensionMode(null)).toBe('');
 	});

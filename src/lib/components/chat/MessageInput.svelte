@@ -71,6 +71,7 @@
 		ConversationGlossaryConfig,
 		GlossarySettings
 	} from '$lib/utils/conversation-glossary';
+	import type { OpenCodeChatConfig } from '$lib/apis/opencode';
 
 	import { WEBUI_BASE_URL, WEBUI_API_BASE_URL, PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
 	import { initiateOAuthRedirect } from '$lib/apis/configs';
@@ -146,6 +147,7 @@
 	};
 
 	export let history;
+	export let chatId = '';
 	export let taskIds = null;
 
 	$: isActive =
@@ -165,6 +167,14 @@
 	export let glossarySettings: GlossarySettings | null = null;
 	export let conversationGlossary: ConversationGlossaryConfig | null = null;
 	export let onConversationGlossaryChange: (value: ConversationGlossaryConfig) => void = () => {};
+	export let openCodeConfig: OpenCodeChatConfig = {
+		enabled: false,
+		directory: '',
+		agent: 'build',
+		model: ''
+	};
+	export let onOpenCodeConfigChange: (value: OpenCodeChatConfig) => void = () => {};
+	export let onOpenCodeSessionReset: () => void = () => {};
 
 	export let pendingOAuthTools = [];
 
@@ -1832,6 +1842,7 @@
 									<div class="flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none">
 										{#if showTranslationModeButton || showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
 											<IntegrationsMenu
+												{chatId}
 												selectedModels={selectedModelIds}
 												{toggleFilters}
 												{showWebSearchButton}
@@ -1841,10 +1852,13 @@
 												bind:selectedSkillIds
 												bind:selectedFilterIds
 												bind:webSearchEnabled
+												{onOpenCodeSessionReset}
 												{onWebSearchToggle}
 												{glossarySettings}
 												{conversationGlossary}
 												{onConversationGlossaryChange}
+												{openCodeConfig}
+												{onOpenCodeConfigChange}
 												closeOnOutsideClick={integrationsMenuCloseOnOutsideClick}
 												onShowValves={(e) => {
 													const { type, id } = e;

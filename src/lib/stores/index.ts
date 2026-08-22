@@ -351,6 +351,7 @@ export const translationModeEnabled = writable(false);
 export const interpretationModeEnabled = writable(false);
 export const learningModeEnabled = writable(false);
 export const manuscriptTranslationModeEnabled = writable(false);
+export const openCodeModeEnabled = writable(false);
 export const codeInterpreterEnabled = writable(false);
 export const imageGenerationEnabled = writable(false);
 export const ragTranslationModeEnabled = writable<boolean>(false);

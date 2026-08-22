@@ -51,6 +51,7 @@
 		chatRequestQueues,
 		desktopEvent,
 		codeInterpreterEnabled,
+		openCodeModeEnabled,
 		imageGenerationEnabled,
 		translationModeEnabled,
 		interpretationModeEnabled,
@@ -87,6 +88,7 @@
 		type ConversationGlossaryConfig,
 		type GlossarySettings
 	} from '$lib/utils/conversation-glossary';
+	import { abortOpenCodeChat, type OpenCodeChatConfig } from '$lib/apis/opencode';
 	import { getOutputText } from './Messages/structuredOutput';
 
 	import {
@@ -241,7 +243,7 @@
 	let generationController = null;
 	let contextCompactionToastId = null;
 
-	let chat = null;
+	let chat: Awaited<ReturnType<typeof getChatById>> | null = null;
 	let tags = [];
 
 	// Read-only when viewing someone else's chat (e.g. via shared folder access)
@@ -269,6 +271,12 @@
 	let glossarySettingsPromise: Promise<GlossarySettings | null> | null = null;
 	let conversationGlossary: ConversationGlossaryConfig | null = null;
 	let conversationGlossaryRevision = 0;
+	let openCodeConfig: OpenCodeChatConfig = {
+		enabled: false,
+		directory: '',
+		agent: 'build',
+		model: ''
+	};
 
 	const ensureGlossarySettings = async () => {
 		if (glossarySettings) return glossarySettings;
@@ -313,6 +321,66 @@
 		if (updatedChat && $chatId === activeChatId) {
 			chat = updatedChat;
 		}
+	};
+
+	const normalizeOpenCodeConfig = (value: unknown): OpenCodeChatConfig => {
+		const data = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+		return {
+			enabled: $user?.role === 'admin' && data.enabled === true,
+			directory: typeof data.directory === 'string' ? data.directory : '',
+			agent: typeof data.agent === 'string' && data.agent ? data.agent : 'build',
+			model: typeof data.model === 'string' ? data.model : ''
+		};
+	};
+
+	const getPersistedOpenCodeConfig = (
+		value: OpenCodeChatConfig = openCodeConfig
+	): Record<string, unknown> => {
+		const existing =
+			chat?.chat?.opencode && typeof chat.chat.opencode === 'object' ? chat.chat.opencode : {};
+		const sameDirectory = existing.directory === value.directory;
+		return {
+			...(sameDirectory ? existing : {}),
+			enabled: value.enabled,
+			directory: value.directory,
+			agent: value.agent,
+			model: value.model
+		};
+	};
+
+	const updateOpenCodeConfig = async (value: OpenCodeChatConfig) => {
+		const normalized = normalizeOpenCodeConfig(value);
+		openCodeConfig = normalized;
+		openCodeModeEnabled.set(normalized.enabled);
+
+		if (!$chatId || $temporaryChatEnabled) return;
+
+		const activeChatId = $chatId;
+		const updatedChat = await updateChatById(localStorage.token, activeChatId, {
+			opencode: getPersistedOpenCodeConfig(normalized)
+		}).catch((error) => {
+			console.error('Failed to save OpenCode conversation settings', error);
+			toast.error($i18n.t('Failed to save Code mode settings'));
+			return null;
+		});
+
+		if (updatedChat && $chatId === activeChatId) {
+			chat = updatedChat;
+		}
+	};
+
+	const clearOpenCodeSessionBinding = () => {
+		if (!chat?.chat?.opencode || typeof chat.chat.opencode !== 'object') return;
+		const opencode = { ...chat.chat.opencode };
+		delete opencode.session_id;
+		delete opencode.updated_at;
+		chat = {
+			...chat,
+			chat: {
+				...chat.chat,
+				opencode
+			}
+		};
 	};
 
 	const getErrorMessage = (error) => {
@@ -1685,6 +1753,8 @@
 		chatFiles = [];
 		params = {};
 		await loadConversationGlossary();
+		openCodeConfig = { enabled: false, directory: '', agent: 'build', model: '' };
+		openCodeModeEnabled.set(false);
 		taskIds = null;
 		chatTasks = [];
 
@@ -1853,6 +1923,8 @@
 				params = structuredClone(chatContent?.params ?? {});
 				chatFiles = structuredClone(chatContent?.files ?? []);
 				await loadConversationGlossary(chatContent?.glossary);
+				openCodeConfig = normalizeOpenCodeConfig(chatContent?.opencode);
+				openCodeModeEnabled.set(openCodeConfig.enabled);
 
 				// Load tasks from chat-level DB field
 				chatTasks = chat?.tasks ?? [];
@@ -2248,7 +2320,18 @@
 	};
 
 	const chatCompletionEventHandler = async (data, message, chatId) => {
-		const { id, done, choices, content, output, sources, selected_model_id, error, usage } = data;
+		const {
+			id,
+			done,
+			choices,
+			content,
+			output,
+			sources,
+			selected_model_id,
+			error,
+			usage,
+			opencode
+		} = data;
 
 		// Store raw OR-aligned output items from backend
 		if (output) {
@@ -2302,6 +2385,19 @@
 
 		if (usage) {
 			message.usage = usage;
+		}
+
+		if (opencode) {
+			message.opencode = opencode;
+			if (chat?.chat) {
+				chat = {
+					...chat,
+					chat: {
+						...chat.chat,
+						opencode: { ...getPersistedOpenCodeConfig(), ...opencode }
+					}
+				};
+			}
 		}
 
 		history.messages[message.id] = message;
@@ -2385,6 +2481,9 @@
 	const submitPrompt = async (inputContent, inputFiles) => {
 		sanitizeHistory(history);
 		const _files = structuredClone(inputFiles);
+		const messageModels = $openCodeModeEnabled
+			? selectedModels.filter(Boolean).slice(0, 1)
+			: selectedModels;
 
 		chatFiles.push(..._files.filter((item) => isContextFile(item)));
 		chatFiles = chatFiles.filter(
@@ -2402,7 +2501,7 @@
 			content: inputContent,
 			files: _files.length > 0 ? _files : undefined,
 			timestamp: Math.floor(Date.now() / 1000), // Unix epoch
-			models: selectedModels
+			models: messageModels
 		};
 
 		// Add message to history and Set currentId to messageId
@@ -2446,6 +2545,21 @@
 		if (selectedModels.includes('')) {
 			toast.error($i18n.t('Model not selected'));
 			return;
+		}
+
+		if ($openCodeModeEnabled) {
+			if ($temporaryChatEnabled) {
+				toast.error($i18n.t('Code mode requires a saved conversation'));
+				return;
+			}
+			if (!openCodeConfig.enabled || !openCodeConfig.directory.trim()) {
+				toast.error($i18n.t('Select a project directory before using Code mode'));
+				return;
+			}
+			if (files.length > 0) {
+				toast.error($i18n.t('Code mode currently accepts text instructions only'));
+				return;
+			}
 		}
 
 		if (
@@ -2555,6 +2669,9 @@
 			: atSelectedModel !== undefined
 				? [atSelectedModel.id]
 				: selectedModels;
+		if ($openCodeModeEnabled) {
+			selectedModelIds = selectedModelIds.filter(Boolean).slice(0, 1);
+		}
 
 		// Create response messages for each selected model
 		// Build message_ids list: [{model_id, message_id}, ...]
@@ -2678,6 +2795,15 @@
 			rag_translation: $ragTranslationModeEnabled,
 			glossary: conversationGlossary
 		};
+
+		if ($openCodeModeEnabled && openCodeConfig.enabled) {
+			features.opencode = {
+				enabled: true,
+				directory: openCodeConfig.directory,
+				agent: openCodeConfig.agent,
+				model: openCodeConfig.model
+			};
+		}
 
 		if ($settings?.contextCompaction?.enabled === false) {
 			features.context_compaction = false;
@@ -3058,6 +3184,13 @@
 	};
 
 	const stopResponse = async (processQueue = true) => {
+		if ($openCodeModeEnabled && $chatId && !$temporaryChatEnabled) {
+			await abortOpenCodeChat(localStorage.token, $chatId).catch((error) => {
+				console.warn('Failed to abort OpenCode session directly', error);
+				return null;
+			});
+		}
+
 		if (taskIds) {
 			if ($chatId) {
 				await stopTasksByChatId(localStorage.token, $chatId).catch((error) => {
@@ -3113,7 +3246,7 @@
 			childrenIds: [],
 			role: 'user',
 			content: userPrompt,
-			models: selectedModels,
+			models: $openCodeModeEnabled ? selectedModels.filter(Boolean).slice(0, 1) : selectedModels,
 			timestamp: Math.floor(Date.now() / 1000) // Unix epoch
 		};
 
@@ -3262,6 +3395,7 @@
 					system: $settings.system ?? undefined,
 					params: params,
 					glossary: conversationGlossary,
+					opencode: getPersistedOpenCodeConfig(),
 					history: history,
 					messages: createMessagesList(history, history.currentId),
 					tags: [],
@@ -3298,6 +3432,7 @@
 					history: history,
 					messages: createMessagesList(history, history.currentId),
 					glossary: conversationGlossary,
+					opencode: getPersistedOpenCodeConfig(),
 					params: params,
 					files: chatFiles
 				});
@@ -3632,6 +3767,7 @@
 									<MessageInput
 										bind:this={messageInput}
 										{history}
+										chatId={$chatId}
 										{taskIds}
 										{selectedModels}
 										bind:files
@@ -3644,10 +3780,13 @@
 										bind:webSearchEnabled
 										bind:atSelectedModel
 										bind:showCommands
+										onOpenCodeSessionReset={clearOpenCodeSessionBinding}
 										bind:dragged
 										{glossarySettings}
 										{conversationGlossary}
 										onConversationGlossaryChange={updateConversationGlossary}
+										{openCodeConfig}
+										onOpenCodeConfigChange={updateOpenCodeConfig}
 										{generating}
 										{stopResponse}
 										{createMessagePair}
@@ -3730,6 +3869,8 @@
 									{glossarySettings}
 									{conversationGlossary}
 									onConversationGlossaryChange={updateConversationGlossary}
+									{openCodeConfig}
+									onOpenCodeConfigChange={updateOpenCodeConfig}
 									{stopResponse}
 									{createMessagePair}
 									{onSelect}
