@@ -179,7 +179,7 @@ type OllamaModelDetails = {
 
 type Settings = {
 	setupWizardVersion?: number;
-	setupPurpose?: 'translation' | 'manuscript_translation' | 'other';
+	setupPurpose?: 'translation' | 'manuscript_translation' | 'programming' | 'other';
 	defaultExtensionMode?:
 		| ''
 		| 'translation'

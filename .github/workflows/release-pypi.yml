@@ -34,5 +34,11 @@ jobs:
       - name: Validate wheel contents
         run: |
           python -c "from pathlib import Path; import zipfile; wheel = next(Path('dist').glob('*.whl')); names = set(zipfile.ZipFile(wheel).namelist()); required = {'open_webui/env.py', 'open_webui/migrations/env.py'}; missing = required - names; assert not missing, f'Missing required wheel files: {sorted(missing)}'"
+      - name: Validate desktop platform dependencies
+        run: |
+          pip install uv
+          wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
+          uv pip install --dry-run --python-platform x86_64-apple-darwin --python-version 3.12 "$wheel"
+          uv pip install --dry-run --python-platform aarch64-apple-darwin --python-version 3.12 "$wheel"
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

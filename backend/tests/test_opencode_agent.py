@@ -40,8 +40,11 @@ def _load_module():
 opencode_agent = _load_module()
 OpenCodeError = opencode_agent.OpenCodeError
 _assistant_snapshot = opencode_agent._assistant_snapshot
+_agent_changed_files = opencode_agent._agent_changed_files
 _normalize_capabilities = opencode_agent._normalize_capabilities
 _normalize_todos = opencode_agent._normalize_todos
+_resolve_user_message_id = opencode_agent._resolve_user_message_id
+_select_changed_files = opencode_agent._select_changed_files
 _split_model = opencode_agent._split_model
 _message_text = opencode_agent._message_text
 _normalize_runtime_url = opencode_agent._normalize_runtime_url
@@ -99,6 +102,104 @@ class OpenCodeAgentHelpersTest(unittest.TestCase):
         self.assertEqual(message_id, 'new')
         self.assertEqual(len(tools), 1)
         self.assertEqual(tools[0]['tool'], 'edit')
+
+    def test_turn_snapshot_and_file_fallback_cover_multi_message_agent_runs(self):
+        directory = str(Path.cwd() / 'workspace' / 'project')
+        created_file = str(Path(directory) / 'index.html')
+        messages = [
+            {
+                'info': {'id': 'msg_user', 'role': 'user'},
+                'parts': [{'type': 'text', 'text': 'Create an index page'}],
+            },
+            {
+                'info': {'id': 'msg_work', 'role': 'assistant', 'parentID': 'msg_user'},
+                'parts': [
+                    {
+                        'id': 'tool_write',
+                        'type': 'tool',
+                        'tool': 'write',
+                        'state': {
+                            'status': 'completed',
+                            'input': {'filePath': created_file},
+                            'metadata': {'filepath': created_file, 'exists': False},
+                        },
+                    }
+                ],
+            },
+            {
+                'info': {'id': 'msg_done', 'role': 'assistant', 'parentID': 'msg_user'},
+                'parts': [{'type': 'text', 'text': 'Done'}],
+            },
+        ]
+
+        text, tools, assistant_id = _assistant_snapshot(messages, set())
+        user_id = _resolve_user_message_id(messages, assistant_id)
+        changes = _agent_changed_files(messages, user_id, directory)
+
+        self.assertEqual(text, 'Done')
+        self.assertEqual(assistant_id, 'msg_done')
+        self.assertEqual(user_id, 'msg_user')
+        self.assertEqual([tool['id'] for tool in tools], ['tool_write'])
+        self.assertEqual(
+            changes,
+            [
+                {
+                    'file': 'index.html',
+                    'path': 'index.html',
+                    'status': 'added',
+                    'source': 'agent_actions',
+                }
+            ],
+        )
+
+    def test_changed_files_prefer_session_diff_then_use_layered_fallbacks(self):
+        directory = str(Path.cwd() / 'workspace' / 'project')
+        edited_file = str(Path(directory) / 'app.py')
+        messages = [
+            {'info': {'id': 'msg_user', 'role': 'user'}, 'parts': []},
+            {
+                'info': {'id': 'msg_assistant', 'role': 'assistant', 'parentID': 'msg_user'},
+                'parts': [
+                    {
+                        'type': 'tool',
+                        'tool': 'edit',
+                        'state': {
+                            'status': 'completed',
+                            'input': {'filePath': edited_file},
+                            'metadata': {'exists': True},
+                        },
+                    }
+                ],
+            },
+        ]
+        session_result, session_source = _select_changed_files(
+            [{'file': 'exact.py', 'additions': 2, 'deletions': 1}],
+            messages,
+            'msg_user',
+            [{'path': 'other.py', 'status': 'modified', 'added': 1, 'removed': 0}],
+            directory,
+        )
+        agent_result, agent_source = _select_changed_files(
+            [],
+            messages,
+            'msg_user',
+            [{'path': 'other.py', 'status': 'modified', 'added': 1, 'removed': 0}],
+            directory,
+        )
+        workspace_result, workspace_source = _select_changed_files(
+            [],
+            [],
+            None,
+            [{'path': 'other.py', 'status': 'modified', 'added': 1, 'removed': 0}],
+            directory,
+        )
+
+        self.assertEqual(session_source, 'session')
+        self.assertEqual([item['file'] for item in session_result], ['exact.py'])
+        self.assertEqual(agent_source, 'agent_actions')
+        self.assertEqual([item['file'] for item in agent_result], ['app.py'])
+        self.assertEqual(workspace_source, 'workspace_status')
+        self.assertEqual(workspace_result[0]['additions'], 1)
 
     def test_tool_description_reports_progress_and_completion(self):
         description, done = _tool_description(

@@ -360,7 +360,7 @@
 			opencode: getPersistedOpenCodeConfig(normalized)
 		}).catch((error) => {
 			console.error('Failed to save OpenCode conversation settings', error);
-			toast.error($i18n.t('Failed to save Code mode settings'));
+			toast.error($i18n.t('Failed to save Code Agent settings'));
 			return null;
 		});
 
@@ -2549,15 +2549,15 @@
 
 		if ($openCodeModeEnabled) {
 			if ($temporaryChatEnabled) {
-				toast.error($i18n.t('Code mode requires a saved conversation'));
+				toast.error($i18n.t('Code Agent requires a saved conversation'));
 				return;
 			}
 			if (!openCodeConfig.enabled || !openCodeConfig.directory.trim()) {
-				toast.error($i18n.t('Select a project directory before using Code mode'));
+				toast.error($i18n.t('Select a project directory before using Code Agent'));
 				return;
 			}
 			if (files.length > 0) {
-				toast.error($i18n.t('Code mode currently accepts text instructions only'));
+				toast.error($i18n.t('Code Agent currently accepts text instructions only'));
 				return;
 			}
 		}

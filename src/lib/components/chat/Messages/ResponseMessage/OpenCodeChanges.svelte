@@ -7,6 +7,7 @@
 		getOpenCodeWorkspace,
 		revertOpenCodeMessage,
 		unrevertOpenCodeChat,
+		type OpenCodeDiffSource,
 		type OpenCodeTodo,
 		type OpenCodeVcs
 	} from '$lib/apis/opencode';
@@ -36,6 +37,7 @@
 	let currentVcs = vcs;
 	let currentAgent = agent;
 	let currentModel = model;
+	let currentDiffSource: OpenCodeDiffSource = 'none';
 
 	$: if (items === null) {
 		currentTodos = todos;
@@ -59,6 +61,20 @@
 		return '';
 	};
 
+	const hasLineStats = (item: Record<string, unknown>): boolean =>
+		['additions', 'deletions', 'added', 'removed'].some((key) => key in item);
+
+	const getStatusLabel = (item: Record<string, unknown>): string => {
+		switch (item.status) {
+			case 'added':
+				return $i18n.t('Added file');
+			case 'deleted':
+				return $i18n.t('Deleted file');
+			default:
+				return $i18n.t('Modified file');
+		}
+	};
+
 	const getError = (value: unknown, fallback: string): string => {
 		if (typeof value === 'string') return value;
 		if (value instanceof Error) return value.message;
@@ -76,6 +92,7 @@
 			currentVcs = result.vcs ?? { branch: '', root: '' };
 			currentAgent = result.agent || agent;
 			currentModel = result.model || model;
+			currentDiffSource = result.diff_source ?? 'none';
 		} catch (value) {
 			error = getError(value, $i18n.t('Failed to load Agent workspace'));
 		} finally {
@@ -207,7 +224,7 @@
 										: todo.status === 'in_progress'
 											? 'bg-blue-500'
 											: 'bg-gray-300 dark:bg-gray-600'}"
-								/>
+								></span>
 								<span class:line-through={todo.status === 'completed'}>{todo.content}</span>
 							</div>
 						{/each}
@@ -216,6 +233,19 @@
 			{/if}
 
 			<div class="border-t border-gray-100 dark:border-gray-800">
+				{#if currentDiffSource === 'agent_actions'}
+					<div class="px-3 pt-2 text-[11px] text-amber-700 dark:text-amber-400">
+						{$i18n.t(
+							'OpenCode did not provide a session diff. Files were detected from completed Agent actions.'
+						)}
+					</div>
+				{:else if currentDiffSource === 'workspace_status'}
+					<div class="px-3 pt-2 text-[11px] text-amber-700 dark:text-amber-400">
+						{$i18n.t(
+							'OpenCode did not provide a session diff. Current workspace changes are shown.'
+						)}
+					</div>
+				{/if}
 				<div class="px-3 py-2 text-[11px] font-medium uppercase text-gray-500 dark:text-gray-400">
 					{$i18n.t('Changed files')}
 				</div>
@@ -226,10 +256,18 @@
 						<div class="border-t border-gray-100 dark:border-gray-800">
 							<div class="flex items-center justify-between gap-3 px-3 py-2">
 								<span class="min-w-0 truncate font-mono text-xs">{getFileName(item)}</span>
-								<span class="shrink-0 font-mono text-[11px]">
-									<span class="text-green-600">+{getNumber(item.additions)}</span>
-									<span class="ml-2 text-red-600">-{getNumber(item.deletions)}</span>
-								</span>
+								{#if hasLineStats(item)}
+									<span class="shrink-0 font-mono text-[11px]">
+										<span class="text-green-600">+{getNumber(item.additions ?? item.added)}</span>
+										<span class="ml-2 text-red-600"
+											>-{getNumber(item.deletions ?? item.removed)}</span
+										>
+									</span>
+								{:else}
+									<span class="shrink-0 text-[11px] text-gray-500 dark:text-gray-400">
+										{getStatusLabel(item)}
+									</span>
+								{/if}
 							</div>
 							{#if getPreview(item)}
 								<pre

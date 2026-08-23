@@ -357,7 +357,7 @@
 		}
 
 		if ($temporaryChatEnabled) {
-			toast.error($i18n.t('Code mode requires a saved conversation'));
+			toast.error($i18n.t('Code Agent requires a saved conversation'));
 			return;
 		}
 
@@ -580,7 +580,7 @@
 					{/if}
 
 					{#if $user?.role === 'admin'}
-						<Tooltip content={$i18n.t('Use OpenCode as a coding agent')} placement="top-start">
+						<Tooltip content={$i18n.t('Use OpenCode as a Code Agent')} placement="top-start">
 							<button
 								class="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/50"
 								aria-pressed={$openCodeModeEnabled}
@@ -589,7 +589,7 @@
 							>
 								<div class="flex min-w-0 flex-1 items-center gap-2">
 									<Terminal className="size-3.5 shrink-0" strokeWidth="1.75" />
-									<span class="truncate">{$i18n.t('Code Mode')}</span>
+									<span class="truncate">{$i18n.t('Code Agent')}</span>
 									<span
 										class="truncate text-[10px] {openCodeStatus?.available
 											? 'text-green-600 dark:text-green-400'

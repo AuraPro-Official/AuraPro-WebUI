@@ -81,7 +81,7 @@ def _load_runtime() -> OpenCodeRuntime:
 
 def _normalize_directory(value: str) -> str:
     if not value or len(value) > 4096 or '\x00' in value:
-        raise OpenCodeError('Select a valid project directory before using Code mode.')
+        raise OpenCodeError('Select a valid project directory before using Code Agent.')
     try:
         directory = Path(value).expanduser().resolve(strict=True)
     except (OSError, RuntimeError) as error:
@@ -283,11 +283,22 @@ def _assistant_snapshot(messages: Any, baseline_ids: set[str]) -> tuple[str, lis
     if not candidates:
         return '', [], None
     current = candidates[-1]
+    current_parent_id = str((current.get('info') or {}).get('parentID') or '')
+    turn_candidates = (
+        [item for item in candidates if str((item.get('info') or {}).get('parentID') or '') == current_parent_id]
+        if current_parent_id
+        else candidates
+    )
     parts = current.get('parts') if isinstance(current.get('parts'), list) else []
     text = ''.join(
         str(part.get('text') or '') for part in parts if isinstance(part, dict) and part.get('type') == 'text'
     )
-    tools = [part for part in parts if isinstance(part, dict) and part.get('type') == 'tool']
+    tools = [
+        part
+        for item in turn_candidates
+        for part in (item.get('parts') if isinstance(item.get('parts'), list) else [])
+        if isinstance(part, dict) and part.get('type') == 'tool'
+    ]
     return text, tools, str((current.get('info') or {}).get('id') or '') or None
 
 
@@ -317,6 +328,173 @@ _IDENTIFIER_PATTERN = re.compile(r'^[A-Za-z0-9_.:/-]{1,256}$')
 def _safe_identifier(value: Any, fallback: str = '') -> str:
     result = str(value or '').strip()
     return result if _IDENTIFIER_PATTERN.fullmatch(result) else fallback
+
+
+def _resolve_user_message_id(
+    messages: Any,
+    message_id: Any = None,
+    baseline_ids: set[str] | None = None,
+) -> str | None:
+    target = _safe_identifier(message_id)
+    latest_user_id = ''
+    for item in messages if isinstance(messages, list) else []:
+        if not isinstance(item, dict):
+            continue
+        info = item.get('info') if isinstance(item.get('info'), dict) else {}
+        current_id = _safe_identifier(info.get('id'))
+        if not current_id:
+            continue
+        if info.get('role') == 'user' and (baseline_ids is None or current_id not in baseline_ids):
+            latest_user_id = current_id
+        if target and current_id == target:
+            if info.get('role') == 'user':
+                return current_id
+            parent_id = _safe_identifier(info.get('parentID'))
+            if parent_id:
+                return parent_id
+    return latest_user_id or target or None
+
+
+def _workspace_file_path(value: Any, directory: str) -> str:
+    result = str(value or '').strip()
+    if not result:
+        return ''
+    try:
+        path = Path(result)
+        if path.is_absolute():
+            return str(path.relative_to(Path(directory)))
+    except (OSError, ValueError):
+        pass
+    return result
+
+
+def _change_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
+
+
+def _agent_changed_files(
+    messages: Any,
+    user_message_id: str | None,
+    directory: str,
+    baseline_ids: set[str] | None = None,
+) -> list[dict]:
+    changes: dict[str, dict] = {}
+
+    def add(path_value: Any, status: str = 'modified') -> None:
+        path = _workspace_file_path(path_value, directory)
+        if not path:
+            return
+        key = _change_key(path)
+        existing = changes.get(key)
+        if existing and existing.get('status') == 'added' and status == 'modified':
+            return
+        changes[key] = {
+            'file': path,
+            'path': path,
+            'status': status,
+            'source': 'agent_actions',
+        }
+
+    file_tools = {'write', 'edit', 'patch', 'apply_patch', 'multiedit', 'multi_edit', 'delete', 'remove'}
+    for item in messages if isinstance(messages, list) else []:
+        if not isinstance(item, dict):
+            continue
+        info = item.get('info') if isinstance(item.get('info'), dict) else {}
+        current_id = _safe_identifier(info.get('id'))
+        if info.get('role') != 'assistant' or (baseline_ids is not None and current_id in baseline_ids):
+            continue
+        if user_message_id and _safe_identifier(info.get('parentID')) != user_message_id:
+            continue
+
+        parts = item.get('parts') if isinstance(item.get('parts'), list) else []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get('type') == 'patch':
+                for path in part.get('files') if isinstance(part.get('files'), list) else []:
+                    add(path)
+                continue
+            if part.get('type') != 'tool':
+                continue
+
+            tool = str(part.get('tool') or '').lower()
+            state = part.get('state') if isinstance(part.get('state'), dict) else {}
+            if tool not in file_tools or state.get('status') != 'completed':
+                continue
+            values = state.get('input') if isinstance(state.get('input'), dict) else {}
+            metadata = state.get('metadata') if isinstance(state.get('metadata'), dict) else {}
+            status = (
+                'deleted'
+                if tool in {'delete', 'remove'}
+                else 'added'
+                if tool == 'write' and metadata.get('exists') is False
+                else 'modified'
+            )
+            paths: list[Any] = []
+            for source in (values, metadata):
+                for key in ('filePath', 'filepath', 'file_path', 'path'):
+                    if source.get(key):
+                        paths.append(source[key])
+                if isinstance(source.get('files'), list):
+                    paths.extend(source['files'])
+            if not paths and state.get('title'):
+                paths.append(state['title'])
+            for path in paths:
+                add(path, status)
+    return list(changes.values())
+
+
+def _normalize_session_diffs(value: Any, directory: str) -> list[dict]:
+    result = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        path = _workspace_file_path(item.get('file') or item.get('path') or item.get('filename'), directory)
+        if not path:
+            continue
+        result.append({**item, 'file': path, 'path': path, 'source': 'session'})
+    return result
+
+
+def _normalize_workspace_files(value: Any, directory: str) -> list[dict]:
+    result = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        path = _workspace_file_path(item.get('path') or item.get('file'), directory)
+        if not path:
+            continue
+        result.append(
+            {
+                **item,
+                'file': path,
+                'path': path,
+                'additions': item.get('additions', item.get('added', 0)),
+                'deletions': item.get('deletions', item.get('removed', 0)),
+                'source': 'workspace_status',
+            }
+        )
+    return result
+
+
+def _select_changed_files(
+    session_diffs: Any,
+    messages: Any,
+    user_message_id: str | None,
+    workspace_files: Any,
+    directory: str,
+    baseline_ids: set[str] | None = None,
+) -> tuple[list[dict], str]:
+    diffs = _normalize_session_diffs(session_diffs, directory)
+    if diffs:
+        return diffs, 'session'
+    agent_changes = _agent_changed_files(messages, user_message_id, directory, baseline_ids)
+    if agent_changes:
+        return agent_changes, 'agent_actions'
+    workspace_changes = _normalize_workspace_files(workspace_files, directory)
+    if workspace_changes:
+        return workspace_changes, 'workspace_status'
+    return [], 'none'
 
 
 def _split_model(value: Any) -> tuple[str, str] | None:
@@ -517,16 +695,16 @@ async def run_agent_chat(  # noqa: C901
     request, form_data: dict, user: Any, metadata: dict
 ) -> dict:
     if user.role != 'admin':
-        raise OpenCodeError('Code mode is currently limited to administrators.')
+        raise OpenCodeError('Code Agent is currently limited to administrators.')
 
     feature = (metadata.get('features') or {}).get('opencode')
     if not isinstance(feature, dict) or not feature.get('enabled'):
-        raise OpenCodeError('Code mode configuration is missing.')
+        raise OpenCodeError('Code Agent configuration is missing.')
 
     chat_id = str(metadata.get('chat_id') or '')
     message_id = str(metadata.get('message_id') or '')
     if not chat_id or chat_id.startswith(('local:', 'channel:')) or not message_id:
-        raise OpenCodeError('Code mode requires a saved private conversation.')
+        raise OpenCodeError('Code Agent requires a saved private conversation.')
 
     directory = _normalize_directory(str(feature.get('directory') or ''))
     agent = _safe_identifier(feature.get('agent'), 'build')
@@ -534,7 +712,7 @@ async def run_agent_chat(  # noqa: C901
     model_ref = _split_model(model_value)
     prompt = _message_text((metadata.get('user_message') or {}).get('content'))
     if not prompt:
-        raise OpenCodeError('Code mode requires a text prompt.')
+        raise OpenCodeError('Code Agent requires a text prompt.')
 
     runtime = _load_runtime()
     event_emitter = await get_event_emitter(metadata, update_db=False)
@@ -574,7 +752,9 @@ async def run_agent_chat(  # noqa: C901
         queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         event_task = asyncio.create_task(_read_sse(event_response, queue))
         latest_text = ''
-        latest_open_code_message_id: str | None = None
+        latest_assistant_message_id: str | None = None
+        latest_user_message_id: str | None = None
+        latest_messages = baseline if isinstance(baseline, list) else []
         seen_activity = False
         idle = False
         last_poll = 0.0
@@ -693,10 +873,16 @@ async def run_agent_chat(  # noqa: C901
                         directory=directory,
                         timeout=10,
                     )
-                    text, tools, open_code_message_id = _assistant_snapshot(messages, baseline_ids)
-                    if open_code_message_id:
+                    latest_messages = messages if isinstance(messages, list) else latest_messages
+                    text, tools, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
+                    if assistant_message_id:
                         seen_activity = True
-                        latest_open_code_message_id = open_code_message_id
+                        latest_assistant_message_id = assistant_message_id
+                        latest_user_message_id = _resolve_user_message_id(
+                            latest_messages,
+                            assistant_message_id,
+                            baseline_ids,
+                        )
                     if text != latest_text:
                         latest_text = text
                         await event_emitter({'type': 'replace', 'data': {'content': latest_text}})
@@ -740,8 +926,31 @@ async def run_agent_chat(  # noqa: C901
                 if idle and seen_activity and time.monotonic() - started_at > 0.8:
                     break
 
-            diff_query = {'messageID': latest_open_code_message_id} if latest_open_code_message_id else None
-            diffs, todos, vcs = await asyncio.gather(
+            final_messages = await _request_json_optional(
+                session,
+                runtime,
+                'GET',
+                f'/session/{session_id}/message',
+                latest_messages,
+                directory=directory,
+                timeout=10,
+            )
+            if isinstance(final_messages, list):
+                latest_messages = final_messages
+            final_text, _, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
+            if assistant_message_id:
+                latest_assistant_message_id = assistant_message_id
+                latest_user_message_id = _resolve_user_message_id(
+                    latest_messages,
+                    assistant_message_id,
+                    baseline_ids,
+                )
+            if final_text and final_text != latest_text:
+                latest_text = final_text
+                await event_emitter({'type': 'replace', 'data': {'content': latest_text}})
+
+            diff_query = {'messageID': latest_user_message_id} if latest_user_message_id else None
+            session_diffs, todos, vcs, workspace_files = await asyncio.gather(
                 _request_json_optional(
                     session,
                     runtime,
@@ -754,10 +963,19 @@ async def run_agent_chat(  # noqa: C901
                 ),
                 _request_json_optional(session, runtime, 'GET', f'/session/{session_id}/todo', [], directory=directory),
                 _request_json_optional(session, runtime, 'GET', '/vcs', {}, directory=directory),
+                _request_json_optional(session, runtime, 'GET', '/file/status', [], directory=directory),
+            )
+            changed_files, diff_source = _select_changed_files(
+                session_diffs,
+                latest_messages,
+                latest_user_message_id,
+                workspace_files,
+                directory,
+                baseline_ids,
             )
             if not latest_text:
                 latest_text = 'OpenCode completed the task.'
-            diff_count = len(diffs) if isinstance(diffs, list) else 0
+            diff_count = len(changed_files)
             if diff_count:
                 await event_emitter(
                     {
@@ -769,21 +987,25 @@ async def run_agent_chat(  # noqa: C901
                         },
                     }
                 )
+            persisted_message_id = latest_user_message_id or latest_assistant_message_id
+            open_code_result = {
+                'session_id': session_id,
+                'message_id': persisted_message_id,
+                'assistant_message_id': latest_assistant_message_id,
+                'directory': directory,
+                'agent': agent,
+                'diff_count': diff_count,
+                'diff_source': diff_source,
+                'model': model_value,
+                'todos': _normalize_todos(todos),
+                'vcs': _normalize_vcs(vcs),
+            }
             await _persist_message(
                 chat_id,
                 message_id,
                 latest_text,
                 done=True,
-                opencode={
-                    'session_id': session_id,
-                    'message_id': latest_open_code_message_id,
-                    'directory': directory,
-                    'agent': agent,
-                    'diff_count': diff_count,
-                    'model': model_value,
-                    'todos': _normalize_todos(todos),
-                    'vcs': _normalize_vcs(vcs),
-                },
+                opencode=open_code_result,
             )
             await event_emitter(
                 {
@@ -791,16 +1013,7 @@ async def run_agent_chat(  # noqa: C901
                     'data': {
                         'content': latest_text,
                         'done': True,
-                        'opencode': {
-                            'session_id': session_id,
-                            'message_id': latest_open_code_message_id,
-                            'directory': directory,
-                            'agent': agent,
-                            'diff_count': diff_count,
-                            'model': model_value,
-                            'todos': _normalize_todos(todos),
-                            'vcs': _normalize_vcs(vcs),
-                        },
+                        'opencode': open_code_result,
                     },
                 }
             )
@@ -861,65 +1074,108 @@ async def _get_chat_binding(chat_id: str, user_id: str) -> tuple[Any, dict, str,
     return chat, binding, session_id, directory
 
 
-async def get_chat_diff(chat_id: str, user_id: str, message_id: str | None = None) -> list[dict]:
-    _, _, session_id, directory = await _get_chat_binding(chat_id, user_id)
-    runtime = _load_runtime()
-    async with aiohttp.ClientSession(trust_env=False) as session:
-        value = await _request_json(
+async def _load_changed_files(
+    session: aiohttp.ClientSession,
+    runtime: OpenCodeRuntime,
+    session_id: str,
+    directory: str,
+    message_id: str | None,
+) -> tuple[list[dict], str, str | None, list[dict], list[dict]]:
+    messages = await _request_json_optional(
+        session,
+        runtime,
+        'GET',
+        f'/session/{session_id}/message',
+        [],
+        directory=directory,
+        timeout=10,
+    )
+    messages = messages if isinstance(messages, list) else []
+    user_message_id = _resolve_user_message_id(messages, message_id)
+    session_diffs, workspace_files = await asyncio.gather(
+        _request_json_optional(
             session,
             runtime,
             'GET',
             f'/session/{session_id}/diff',
+            [],
             directory=directory,
-            query={'messageID': _safe_identifier(message_id)} if _safe_identifier(message_id) else None,
+            query={'messageID': user_message_id} if user_message_id else None,
             timeout=15,
+        ),
+        _request_json_optional(
+            session,
+            runtime,
+            'GET',
+            '/file/status',
+            [],
+            directory=directory,
+            timeout=10,
+        ),
+    )
+    changed_files, source = _select_changed_files(
+        session_diffs,
+        messages,
+        user_message_id,
+        workspace_files,
+        directory,
+    )
+    return (
+        changed_files,
+        source,
+        user_message_id,
+        messages,
+        _normalize_workspace_files(workspace_files, directory),
+    )
+
+
+async def get_chat_diff(chat_id: str, user_id: str, message_id: str | None = None) -> list[dict]:
+    _, _, session_id, directory = await _get_chat_binding(chat_id, user_id)
+    runtime = _load_runtime()
+    async with aiohttp.ClientSession(trust_env=False) as session:
+        changed_files, _, _, _, _ = await _load_changed_files(
+            session,
+            runtime,
+            session_id,
+            directory,
+            message_id,
         )
-    return value if isinstance(value, list) else []
+    return changed_files
 
 
 async def get_workspace(chat_id: str, user_id: str, message_id: str | None = None) -> dict:
     _, binding, session_id, directory = await _get_chat_binding(chat_id, user_id)
     runtime = _load_runtime()
 
-    async def optional(path: str, fallback: Any, *, query: dict[str, str] | None = None) -> Any:
-        try:
-            return await _request_json(
+    async with aiohttp.ClientSession(trust_env=False) as session:
+        changes_result, status_map, todos, vcs = await asyncio.gather(
+            _load_changed_files(session, runtime, session_id, directory, message_id),
+            _request_json_optional(session, runtime, 'GET', '/session/status', {}, directory=directory, timeout=10),
+            _request_json_optional(
                 session,
                 runtime,
                 'GET',
-                path,
-                directory=directory,
-                query=query,
-                timeout=10,
-            )
-        except Exception as error:
-            log.debug('Optional OpenCode workspace endpoint failed (%s): %s', path, error)
-            return fallback
-
-    diff_message_id = _safe_identifier(message_id)
-    async with aiohttp.ClientSession(trust_env=False) as session:
-        status_map, todos, vcs, files, diffs = await asyncio.gather(
-            optional('/session/status', {}),
-            optional(f'/session/{session_id}/todo', []),
-            optional('/vcs', {}),
-            optional('/file/status', []),
-            optional(
-                f'/session/{session_id}/diff',
+                f'/session/{session_id}/todo',
                 [],
-                query={'messageID': diff_message_id} if diff_message_id else None,
+                directory=directory,
+                timeout=10,
             ),
+            _request_json_optional(session, runtime, 'GET', '/vcs', {}, directory=directory, timeout=10),
         )
+    changed_files, diff_source, user_message_id, _, workspace_files = changes_result
     current_status = status_map.get(session_id) if isinstance(status_map, dict) else None
     return {
         'session_id': session_id,
+        'message_id': user_message_id,
         'directory': directory,
         'agent': str(binding.get('agent') or 'build'),
         'model': str(binding.get('model') or ''),
         'status': current_status,
         'todos': _normalize_todos(todos),
         'vcs': _normalize_vcs(vcs),
-        'files': files if isinstance(files, list) else [],
-        'diffs': diffs if isinstance(diffs, list) else [],
+        'files': workspace_files,
+        'diffs': changed_files,
+        'diff_source': diff_source,
     }
 
 
@@ -954,18 +1210,30 @@ async def reset_chat_session(chat_id: str, user_id: str) -> bool:
 
 async def revert_chat_message(chat_id: str, user_id: str, message_id: str) -> bool:
     _, _, session_id, directory = await _get_chat_binding(chat_id, user_id)
-    safe_message_id = _safe_identifier(message_id)
-    if not safe_message_id:
+    requested_message_id = _safe_identifier(message_id)
+    if not requested_message_id:
         raise OpenCodeError('A valid OpenCode message ID is required.')
     runtime = _load_runtime()
     async with aiohttp.ClientSession(trust_env=False) as session:
+        messages = await _request_json_optional(
+            session,
+            runtime,
+            'GET',
+            f'/session/{session_id}/message',
+            [],
+            directory=directory,
+            timeout=10,
+        )
+        user_message_id = _resolve_user_message_id(messages, requested_message_id)
+        if not user_message_id:
+            raise OpenCodeError('The OpenCode user message could not be resolved.')
         result = await _request_json(
             session,
             runtime,
             'POST',
             f'/session/{session_id}/revert',
             directory=directory,
-            payload={'messageID': safe_message_id},
+            payload={'messageID': user_message_id},
             timeout=15,
         )
     return bool(result)

@@ -37,6 +37,8 @@ export type OpenCodeTodo = {
 	priority: string;
 };
 
+export type OpenCodeDiffSource = 'session' | 'agent_actions' | 'workspace_status' | 'none';
+
 export type OpenCodeCapabilities = {
 	directory: string;
 	agents: OpenCodeAgentOption[];
@@ -60,6 +62,7 @@ export type OpenCodeStatus = {
 
 export type OpenCodeWorkspace = {
 	session_id: string;
+	message_id?: string | null;
 	directory: string;
 	agent: OpenCodeAgent;
 	model: string;
@@ -68,6 +71,7 @@ export type OpenCodeWorkspace = {
 	vcs: OpenCodeVcs;
 	files: Record<string, unknown>[];
 	diffs: Record<string, unknown>[];
+	diff_source: OpenCodeDiffSource;
 };
 
 const request = async <T>(token: string, path: string, init: RequestInit = {}): Promise<T> => {

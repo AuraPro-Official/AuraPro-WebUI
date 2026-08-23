@@ -31,7 +31,7 @@ def _require_admin(user) -> None:
     if user.role != 'admin':
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail='Code mode is currently limited to administrators.',
+            detail='Code Agent is currently limited to administrators.',
         )
 
 

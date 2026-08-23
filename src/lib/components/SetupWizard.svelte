@@ -11,6 +11,7 @@
 	import {
 		activateGlossary,
 		createGlossary,
+		getGlossary,
 		getGlossarySettings,
 		updateGlossarySettings
 	} from '$lib/apis/glossary';
@@ -24,6 +25,10 @@
 		normalizeExtensionMode,
 		type ExtensionMode
 	} from '$lib/utils/extension-modes';
+	import {
+		buildGlossaryLanguageSelectItems,
+		normalizeGlossaryLanguage
+	} from '$lib/utils/glossaryLanguages';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import SearchableSelect from '$lib/components/common/SearchableSelect.svelte';
@@ -35,7 +40,8 @@
 
 	export let show = false;
 
-	type Purpose = 'translation' | 'manuscript_translation' | 'other';
+	type Purpose = 'translation' | 'manuscript_translation' | 'programming' | 'other';
+	type GlossaryMode = 'smart' | 'fixed';
 
 	interface GlossaryOption {
 		id: string;
@@ -59,6 +65,9 @@
 	let multimodalEnabled = true;
 	let glossarySettings: {
 		active_glossary_id?: string;
+		glossary_mode?: GlossaryMode;
+		smart_source_lang?: string;
+		smart_target_lang?: string;
 		glossaries?: GlossaryOption[];
 		source_lang?: string;
 		target_lang?: string;
@@ -67,7 +76,11 @@
 		mtp_enabled?: boolean;
 		multimodal_enabled?: boolean;
 	} = {};
+	let glossaryMode: GlossaryMode = 'smart';
 	let selectedGlossaryId = '';
+	let smartSourceLanguage = '中文';
+	let smartTargetLanguage = '外文';
+	let availableGlossaryLanguages: string[] = [];
 	let customSourceLanguage = '';
 	let customTargetLanguage = '';
 	let customGlossaryName = '';
@@ -132,13 +145,26 @@
 		}
 	];
 
+	$: glossaryLanguageSelectItems = buildGlossaryLanguageSelectItems([
+		...availableGlossaryLanguages,
+		...(glossarySettings.glossaries ?? []).flatMap((glossary) => [
+			glossary.source_lang,
+			glossary.target_lang ?? glossary.glossary_lang
+		]),
+		smartSourceLanguage,
+		smartTargetLanguage
+	]);
+
+	const purposeUsesContextCompaction = (value: Purpose): boolean =>
+		value === 'other' || value === 'programming';
+
 	const selectPurpose = (nextPurpose: Purpose) => {
 		purpose = nextPurpose;
 
 		if ($user?.role !== 'admin') return;
 
 		memoryBackgroundReviewEnabled = false;
-		contextCompactionEnabled = nextPurpose === 'other';
+		contextCompactionEnabled = purposeUsesContextCompaction(nextPurpose);
 	};
 
 	const isLocalLlamaConnectionUrl = (url: unknown): boolean =>
@@ -224,11 +250,27 @@
 		customSourceLanguage = '';
 		customTargetLanguage = '';
 		customGlossaryName = '';
+		availableGlossaryLanguages = [];
 
 		await fixLocalLlamaConnectionTypes();
 
 		try {
-			glossarySettings = (await getGlossarySettings(localStorage.token)) ?? {};
+			const [loadedGlossarySettings, glossary] = await Promise.all([
+				getGlossarySettings(localStorage.token),
+				getGlossary(localStorage.token).catch(() => null)
+			]);
+			glossarySettings = loadedGlossarySettings ?? {};
+			glossaryMode = glossarySettings.glossary_mode === 'fixed' ? 'fixed' : 'smart';
+			smartSourceLanguage = normalizeGlossaryLanguage(
+				glossarySettings.smart_source_lang ?? glossarySettings.source_lang ?? '中文'
+			);
+			smartTargetLanguage = normalizeGlossaryLanguage(
+				glossarySettings.smart_target_lang ??
+					glossarySettings.target_lang ??
+					glossarySettings.glossary_lang ??
+					'外文'
+			);
+			availableGlossaryLanguages = Array.isArray(glossary?.languages) ? glossary.languages : [];
 			selectedGlossaryId =
 				glossarySettings.active_glossary_id ?? glossarySettings.glossaries?.[0]?.id ?? '__other__';
 			const glossaryContextSize = Number(glossarySettings.token_limit ?? storedContextSize);
@@ -241,7 +283,11 @@
 		} catch (error) {
 			console.error('Failed to load glossary settings for setup wizard:', error);
 			glossarySettings = {};
+			glossaryMode = 'smart';
 			selectedGlossaryId = '__other__';
+			smartSourceLanguage = '中文';
+			smartTargetLanguage = '外文';
+			availableGlossaryLanguages = [];
 			mtpEnabled = false;
 			multimodalEnabled = true;
 		}
@@ -258,7 +304,7 @@
 				memoryBackgroundReviewEnabled =
 					adminGeneralConfig?.ENABLE_MEMORY_BACKGROUND_REVIEW ?? false;
 				contextCompactionEnabled =
-					adminChatConfig?.ENABLE_CONTEXT_COMPACTION ?? purpose === 'other';
+					adminChatConfig?.ENABLE_CONTEXT_COMPACTION ?? purposeUsesContextCompaction(purpose);
 			} catch (error) {
 				console.error('Failed to load administrator setup settings:', error);
 				adminAudioConfig = null;
@@ -266,7 +312,7 @@
 				adminChatConfig = null;
 				speechRecognitionMode = 'sherpa';
 				memoryBackgroundReviewEnabled = false;
-				contextCompactionEnabled = purpose === 'other';
+				contextCompactionEnabled = purposeUsesContextCompaction(purpose);
 			}
 		} else {
 			speechRecognitionMode = $settings?.audio?.stt?.engine === 'multimodal' ? 'multimodal' : '';
@@ -331,6 +377,20 @@
 	const saveGlossarySelection = async () => {
 		if (!['translation', 'manuscript_translation'].includes(purpose)) return;
 
+		if (glossaryMode === 'smart') {
+			const sourceLanguage = normalizeGlossaryLanguage(smartSourceLanguage);
+			const targetLanguage = normalizeGlossaryLanguage(smartTargetLanguage);
+			if (!sourceLanguage || !targetLanguage) {
+				throw new Error($i18n.t('Source language and target language are required.'));
+			}
+			glossarySettings = await updateGlossarySettings(localStorage.token, {
+				glossary_mode: 'smart',
+				smart_source_lang: sourceLanguage,
+				smart_target_lang: targetLanguage
+			});
+			return;
+		}
+
 		if (selectedGlossaryId === '__other__') {
 			const sourceLanguage = customSourceLanguage.trim();
 			const targetLanguage = customTargetLanguage.trim();
@@ -345,12 +405,14 @@
 				targetLanguage
 			);
 			selectedGlossaryId = glossarySettings.active_glossary_id ?? selectedGlossaryId;
-			return;
-		}
-
-		if (selectedGlossaryId && selectedGlossaryId !== glossarySettings.active_glossary_id) {
+		} else if (selectedGlossaryId && selectedGlossaryId !== glossarySettings.active_glossary_id) {
 			glossarySettings = await activateGlossary(localStorage.token, selectedGlossaryId);
 		}
+
+		glossarySettings = await updateGlossarySettings(localStorage.token, {
+			glossary_mode: 'fixed',
+			active_glossary_id: selectedGlossaryId
+		});
 	};
 
 	const normalizedContextSize = (): number => Math.max(1, Math.trunc(Number(contextSize) || 16384));
@@ -468,9 +530,9 @@
 				<section class="border-b border-gray-100 py-4 dark:border-gray-800">
 					<div class="mb-2 text-sm font-medium">{$i18n.t('Primary use')}</div>
 					<div
-						class="grid grid-cols-1 overflow-hidden rounded-lg border border-gray-200 sm:grid-cols-3 dark:border-gray-700"
+						class="grid grid-cols-1 overflow-hidden rounded-lg border border-gray-200 sm:grid-cols-4 dark:border-gray-700"
 					>
-						{#each [{ value: 'translation', label: $i18n.t('Translation purpose') }, { value: 'manuscript_translation', label: $i18n.t('Manuscript translation') }, { value: 'other', label: $i18n.t('Other uses') }] as option}
+						{#each [{ value: 'translation', label: $i18n.t('Translation purpose') }, { value: 'manuscript_translation', label: $i18n.t('Manuscript translation') }, { value: 'programming', label: $i18n.t('Programming') }, { value: 'other', label: $i18n.t('Other uses') }] as option}
 							<button
 								type="button"
 								class="px-3 py-2.5 text-sm transition {purpose === option.value
@@ -486,46 +548,101 @@
 
 				{#if purpose === 'translation' || purpose === 'manuscript_translation'}
 					<section class="border-b border-gray-100 py-4 dark:border-gray-800">
-						<label class="block">
-							<span class="text-sm font-medium">{$i18n.t('Translation languages')}</span>
-							<SearchableSelect
-								id="setup-glossary-selector"
-								className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-850"
-								bind:value={selectedGlossaryId}
-								items={glossarySelectItems}
-								placeholder={$i18n.t('Search')}
-								emptyText={$i18n.t('No results found')}
-							/>
-						</label>
+						<div class="text-sm font-medium">{$i18n.t('Translation languages')}</div>
+						<div class="mt-2 text-xs text-gray-500">{$i18n.t('Glossary mode')}</div>
+						<div
+							class="mt-1 grid grid-cols-2 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700"
+							role="group"
+							aria-label={$i18n.t('Glossary mode')}
+						>
+							{#each [{ value: 'smart', label: $i18n.t('Smart glossary') }, { value: 'fixed', label: $i18n.t('Specific glossary') }] as option}
+								<button
+									type="button"
+									class="px-3 py-2.5 text-sm transition {glossaryMode === option.value
+										? 'bg-gray-900 text-white dark:bg-white dark:text-black'
+										: 'bg-white text-gray-600 hover:bg-gray-50 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'}"
+									aria-pressed={glossaryMode === option.value}
+									on:click={() => (glossaryMode = option.value as GlossaryMode)}
+								>
+									{option.label}
+								</button>
+							{/each}
+						</div>
 
-						{#if selectedGlossaryId === '__other__'}
+						{#if glossaryMode === 'smart'}
 							<div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-								<label class="block">
-									<span class="text-xs text-gray-500">{$i18n.t('Source language')}</span>
-									<input
-										class="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-hidden dark:border-gray-700 dark:bg-gray-850"
-										bind:value={customSourceLanguage}
-										required
+								<label class="min-w-0">
+									<span class="text-xs text-gray-500">{$i18n.t('Language 1')}</span>
+									<SearchableSelect
+										id="setup-smart-glossary-source-language"
+										className="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-850"
+										bind:value={smartSourceLanguage}
+										items={glossaryLanguageSelectItems}
+										allowCustom={true}
+										placeholder={$i18n.t('Enter or select a language')}
+										emptyText={$i18n.t('Enter a custom language')}
 									/>
 								</label>
-								<label class="block">
-									<span class="text-xs text-gray-500">{$i18n.t('Target language')}</span>
-									<input
-										class="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-hidden dark:border-gray-700 dark:bg-gray-850"
-										bind:value={customTargetLanguage}
-										required
-									/>
-								</label>
-								<label class="block sm:col-span-2">
-									<span class="text-xs text-gray-500"
-										>{$i18n.t('Glossary name')} ({$i18n.t('Optional')})</span
-									>
-									<input
-										class="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-hidden dark:border-gray-700 dark:bg-gray-850"
-										bind:value={customGlossaryName}
+								<label class="min-w-0">
+									<span class="text-xs text-gray-500">{$i18n.t('Language 2')}</span>
+									<SearchableSelect
+										id="setup-smart-glossary-target-language"
+										className="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-850"
+										bind:value={smartTargetLanguage}
+										items={glossaryLanguageSelectItems}
+										allowCustom={true}
+										placeholder={$i18n.t('Enter or select a language')}
+										emptyText={$i18n.t('Enter a custom language')}
 									/>
 								</label>
 							</div>
+							<p class="mt-2 text-xs leading-5 text-gray-500">
+								{$i18n.t(
+									'Smart mode uses a direct glossary first, then combines compatible glossaries through a shared language.'
+								)}
+							</p>
+						{:else}
+							<label class="mt-3 block">
+								<span class="text-xs text-gray-500">{$i18n.t('Glossary file')}</span>
+								<SearchableSelect
+									id="setup-glossary-selector"
+									className="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-850"
+									bind:value={selectedGlossaryId}
+									items={glossarySelectItems}
+									placeholder={$i18n.t('Search')}
+									emptyText={$i18n.t('No results found')}
+								/>
+							</label>
+
+							{#if selectedGlossaryId === '__other__'}
+								<div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+									<label class="block">
+										<span class="text-xs text-gray-500">{$i18n.t('Source language')}</span>
+										<input
+											class="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-hidden dark:border-gray-700 dark:bg-gray-850"
+											bind:value={customSourceLanguage}
+											required
+										/>
+									</label>
+									<label class="block">
+										<span class="text-xs text-gray-500">{$i18n.t('Target language')}</span>
+										<input
+											class="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-hidden dark:border-gray-700 dark:bg-gray-850"
+											bind:value={customTargetLanguage}
+											required
+										/>
+									</label>
+									<label class="block sm:col-span-2">
+										<span class="text-xs text-gray-500"
+											>{$i18n.t('Glossary name')} ({$i18n.t('Optional')})</span
+										>
+										<input
+											class="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-hidden dark:border-gray-700 dark:bg-gray-850"
+											bind:value={customGlossaryName}
+										/>
+									</label>
+								</div>
+							{/if}
 						{/if}
 					</section>
 				{/if}
