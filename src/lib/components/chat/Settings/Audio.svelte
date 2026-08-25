@@ -197,7 +197,7 @@
 			<div class="py-0.5 flex w-full justify-between gap-3">
 				<div class="self-center text-xs font-medium">{$i18n.t('Microphone')}</div>
 				<select
-					class="min-w-0 w-56 rounded-md border border-gray-200 bg-transparent px-2 py-1.5 pr-8 text-right text-xs outline-hidden dark:border-gray-700"
+					class="min-w-0 w-56 rounded-sm bg-transparent p-1 px-2 pr-8 text-right text-xs outline-hidden dark:text-gray-300 disabled:opacity-50"
 					bind:value={audioInputDeviceId}
 					aria-label={$i18n.t('Microphone')}
 					disabled={audioDeviceStatus === 'unavailable'}
@@ -217,7 +217,7 @@
 			<div class="py-0.5 flex w-full justify-between gap-3">
 				<div class="self-center text-xs font-medium">{$i18n.t('Speaker')}</div>
 				<select
-					class="min-w-0 w-56 rounded-md border border-gray-200 bg-transparent px-2 py-1.5 pr-8 text-right text-xs outline-hidden dark:border-gray-700"
+					class="min-w-0 w-56 rounded-sm bg-transparent p-1 px-2 pr-8 text-right text-xs outline-hidden dark:text-gray-300 disabled:opacity-50"
 					bind:value={audioOutputDeviceId}
 					aria-label={$i18n.t('Speaker')}
 					disabled={!supportsOutputDeviceSelection || audioDeviceStatus === 'unavailable'}

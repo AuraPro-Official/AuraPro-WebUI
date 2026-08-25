@@ -44,10 +44,12 @@ _agent_changed_files = opencode_agent._agent_changed_files
 _normalize_capabilities = opencode_agent._normalize_capabilities
 _normalize_todos = opencode_agent._normalize_todos
 _resolve_user_message_id = opencode_agent._resolve_user_message_id
+_normalize_session_diffs = opencode_agent._normalize_session_diffs
 _select_changed_files = opencode_agent._select_changed_files
 _split_model = opencode_agent._split_model
 _message_text = opencode_agent._message_text
 _normalize_runtime_url = opencode_agent._normalize_runtime_url
+_progress_status = opencode_agent._progress_status
 _tool_description = opencode_agent._tool_description
 
 
@@ -200,6 +202,58 @@ class OpenCodeAgentHelpersTest(unittest.TestCase):
         self.assertEqual([item['file'] for item in agent_result], ['app.py'])
         self.assertEqual(workspace_source, 'workspace_status')
         self.assertEqual(workspace_result[0]['additions'], 1)
+
+    def test_session_diff_converts_before_and_after_to_a_bounded_unified_patch(self):
+        result = _normalize_session_diffs(
+            [
+                {
+                    'file': 'index.html',
+                    'before': '<title>Old</title>\n<p>Before</p>\n',
+                    'after': '<title>New</title>\n<p>Before</p>\n',
+                }
+            ],
+            str(Path.cwd()),
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['file'], 'index.html')
+        self.assertEqual(result[0]['status'], 'modified')
+        self.assertEqual(result[0]['additions'], 1)
+        self.assertEqual(result[0]['deletions'], 1)
+        self.assertIn('--- a/index.html', result[0]['patch'])
+        self.assertIn('+++ b/index.html', result[0]['patch'])
+        self.assertIn('-<title>Old</title>', result[0]['patch'])
+        self.assertIn('+<title>New</title>', result[0]['patch'])
+        self.assertNotIn('before', result[0])
+        self.assertNotIn('after', result[0])
+
+    def test_session_diff_infers_added_and_deleted_file_status(self):
+        added = _normalize_session_diffs([{'file': 'new.txt', 'before': '', 'after': 'new\n'}], '')
+        deleted = _normalize_session_diffs([{'file': 'old.txt', 'before': 'old\n', 'after': ''}], '')
+
+        self.assertEqual(added[0]['status'], 'added')
+        self.assertEqual(deleted[0]['status'], 'deleted')
+
+    def test_progress_status_reports_elapsed_time_and_long_idle_periods(self):
+        status = _progress_status(
+            'tool',
+            elapsed_seconds=125.9,
+            idle_seconds=61.2,
+            detail='OpenCode · bash: npm test',
+        )
+
+        self.assertEqual(status['action'], 'opencode_progress')
+        self.assertEqual(status['phase'], 'tool')
+        self.assertEqual(status['elapsed_seconds'], 125)
+        self.assertEqual(status['idle_seconds'], 61)
+        self.assertEqual(status['detail'], 'OpenCode · bash: npm test')
+        self.assertTrue(status['delayed'])
+        self.assertTrue(status['replace'])
+        self.assertFalse(status['done'])
+
+        completed = _progress_status('completed', 126, idle_seconds=90, done=True)
+        self.assertTrue(completed['done'])
+        self.assertFalse(completed['delayed'])
 
     def test_tool_description_reports_progress_and_completion(self):
         description, done = _tool_description(

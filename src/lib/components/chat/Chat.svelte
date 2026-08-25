@@ -850,11 +850,14 @@
 
 			if (message) {
 				if (type === 'status') {
-					if (message?.statusHistory) {
-						message.statusHistory.push(data);
+					const statusHistory = message?.statusHistory ?? [];
+					const latestStatus = statusHistory.at(-1);
+					if (data?.replace === true && latestStatus?.action === data?.action) {
+						statusHistory[statusHistory.length - 1] = data;
 					} else {
-						message.statusHistory = [data];
+						statusHistory.push(data);
 					}
+					message.statusHistory = statusHistory;
 				} else if (type === 'context_compaction') {
 					handleContextCompactionStatus(data);
 				} else if (type === 'chat:completion') {

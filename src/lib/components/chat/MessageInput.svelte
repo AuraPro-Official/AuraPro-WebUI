@@ -36,6 +36,7 @@
 		showSettings,
 		selectedTerminalId,
 		temporaryChatEnabled,
+		openCodeModeEnabled,
 		translationModeEnabled,
 		interpretationModeEnabled,
 		learningModeEnabled,
@@ -174,6 +175,11 @@
 		model: ''
 	};
 	export let onOpenCodeConfigChange: (value: OpenCodeChatConfig) => void = () => {};
+	const disableOpenCodeMode = () => {
+		openCodeModeEnabled.set(false);
+		onOpenCodeConfigChange({ ...openCodeConfig, enabled: false });
+	};
+
 	export let onOpenCodeSessionReset: () => void = () => {};
 
 	export let pendingOAuthTools = [];
@@ -1940,6 +1946,26 @@
 													<Terminal className="size-3.5" strokeWidth="2" />
 
 													<div class="hidden group-hover:block">
+														<XMark className="size-4" strokeWidth="1.75" />
+													</div>
+												</button>
+											</Tooltip>
+										{/if}
+
+										{#if $openCodeModeEnabled}
+											<Tooltip content={$i18n.t('Code Agent')} placement="top">
+												<button
+													aria-label={$i18n.t('Disable Code Agent')}
+													aria-pressed="true"
+													on:click|preventDefault={disableOpenCodeMode}
+													type="button"
+													class="group flex max-w-full items-center gap-1.5 overflow-hidden rounded-full border border-orange-200/50 bg-orange-50 px-2.5 py-[7px] text-sm text-orange-700 transition-colors duration-300 hover:bg-orange-100 dark:border-orange-500/20 dark:bg-orange-400/10 dark:text-orange-300 dark:hover:bg-orange-700/10"
+												>
+													<Terminal className="size-3.5 shrink-0" strokeWidth="2" />
+													<span class="hidden max-w-32 truncate sm:block"
+														>{$i18n.t('Code Agent')}</span
+													>
+													<div class="hidden shrink-0 group-hover:block">
 														<XMark className="size-4" strokeWidth="1.75" />
 													</div>
 												</button>

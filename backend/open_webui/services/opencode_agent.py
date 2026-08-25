@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import os
@@ -21,6 +22,12 @@ log = logging.getLogger(__name__)
 _MAX_TURN_SECONDS = max(60, int(os.getenv('AURAPRO_OPENCODE_TURN_TIMEOUT', '1800')))
 _POLL_INTERVAL_SECONDS = 0.4
 _ALLOWED_HOSTS = {'127.0.0.1', 'localhost', '::1'}
+_PROGRESS_INTERVAL_SECONDS = 5.0
+_PROGRESS_DELAY_SECONDS = 60.0
+_PROGRESS_LOG_INTERVAL_SECONDS = 60.0
+_MAX_DIFF_PREVIEW_CHARS = max(20_000, int(os.getenv('AURAPRO_OPENCODE_DIFF_PREVIEW_CHARS', '120000')))
+_MAX_PERSISTED_DIFF_CHARS = max(50_000, int(os.getenv('AURAPRO_OPENCODE_PERSISTED_DIFF_CHARS', '400000')))
+_MAX_PERSISTED_DIFF_FILES = 100
 _chat_locks: dict[str, asyncio.Lock] = {}
 _active_sessions: dict[str, tuple[str, str]] = {}
 
@@ -322,6 +329,37 @@ def _tool_description(part: dict) -> tuple[str, bool]:
     return description, status in {'completed', 'error'}
 
 
+def _progress_status(
+    phase: str,
+    elapsed_seconds: float,
+    idle_seconds: float = 0,
+    detail: str = '',
+    done: bool = False,
+) -> dict:
+    phases = {
+        'planning': 'Planning',
+        'working': 'Working',
+        'tool': 'Running a tool',
+        'waiting': 'Waiting for the current step',
+        'finishing': 'Preparing the result',
+        'completed': 'Completed',
+    }
+    phase = phase if phase in phases else 'working'
+    elapsed = max(0, int(elapsed_seconds))
+    idle_for = max(0, int(idle_seconds))
+    return {
+        'action': 'opencode_progress',
+        'description': f'OpenCode · {phases[phase]} · {elapsed // 60:02d}:{elapsed % 60:02d}',
+        'phase': phase,
+        'elapsed_seconds': elapsed,
+        'idle_seconds': idle_for,
+        'detail': ' '.join(str(detail or '').split())[:240],
+        'delayed': not done and idle_for >= _PROGRESS_DELAY_SECONDS,
+        'replace': True,
+        'done': done,
+    }
+
+
 _IDENTIFIER_PATTERN = re.compile(r'^[A-Za-z0-9_.:/-]{1,256}$')
 
 
@@ -444,6 +482,44 @@ def _agent_changed_files(
     return list(changes.values())
 
 
+def _diff_line_counts(patch: str) -> tuple[int, int]:
+    additions = 0
+    deletions = 0
+    for line in patch.splitlines():
+        if line.startswith('+') and not line.startswith('+++'):
+            additions += 1
+        elif line.startswith('-') and not line.startswith('---'):
+            deletions += 1
+    return additions, deletions
+
+
+def _unified_patch(path: str, before: str, after: str) -> str:
+    if before == after:
+        return ''
+    return ''.join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f'a/{path}',
+            tofile=f'b/{path}',
+            lineterm='\n',
+        )
+    )
+
+
+def _bounded_patch(value: str, limit: int) -> tuple[str, bool]:
+    if len(value) <= limit:
+        return value, False
+    return f'{value[:limit].rstrip()}\n', True
+
+
+def _change_count(value: Any, fallback: int) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _normalize_session_diffs(value: Any, directory: str) -> list[dict]:
     result = []
     for item in value if isinstance(value, list) else []:
@@ -452,7 +528,61 @@ def _normalize_session_diffs(value: Any, directory: str) -> list[dict]:
         path = _workspace_file_path(item.get('file') or item.get('path') or item.get('filename'), directory)
         if not path:
             continue
-        result.append({**item, 'file': path, 'path': path, 'source': 'session'})
+
+        patch = ''
+        for key in ('patch', 'diff', 'content'):
+            if isinstance(item.get(key), str) and item[key]:
+                patch = item[key]
+                break
+        before = item.get('before')
+        after = item.get('after')
+        if not patch and isinstance(before, str) and isinstance(after, str):
+            patch = _unified_patch(path, before, after)
+
+        inferred_additions, inferred_deletions = _diff_line_counts(patch)
+        status = str(item.get('status') or '')
+        if status not in {'added', 'deleted', 'modified'}:
+            status = (
+                'added'
+                if isinstance(before, str) and isinstance(after, str) and not before and bool(after)
+                else 'deleted'
+                if isinstance(before, str) and isinstance(after, str) and bool(before) and not after
+                else 'modified'
+            )
+
+        normalized = {
+            'file': path,
+            'path': path,
+            'status': status,
+            'additions': _change_count(item.get('additions', item.get('added')), inferred_additions),
+            'deletions': _change_count(item.get('deletions', item.get('removed')), inferred_deletions),
+            'source': 'session',
+        }
+        if patch:
+            normalized['patch'], normalized['truncated'] = _bounded_patch(patch, _MAX_DIFF_PREVIEW_CHARS)
+        result.append(normalized)
+    return result
+
+
+def _compact_changed_files(value: list[dict]) -> list[dict]:
+    remaining = _MAX_PERSISTED_DIFF_CHARS
+    result: list[dict] = []
+    for item in value[:_MAX_PERSISTED_DIFF_FILES]:
+        if not isinstance(item, dict):
+            continue
+        compact = {
+            key: item[key] for key in ('file', 'path', 'status', 'additions', 'deletions', 'source') if key in item
+        }
+        patch = item.get('patch')
+        if isinstance(patch, str) and patch:
+            if remaining > 0:
+                compact['patch'], clipped = _bounded_patch(patch, remaining)
+                remaining -= len(compact['patch'])
+                if clipped or item.get('truncated') is True:
+                    compact['truncated'] = True
+            else:
+                compact['truncated'] = True
+        result.append(compact)
     return result
 
 
@@ -721,7 +851,10 @@ async def run_agent_chat(  # noqa: C901
         raise OpenCodeError('The WebUI event channel is unavailable.')
 
     await event_emitter(
-        {'type': 'status', 'data': {'action': 'opencode', 'description': 'Connecting to OpenCode', 'done': False}}
+        {
+            'type': 'status',
+            'data': {'action': 'opencode_connect', 'description': 'Connecting to OpenCode', 'done': False},
+        }
     )
 
     timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_connect=10, sock_read=None)
@@ -732,6 +865,13 @@ async def run_agent_chat(  # noqa: C901
 
         session_id = await _ensure_session(session, runtime, chat_id, user.id, directory, agent, model_value)
         _active_sessions[chat_id] = (session_id, directory)
+        await event_emitter(
+            {
+                'type': 'status',
+                'data': {'action': 'opencode_connect', 'description': 'Connected to OpenCode', 'done': True},
+            }
+        )
+        log.info('OpenCode task started session=%s agent=%s directory=%s', session_id, agent, directory)
         baseline = await _request_json(session, runtime, 'GET', f'/session/{session_id}/message', directory=directory)
         baseline_ids = {
             str((item.get('info') or {}).get('id'))
@@ -761,6 +901,12 @@ async def run_agent_chat(  # noqa: C901
         last_persist = 0.0
         tool_states: dict[str, tuple[str, bool]] = {}
         started_at = time.monotonic()
+        last_activity_at = started_at
+        last_progress_emit = 0.0
+        last_progress_log = started_at
+        current_phase = 'planning' if agent == 'plan' else 'working'
+        current_detail = ''
+        live_session_diffs: list[dict] = []
 
         try:
             await asyncio.sleep(0)
@@ -777,16 +923,14 @@ async def run_agent_chat(  # noqa: C901
                 },
                 timeout=30,
             )
+            last_activity_at = time.monotonic()
             await event_emitter(
                 {
                     'type': 'status',
-                    'data': {
-                        'action': 'opencode',
-                        'description': f'OpenCode · {"Planning" if agent == "plan" else "Working"}',
-                        'done': False,
-                    },
+                    'data': _progress_status(current_phase, 0),
                 }
             )
+            last_progress_emit = time.monotonic()
 
             while True:
                 if time.monotonic() - started_at > _MAX_TURN_SECONDS:
@@ -802,13 +946,20 @@ async def run_agent_chat(  # noqa: C901
                     if event_type == 'aurapro.sse.error':
                         log.warning('OpenCode SSE stream ended: %s', properties.get('message'))
                     elif event_session_id == session_id:
-                        if event_type in {
+                        if event_type == 'session.diff':
+                            event_diffs = properties.get('diff')
+                            if isinstance(event_diffs, list):
+                                live_session_diffs = event_diffs
+                            seen_activity = True
+                            last_activity_at = time.monotonic()
+                        elif event_type in {
                             'message.part.delta',
                             'message.part.updated',
                             'message.updated',
-                            'session.diff',
                         }:
                             seen_activity = True
+                            last_activity_at = time.monotonic()
+                            current_phase = 'working'
                         elif event_type == 'session.status':
                             status_value = properties.get('status') or {}
                             status_type = status_value.get('type') if isinstance(status_value, dict) else status_value
@@ -884,6 +1035,9 @@ async def run_agent_chat(  # noqa: C901
                             baseline_ids,
                         )
                     if text != latest_text:
+                        last_activity_at = now
+                        current_phase = 'working'
+                        current_detail = ''
                         latest_text = text
                         await event_emitter({'type': 'replace', 'data': {'content': latest_text}})
                     for part_index, part in enumerate(tools):
@@ -897,6 +1051,10 @@ async def run_agent_chat(  # noqa: C901
                         state = _tool_description(part)
                         if tool_states.get(part_id) != state:
                             tool_states[part_id] = state
+                            last_activity_at = now
+                            current_phase = 'working' if state[1] else 'tool'
+                            current_detail = '' if state[1] else state[0]
+                            log.info('OpenCode tool update session=%s status=%s', session_id, state[0])
                             await event_emitter(
                                 {
                                     'type': 'status',
@@ -923,9 +1081,44 @@ async def run_agent_chat(  # noqa: C901
                         idle = True
                     last_poll = now
 
+                if now - last_progress_emit >= _PROGRESS_INTERVAL_SECONDS:
+                    idle_seconds = max(0.0, now - last_activity_at)
+                    display_phase = 'waiting' if idle_seconds >= _PROGRESS_DELAY_SECONDS else current_phase
+                    await event_emitter(
+                        {
+                            'type': 'status',
+                            'data': _progress_status(
+                                display_phase,
+                                now - started_at,
+                                idle_seconds,
+                                current_detail,
+                            ),
+                        }
+                    )
+                    last_progress_emit = now
+                    if (
+                        idle_seconds >= _PROGRESS_DELAY_SECONDS
+                        and now - last_progress_log >= _PROGRESS_LOG_INTERVAL_SECONDS
+                    ):
+                        log.info(
+                            'OpenCode task still running session=%s elapsed=%ss idle=%ss detail=%s',
+                            session_id,
+                            int(now - started_at),
+                            int(idle_seconds),
+                            current_detail or 'model processing',
+                        )
+                        last_progress_log = now
+
                 if idle and seen_activity and time.monotonic() - started_at > 0.8:
                     break
 
+            finishing_at = time.monotonic()
+            await event_emitter(
+                {
+                    'type': 'status',
+                    'data': _progress_status('finishing', finishing_at - started_at),
+                }
+            )
             final_messages = await _request_json_optional(
                 session,
                 runtime,
@@ -965,8 +1158,11 @@ async def run_agent_chat(  # noqa: C901
                 _request_json_optional(session, runtime, 'GET', '/vcs', {}, directory=directory),
                 _request_json_optional(session, runtime, 'GET', '/file/status', [], directory=directory),
             )
+            effective_session_diffs = (
+                session_diffs if isinstance(session_diffs, list) and session_diffs else live_session_diffs
+            )
             changed_files, diff_source = _select_changed_files(
-                session_diffs,
+                effective_session_diffs,
                 latest_messages,
                 latest_user_message_id,
                 workspace_files,
@@ -976,6 +1172,13 @@ async def run_agent_chat(  # noqa: C901
             if not latest_text:
                 latest_text = 'OpenCode completed the task.'
             diff_count = len(changed_files)
+            completed_at = time.monotonic()
+            await event_emitter(
+                {
+                    'type': 'status',
+                    'data': _progress_status('completed', completed_at - started_at, done=True),
+                }
+            )
             if diff_count:
                 await event_emitter(
                     {
@@ -997,6 +1200,7 @@ async def run_agent_chat(  # noqa: C901
                 'diff_count': diff_count,
                 'diff_source': diff_source,
                 'model': model_value,
+                'diffs': _compact_changed_files(changed_files),
                 'todos': _normalize_todos(todos),
                 'vcs': _normalize_vcs(vcs),
             }
@@ -1017,8 +1221,15 @@ async def run_agent_chat(  # noqa: C901
                     },
                 }
             )
+            log.info(
+                'OpenCode task completed session=%s elapsed=%ss changed_files=%s',
+                session_id,
+                int(completed_at - started_at),
+                diff_count,
+            )
             return {'status': True, 'session_id': session_id, 'content': latest_text}
         except asyncio.CancelledError:
+            log.info('OpenCode task cancelled session=%s', session_id)
             try:
                 await _request_json(
                     session,
@@ -1030,6 +1241,9 @@ async def run_agent_chat(  # noqa: C901
                 )
             except Exception:
                 pass
+            raise
+        except Exception:
+            log.exception('OpenCode task failed session=%s', session_id)
             raise
         finally:
             event_task.cancel()

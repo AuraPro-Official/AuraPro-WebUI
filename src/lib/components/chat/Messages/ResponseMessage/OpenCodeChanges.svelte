@@ -25,6 +25,8 @@
 	export let model = '';
 	export let todos: OpenCodeTodo[] = [];
 	export let vcs: OpenCodeVcs = { branch: '', root: '' };
+	export let diffs: Record<string, unknown>[] = [];
+	export let diffSource: OpenCodeDiffSource = 'none';
 
 	let expanded = false;
 	let loading = false;
@@ -32,12 +34,12 @@
 	let error = '';
 	let actionMessage = '';
 	let reverted = false;
-	let items: Record<string, unknown>[] | null = null;
+	let items: Record<string, unknown>[] | null = diffs.length > 0 ? diffs : null;
 	let currentTodos = todos;
 	let currentVcs = vcs;
 	let currentAgent = agent;
 	let currentModel = model;
-	let currentDiffSource: OpenCodeDiffSource = 'none';
+	let currentDiffSource: OpenCodeDiffSource = diffs.length > 0 ? diffSource : 'none';
 
 	$: if (items === null) {
 		currentTodos = todos;
@@ -58,6 +60,18 @@
 		for (const key of ['patch', 'diff', 'content']) {
 			if (typeof item[key] === 'string' && item[key]) return item[key] as string;
 		}
+		return '';
+	};
+
+	const getDiffLineClass = (line: string): string => {
+		if (line.startsWith('+++') || line.startsWith('---')) {
+			return 'text-blue-700 dark:text-blue-300';
+		}
+		if (line.startsWith('@@'))
+			return 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300';
+		if (line.startsWith('+'))
+			return 'bg-green-50 text-green-800 dark:bg-green-950/30 dark:text-green-300';
+		if (line.startsWith('-')) return 'bg-red-50 text-red-800 dark:bg-red-950/30 dark:text-red-300';
 		return '';
 	};
 
@@ -270,10 +284,22 @@
 								{/if}
 							</div>
 							{#if getPreview(item)}
-								<pre
-									class="max-h-72 overflow-auto border-t border-gray-100 bg-gray-50 px-3 py-2 text-[11px] leading-5 dark:border-gray-800 dark:bg-gray-900">{getPreview(
-										item
-									)}</pre>
+								<div
+									class="max-h-96 overflow-auto border-t border-gray-100 bg-gray-50 py-2 font-mono text-[11px] leading-5 dark:border-gray-800 dark:bg-gray-900"
+								>
+									{#each getPreview(item).split('\n') as line}
+										<div class="min-w-max whitespace-pre px-3 {getDiffLineClass(line)}">
+											{line || ' '}
+										</div>
+									{/each}
+								</div>
+							{/if}
+							{#if item.truncated === true}
+								<div
+									class="border-t border-gray-100 px-3 py-2 text-[11px] text-amber-700 dark:border-gray-800 dark:text-amber-400"
+								>
+									{$i18n.t('Diff preview truncated')}
+								</div>
 							{/if}
 						</div>
 					{/each}

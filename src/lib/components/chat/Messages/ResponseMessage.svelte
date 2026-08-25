@@ -110,6 +110,8 @@
 			agent?: string;
 			model?: string;
 			diff_count?: number;
+			diff_source?: 'session' | 'agent_actions' | 'workspace_status' | 'none';
+			diffs?: Record<string, unknown>[];
 			todos?: { id: string; content: string; status: string; priority: string }[];
 			vcs?: { branch: string; root: string };
 		};
@@ -838,6 +840,8 @@
 									count={message.opencode.diff_count ?? 0}
 									agent={message.opencode.agent ?? ''}
 									model={message.opencode.model ?? ''}
+									diffs={message.opencode.diffs ?? []}
+									diffSource={message.opencode.diff_source ?? 'none'}
 									todos={message.opencode.todos ?? []}
 									vcs={message.opencode.vcs ?? { branch: '', root: '' }}
 								/>
