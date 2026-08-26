@@ -40,7 +40,7 @@ jobs:
           wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
           # Windows ARM runs the complete x64 Python stack through Windows 11 emulation.
           # Native runtime packages must never fall back to compiling on an end-user machine.
-          native_wheels="brotli,brotlicffi,onnxruntime,opencv-python"
+          native_wheels="brotli,brotlicffi,cryptography,onnxruntime,opencv-python"
           uv pip install --dry-run --system --only-binary "$native_wheels" --python-platform x86_64-pc-windows-msvc --python-version 3.12 "$wheel"
           uv pip install --dry-run --system --only-binary "$native_wheels" --python-platform x86_64-apple-darwin --python-version 3.12 "$wheel"
           uv pip install --dry-run --system --only-binary "$native_wheels" --python-platform aarch64-apple-darwin --python-version 3.12 "$wheel"
