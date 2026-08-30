@@ -78,6 +78,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fixed incorrect language detection that could make voice input unusable.
 - Fixed cases where simultaneous voice translation did not work.
 - Replaced the Chinese speech-to-text model to prevent repeated transcription text in long recordings.
+
 ## [3.4.0] - 2026-05-28
 
 ### Added
@@ -202,6 +203,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Simultaneous voice translation may not work in some situations.
 - Voice-input language recognition currently supports only Chinese and English.
+
 ## [3.3.8] - 2026-05-21
 
 ### Added
@@ -311,6 +313,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Improved installation handling so slow networks and long initial setup times no longer produce a false installation-failed message because of connection timeouts.
 - Fixed incomplete retry behavior after an initial installation failure, which could start the application without installing the required models or components.
+
 ## [2.5.3] - 2026-05-04
 
 ### Added
@@ -391,6 +394,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Removed the experimental feature that automatically enabled extension modes from shortcuts because unreliable UI state detection caused repeated false triggers. It may return after upstream compatibility improves.
 - Fixed 0 KB model files and application hangs that could occur when a model download began immediately after CUDA installation.
 - Added automatic cleanup of temporary CUDA installer files to reduce disk usage.
+
 ## [2.3.2] - 2026-04-27
 
 ### Changed
@@ -484,6 +488,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added update checks, automatic updates, release notes, service logs, and global shortcuts.
 - Replaced voice input with a more efficient implementation.
 - Added support for Windows, two macOS builds, and Linux.
+
 ## [1.2.1] - 2026-04-22
 
 ### Changed
