@@ -1,8 +1,10 @@
 import { fileURLToPath, URL } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 export default defineConfig({
+	plugins: [svelte({ configFile: false })],
 	define: {
 		APP_BUILD_HASH: JSON.stringify('test'),
 		APP_VERSION: JSON.stringify('test')

@@ -32,7 +32,7 @@
 <script>
 	import { onDestroy } from 'svelte';
 	import { replaceTokens, processResponseContent } from '$lib/utils';
-	import { createStreamingRenderScheduler } from '$lib/utils/render-scheduler';
+	import { scheduleFrameWithFallback } from '$lib/utils/render-scheduler';
 	import { user } from '$lib/stores';
 
 	import MarkdownTokens from './Markdown/MarkdownTokens.svelte';
@@ -60,30 +60,42 @@
 	export let onTaskClick = () => {};
 
 	let tokens = [];
+	let pendingUpdateCancel = null;
 	let lastContent = '';
 	let lastParsedContent = '';
 
 	const parseTokens = () => {
-		const currentContent = content ?? '';
-		if (currentContent === lastContent) return;
-		lastContent = currentContent;
+		if (content === lastContent) return;
+		lastContent = content;
 
-		const processed = replaceTokens(
-			processResponseContent(currentContent),
-			model?.name,
-			$user?.name
-		);
+		const processed = replaceTokens(processResponseContent(content), model?.name, $user?.name);
 		if (processed === lastParsedContent) return;
 		lastParsedContent = processed;
 
 		tokens = marked.lexer(processed);
 	};
 
-	const renderScheduler = createStreamingRenderScheduler(parseTokens);
+	const updateHandler = (content) => {
+		if (content) {
+			if (done) {
+				pendingUpdateCancel?.();
+				pendingUpdateCancel = null;
+				parseTokens();
+			} else if (!pendingUpdateCancel) {
+				pendingUpdateCancel = scheduleFrameWithFallback(() => {
+					pendingUpdateCancel = null;
+					parseTokens();
+				});
+			}
+		}
+	};
 
-	$: renderScheduler.update(content?.length ?? 0, done || !content);
+	$: updateHandler(content);
 
-	onDestroy(renderScheduler.cancel);
+	// Throttle parsing to once per animation frame while streaming
+	onDestroy(() => {
+		pendingUpdateCancel?.();
+	});
 </script>
 
 {#key id}

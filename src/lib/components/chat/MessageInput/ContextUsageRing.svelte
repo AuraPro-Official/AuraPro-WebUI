@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
+	import type { Readable } from 'svelte/store';
+	import type { i18n as I18n } from 'i18next';
 
 	import { models, settings, type Model } from '$lib/stores';
 	import {
@@ -10,9 +12,7 @@
 
 	import Tooltip from '../../common/Tooltip.svelte';
 
-	const i18n = getContext<{
-		t: (key: string, variables?: Record<string, string | number>) => string;
-	}>('i18n');
+	const i18n = getContext<Readable<I18n>>('i18n');
 
 	export let history: {
 		currentId?: string | null;
@@ -41,7 +41,7 @@
 
 	const numberFormatter = new Intl.NumberFormat();
 	const formatTokens = (value: number | null) =>
-		value === null ? i18n.t('Unknown') : numberFormatter.format(Math.round(value));
+		value === null ? $i18n.t('Unknown') : numberFormatter.format(Math.round(value));
 	const escapeHtml = (value: unknown) =>
 		String(value)
 			.replaceAll('&', '&amp;')
@@ -68,41 +68,41 @@
 		details.available && details.percent !== null ? Math.min(100, Math.max(0, details.percent)) : 0;
 	$: ringColor = compacting ? '#0ea5e9' : colors[details.level];
 	$: compactionStatus = compacting
-		? i18n.t('Compacting context')
+		? $i18n.t('Compacting context')
 		: details.hardTruncation
-			? i18n.t('Hard context truncation is active')
+			? $i18n.t('Hard context truncation is active')
 			: !details.compactionEnabled
-				? i18n.t('Disabled')
+				? $i18n.t('Disabled')
 				: details.compacted
-					? i18n.t('Context was compacted for the latest request')
-					: i18n.t('Enabled');
+					? $i18n.t('Context was compacted for the latest request')
+					: $i18n.t('Enabled');
 	$: sourceLabel = details.available
 		? details.estimated
-			? i18n.t('Estimated token count')
-			: i18n.t('Exact model usage')
-		: i18n.t('Waiting for model usage');
+			? $i18n.t('Estimated token count')
+			: $i18n.t('Exact model usage')
+		: $i18n.t('Waiting for model usage');
 	$: tooltipContent = `
 		<div style="min-width: 238px; text-align: left; line-height: 1.55;">
 			<div style="display: flex; justify-content: space-between; gap: 20px; margin-bottom: 5px;">
-				<strong>${escapeHtml(i18n.t('Context usage'))}</strong>
+				<strong>${escapeHtml($i18n.t('Context usage'))}</strong>
 				<strong>${displayedPercent === null ? '--' : `${displayedPercent}%`}</strong>
 			</div>
-			<div>${escapeHtml(i18n.t('Current context'))}: ${escapeHtml(formatTokens(details.usedTokens))} / ${escapeHtml(formatTokens(details.limitTokens))} tokens</div>
-			<div>${escapeHtml(i18n.t('Input tokens'))}: ${escapeHtml(formatTokens(details.inputTokens))}</div>
-			<div>${escapeHtml(i18n.t('Output tokens'))}: ${escapeHtml(formatTokens(details.outputTokens))}</div>
-			<div>${escapeHtml(i18n.t('Compaction threshold'))}: ${escapeHtml(formatTokens(details.thresholdTokens))}${
+			<div>${escapeHtml($i18n.t('Current context'))}: ${escapeHtml(formatTokens(details.usedTokens))} / ${escapeHtml(formatTokens(details.limitTokens))} tokens</div>
+			<div>${escapeHtml($i18n.t('Input tokens'))}: ${escapeHtml(formatTokens(details.inputTokens))}</div>
+			<div>${escapeHtml($i18n.t('Output tokens'))}: ${escapeHtml(formatTokens(details.outputTokens))}</div>
+			<div>${escapeHtml($i18n.t('Compaction threshold'))}: ${escapeHtml(formatTokens(details.thresholdTokens))}${
 				details.thresholdPercent === null ? '' : ` (${Math.round(details.thresholdPercent)}%)`
 			}</div>
-			<div>${escapeHtml(i18n.t('Automatic context compaction'))}: ${escapeHtml(compactionStatus)}</div>
+			<div>${escapeHtml($i18n.t('Automatic context compaction'))}: ${escapeHtml(compactionStatus)}</div>
 			<div style="margin-top: 5px; opacity: 0.72;">${escapeHtml(sourceLabel)}${
-				details.limitEstimated ? ` · ${escapeHtml(i18n.t('Context limit estimated'))}` : ''
+				details.limitEstimated ? ` · ${escapeHtml($i18n.t('Context limit estimated'))}` : ''
 			}</div>
 		</div>
 	`;
 	$: ariaLabel =
 		displayedPercent === null
-			? i18n.t('Context usage is unavailable')
-			: i18n.t('Context usage: {{percent}}%', { percent: displayedPercent });
+			? $i18n.t('Context usage is unavailable')
+			: $i18n.t('Context usage: {{percent}}%', { percent: displayedPercent });
 </script>
 
 {#if activeModelId}

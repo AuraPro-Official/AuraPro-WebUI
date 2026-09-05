@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Awaitable, Optional, Union
 from urllib.parse import quote
 
@@ -777,14 +778,13 @@ async def query_collection(
     query_embeddings = await embedding_function(queries, prefix=RAG_EMBEDDING_QUERY_PREFIX)
     log.debug(f'query_collection: processing {len(queries)} queries across {len(collection_names)} collections')
 
-    # Use the bounded shared worker pool without blocking the async request loop.
-    task_results = await asyncio.gather(
-        *(
-            asyncio.to_thread(process_query_collection, collection_name, query_embedding)
-            for query_embedding in query_embeddings
-            for collection_name in collection_names
-        )
-    )
+    with ThreadPoolExecutor() as executor:
+        future_results = []
+        for query_embedding in query_embeddings:
+            for collection_name in collection_names:
+                result = executor.submit(process_query_collection, collection_name, query_embedding)
+                future_results.append(result)
+        task_results = [future.result() for future in future_results]
 
     for result, err in task_results:
         if err is not None:
@@ -870,14 +870,10 @@ async def query_collection_with_hybrid_search(
                 native_hybrid_search=False,
             )
 
-            metadata_groups = result.get('metadatas') or []
-            for group_index, documents in enumerate(result['documents']):
-                metadatas = metadata_groups[group_index] if group_index < len(metadata_groups) else []
-                for index in range(len(documents)):
-                    metadata = metadatas[index] if metadatas and index < len(metadatas) else None
-                    parent_content = metadata.get('parent_content') if isinstance(metadata, dict) else None
-                    if isinstance(parent_content, str) and parent_content:
-                        documents[index] = parent_content
+            documents = result['documents']
+            for index, _ in documents:
+                parent_content = result['metadatas'][0][index]['parent_content']
+                result['documents'][index] = parent_content
             return result, None
         except Exception as e:
             log.exception(f'Error when querying the collection with hybrid_search: {e}')
