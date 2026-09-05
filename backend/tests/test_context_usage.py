@@ -1,8 +1,11 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from open_webui.utils.context_compaction import (
+    _exceeds_token_threshold,
     _find_compaction_boundary,
+    _generate_summary,
     _resolve_context_size_details,
     _resolve_token_threshold,
     compact_messages_for_request,
@@ -33,6 +36,33 @@ class ContextUsageTest(unittest.TestCase):
         self.assertFalse(result['estimated'])
         self.assertTrue(result['compacted'])
 
+    def test_llamacpp_usage_includes_reused_prompt_cache(self):
+        snapshot = {
+            'used_tokens': 1500,
+            'input_tokens': 1500,
+            'output_tokens': 0,
+            'limit_tokens': 20224,
+            'estimated': True,
+        }
+
+        result = context_usage_from_model_usage(
+            snapshot,
+            {
+                'cache_n': 17905,
+                'prompt_n': 1316,
+                'predicted_n': 168,
+                # normalize_usage previously derived these incomplete values.
+                'input_tokens': 1316,
+                'output_tokens': 168,
+                'total_tokens': 1484,
+            },
+        )
+
+        self.assertEqual(result['input_tokens'], 19221)
+        self.assertEqual(result['output_tokens'], 168)
+        self.assertEqual(result['used_tokens'], 19389)
+        self.assertFalse(result['estimated'])
+
     def test_request_context_limit_takes_precedence(self):
         context_size, source, estimated = _resolve_context_size_details(
             {'params': {'num_ctx': 16384}},
@@ -50,6 +80,34 @@ class ContextUsageTest(unittest.TestCase):
         self.assertEqual(context_size, 16384)
         self.assertEqual(source, 'request')
         self.assertFalse(estimated)
+
+    def test_llamacpp_model_metadata_context_limit_is_used(self):
+        context_size, source, estimated = _resolve_context_size_details(
+            {},
+            'model-1',
+            {'model-1': {'meta': {'n_ctx': 20224}}},
+        )
+
+        self.assertEqual(context_size, 20224)
+        self.assertEqual(source, 'model_metadata')
+        self.assertFalse(estimated)
+
+    def test_cached_llamacpp_context_triggers_compaction(self):
+        messages = [
+            {
+                'role': 'assistant',
+                'usage': {
+                    'cache_n': 12596,
+                    'prompt_n': 1675,
+                    'predicted_n': 1235,
+                    'input_tokens': 1675,
+                    'output_tokens': 1235,
+                },
+            },
+            {'role': 'user', 'content': 'continue'},
+        ]
+
+        self.assertTrue(_exceeds_token_threshold(messages, '', None, 15168))
 
     def test_unknown_context_limit_is_marked_as_estimated(self):
         context_size, source, estimated = _resolve_context_size_details({}, 'missing', {})
@@ -98,6 +156,38 @@ class ContextUsageTest(unittest.TestCase):
 
 
 class ContextCompactionFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_summary_request_only_includes_recent_context_tail(self):
+        recent_messages = [{'role': 'user', 'content': f'recent-message-{index}'} for index in range(6)]
+        generate_completion = AsyncMock(return_value={'choices': [{'message': {'content': 'compact summary'}}]})
+
+        with (
+            patch(
+                'open_webui.models.config.Config.get',
+                AsyncMock(return_value=''),
+            ),
+            patch(
+                'open_webui.utils.chat.generate_chat_completion',
+                generate_completion,
+            ),
+        ):
+            summary = await _generate_summary(
+                request=SimpleNamespace(state=SimpleNamespace(metadata={})),
+                user=object(),
+                model_id='model-1',
+                models={'model-1': {'info': {'params': {'max_tokens': 100}}}},
+                compacted_messages=[{'role': 'user', 'content': 'old-message'}],
+                recent_messages=recent_messages,
+                previous_summary=None,
+                summary_prompt_template='',
+            )
+
+        prompt = generate_completion.await_args.kwargs['form_data']['messages'][0]['content']
+        self.assertEqual(summary, 'compact summary')
+        self.assertNotIn('recent-message-0', prompt)
+        self.assertNotIn('recent-message-1', prompt)
+        for index in range(2, 6):
+            self.assertIn(f'recent-message-{index}', prompt)
+
     async def test_compaction_preserves_system_prompt_and_summarizes_only_history(self):
         messages = [
             {'role': 'system', 'content': 'Always preserve this instruction.'},

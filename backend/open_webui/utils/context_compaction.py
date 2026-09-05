@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_SIZE = 16384
 DEFAULT_CONTEXT_COMPACTION_PERCENT = 75
+SUMMARY_RECENT_MESSAGE_LIMIT = 4
 HARD_TRUNCATION_FEATURES = (
     'translation',
     'manuscript_translation',
@@ -259,13 +260,32 @@ def _resolve_context_size_details(metadata: dict, model_id: str, models: dict) -
     model_info = model.get('info') if isinstance(model, dict) and isinstance(model.get('info'), dict) else {}
     model_params = model_info.get('params') if isinstance(model_info.get('params'), dict) else {}
     model_meta = model_info.get('meta') if isinstance(model_info.get('meta'), dict) else {}
+    provider_model = model.get('openai') if isinstance(model, dict) and isinstance(model.get('openai'), dict) else {}
+    provider_meta = provider_model.get('meta') if isinstance(provider_model.get('meta'), dict) else {}
+    base_meta = model.get('meta') if isinstance(model, dict) and isinstance(model.get('meta'), dict) else {}
 
     candidates = (
         (params.get('num_ctx'), 'request'),
+        (params.get('n_ctx'), 'request'),
+        (params.get('ctx_size'), 'request'),
+        (params.get('context_length'), 'request'),
+        (params.get('context_size'), 'request'),
         (model_params.get('num_ctx'), 'model_params'),
+        (model_params.get('n_ctx'), 'model_params'),
+        (model_params.get('ctx_size'), 'model_params'),
+        (model_params.get('context_length'), 'model_params'),
+        (model_params.get('context_size'), 'model_params'),
+        (base_meta.get('n_ctx'), 'model_metadata'),
+        (base_meta.get('context_length'), 'model_metadata'),
+        (base_meta.get('context_size'), 'model_metadata'),
         (model_meta.get('context_length'), 'model_metadata'),
         (model_meta.get('context_size'), 'model_metadata'),
+        (model_meta.get('n_ctx'), 'model_metadata'),
+        (provider_meta.get('n_ctx'), 'model_metadata'),
+        (provider_meta.get('context_length'), 'model_metadata'),
+        (provider_meta.get('context_size'), 'model_metadata'),
         (model.get('context_length') if isinstance(model, dict) else None, 'model'),
+        (model.get('n_ctx') if isinstance(model, dict) else None, 'model'),
     )
     for value, source in candidates:
         parsed = _parse_positive_int(value)
@@ -319,9 +339,14 @@ def _exceeds_token_threshold(messages: list[dict], system_prompt: str, summary: 
 
     for idx in range(len(messages) - 1, -1, -1):
         usage = messages[idx].get('usage') or (messages[idx].get('info') or {}).get('usage')
-        if isinstance(usage, dict) and usage.get('input_tokens'):
-            total = int(usage.get('input_tokens') or 0) + int(usage.get('output_tokens') or 0)
-            return total + _estimate_messages_tokens(messages[idx + 1 :]) > threshold
+        if isinstance(usage, dict):
+            llama_usage = _llamacpp_context_usage(usage)
+            if llama_usage is not None:
+                total = llama_usage[2]
+                return total + _estimate_messages_tokens(messages[idx + 1 :]) > threshold
+            if usage.get('input_tokens'):
+                total = int(usage.get('input_tokens') or 0) + int(usage.get('output_tokens') or 0)
+                return total + _estimate_messages_tokens(messages[idx + 1 :]) > threshold
 
     estimated = _estimate_tokens(system_prompt) + _estimate_tokens(summary or '') + _estimate_messages_tokens(messages)
     return estimated > threshold
@@ -369,11 +394,12 @@ async def _generate_summary(
         raise ValueError('No available model for context compaction')
 
     summary_prompt_template = summary_prompt_template.strip() or DEFAULT_CONTEXT_COMPACTION_PROMPT
-    all_messages = [*compacted_messages, *recent_messages]
+    summary_recent_messages = recent_messages[-SUMMARY_RECENT_MESSAGE_LIMIT:]
+    all_messages = [*compacted_messages, *summary_recent_messages]
     prompt = replace_prompt_variable(summary_prompt_template, get_last_user_message(all_messages) or '')
     prompt = replace_messages_variable(prompt, all_messages)
     prompt = replace_messages_variable(prompt, compacted_messages, 'COMPACTED_MESSAGES')
-    prompt = replace_messages_variable(prompt, recent_messages, 'RECENT_MESSAGES')
+    prompt = replace_messages_variable(prompt, summary_recent_messages, 'RECENT_MESSAGES')
     prompt = prompt_variables_template(prompt, {'{{PREVIOUS_SUMMARY}}': previous_summary or ''})
     prompt = await prompt_template(prompt, user)
 
@@ -522,6 +548,10 @@ def context_usage_from_model_usage(snapshot: dict | None, usage: dict | None) ->
     )
     total_tokens = _parse_nonnegative_int(usage.get('total_tokens'))
 
+    llama_usage = _llamacpp_context_usage(usage)
+    if llama_usage is not None:
+        input_tokens, output_tokens, total_tokens = llama_usage
+
     has_model_count = input_tokens is not None or output_tokens is not None or total_tokens is not None
     if not has_model_count:
         return snapshot
@@ -537,6 +567,24 @@ def context_usage_from_model_usage(snapshot: dict | None, usage: dict | None) ->
         'output_tokens': output_tokens,
         'estimated': False,
     }
+
+
+def _llamacpp_context_usage(usage: dict) -> tuple[int, int, int] | None:
+    # llama.cpp timings separate the reused cache_n prompt prefix from newly
+    # evaluated prompt_n tokens. Include both to match the slot's final n_tokens.
+    cache_tokens = _parse_nonnegative_int(usage.get('cache_n'))
+    prompt_tokens = _parse_nonnegative_int(usage.get('prompt_n'))
+    if cache_tokens is None or prompt_tokens is None:
+        return None
+
+    output_tokens = _parse_nonnegative_int(usage.get('predicted_n'))
+    if output_tokens is None:
+        output_tokens = _parse_nonnegative_int(
+            usage.get('output_tokens') if usage.get('output_tokens') is not None else usage.get('completion_tokens')
+        )
+    output_tokens = output_tokens or 0
+    input_tokens = cache_tokens + prompt_tokens
+    return input_tokens, output_tokens, input_tokens + output_tokens
 
 
 def _parse_nonnegative_int(value: Any) -> int | None:
