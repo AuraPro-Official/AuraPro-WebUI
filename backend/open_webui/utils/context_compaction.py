@@ -18,7 +18,6 @@ from open_webui.utils.task import (
 
 log = logging.getLogger(__name__)
 
-DEFAULT_CONTEXT_SIZE = 16384
 DEFAULT_CONTEXT_COMPACTION_PERCENT = 75
 SUMMARY_RECENT_MESSAGE_LIMIT = 4
 HARD_TRUNCATION_FEATURES = (
@@ -59,7 +58,6 @@ async def compact_messages_for_request(
     metadata: dict,
     model_id: str,
     models: dict,
-    system_prompt: str = '',
 ) -> tuple[list[dict], str | None, bool]:
     features = metadata.get('features') if isinstance(metadata.get('features'), dict) else {}
     config = await _load_enabled_config(features)
@@ -71,13 +69,9 @@ async def compact_messages_for_request(
     active_messages = [*system_messages, *conversation_messages]
     token_threshold = _resolve_token_threshold(config, metadata, model_id, models)
     if (
-        not _exceeds_token_threshold(
-            conversation_messages,
-            system_prompt,
-            previous_summary,
-            token_threshold,
-        )
+        token_threshold is None
         or len(conversation_messages) <= 3
+        or not _exceeds_token_threshold(conversation_messages, token_threshold)
     ):
         return active_messages, previous_summary, False
 
@@ -250,11 +244,11 @@ def uses_hard_context_truncation(features: dict | None) -> bool:
     return any(features.get(key) for key in HARD_TRUNCATION_FEATURES)
 
 
-def _resolve_context_size(metadata: dict, model_id: str, models: dict) -> int:
+def _resolve_context_size(metadata: dict, model_id: str, models: dict) -> int | None:
     return _resolve_context_size_details(metadata, model_id, models)[0]
 
 
-def _resolve_context_size_details(metadata: dict, model_id: str, models: dict) -> tuple[int, str, bool]:
+def _resolve_context_size_details(metadata: dict, model_id: str, models: dict) -> tuple[int | None, str]:
     params = metadata.get('params') if isinstance(metadata.get('params'), dict) else {}
     model = models.get(model_id, {}) if isinstance(models, dict) else {}
     model_info = model.get('info') if isinstance(model, dict) and isinstance(model.get('info'), dict) else {}
@@ -290,26 +284,25 @@ def _resolve_context_size_details(metadata: dict, model_id: str, models: dict) -
     for value, source in candidates:
         parsed = _parse_positive_int(value)
         if parsed is not None:
-            return parsed, source, False
-    return DEFAULT_CONTEXT_SIZE, 'fallback', True
+            return parsed, source
+    return None, 'unknown'
 
 
-def _resolve_token_threshold(config: dict, metadata: dict, model_id: str, models: dict) -> int:
+def _resolve_token_threshold(config: dict, metadata: dict, model_id: str, models: dict) -> int | None:
     try:
         threshold_percent = int(config.get('threshold_percent', DEFAULT_CONTEXT_COMPACTION_PERCENT))
     except (TypeError, ValueError):
         threshold_percent = DEFAULT_CONTEXT_COMPACTION_PERCENT
     threshold_percent = min(95, max(10, threshold_percent))
 
-    percentage_threshold = max(
-        1,
-        round(_resolve_context_size(metadata, model_id, models) * threshold_percent / 100),
-    )
+    context_size = _resolve_context_size(metadata, model_id, models)
     configured_threshold = _parse_positive_int((metadata.get('params') or {}).get('compact_token_threshold'))
-    thresholds = [percentage_threshold]
+    thresholds = []
+    if context_size is not None:
+        thresholds.append(max(1, round(context_size * threshold_percent / 100)))
     if configured_threshold is not None:
         thresholds.append(configured_threshold)
-    return min(thresholds)
+    return min(thresholds) if thresholds else None
 
 
 def _split_system_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -333,23 +326,34 @@ def _apply_latest_summary_checkpoint(messages: list[dict]) -> tuple[list[dict], 
     return messages[summary_idx:], summary
 
 
-def _exceeds_token_threshold(messages: list[dict], system_prompt: str, summary: str | None, threshold: int) -> bool:
+def _exceeds_token_threshold(messages: list[dict], threshold: int) -> bool:
     if threshold <= 0:
         return False
 
-    for idx in range(len(messages) - 1, -1, -1):
-        usage = messages[idx].get('usage') or (messages[idx].get('info') or {}).get('usage')
+    for message in reversed(messages):
+        usage = message.get('usage') or (message.get('info') or {}).get('usage')
         if isinstance(usage, dict):
             llama_usage = _llamacpp_context_usage(usage)
             if llama_usage is not None:
-                total = llama_usage[2]
-                return total + _estimate_messages_tokens(messages[idx + 1 :]) > threshold
-            if usage.get('input_tokens'):
-                total = int(usage.get('input_tokens') or 0) + int(usage.get('output_tokens') or 0)
-                return total + _estimate_messages_tokens(messages[idx + 1 :]) > threshold
+                return llama_usage[2] >= threshold
 
-    estimated = _estimate_tokens(system_prompt) + _estimate_tokens(summary or '') + _estimate_messages_tokens(messages)
-    return estimated > threshold
+            input_tokens = _parse_nonnegative_int(
+                usage.get('input_tokens')
+                if usage.get('input_tokens') is not None
+                else usage.get('prompt_tokens', usage.get('prompt_eval_count'))
+            )
+            output_tokens = _parse_nonnegative_int(
+                usage.get('output_tokens')
+                if usage.get('output_tokens') is not None
+                else usage.get('completion_tokens', usage.get('eval_count'))
+            )
+            total_tokens = _parse_nonnegative_int(usage.get('total_tokens'))
+            if total_tokens is not None:
+                return total_tokens >= threshold
+            if input_tokens is not None or output_tokens is not None:
+                return (input_tokens or 0) + (output_tokens or 0) >= threshold
+
+    return False
 
 
 def _find_compaction_boundary(messages: list[dict]) -> int:
@@ -458,72 +462,30 @@ def _response_text(response: Any) -> str:
     return '\n'.join(part for part in parts if part)
 
 
-def _estimate_messages_tokens(messages: list[dict]) -> int:
-    total = 0
-    for message in messages:
-        total += 4
-        content = message.get('content')
-        if isinstance(content, list):
-            for item in content:
-                if not isinstance(item, dict):
-                    total += _estimate_tokens(item)
-                elif item.get('type') in {'image', 'image_url'}:
-                    total += 1000
-                else:
-                    total += _estimate_tokens(item.get('text') or item.get('content') or item)
-        else:
-            total += _estimate_tokens(content)
-
-        total += _estimate_tokens(message.get('output'))
-        total += _estimate_tokens(message.get('tool_calls'))
-        total += _estimate_tokens(message.get('files'))
-    return total
-
-
-def _estimate_tokens(value: Any) -> int:
-    if value is None:
-        return 0
-
-    if not isinstance(value, str):
-        try:
-            value = json.dumps(value, ensure_ascii=False)
-        except Exception:
-            value = str(value)
-
-    if not value:
-        return 0
-
-    return max(1, len(value) // 4)
-
-
 async def build_context_usage_snapshot(
-    messages: list[dict],
     metadata: dict,
     model_id: str,
     models: dict,
     *,
-    tools: Any = None,
     compacted: bool = False,
 ) -> dict:
     config = await _load_config()
     features = metadata.get('features') if isinstance(metadata.get('features'), dict) else {}
-    context_size, limit_source, limit_estimated = _resolve_context_size_details(metadata, model_id, models)
+    context_size, limit_source = _resolve_context_size_details(metadata, model_id, models)
     threshold_tokens = _resolve_token_threshold(config, metadata, model_id, models)
     hard_truncation = uses_hard_context_truncation(features)
     user_enabled = features.get('context_compaction')
     compaction_enabled = user_enabled if isinstance(user_enabled, bool) else config['enable']
 
-    used_tokens = _estimate_messages_tokens(messages) + _estimate_tokens(tools)
     return {
-        'used_tokens': used_tokens,
-        'input_tokens': used_tokens,
-        'output_tokens': 0,
         'limit_tokens': context_size,
         'limit_source': limit_source,
-        'limit_estimated': limit_estimated,
         'threshold_tokens': threshold_tokens,
-        'threshold_percent': round(threshold_tokens * 100 / context_size, 1),
-        'estimated': True,
+        'threshold_percent': (
+            round(threshold_tokens * 100 / context_size, 1)
+            if threshold_tokens is not None and context_size is not None
+            else None
+        ),
         'compacted': compacted,
         'compaction_enabled': bool(compaction_enabled and not hard_truncation),
         'hard_truncation': hard_truncation,
@@ -534,7 +496,7 @@ def context_usage_from_model_usage(snapshot: dict | None, usage: dict | None) ->
     if not isinstance(snapshot, dict):
         return None
     if not isinstance(usage, dict) or not usage:
-        return snapshot
+        return None
 
     input_tokens = _parse_nonnegative_int(
         usage.get('input_tokens')
@@ -554,7 +516,7 @@ def context_usage_from_model_usage(snapshot: dict | None, usage: dict | None) ->
 
     has_model_count = input_tokens is not None or output_tokens is not None or total_tokens is not None
     if not has_model_count:
-        return snapshot
+        return None
 
     input_tokens = input_tokens or 0
     output_tokens = output_tokens or 0
@@ -565,7 +527,6 @@ def context_usage_from_model_usage(snapshot: dict | None, usage: dict | None) ->
         'used_tokens': used_tokens,
         'input_tokens': input_tokens,
         'output_tokens': output_tokens,
-        'estimated': False,
     }
 
 

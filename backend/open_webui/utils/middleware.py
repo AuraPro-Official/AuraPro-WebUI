@@ -2211,7 +2211,7 @@ async def convert_url_images_to_base64(form_data, user=None):
 async def load_messages_from_db(chat_id: str, message_id: str) -> Optional[list[dict]]:
     """
     Load the message chain from DB up to message_id,
-    keeping only LLM-relevant fields (role, content, output).
+    retaining exact model usage until context compaction has run.
     """
     messages_map = await Chats.get_messages_map_by_chat_id(chat_id)
     if not messages_map:
@@ -2222,7 +2222,11 @@ async def load_messages_from_db(chat_id: str, message_id: str) -> Optional[list[
         return None
 
     return [
-        {k: v for k, v in msg.items() if k in ('role', 'content', 'output', 'files', 'contextSummary')}
+        {
+            k: v
+            for k, v in msg.items()
+            if k in ('role', 'content', 'output', 'files', 'contextSummary', 'usage')
+        }
         for msg in db_messages
     ]
 
@@ -2296,6 +2300,11 @@ def strip_compaction_fields(messages: list[dict]) -> list[dict]:
         clean = dict(message)
         clean.pop('contextSummary', None)
         clean.pop('context_summary', None)
+        clean.pop('usage', None)
+        clean.pop('info', None)
+        clean.pop('model', None)
+        clean.pop('model_id', None)
+        clean.pop('selectedModelId', None)
         stripped.append(clean)
     return stripped
 
@@ -2469,7 +2478,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         {
                             k: v
                             for k, v in assistant_message.items()
-                            if k in ('role', 'content', 'output', 'files', 'contextSummary')
+                            if k in ('role', 'content', 'output', 'files', 'contextSummary', 'usage')
                         }
                     )
 
@@ -2504,9 +2513,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         else:
             compaction_models = request.app.state.MODELS
 
-        system_message = get_system_message(form_data.get('messages', []))
-        system_prompt = get_content_from_message(system_message) if system_message else ''
-
         try:
             form_data['messages'], context_summary, context_was_compacted = await compact_messages_for_request(
                 request,
@@ -2515,7 +2521,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 metadata,
                 form_data.get('model'),
                 compaction_models,
-                system_prompt,
             )
             if context_summary:
                 form_data['messages'] = add_or_update_system_message(
@@ -3165,15 +3170,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         'params': form_data.get('params') or metadata.get('params') or {},
     }
     context_usage = await build_context_usage_snapshot(
-        form_data.get('messages', []),
         context_usage_metadata,
         form_data.get('model'),
         models,
-        tools=form_data.get('tools'),
         compacted=context_was_compacted,
     )
     metadata['context_usage'] = context_usage
-    events.append({'contextUsage': context_usage})
 
     return form_data, metadata, events
 

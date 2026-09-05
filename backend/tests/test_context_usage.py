@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -8,20 +9,26 @@ from open_webui.utils.context_compaction import (
     _generate_summary,
     _resolve_context_size_details,
     _resolve_token_threshold,
+    build_context_usage_snapshot,
     compact_messages_for_request,
     context_usage_from_model_usage,
     uses_hard_context_truncation,
 )
+from open_webui.utils.middleware import load_messages_from_db, strip_compaction_fields
 
 
 class ContextUsageTest(unittest.TestCase):
-    def test_llama_usage_replaces_estimate(self):
+    def test_missing_model_usage_does_not_expose_estimate(self):
         snapshot = {
-            'used_tokens': 9000,
-            'input_tokens': 9000,
-            'output_tokens': 0,
             'limit_tokens': 32768,
-            'estimated': True,
+        }
+
+        self.assertIsNone(context_usage_from_model_usage(snapshot, None))
+        self.assertIsNone(context_usage_from_model_usage(snapshot, {}))
+
+    def test_llama_usage_populates_exact_snapshot(self):
+        snapshot = {
+            'limit_tokens': 32768,
             'compacted': True,
         }
 
@@ -33,16 +40,11 @@ class ContextUsageTest(unittest.TestCase):
         self.assertEqual(result['used_tokens'], 6600)
         self.assertEqual(result['input_tokens'], 6200)
         self.assertEqual(result['output_tokens'], 400)
-        self.assertFalse(result['estimated'])
         self.assertTrue(result['compacted'])
 
     def test_llamacpp_usage_includes_reused_prompt_cache(self):
         snapshot = {
-            'used_tokens': 1500,
-            'input_tokens': 1500,
-            'output_tokens': 0,
             'limit_tokens': 20224,
-            'estimated': True,
         }
 
         result = context_usage_from_model_usage(
@@ -61,10 +63,9 @@ class ContextUsageTest(unittest.TestCase):
         self.assertEqual(result['input_tokens'], 19221)
         self.assertEqual(result['output_tokens'], 168)
         self.assertEqual(result['used_tokens'], 19389)
-        self.assertFalse(result['estimated'])
 
     def test_request_context_limit_takes_precedence(self):
-        context_size, source, estimated = _resolve_context_size_details(
+        context_size, source = _resolve_context_size_details(
             {'params': {'num_ctx': 16384}},
             'model-1',
             {
@@ -79,10 +80,9 @@ class ContextUsageTest(unittest.TestCase):
 
         self.assertEqual(context_size, 16384)
         self.assertEqual(source, 'request')
-        self.assertFalse(estimated)
 
     def test_llamacpp_model_metadata_context_limit_is_used(self):
-        context_size, source, estimated = _resolve_context_size_details(
+        context_size, source = _resolve_context_size_details(
             {},
             'model-1',
             {'model-1': {'meta': {'n_ctx': 20224}}},
@@ -90,7 +90,6 @@ class ContextUsageTest(unittest.TestCase):
 
         self.assertEqual(context_size, 20224)
         self.assertEqual(source, 'model_metadata')
-        self.assertFalse(estimated)
 
     def test_cached_llamacpp_context_triggers_compaction(self):
         messages = [
@@ -107,14 +106,44 @@ class ContextUsageTest(unittest.TestCase):
             {'role': 'user', 'content': 'continue'},
         ]
 
-        self.assertTrue(_exceeds_token_threshold(messages, '', None, 15168))
+        self.assertTrue(_exceeds_token_threshold(messages, 15168))
 
-    def test_unknown_context_limit_is_marked_as_estimated(self):
-        context_size, source, estimated = _resolve_context_size_details({}, 'missing', {})
+    def test_unknown_context_limit_is_not_guessed(self):
+        context_size, source = _resolve_context_size_details({}, 'missing', {})
 
-        self.assertEqual(context_size, 16384)
-        self.assertEqual(source, 'fallback')
-        self.assertTrue(estimated)
+        self.assertIsNone(context_size)
+        self.assertEqual(source, 'unknown')
+        self.assertIsNone(
+            _resolve_token_threshold(
+                {'threshold_percent': 75},
+                {},
+                'missing',
+                {},
+            )
+        )
+
+    def test_messages_without_exact_usage_do_not_trigger_compaction(self):
+        messages = [
+            {'role': 'user', 'content': 'A' * 100000},
+            {'role': 'assistant', 'content': 'B' * 100000},
+        ]
+
+        self.assertFalse(_exceeds_token_threshold(messages, 100))
+
+    def test_latest_exact_usage_is_reused_after_model_switch(self):
+        messages = [
+            {
+                'role': 'assistant',
+                'model': 'model-1',
+                'usage': {
+                    'input_tokens': 16000,
+                    'output_tokens': 1000,
+                    'total_tokens': 17000,
+                },
+            }
+        ]
+
+        self.assertTrue(_exceeds_token_threshold(messages, 15168))
 
     def test_percentage_threshold_is_not_capped_by_legacy_global_limit(self):
         threshold = _resolve_token_threshold(
@@ -156,6 +185,32 @@ class ContextUsageTest(unittest.TestCase):
 
 
 class ContextCompactionFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_pre_request_snapshot_contains_no_estimated_token_values(self):
+        config = {
+            'enable': True,
+            'token_threshold': 80000,
+            'threshold_percent': 75,
+            'prompt_template': '',
+        }
+
+        with patch(
+            'open_webui.utils.context_compaction._load_config',
+            AsyncMock(return_value=config),
+        ):
+            snapshot = await build_context_usage_snapshot(
+                {},
+                'model-1',
+                {'model-1': {'meta': {'n_ctx': 20224}}},
+            )
+
+        self.assertEqual(snapshot['limit_tokens'], 20224)
+        self.assertEqual(snapshot['threshold_tokens'], 15168)
+        self.assertNotIn('used_tokens', snapshot)
+        self.assertNotIn('input_tokens', snapshot)
+        self.assertNotIn('output_tokens', snapshot)
+        self.assertNotIn('estimated', snapshot)
+        self.assertNotIn('limit_estimated', snapshot)
+
     async def test_summary_request_only_includes_recent_context_tail(self):
         recent_messages = [{'role': 'user', 'content': f'recent-message-{index}'} for index in range(6)]
         generate_completion = AsyncMock(return_value={'choices': [{'message': {'content': 'compact summary'}}]})
@@ -194,7 +249,16 @@ class ContextCompactionFlowTest(unittest.IsolatedAsyncioTestCase):
             {'role': 'user', 'content': 'A' * 120},
             {'role': 'assistant', 'content': 'B' * 120},
             {'role': 'user', 'content': 'C' * 120},
-            {'role': 'assistant', 'content': 'D' * 120},
+            {
+                'role': 'assistant',
+                'content': 'D' * 120,
+                'model': 'model-1',
+                'usage': {
+                    'input_tokens': 70,
+                    'output_tokens': 20,
+                    'total_tokens': 90,
+                },
+            },
             {'role': 'user', 'content': 'E' * 120},
         ]
         config = {
@@ -222,7 +286,6 @@ class ContextCompactionFlowTest(unittest.IsolatedAsyncioTestCase):
                 metadata={},
                 model_id='model-1',
                 models={'model-1': {'info': {'params': {'num_ctx': 100}}}},
-                system_prompt=messages[0]['content'],
             )
 
         self.assertTrue(compacted)
@@ -269,7 +332,6 @@ class ContextCompactionFlowTest(unittest.IsolatedAsyncioTestCase):
                 metadata={},
                 model_id='model-1',
                 models={'model-1': {'info': {'params': {'num_ctx': 32768}}}},
-                system_prompt=messages[0]['content'],
             )
 
         self.assertFalse(compacted)
@@ -284,6 +346,64 @@ class ContextCompactionFlowTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
         generate_summary.assert_not_awaited()
+
+    async def test_compaction_persists_checkpoint_without_deleting_full_history(self):
+        messages = [
+            {'role': 'system', 'content': 'System instruction'},
+            {'role': 'user', 'content': 'old user'},
+            {'role': 'assistant', 'content': 'old assistant'},
+            {'role': 'user', 'content': 'recent user'},
+            {
+                'role': 'assistant',
+                'content': 'recent assistant',
+                'usage': {'total_tokens': 90},
+            },
+            {'role': 'user', 'content': 'current user'},
+        ]
+        original_messages = deepcopy(messages)
+        config = {
+            'enable': True,
+            'token_threshold': 80000,
+            'threshold_percent': 75,
+            'prompt_template': '',
+        }
+        persist_checkpoint = AsyncMock(return_value=True)
+
+        with (
+            patch(
+                'open_webui.utils.context_compaction._load_config',
+                AsyncMock(return_value=config),
+            ),
+            patch(
+                'open_webui.utils.context_compaction._generate_summary',
+                AsyncMock(return_value='persisted summary'),
+            ),
+            patch(
+                'open_webui.utils.context_compaction.Chats.upsert_message_to_chat_by_id_and_message_id',
+                persist_checkpoint,
+            ),
+        ):
+            request_messages, summary, compacted = await compact_messages_for_request(
+                request=object(),
+                user=object(),
+                messages=messages,
+                metadata={
+                    'chat_id': 'chat-1',
+                    'user_message_id': 'current-user',
+                },
+                model_id='new-model',
+                models={'new-model': {'info': {'params': {'num_ctx': 100}}}},
+            )
+
+        self.assertTrue(compacted)
+        self.assertEqual(summary, 'persisted summary')
+        self.assertEqual(messages, original_messages)
+        self.assertLess(len(request_messages), len(messages))
+        persist_checkpoint.assert_awaited_once_with(
+            'chat-1',
+            'current-user',
+            {'contextSummary': 'persisted summary'},
+        )
 
     async def test_hard_truncation_mode_bypasses_summary_without_loading_config(self):
         messages = [
@@ -310,6 +430,153 @@ class ContextCompactionFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(summary)
         self.assertFalse(compacted)
         load_config.assert_not_awaited()
+
+
+class ContextCompactionMessageFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_database_messages_retain_exact_usage_for_compaction(self):
+        usage = {
+            'cache_n': 19745,
+            'prompt_n': 447,
+            'predicted_n': 31,
+        }
+        messages = [
+            {
+                'role': 'assistant',
+                'content': 'answer',
+                'model': 'high_Q4',
+                'usage': usage,
+            },
+            {'role': 'user', 'content': 'continue'},
+        ]
+
+        get_messages_map = AsyncMock(return_value={'message': {}})
+        get_message_list_mock = unittest.mock.Mock(return_value=messages)
+
+        with (
+            patch(
+                'open_webui.utils.middleware.Chats.get_messages_map_by_chat_id',
+                get_messages_map,
+            ),
+            patch(
+                'open_webui.utils.middleware.get_message_list',
+                get_message_list_mock,
+            ),
+        ):
+            result = await load_messages_from_db('chat-1', 'user-2')
+
+        get_messages_map.assert_awaited_once_with('chat-1')
+        get_message_list_mock.assert_called_once_with({'message': {}}, 'user-2')
+        self.assertNotIn('model', result[0])
+        self.assertEqual(result[0]['usage'], usage)
+
+    async def test_database_history_is_scoped_to_selected_chat_and_branch(self):
+        first_map = {'first': {}}
+        second_map = {'second': {}}
+        get_messages_map = AsyncMock(side_effect=[first_map, second_map])
+        get_message_list_mock = unittest.mock.Mock(
+            side_effect=[
+                [{'role': 'user', 'content': 'first conversation'}],
+                [{'role': 'user', 'content': 'second conversation'}],
+            ]
+        )
+
+        with (
+            patch(
+                'open_webui.utils.middleware.Chats.get_messages_map_by_chat_id',
+                get_messages_map,
+            ),
+            patch(
+                'open_webui.utils.middleware.get_message_list',
+                get_message_list_mock,
+            ),
+        ):
+            first = await load_messages_from_db('chat-1', 'branch-1')
+            second = await load_messages_from_db('chat-2', 'branch-2')
+
+        self.assertEqual(first[0]['content'], 'first conversation')
+        self.assertEqual(second[0]['content'], 'second conversation')
+        self.assertEqual(
+            get_messages_map.await_args_list,
+            [unittest.mock.call('chat-1'), unittest.mock.call('chat-2')],
+        )
+        self.assertEqual(
+            get_message_list_mock.call_args_list,
+            [
+                unittest.mock.call(first_map, 'branch-1'),
+                unittest.mock.call(second_map, 'branch-2'),
+            ],
+        )
+
+    async def test_persisted_checkpoint_is_restored_for_a_later_model(self):
+        persisted_messages = [
+            {'role': 'user', 'content': 'old user'},
+            {'role': 'assistant', 'content': 'old assistant'},
+            {
+                'role': 'user',
+                'content': 'checkpoint user',
+                'contextSummary': 'saved yesterday',
+            },
+            {
+                'role': 'assistant',
+                'content': 'recent assistant',
+                'usage': {'total_tokens': 20},
+            },
+            {'role': 'user', 'content': 'continue today'},
+        ]
+        config = {
+            'enable': True,
+            'token_threshold': 80000,
+            'threshold_percent': 75,
+            'prompt_template': '',
+        }
+
+        with (
+            patch(
+                'open_webui.utils.middleware.Chats.get_messages_map_by_chat_id',
+                AsyncMock(return_value={'message': {}}),
+            ),
+            patch(
+                'open_webui.utils.middleware.get_message_list',
+                return_value=persisted_messages,
+            ),
+        ):
+            loaded_messages = await load_messages_from_db('chat-1', 'today-user')
+
+        with patch(
+            'open_webui.utils.context_compaction._load_config',
+            AsyncMock(return_value=config),
+        ):
+            request_messages, summary, compacted = await compact_messages_for_request(
+                request=object(),
+                user=object(),
+                messages=loaded_messages,
+                metadata={},
+                model_id='different-model',
+                models={'different-model': {'info': {'params': {'num_ctx': 32768}}}},
+            )
+
+        self.assertFalse(compacted)
+        self.assertEqual(summary, 'saved yesterday')
+        self.assertEqual(
+            [message['content'] for message in request_messages],
+            ['checkpoint user', 'recent assistant', 'continue today'],
+        )
+
+    async def test_internal_usage_fields_are_removed_before_model_request(self):
+        messages = [
+            {
+                'role': 'assistant',
+                'content': 'answer',
+                'model': 'high_Q4',
+                'usage': {'total_tokens': 17000},
+                'info': {'usage': {'total_tokens': 17000}},
+                'contextSummary': 'summary',
+            }
+        ]
+
+        result = strip_compaction_fields(messages)
+
+        self.assertEqual(result, [{'role': 'assistant', 'content': 'answer'}])
 
 
 if __name__ == '__main__':

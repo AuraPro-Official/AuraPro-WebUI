@@ -13,9 +13,9 @@ export type ContextUsageSnapshot = {
 	output_tokens?: number;
 	limit_tokens?: number;
 	limit_source?: string;
-	limit_estimated?: boolean;
 	threshold_tokens?: number;
 	threshold_percent?: number;
+	// Read-only compatibility marker for estimates saved by v3.9.35.
 	estimated?: boolean;
 	compacted?: boolean;
 	compaction_enabled?: boolean;
@@ -31,8 +31,6 @@ export type ContextUsageDetails = {
 	percent: number | null;
 	thresholdTokens: number | null;
 	thresholdPercent: number | null;
-	estimated: boolean;
-	limitEstimated: boolean;
 	compacted: boolean;
 	compactionEnabled: boolean;
 	hardTruncation: boolean;
@@ -70,7 +68,8 @@ const findLatestContextMessage = (history: ContextUsageOptions['history']) => {
 		visited.add(messageId);
 		const message = messages[messageId];
 		if (!message) break;
-		if (message.role === 'assistant' && (message.contextUsage || message.usage)) {
+		const hasExactSnapshot = message.contextUsage && message.contextUsage.estimated !== true;
+		if (message.role === 'assistant' && (hasExactSnapshot || message.usage)) {
 			return message;
 		}
 		messageId = message.parentId ?? null;
@@ -84,13 +83,29 @@ const resolveModelContextLimit = (model: unknown, requestParams: Record<string, 
 	const modelInfo = asRecord(modelRecord.info);
 	const modelParams = asRecord(modelInfo.params);
 	const modelMeta = asRecord(modelInfo.meta);
+	const providerMeta = asRecord(asRecord(modelRecord.openai).meta);
+	const baseMeta = asRecord(modelRecord.meta);
 	const candidates = [
 		requestParams?.num_ctx,
+		requestParams?.n_ctx,
+		requestParams?.ctx_size,
 		requestParams?.context_length,
+		requestParams?.context_size,
 		modelParams?.num_ctx,
+		modelParams?.n_ctx,
+		modelParams?.ctx_size,
 		modelParams?.context_length,
+		modelParams?.context_size,
+		baseMeta?.n_ctx,
+		baseMeta?.context_length,
+		baseMeta?.context_size,
+		modelMeta?.n_ctx,
 		modelMeta?.context_length,
 		modelMeta?.context_size,
+		providerMeta?.n_ctx,
+		providerMeta?.context_length,
+		providerMeta?.context_size,
+		modelRecord.n_ctx,
 		modelRecord.context_length
 	];
 
@@ -104,9 +119,13 @@ const resolveModelContextLimit = (model: unknown, requestParams: Record<string, 
 
 const normalizeLegacyUsage = (usage: TokenUsage | null | undefined) => {
 	if (!usage) return null;
-	const inputTokens = toNonnegativeNumber(
+	const promptTokens = toNonnegativeNumber(
 		usage.input_tokens ?? usage.prompt_tokens ?? usage.prompt_eval_count ?? usage.prompt_n
 	);
+	const cacheTokens = toNonnegativeNumber(usage.cache_n);
+	const llamaPromptTokens = toNonnegativeNumber(usage.prompt_n);
+	const hasLlamaCacheUsage = cacheTokens !== null && llamaPromptTokens !== null;
+	const inputTokens = hasLlamaCacheUsage ? cacheTokens + llamaPromptTokens : promptTokens;
 	const outputTokens = toNonnegativeNumber(
 		usage.output_tokens ?? usage.completion_tokens ?? usage.eval_count ?? usage.predicted_n
 	);
@@ -118,7 +137,7 @@ const normalizeLegacyUsage = (usage: TokenUsage | null | undefined) => {
 	return {
 		inputTokens: input,
 		outputTokens: output,
-		usedTokens: totalTokens ?? input + output
+		usedTokens: hasLlamaCacheUsage ? input + output : (totalTokens ?? input + output)
 	};
 };
 
@@ -139,7 +158,9 @@ export const resolveContextUsage = ({
 	requestParams = {}
 }: ContextUsageOptions): ContextUsageDetails => {
 	const message = findLatestContextMessage(history);
-	const snapshot = (message?.contextUsage ?? null) as ContextUsageSnapshot | null;
+	const snapshot = (
+		message?.contextUsage?.estimated === true ? null : (message?.contextUsage ?? null)
+	) as ContextUsageSnapshot | null;
 	const legacyUsage = snapshot ? null : normalizeLegacyUsage(message?.usage);
 
 	const snapshotUsed = toNonnegativeNumber(snapshot?.used_tokens);
@@ -170,8 +191,6 @@ export const resolveContextUsage = ({
 		percent,
 		thresholdTokens,
 		thresholdPercent,
-		estimated: snapshot ? Boolean(snapshot.estimated) : false,
-		limitEstimated: Boolean(snapshot?.limit_estimated),
 		compacted: Boolean(snapshot?.compacted),
 		compactionEnabled: snapshot?.compaction_enabled ?? true,
 		hardTruncation: Boolean(snapshot?.hard_truncation),

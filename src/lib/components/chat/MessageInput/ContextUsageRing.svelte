@@ -77,9 +77,7 @@
 					? $i18n.t('Context was compacted for the latest request')
 					: $i18n.t('Enabled');
 	$: sourceLabel = details.available
-		? details.estimated
-			? $i18n.t('Estimated token count')
-			: $i18n.t('Exact model usage')
+		? $i18n.t('Exact model usage')
 		: $i18n.t('Waiting for model usage');
 	$: tooltipContent = `
 		<div style="min-width: 238px; text-align: left; line-height: 1.55;">
@@ -94,9 +92,7 @@
 				details.thresholdPercent === null ? '' : ` (${Math.round(details.thresholdPercent)}%)`
 			}</div>
 			<div>${escapeHtml($i18n.t('Automatic context compaction'))}: ${escapeHtml(compactionStatus)}</div>
-			<div style="margin-top: 5px; opacity: 0.72;">${escapeHtml(sourceLabel)}${
-				details.limitEstimated ? ` · ${escapeHtml($i18n.t('Context limit estimated'))}` : ''
-			}</div>
+			<div style="margin-top: 5px; opacity: 0.72;">${escapeHtml(sourceLabel)}</div>
 		</div>
 	`;
 	$: ariaLabel =
