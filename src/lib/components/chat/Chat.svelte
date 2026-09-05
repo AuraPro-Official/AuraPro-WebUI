@@ -242,6 +242,7 @@
 	let dragged = false;
 	let generationController = null;
 	let contextCompactionToastId = null;
+	let contextCompactionActive = false;
 
 	let chat: Awaited<ReturnType<typeof getChatById>> | null = null;
 	let tags = [];
@@ -777,6 +778,7 @@
 	};
 
 	const dismissContextCompactionToast = () => {
+		contextCompactionActive = false;
 		if (contextCompactionToastId !== null) {
 			toast.dismiss(contextCompactionToastId);
 			contextCompactionToastId = null;
@@ -789,6 +791,7 @@
 		}
 
 		if (status?.done) {
+			contextCompactionActive = false;
 			if (contextCompactionToastId !== null) {
 				if (status?.error) {
 					toast.error($i18n.t('Context compaction failed'), {
@@ -807,6 +810,7 @@
 		}
 
 		if (contextCompactionToastId === null) {
+			contextCompactionActive = true;
 			contextCompactionToastId = toast.loading($i18n.t('Compacting context'), {
 				duration: Infinity
 			});
@@ -2333,6 +2337,7 @@
 			selected_model_id,
 			error,
 			usage,
+			contextUsage,
 			opencode
 		} = data;
 
@@ -2388,6 +2393,10 @@
 
 		if (usage) {
 			message.usage = usage;
+		}
+
+		if (contextUsage) {
+			message.contextUsage = contextUsage;
 		}
 
 		if (opencode) {
@@ -3790,6 +3799,8 @@
 										onConversationGlossaryChange={updateConversationGlossary}
 										{openCodeConfig}
 										onOpenCodeConfigChange={updateOpenCodeConfig}
+										chatParams={params}
+										{contextCompactionActive}
 										{generating}
 										{stopResponse}
 										{createMessagePair}

@@ -5,7 +5,6 @@ import logging
 from typing import Any
 
 from fastapi.responses import JSONResponse
-
 from open_webui.models.chats import Chats
 from open_webui.models.config import Config
 from open_webui.utils.misc import get_content_from_message, get_last_user_message, get_message_list
@@ -61,26 +60,31 @@ async def compact_messages_for_request(
     models: dict,
     system_prompt: str = '',
 ) -> tuple[list[dict], str | None, bool]:
-    config = await _load_config()
     features = metadata.get('features') if isinstance(metadata.get('features'), dict) else {}
-    if uses_hard_context_truncation(features):
+    config = await _load_enabled_config(features)
+    if config is None:
         return messages, None, False
 
-    user_enabled = features.get('context_compaction')
-    enabled = user_enabled if isinstance(user_enabled, bool) else config['enable']
-    if not enabled:
-        return messages, None, False
-
-    messages, previous_summary = _apply_latest_summary_checkpoint(messages)
+    system_messages, conversation_messages = _split_system_messages(messages)
+    conversation_messages, previous_summary = _apply_latest_summary_checkpoint(conversation_messages)
+    active_messages = [*system_messages, *conversation_messages]
     token_threshold = _resolve_token_threshold(config, metadata, model_id, models)
-    if not _exceeds_token_threshold(messages, system_prompt, previous_summary, token_threshold) or len(messages) <= 3:
-        return messages, previous_summary, False
+    if (
+        not _exceeds_token_threshold(
+            conversation_messages,
+            system_prompt,
+            previous_summary,
+            token_threshold,
+        )
+        or len(conversation_messages) <= 3
+    ):
+        return active_messages, previous_summary, False
 
-    boundary = _find_compaction_boundary(messages)
-    compacted_messages = messages[:boundary]
-    recent_messages = messages[boundary:]
+    boundary = _find_compaction_boundary(conversation_messages)
+    compacted_messages = conversation_messages[:boundary]
+    recent_messages = conversation_messages[boundary:]
     if not compacted_messages or not recent_messages:
-        return messages, previous_summary, False
+        return active_messages, previous_summary, False
 
     event_emitter = None
     if metadata.get('chat_id') and metadata.get('message_id'):
@@ -157,7 +161,7 @@ async def compact_messages_for_request(
             }
         )
 
-    return recent_messages, summary, True
+    return [*system_messages, *recent_messages], summary, True
 
 
 async def compact_chat_branch(request, user, chat: Any, model_id: str, models: dict) -> dict:
@@ -219,6 +223,19 @@ async def _load_config() -> dict:
     }
 
 
+async def _load_enabled_config(features: dict) -> dict | None:
+    if uses_hard_context_truncation(features):
+        return None
+
+    user_enabled = features.get('context_compaction')
+    if user_enabled is False:
+        return None
+
+    config = await _load_config()
+    enabled = user_enabled if isinstance(user_enabled, bool) else config['enable']
+    return config if enabled else None
+
+
 def _parse_positive_int(value: Any) -> int | None:
     try:
         parsed = int(value)
@@ -233,6 +250,10 @@ def uses_hard_context_truncation(features: dict | None) -> bool:
 
 
 def _resolve_context_size(metadata: dict, model_id: str, models: dict) -> int:
+    return _resolve_context_size_details(metadata, model_id, models)[0]
+
+
+def _resolve_context_size_details(metadata: dict, model_id: str, models: dict) -> tuple[int, str, bool]:
     params = metadata.get('params') if isinstance(metadata.get('params'), dict) else {}
     model = models.get(model_id, {}) if isinstance(models, dict) else {}
     model_info = model.get('info') if isinstance(model, dict) and isinstance(model.get('info'), dict) else {}
@@ -240,17 +261,17 @@ def _resolve_context_size(metadata: dict, model_id: str, models: dict) -> int:
     model_meta = model_info.get('meta') if isinstance(model_info.get('meta'), dict) else {}
 
     candidates = (
-        params.get('num_ctx'),
-        model_params.get('num_ctx'),
-        model_meta.get('context_length'),
-        model_meta.get('context_size'),
-        model.get('context_length') if isinstance(model, dict) else None,
+        (params.get('num_ctx'), 'request'),
+        (model_params.get('num_ctx'), 'model_params'),
+        (model_meta.get('context_length'), 'model_metadata'),
+        (model_meta.get('context_size'), 'model_metadata'),
+        (model.get('context_length') if isinstance(model, dict) else None, 'model'),
     )
-    for value in candidates:
+    for value, source in candidates:
         parsed = _parse_positive_int(value)
         if parsed is not None:
-            return parsed
-    return DEFAULT_CONTEXT_SIZE
+            return parsed, source, False
+    return DEFAULT_CONTEXT_SIZE, 'fallback', True
 
 
 def _resolve_token_threshold(config: dict, metadata: dict, model_id: str, models: dict) -> int:
@@ -266,12 +287,15 @@ def _resolve_token_threshold(config: dict, metadata: dict, model_id: str, models
     )
     configured_threshold = _parse_positive_int((metadata.get('params') or {}).get('compact_token_threshold'))
     thresholds = [percentage_threshold]
-    parsed_global_threshold = _parse_positive_int(config.get('token_threshold'))
-    if parsed_global_threshold is not None:
-        thresholds.append(parsed_global_threshold)
     if configured_threshold is not None:
         thresholds.append(configured_threshold)
     return min(thresholds)
+
+
+def _split_system_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
+    system_messages = [message for message in messages if message.get('role') == 'system']
+    conversation_messages = [message for message in messages if message.get('role') != 'system']
+    return system_messages, conversation_messages
 
 
 def _apply_latest_summary_checkpoint(messages: list[dict]) -> tuple[list[dict], str | None]:
@@ -305,17 +329,20 @@ def _exceeds_token_threshold(messages: list[dict], system_prompt: str, summary: 
 
 def _find_compaction_boundary(messages: list[dict]) -> int:
     keep_count = max(2, len(messages) * 2 // 5)
-    split = max(1, len(messages) - keep_count)
+    max_split = max(1, len(messages) - 2)
+    target = min(max_split, max(1, len(messages) - keep_count))
 
-    while split < len(messages) - 1:
-        previous = messages[split - 1] if split > 0 else {}
-        current = messages[split]
-        if current.get('role') == 'tool' or previous.get('tool_calls') or previous.get('output'):
-            split += 1
-            continue
-        break
+    # Start retained history at a complete user turn whenever possible.
+    candidates = [index for index in range(1, max_split + 1) if messages[index].get('role') == 'user']
+    if candidates:
+        return min(candidates, key=lambda index: (abs(index - target), index > target))
 
-    return min(split, len(messages) - 2)
+    split = target
+    while split > 1 and messages[split].get('role') == 'tool':
+        split -= 1
+    if split > 1 and messages[split - 1].get('tool_calls'):
+        split -= 1
+    return split
 
 
 async def _generate_summary(
@@ -441,3 +468,80 @@ def _estimate_tokens(value: Any) -> int:
         return 0
 
     return max(1, len(value) // 4)
+
+
+async def build_context_usage_snapshot(
+    messages: list[dict],
+    metadata: dict,
+    model_id: str,
+    models: dict,
+    *,
+    tools: Any = None,
+    compacted: bool = False,
+) -> dict:
+    config = await _load_config()
+    features = metadata.get('features') if isinstance(metadata.get('features'), dict) else {}
+    context_size, limit_source, limit_estimated = _resolve_context_size_details(metadata, model_id, models)
+    threshold_tokens = _resolve_token_threshold(config, metadata, model_id, models)
+    hard_truncation = uses_hard_context_truncation(features)
+    user_enabled = features.get('context_compaction')
+    compaction_enabled = user_enabled if isinstance(user_enabled, bool) else config['enable']
+
+    used_tokens = _estimate_messages_tokens(messages) + _estimate_tokens(tools)
+    return {
+        'used_tokens': used_tokens,
+        'input_tokens': used_tokens,
+        'output_tokens': 0,
+        'limit_tokens': context_size,
+        'limit_source': limit_source,
+        'limit_estimated': limit_estimated,
+        'threshold_tokens': threshold_tokens,
+        'threshold_percent': round(threshold_tokens * 100 / context_size, 1),
+        'estimated': True,
+        'compacted': compacted,
+        'compaction_enabled': bool(compaction_enabled and not hard_truncation),
+        'hard_truncation': hard_truncation,
+    }
+
+
+def context_usage_from_model_usage(snapshot: dict | None, usage: dict | None) -> dict | None:
+    if not isinstance(snapshot, dict):
+        return None
+    if not isinstance(usage, dict) or not usage:
+        return snapshot
+
+    input_tokens = _parse_nonnegative_int(
+        usage.get('input_tokens')
+        if usage.get('input_tokens') is not None
+        else usage.get('prompt_tokens', usage.get('prompt_n'))
+    )
+    output_tokens = _parse_nonnegative_int(
+        usage.get('output_tokens')
+        if usage.get('output_tokens') is not None
+        else usage.get('completion_tokens', usage.get('predicted_n'))
+    )
+    total_tokens = _parse_nonnegative_int(usage.get('total_tokens'))
+
+    has_model_count = input_tokens is not None or output_tokens is not None or total_tokens is not None
+    if not has_model_count:
+        return snapshot
+
+    input_tokens = input_tokens or 0
+    output_tokens = output_tokens or 0
+    used_tokens = total_tokens if total_tokens is not None else input_tokens + output_tokens
+
+    return {
+        **snapshot,
+        'used_tokens': used_tokens,
+        'input_tokens': input_tokens,
+        'output_tokens': output_tokens,
+        'estimated': False,
+    }
+
+
+def _parse_nonnegative_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None

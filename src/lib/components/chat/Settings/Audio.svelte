@@ -103,6 +103,11 @@
 
 	const requestAudioDeviceLabels = () => refreshAudioDevices(true, true);
 	const handleAudioDeviceChange = () => void refreshAudioDevices();
+	const updateBrowserVoices = () => {
+		if (TTSEngine === '' && typeof speechSynthesis !== 'undefined') {
+			voices = speechSynthesis.getVoices();
+		}
+	};
 
 	const getVoices = async () => {
 		if (($settings?.audio?.tts?.engine ?? '') !== '') {
@@ -111,10 +116,7 @@
 			return;
 		}
 
-		const getVoicesLoop = setInterval(async () => {
-			voices = await speechSynthesis.getVoices();
-			if (voices.length > 0) clearInterval(getVoicesLoop);
-		}, 100);
+		updateBrowserVoices();
 	};
 
 	const toggleResponseAutoPlayback = async () => {
@@ -154,10 +156,13 @@
 		};
 
 		navigator.mediaDevices?.addEventListener('devicechange', handleAudioDeviceChange);
+		const synthesis = typeof speechSynthesis !== 'undefined' ? speechSynthesis : null;
+		synthesis?.addEventListener('voiceschanged', updateBrowserVoices);
 		void initializeAudio();
 
 		return () => {
 			navigator.mediaDevices?.removeEventListener('devicechange', handleAudioDeviceChange);
+			synthesis?.removeEventListener('voiceschanged', updateBrowserVoices);
 		};
 	});
 </script>

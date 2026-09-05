@@ -122,6 +122,7 @@
 	import Expand from '../icons/Expand.svelte';
 	import QueuedMessageItem from './MessageInput/QueuedMessageItem.svelte';
 	import TaskList from './Messages/ResponseMessage/TaskList.svelte';
+	import ContextUsageRing from './MessageInput/ContextUsageRing.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -192,6 +193,8 @@
 	export let onQueueDelete: (id: string) => void = () => {};
 
 	export let chatTasks = [];
+	export let chatParams: Record<string, unknown> = {};
+	export let contextCompactionActive = false;
 
 	let inputContent = null;
 
@@ -2217,6 +2220,14 @@
 								</div>
 
 								<div class="self-end flex space-x-1 mr-1 shrink-0 gap-[0.5px]">
+									<ContextUsageRing
+										{history}
+										{atSelectedModel}
+										{selectedModelIds}
+										{chatParams}
+										compacting={contextCompactionActive}
+									/>
+
 									{#if isActive && prompt === '' && files.length === 0}
 										<!-- ↓↓↓ Stop 状态下也显示 Voice Input 按钮 ↓↓↓ -->
 										{#if $_user?.role === 'admin' || ($_user?.permissions?.chat?.stt ?? true)}

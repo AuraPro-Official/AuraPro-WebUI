@@ -10,6 +10,8 @@ test*.py
 
 backend/tests/*
 !backend/tests/test_opencode_agent.py
+!backend/tests/test_context_usage.py
+!backend/tests/test_retrieval_scheduling.py
 launch.json
 *.json
 .gitignore

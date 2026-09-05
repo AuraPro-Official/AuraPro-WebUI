@@ -77,7 +77,9 @@ from open_webui.utils.access_control.files import get_accessible_folder_files
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import (
+    build_context_usage_snapshot,
     compact_messages_for_request,
+    context_usage_from_model_usage,
     uses_hard_context_truncation,
 )
 from open_webui.utils.files import (
@@ -2493,6 +2495,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if regeneration_prompt:
         form_data['messages'].append({'role': 'user', 'content': regeneration_prompt})
 
+    context_was_compacted = False
     if chat_id and user_message_id and not chat_id.startswith('local:') and not chat_id.startswith('channel:'):
         if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
             compaction_models = {
@@ -2505,7 +2508,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         system_prompt = get_content_from_message(system_message) if system_message else ''
 
         try:
-            form_data['messages'], context_summary, _ = await compact_messages_for_request(
+            form_data['messages'], context_summary, context_was_compacted = await compact_messages_for_request(
                 request,
                 user,
                 form_data.get('messages', []),
@@ -3157,6 +3160,21 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # to prevent template parsing errors with strict chat templates (e.g. Qwen)
     form_data['messages'] = merge_system_messages(form_data.get('messages', []))
 
+    context_usage_metadata = {
+        **metadata,
+        'params': form_data.get('params') or metadata.get('params') or {},
+    }
+    context_usage = await build_context_usage_snapshot(
+        form_data.get('messages', []),
+        context_usage_metadata,
+        form_data.get('model'),
+        models,
+        tools=form_data.get('tools'),
+        compacted=context_was_compacted,
+    )
+    metadata['context_usage'] = context_usage
+    events.append({'contextUsage': context_usage})
+
     return form_data, metadata, events
 
 
@@ -3793,6 +3811,14 @@ async def non_streaming_chat_response_handler(response, ctx):
 
             if content or response_output:
                 if content or response_output:
+                    usage = normalize_usage(response_data.get('usage', {}) or {})
+                    final_context_usage = context_usage_from_model_usage(
+                        metadata.get('context_usage'),
+                        usage,
+                    )
+                    if final_context_usage:
+                        response_data['contextUsage'] = final_context_usage
+
                     await event_emitter(
                         {
                             'type': 'chat:completion',
@@ -3848,13 +3874,13 @@ async def non_streaming_chat_response_handler(response, ctx):
                                 'done': True,
                                 'output': response_output,
                                 'title': title,
+                                **({'usage': usage} if usage else {}),
+                                **({'contextUsage': final_context_usage} if final_context_usage else {}),
                             },
                         }
                     )
 
                     # Save message in the database
-                    usage = normalize_usage(response_data.get('usage', {}) or {})
-
                     if not metadata.get('chat_id', '').startswith('channel:'):
                         await Chats.upsert_message_to_chat_by_id_and_message_id(
                             metadata['chat_id'],
@@ -3864,6 +3890,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                                 'role': 'assistant',
                                 'output': response_output,
                                 **({'usage': usage} if usage else {}),
+                                **({'contextUsage': final_context_usage} if final_context_usage else {}),
                             },
                         )
 
@@ -3888,6 +3915,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                         'content': content,
                         'output': response_output,
                         **({'usage': usage} if usage else {}),
+                        **({'contextUsage': final_context_usage} if final_context_usage else {}),
                     }
                     await outlet_filter_handler(ctx)
                     await background_tasks_handler(ctx)
@@ -4215,6 +4243,8 @@ async def streaming_chat_response_handler(response, ctx):
                     output = []
 
             usage = None
+            latest_usage = None
+            context_usage = metadata.get('context_usage')
             prior_output = []
             last_response_id = None
 
@@ -4272,6 +4302,7 @@ async def streaming_chat_response_handler(response, ctx):
                 async def stream_body_handler(response, form_data):
                     nonlocal content
                     nonlocal usage
+                    nonlocal latest_usage
                     nonlocal output
                     nonlocal prior_output
                     nonlocal last_response_id
@@ -4445,6 +4476,7 @@ async def streaming_chat_response_handler(response, ctx):
 
                                         # Normalize and capture usage for DB persistence
                                         if response_metadata.get('usage'):
+                                            latest_usage = normalize_usage(response_metadata['usage'])
                                             usage = merge_usage(usage, response_metadata['usage'])
                                             response_metadata['usage'] = usage
 
@@ -4474,6 +4506,7 @@ async def streaming_chat_response_handler(response, ctx):
                                     raw_usage = data.get('usage', {}) or {}
                                     raw_usage.update(data.get('timings', {}) or {})  # llama.cpp
                                     if raw_usage:
+                                        latest_usage = normalize_usage(raw_usage)
                                         usage = merge_usage(usage, raw_usage)
                                         await event_emitter(
                                             {
@@ -5539,11 +5572,13 @@ async def streaming_chat_response_handler(response, ctx):
                     if not metadata.get('chat_id', '').startswith('channel:')
                     else ''
                 )
+                final_context_usage = context_usage_from_model_usage(context_usage, latest_usage)
                 data = {
                     'done': True,
                     'output': output,
                     'title': title,
                     **({'usage': usage} if usage else {}),
+                    **({'contextUsage': final_context_usage} if final_context_usage else {}),
                 }
 
                 if not metadata.get('chat_id', '').startswith('channel:'):
@@ -5556,19 +5591,27 @@ async def streaming_chat_response_handler(response, ctx):
                                 'done': True,
                                 'output': output,
                                 **({'usage': usage} if usage else {}),
+                                **({'contextUsage': final_context_usage} if final_context_usage else {}),
                             },
                         )
                     elif usage:
                         await Chats.upsert_message_to_chat_by_id_and_message_id(
                             metadata['chat_id'],
                             metadata['message_id'],
-                            {'done': True, 'usage': usage},
+                            {
+                                'done': True,
+                                'usage': usage,
+                                **({'contextUsage': final_context_usage} if final_context_usage else {}),
+                            },
                         )
                     else:
                         await Chats.upsert_message_to_chat_by_id_and_message_id(
                             metadata['chat_id'],
                             metadata['message_id'],
-                            {'done': True},
+                            {
+                                'done': True,
+                                **({'contextUsage': final_context_usage} if final_context_usage else {}),
+                            },
                         )
 
                 # Send a webhook notification if the user is not active
@@ -5599,6 +5642,7 @@ async def streaming_chat_response_handler(response, ctx):
                     'content': content,
                     'output': output,
                     **({'usage': usage} if usage else {}),
+                    **({'contextUsage': final_context_usage} if final_context_usage else {}),
                 }
                 await outlet_filter_handler(ctx)
                 await background_tasks_handler(ctx)
