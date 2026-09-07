@@ -1,16 +1,16 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Backend CI — Python formatting checks via Ruff
-# Runs on pushes and PRs to main/dev when backend files change
+# Backend CI — Python formatting checks via Ruff, plus the Python test suites
+# Runs on pushes and PRs to main/dev when Python source, tests or scripts change
 # ─────────────────────────────────────────────────────────────────────────────
 name: Python CI
 
 on:
   push:
     branches: [main, dev]
-    paths: ['backend/**', 'pyproject.toml', 'uv.lock', '.github/workflows/backend.yaml']
+    paths: ['backend/**', 'test/**', 'scripts/**', 'pyproject.toml', 'uv.lock', '.github/workflows/backend.yaml']
   pull_request:
     branches: [main, dev]
-    paths: ['backend/**', 'pyproject.toml', 'uv.lock', '.github/workflows/backend.yaml']
+    paths: ['backend/**', 'test/**', 'scripts/**', 'pyproject.toml', 'uv.lock', '.github/workflows/backend.yaml']
 
 concurrency:
   group: backend-${{ github.ref }}
@@ -45,3 +45,239 @@ jobs:
 
       - name: Detect logic errors
         run: ruff check --select=F --ignore=F401,F403,F405,F541,F811,F841 --output-format=github .
+
+  # ── EPUB suite: test/test_epub_*.py ──────────────────────────────────────
+  #
+  # This suite needs an interpreter with BOTH working `xml.parsers.expat` AND
+  # `sqlite3.Connection.enable_load_extension` (the sqlite-vec retrieval backend
+  # loads a SQLite extension at runtime).  That pair is not guaranteed, so the
+  # runner's interpreter is probed with the same validator developers run
+  # locally, and a python-build-standalone CPython is provisioned when it fails.
+  # Provisioning and the dependency pins both come from scripts/epub_test_env.sh
+  # so CI and local runs cannot drift apart.
+  epub-tests:
+    name: EPUB Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # A job that passes because discovery found nothing is worse than no job
+      # at all, so require the suite to be roughly the size it is today (303).
+      MIN_TESTS: '250'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          # 3.12 matches the python-build-standalone build pinned in
+          # scripts/epub_test_env.sh, which is what AuraPro Desktop ships.
+          python-version: '3.12'
+
+      - name: Probe the runner interpreter
+        id: probe
+        # The verdict is printed in full either way, so the log always answers
+        # "which interpreter ran the tests, and why".
+        run: |
+          venv="$RUNNER_TEMP/epub-test-venv"
+          echo "AURAPRO_EPUB_TEST_VENV=$venv" >> "$GITHUB_ENV"
+          echo "VENV_PYTHON=$venv/bin/python" >> "$GITHUB_ENV"
+
+          candidate="$(command -v python)"
+          echo "candidate: $candidate ($(python --version 2>&1))"
+          if python scripts/validate_test_python.py; then
+            echo 'verdict=usable' >> "$GITHUB_OUTPUT"
+            echo "AURAPRO_EPUB_TEST_PYTHON=$candidate" >> "$GITHUB_ENV"
+            echo "::notice::actions/setup-python satisfies both hard requirements; using $candidate"
+          else
+            echo 'verdict=unusable' >> "$GITHUB_OUTPUT"
+            echo '::notice::actions/setup-python fails validation; provisioning python-build-standalone instead'
+          fi
+
+      - name: Read the pinned python-build-standalone release
+        id: pbs
+        if: steps.probe.outputs.verdict != 'usable'
+        # Read from the script rather than restating the pins here, so the cache
+        # key can never describe a different build than the one downloaded.
+        run: |
+          date="$(sed -n 's/^PBS_RELEASE_DATE="\(.*\)"$/\1/p' scripts/epub_test_env.sh)"
+          version="$(sed -n 's/^PBS_PYTHON_VERSION="\(.*\)"$/\1/p' scripts/epub_test_env.sh)"
+          if [ -z "$date" ] || [ -z "$version" ]; then
+            echo "::error::could not read PBS_RELEASE_DATE / PBS_PYTHON_VERSION from scripts/epub_test_env.sh"
+            exit 1
+          fi
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache python-build-standalone
+        if: steps.probe.outputs.verdict != 'usable'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/aurapro/python-standalone
+          key: pbs-${{ runner.os }}-${{ runner.arch }}-${{ steps.pbs.outputs.version }}-${{ steps.pbs.outputs.date }}
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: py-tests-pip-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'scripts/epub_test_env.sh') }}
+          restore-keys: py-tests-pip-${{ runner.os }}-
+
+      - name: Provision the test environment
+        # Installs the minimal set only (typer, uvicorn, fastapi, httpx,
+        # python-multipart, sqlite-vec, jieba, ruff) at the pyproject pins.
+        # Deliberately not `pip install -e .`, which drags in torch.
+        run: ./scripts/epub_test_env.sh
+
+      - name: Confirm the interpreter under test
+        # scripts/epub_test_env.sh already dies on an unusable interpreter; this
+        # makes the final verdict a step of its own so a red job says why.
+        run: |
+          echo "interpreter: $VENV_PYTHON ($("$VENV_PYTHON" --version))"
+          "$VENV_PYTHON" scripts/validate_test_python.py
+
+      - name: Run the EPUB suite
+        run: |
+          set -o pipefail
+          "$VENV_PYTHON" -m unittest discover -s test -p 'test_epub_*.py' 2>&1 | tee epub-tests.log
+
+      - name: Assert the EPUB suite actually ran
+        run: |
+          ran="$(sed -n 's/^Ran \([0-9]*\) tests\{0,1\} in .*/\1/p' epub-tests.log | tail -n 1)"
+          if [ -z "$ran" ]; then
+            echo "::error::no 'Ran N tests' line in the unittest output -- the suite did not run"
+            exit 1
+          fi
+          echo "EPUB suite reported $ran tests (minimum $MIN_TESTS)"
+          if [ "$ran" -lt "$MIN_TESTS" ]; then
+            echo "::error::only $ran EPUB tests ran, expected at least $MIN_TESTS -- discovery is broken"
+            exit 1
+          fi
+
+  # ── Backend suite: backend/tests/test_*.py ───────────────────────────────
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # 58 tests as of this writing; see the exclusion note on the run step.
+      MIN_TESTS: '50'
+      # open_webui.env refuses to import without one.  Any value works here: no
+      # CI test signs, encrypts or persists anything with it.
+      WEBUI_SECRET_KEY: python-ci-not-a-real-secret
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Probe the runner interpreter
+        id: probe
+        run: |
+          venv="$RUNNER_TEMP/epub-test-venv"
+          echo "AURAPRO_EPUB_TEST_VENV=$venv" >> "$GITHUB_ENV"
+          echo "VENV_PYTHON=$venv/bin/python" >> "$GITHUB_ENV"
+          # Importing open_webui.config unlinks every file in STATIC_DIR at
+          # module scope and refills it from the frontend build, which does not
+          # exist in a source checkout.  Point it somewhere disposable so the
+          # tests cannot delete backend/open_webui/static/* out of the tree.
+          echo "STATIC_DIR=$RUNNER_TEMP/open-webui-static" >> "$GITHUB_ENV"
+
+          candidate="$(command -v python)"
+          echo "candidate: $candidate ($(python --version 2>&1))"
+          if python scripts/validate_test_python.py; then
+            echo 'verdict=usable' >> "$GITHUB_OUTPUT"
+            echo "AURAPRO_EPUB_TEST_PYTHON=$candidate" >> "$GITHUB_ENV"
+            echo "::notice::actions/setup-python satisfies both hard requirements; using $candidate"
+          else
+            echo 'verdict=unusable' >> "$GITHUB_OUTPUT"
+            echo '::notice::actions/setup-python fails validation; provisioning python-build-standalone instead'
+          fi
+
+      - name: Read the pinned python-build-standalone release
+        id: pbs
+        if: steps.probe.outputs.verdict != 'usable'
+        run: |
+          date="$(sed -n 's/^PBS_RELEASE_DATE="\(.*\)"$/\1/p' scripts/epub_test_env.sh)"
+          version="$(sed -n 's/^PBS_PYTHON_VERSION="\(.*\)"$/\1/p' scripts/epub_test_env.sh)"
+          if [ -z "$date" ] || [ -z "$version" ]; then
+            echo "::error::could not read PBS_RELEASE_DATE / PBS_PYTHON_VERSION from scripts/epub_test_env.sh"
+            exit 1
+          fi
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache python-build-standalone
+        if: steps.probe.outputs.verdict != 'usable'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/aurapro/python-standalone
+          key: pbs-${{ runner.os }}-${{ runner.arch }}-${{ steps.pbs.outputs.version }}-${{ steps.pbs.outputs.date }}
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: py-tests-pip-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'scripts/epub_test_env.sh') }}
+          restore-keys: py-tests-pip-${{ runner.os }}-
+
+      - name: Provision the test environment
+        run: ./scripts/epub_test_env.sh
+
+      - name: Install the extra packages backend/tests needs
+        # The EPUB minimal set is not enough here.  Versions are read straight
+        # out of pyproject.toml rather than restated, so this cannot drift from
+        # production; numpy is the one exception, being an unpinned transitive
+        # dependency there.
+        #
+        #   langcodes + language_data -> open_webui.utils.glossary_routing
+        #   numpy                     -> test_knowledge_export_import
+        #   sqlalchemy, aiosqlite,
+        #   alembic, redis, authlib,
+        #   aiohttp, python-mimeparse,
+        #   aiocache                  -> the open_webui.models / config import
+        #                                chain shared by most of these tests
+        run: |
+          extras=()
+          for dist in langcodes language_data sqlalchemy aiosqlite alembic \
+                      redis authlib aiohttp python-mimeparse aiocache; do
+            pin="$(sed -n "s/^[[:space:]]*\"\(${dist}\(\[[^]]*\]\)\{0,1\}==[^\"]*\)\".*/\1/p" pyproject.toml | head -n 1)"
+            if [ -z "$pin" ]; then
+              echo "::error::no pin for ${dist} in pyproject.toml"
+              exit 1
+            fi
+            extras+=("$pin")
+          done
+          # numpy is a transitive dependency in pyproject.toml, so there is no
+          # direct pin to read.
+          extras+=(numpy)
+          echo "installing: ${extras[*]}"
+          "$VENV_PYTHON" -m pip install --quiet "${extras[@]}"
+
+      - name: Run the backend suite
+        # backend/tests/test_context_usage.py is excluded on purpose: it imports
+        # open_webui.utils.middleware, which transitively imports the whole
+        # application (middleware -> routers.images -> routers.files ->
+        # routers.retrieval -> socket.main -> the storage providers), so running
+        # it means installing the full project -- huggingface_hub, langchain,
+        # pillow, tiktoken, the azure/boto3/gcs SDKs and eventually torch.  The
+        # glob picks up every other file automatically, new ones included.
+        run: |
+          set -o pipefail
+          modules="$(ls backend/tests/test_*.py | grep -v '/test_context_usage\.py$')"
+          echo "modules under test:"
+          echo "$modules"
+          # shellcheck disable=SC2086
+          PYTHONPATH=backend "$VENV_PYTHON" -m unittest $modules 2>&1 | tee backend-tests.log
+
+      - name: Assert the backend suite actually ran
+        run: |
+          ran="$(sed -n 's/^Ran \([0-9]*\) tests\{0,1\} in .*/\1/p' backend-tests.log | tail -n 1)"
+          if [ -z "$ran" ]; then
+            echo "::error::no 'Ran N tests' line in the unittest output -- the suite did not run"
+            exit 1
+          fi
+          echo "backend suite reported $ran tests (minimum $MIN_TESTS)"
+          if [ "$ran" -lt "$MIN_TESTS" ]; then
+            echo "::error::only $ran backend tests ran, expected at least $MIN_TESTS -- discovery is broken"
+            exit 1
+          fi
