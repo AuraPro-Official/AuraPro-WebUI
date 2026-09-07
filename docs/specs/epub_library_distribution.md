@@ -24,6 +24,7 @@ colleague's machine) and **simplification** (colleagues report too many settings
 | D-3 | **Manual publish, direct-link fetch, password-protected**                                      | Operator uploads EPUB + overlay by hand. The client checks for updates and downloads over a direct link behind a password. Reuse the Desktop official-glossary mechanism rather than inventing one.                                                                                                                    |
 | D-4 | **Models download on first launch**, not bundled                                               | Keeps the installer small. Paired with progressive enhancement (§5) so first use is not a 1.3 GB wait.                                                                                                                                                                                                                 |
 | D-5 | **Published books use mirror semantics**; locally built graphs keep today's additive semantics | See §4.                                                                                                                                                                                                                                                                                                                |
+| D-6 | The library password is **distributed out of band** and entered once by the reader             | Not baked into the build: a build-embedded secret cannot be rotated without shipping a new installer, and it leaks to anyone who unpacks the app. The operator sends it through a separate channel; the client stores it after first entry, exactly as the official-glossary flow already does.                        |
 
 ## 3. Distribution architecture
 
@@ -175,7 +176,8 @@ have zero settings**, and the publisher's settings should not be visible to
 readers at all. Concretely: DB path defaults under `DATA_DIR`; device is already
 automatic (PR #30); models are Desktop-managed; Tier-2 is optional and enabled by
 presence; Batch and admin surfaces are hidden. The library URL is baked into the
-build; the password is entered once.
+build; the password is sent to colleagues out of band and entered once (D-6) --
+one entry, ever, which does not reopen the "too many settings" complaint.
 
 **Note the real obstacle was never the variable count** — it is the 1.3 GB of
 model downloads, addressed by §5. Removing ten environment variables without
@@ -201,6 +203,5 @@ overlay, copies the EPUB, and updates `manifest.json` / `version.json`.
 - Desktop WebUI auth model — is the local user an administrator? (§3)
 - Replace via uninstall+reinstall, or computed diff? (§4.4)
 - What happens if a reader curates a published book? Forbid, or detect and refuse? (§4.4)
-- Password distribution to colleagues — baked per-build, or entered once and stored?
 - Does the catalog need to express "this overlay supersedes versions < N", or is a
   single monotonic `overlay_version` enough?
