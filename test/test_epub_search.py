@@ -307,16 +307,17 @@ class FakeSource:
         caller's job and not the repository's.  ``both`` returns the edge once
         even when both of its ends were queried, since it is one edge.
         """
-        self.relation_calls.append({'concept_ids': tuple(concept_ids), 'predicates': tuple(predicates), 'direction': direction})
+        self.relation_calls.append(
+            {'concept_ids': tuple(concept_ids), 'predicates': tuple(predicates), 'direction': direction}
+        )
         matches = {
             'outgoing': lambda relation: relation['subject_concept_id'] in concept_ids,
             'incoming': lambda relation: relation['object_concept_id'] in concept_ids,
-            'both': lambda relation: relation['subject_concept_id'] in concept_ids
-            or relation['object_concept_id'] in concept_ids,
+            'both': lambda relation: (
+                relation['subject_concept_id'] in concept_ids or relation['object_concept_id'] in concept_ids
+            ),
         }[direction]
-        return [
-            relation for relation in self.relations if matches(relation) and relation['predicate'] in predicates
-        ]
+        return [relation for relation in self.relations if matches(relation) and relation['predicate'] in predicates]
 
 
 class HubFakeSource(FakeSource):
@@ -795,7 +796,6 @@ class EnumerationFakeSource(FakeSource):
     _occurrence = TocFakeSource._occurrence
     matched_concept_names = TocFakeSource.matched_concept_names
     list_toc_child_concepts = TocFakeSource.list_toc_child_concepts
-
 
 
 class PredicateGraphFakeSource(FakeSource):
@@ -2292,7 +2292,9 @@ class EpubSearchTest(unittest.TestCase):
                 '六道闸门': OTHER_AXIS,
                 '每一个观测网都要经过几道关键闸门。': (0.8, 0.6, 0.0),
                 '流量校准的复核在每季度进行一次。': (0.6, 0.8, 0.0),
-                **{text: GATE_AXIS for text in ('流量校准', '基线复核', '相位对齐', '量程标定', '残差归算', '停机封存')},
+                **{
+                    text: GATE_AXIS for text in ('流量校准', '基线复核', '相位对齐', '量程标定', '残差归算', '停机封存')
+                },
                 '量程分档的档位由历史极值决定。': GATE_AXIS,
                 '停机封存之前要留存最后一组读数。': GATE_AXIS,
             },
@@ -2303,9 +2305,7 @@ class EpubSearchTest(unittest.TestCase):
             [hit.passage_id for hit in response.fused_results],
             ['gates', 'g1', 'g2', 'g3', 'g4', 'g5', 'g6v', 'gates_body'],
         )
-        self.assertEqual(
-            _sections(response)[1:7], [title for _, title, _ in EnumerationFakeSource.SECTIONS]
-        )
+        self.assertEqual(_sections(response)[1:7], [title for _, title, _ in EnumerationFakeSource.SECTIONS])
         # Both near-duplicates lose to sections they outscore, which is the
         # trade the rule is making and the reason it is worth making.
         self.assertNotIn('g1b', [hit.passage_id for hit in response.fused_results])
@@ -2343,8 +2343,7 @@ class EpubSearchTest(unittest.TestCase):
                 '六道闸门': OTHER_AXIS,
                 '每一个观测网都要经过几道关键闸门。': (0.8, 0.6, 0.0),
                 **{
-                    text: GATE_AXIS
-                    for text in ('流量校准', '基线复核', '相位对齐', '量程标定', '残差归算', '停机封存')
+                    text: GATE_AXIS for text in ('流量校准', '基线复核', '相位对齐', '量程标定', '残差归算', '停机封存')
                 },
                 # Every other span under this chapter reads on the same axis,
                 # so nothing wins a slot merely by being unlike the answer.
@@ -2400,9 +2399,7 @@ class EpubSearchTest(unittest.TestCase):
 
         # The fifth gate is two of six results ahead of the first gate, and it
         # stays there: it is the one the reader asked something answerable by.
-        self.assertEqual(
-            [hit.passage_id for hit in response.fused_results], ['gates', 'g5', 'o1', 'o2', 'o3', 'g1']
-        )
+        self.assertEqual([hit.passage_id for hit in response.fused_results], ['gates', 'g5', 'o1', 'o2', 'o3', 'g1'])
 
     def test_sections_sharing_a_toc_parent_are_ordinary_without_toc_child_expansion(self) -> None:
         """Adjacency in the TOC is association; only expansion says decomposition.
@@ -2438,7 +2435,10 @@ class EpubSearchTest(unittest.TestCase):
             },
             vectors={
                 **{text: GATE_AXIS for text in ('流量校准', '基线复核', '相位对齐', '量程标定')},
-                **{text: OTHER_AXIS for text in ('甲节的记录另作说明。', '乙节的记录另作说明。', '丙节的记录另作说明。')},
+                **{
+                    text: OTHER_AXIS
+                    for text in ('甲节的记录另作说明。', '乙节的记录另作说明。', '丙节的记录另作说明。')
+                },
             },
         ).search(ENUMERATION_QUERY, graph_limit=20, vector_limit=6, vector_candidate_limit=20)
 
@@ -2481,9 +2481,7 @@ class EpubSearchTest(unittest.TestCase):
             },
         ).search(ENUMERATION_QUERY, graph_limit=20, vector_limit=4, vector_candidate_limit=20)
 
-        self.assertEqual(
-            [hit.passage_id for hit in response.fused_results], ['gates', 'g1', 'g2', 'gates_body']
-        )
+        self.assertEqual([hit.passage_id for hit in response.fused_results], ['gates', 'g1', 'g2', 'gates_body'])
         bound = [item for item in response.degraded if item.component == 'toc-sibling-diversity']
         self.assertEqual(len(bound), 1)
         self.assertIn('one TOC node', bound[0].reason or '')

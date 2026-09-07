@@ -51,9 +51,7 @@ def convert_output_to_messages(output):
     for item in output:
         if item.get('type') != 'message':
             continue
-        content = ''.join(
-            part.get('text', '') for part in item.get('content', []) if part.get('type') == 'output_text'
-        )
+        content = ''.join(part.get('text', '') for part in item.get('content', []) if part.get('type') == 'output_text')
         messages.append({'role': item.get('role', 'assistant'), 'content': content})
     return messages
 

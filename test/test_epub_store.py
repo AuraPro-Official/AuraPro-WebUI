@@ -307,7 +307,10 @@ class SQLiteEpubStoreTest(unittest.TestCase):
         # ``outgoing`` remains the default, so a caller written before the
         # argument existed still walks containment downwards and only that.
         self.assertEqual(
-            [row['relation_id'] for row in self.store.list_concept_relation_neighbors([first], predicates=['PRECEDES'])],
+            [
+                row['relation_id']
+                for row in self.store.list_concept_relation_neighbors([first], predicates=['PRECEDES'])
+            ],
             [relation_id],
         )
         with self.assertRaisesRegex(IntegrityError, 'traversal direction'):

@@ -115,9 +115,7 @@ class TestExportKnowledgeWithVectors(unittest.TestCase):
         async def run() -> None:
             with (
                 mock.patch('open_webui.utils.knowledge_export_import.Knowledges') as mock_knowledges,
-                mock.patch(
-                    'open_webui.utils.knowledge_export_import.ASYNC_VECTOR_DB_CLIENT'
-                ) as mock_async_client,
+                mock.patch('open_webui.utils.knowledge_export_import.ASYNC_VECTOR_DB_CLIENT') as mock_async_client,
             ):
                 mock_knowledges.get_knowledge_by_id = mock.AsyncMock(return_value=_fake_knowledge())
                 mock_async_client.get = mock.AsyncMock(side_effect=_single_batch_get)
@@ -161,9 +159,7 @@ class TestExportKnowledgeWithVectors(unittest.TestCase):
 
             with (
                 mock.patch('open_webui.utils.knowledge_export_import.Knowledges') as mock_knowledges,
-                mock.patch(
-                    'open_webui.utils.knowledge_export_import.ASYNC_VECTOR_DB_CLIENT'
-                ) as mock_async_client,
+                mock.patch('open_webui.utils.knowledge_export_import.ASYNC_VECTOR_DB_CLIENT') as mock_async_client,
             ):
                 mock_knowledges.get_knowledge_by_id = mock.AsyncMock(return_value=_fake_knowledge())
                 mock_async_client.get = mock.AsyncMock(side_effect=_single_batch_get)
@@ -183,9 +179,7 @@ class TestExportKnowledgeWithVectors(unittest.TestCase):
         async def run() -> None:
             with (
                 mock.patch('open_webui.utils.knowledge_export_import.Knowledges') as mock_knowledges,
-                mock.patch(
-                    'open_webui.utils.knowledge_export_import.ASYNC_VECTOR_DB_CLIENT'
-                ) as mock_async_client,
+                mock.patch('open_webui.utils.knowledge_export_import.ASYNC_VECTOR_DB_CLIENT') as mock_async_client,
             ):
                 mock_knowledges.get_knowledge_by_id = mock.AsyncMock(return_value=_fake_knowledge())
                 mock_async_client.get = mock.AsyncMock(side_effect=_single_batch_get)
@@ -229,9 +223,7 @@ class TestImportKnowledgeWithVectors(unittest.TestCase):
     def test_import_inserts_vectors_into_collection(self) -> None:
         async def run() -> None:
             zip_buffer = _build_v2_zip()
-            with mock.patch(
-                'open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT'
-            ) as mock_vector_client:
+            with mock.patch('open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT') as mock_vector_client:
                 mock_vector_client.insert = mock.MagicMock()
 
                 result = await import_knowledge_from_zip('kb-1', zip_buffer)
@@ -258,9 +250,7 @@ class TestImportKnowledgeWithVectors(unittest.TestCase):
                 progress.append((percent, message))
 
             zip_buffer = _build_v2_zip()
-            with mock.patch(
-                'open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT'
-            ) as mock_vector_client:
+            with mock.patch('open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT') as mock_vector_client:
                 mock_vector_client.insert = mock.MagicMock()
 
                 result = await import_knowledge_from_zip('kb-1', zip_buffer, progress_callback=progress_callback)
@@ -286,9 +276,7 @@ class TestImportKnowledgeWithVectors(unittest.TestCase):
                 progress.append((percent, message))
 
             zip_buffer = _build_v2_zip(count=3)
-            with mock.patch(
-                'open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT'
-            ) as mock_vector_client:
+            with mock.patch('open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT') as mock_vector_client:
                 mock_vector_client.insert = mock.MagicMock()
 
                 result = await import_knowledge_from_zip('kb-1', zip_buffer, progress_callback=progress_callback)
@@ -302,9 +290,7 @@ class TestImportKnowledgeWithVectors(unittest.TestCase):
     def test_import_without_manifest_inserts_nothing(self) -> None:
         async def run() -> None:
             zip_buffer = _build_v2_zip(manifest=False)
-            with mock.patch(
-                'open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT'
-            ) as mock_vector_client:
+            with mock.patch('open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT') as mock_vector_client:
                 mock_vector_client.insert = mock.MagicMock()
 
                 result = await import_knowledge_from_zip('kb-1', zip_buffer)
@@ -317,9 +303,7 @@ class TestImportKnowledgeWithVectors(unittest.TestCase):
     def test_import_rejects_missing_embeddings(self) -> None:
         async def run() -> None:
             zip_buffer = _build_v2_zip(embeddings=False)
-            with mock.patch(
-                'open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT'
-            ) as mock_vector_client:
+            with mock.patch('open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT') as mock_vector_client:
                 mock_vector_client.insert = mock.MagicMock()
                 with self.assertRaises(KnowledgeImportError):
                     await import_knowledge_from_zip('kb-1', zip_buffer)
@@ -330,9 +314,7 @@ class TestImportKnowledgeWithVectors(unittest.TestCase):
     def test_import_rejects_bad_zip(self) -> None:
         async def run() -> None:
             bad = io.BytesIO(b'not a zip file')
-            with mock.patch(
-                'open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT'
-            ) as mock_vector_client:
+            with mock.patch('open_webui.utils.knowledge_export_import.VECTOR_DB_CLIENT') as mock_vector_client:
                 mock_vector_client.insert = mock.MagicMock()
                 with self.assertRaises(KnowledgeImportError):
                     await import_knowledge_from_zip('kb-1', bad)

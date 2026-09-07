@@ -6,13 +6,20 @@ node_modules
 /.svelte-kit
 /package
 .env*
-test*.py
+# Ad-hoc scratch scripts at the repo root (see x.py above).  Anchored on
+# purpose: an unanchored `test*.py` also swallowed test/test_epub_*.py and
+# backend/tests/test_*.py, so a contributor's new test file vanished before it
+# could ever be committed.  CI runs both of those suites -- see
+# .github/workflows/backend.yaml.
+/test*.py
 
-backend/tests/*
-!backend/tests/test_opencode_agent.py
-!backend/tests/test_context_usage.py
+# A blanket `*.json` used to live here, together with `backend/tests/*` and
+# per-file negations to claw two test modules back out of it.  It also hid
+# every new test fixture and every new i18n locale file, and the JSON tracked
+# in this repo today is only tracked because it was force-added past it.
+# Generated and editor-local JSON is ignored by name instead -- see
+# launch.json here and the specific rules further down.
 launch.json
-*.json
 .gitignore
 
 
