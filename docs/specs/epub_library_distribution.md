@@ -17,14 +17,16 @@ colleague's machine) and **simplification** (colleagues report too many settings
 
 ## 2. Decisions taken
 
-| #   | Decision                                                                                       | Rationale                                                                                                                                                                                                                                                                                                              |
-| --- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D-1 | The server hosts **both the EPUB and the overlay**                                             | Best experience; also makes `epub_sha256` match by construction, so the overlay can never fail to attach because a colleague's copy differs by a byte. The copyright exposure of redistributing the work was raised and accepted by the owner; mitigate with password-protected access limited to internal colleagues. |
-| D-2 | **Each colleague installs their own Desktop** (no shared server)                               | Removes shared-library isolation entirely. One store per machine, and the local user is that machine's administrator.                                                                                                                                                                                                  |
-| D-3 | **Manual publish, direct-link fetch, password-protected**                                      | Operator uploads EPUB + overlay by hand. The client checks for updates and downloads over a direct link behind a password. Reuse the Desktop official-glossary mechanism rather than inventing one.                                                                                                                    |
-| D-4 | **Models download on first launch**, not bundled                                               | Keeps the installer small. Paired with progressive enhancement (§5) so first use is not a 1.3 GB wait.                                                                                                                                                                                                                 |
-| D-5 | **Published books use mirror semantics**; locally built graphs keep today's additive semantics | See §4.                                                                                                                                                                                                                                                                                                                |
-| D-6 | The library password is **distributed out of band** and entered once by the reader             | Not baked into the build: a build-embedded secret cannot be rotated without shipping a new installer, and it leaks to anyone who unpacks the app. The operator sends it through a separate channel; the client stores it after first entry, exactly as the official-glossary flow already does.                        |
+| #   | Decision                                                                                                                    | Rationale                                                                                                                                                                                                                                                                                                              |
+| --- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D-1 | The server hosts **both the EPUB and the overlay**                                                                          | Best experience; also makes `epub_sha256` match by construction, so the overlay can never fail to attach because a colleague's copy differs by a byte. The copyright exposure of redistributing the work was raised and accepted by the owner; mitigate with password-protected access limited to internal colleagues. |
+| D-2 | **Each colleague installs their own Desktop** (no shared server)                                                            | Removes shared-library isolation entirely. One store per machine, and the local user is that machine's administrator.                                                                                                                                                                                                  |
+| D-3 | **Manual publish, direct-link fetch, password-protected**                                                                   | Operator uploads EPUB + overlay by hand. The client checks for updates and downloads over a direct link behind a password. Reuse the Desktop official-glossary mechanism rather than inventing one.                                                                                                                    |
+| D-4 | **Models download on first launch**, not bundled                                                                            | Keeps the installer small. Paired with progressive enhancement (§5) so first use is not a 1.3 GB wait.                                                                                                                                                                                                                 |
+| D-5 | **Published books use mirror semantics**; locally built graphs keep today's additive semantics                              | See §4.                                                                                                                                                                                                                                                                                                                |
+| D-6 | The library password is **distributed out of band** and entered once by the reader                                          | Not baked into the build: a build-embedded secret cannot be rotated without shipping a new installer, and it leaks to anyone who unpacks the app. The operator sends it through a separate channel; the client stores it after first entry, exactly as the official-glossary flow already does.                        |
+| D-7 | **Readers may not curate a published book.** Enforced by the service refusing curation on a published version               | Makes the one unacceptable outcome — silently discarding a colleague's work — structurally unreachable instead of merely detected.                                                                                                                                                                                     |
+| D-8 | **Exactly one publisher.** The owner alone runs the Batch extraction and uploads; every colleague is permanently a consumer | Settles the persona split in §6 as a permanent property of the deployment, not a default some installs might invert.                                                                                                                                                                                                   |
 
 ## 3. Distribution architecture
 
@@ -124,12 +126,25 @@ version itself, not individual rows.
 Update detection is the glossary mechanism unchanged: store the installed
 manifest, compare `overlay_version` / `overlay_sha256`, act on difference.
 
-**Assumption to state explicitly, and to enforce:** a book installed from the
-library is not also locally curated. If a reader ever does curate one, mirror
-semantics would discard that work. Either forbid curation on published assets in
-the UI, or detect local `ADMIN` rows and refuse the replace with a clear message.
-Silently discarding a colleague's work is the one outcome this design must not
-allow.
+**Curation of a published book is forbidden outright (D-7).** Earlier drafts
+offered a choice between forbidding it and detecting local `ADMIN` rows before a
+replace. The owner has settled it: readers do not curate. Forbidding is both
+simpler and safer, because it makes the dangerous outcome _unreachable_ rather
+than _detected_ — with no local decisions able to exist on a published asset,
+replace cannot discard anything, and the guard needs no recovery path.
+
+**Enforce it in the service layer, not by hiding UI.** Under D-2 the local user
+is (pending confirmation) that machine's administrator, so the curation endpoints
+— merge, split, concept review, relation-assertion review — remain reachable
+whatever the UI shows. The rule must be a refusal on a version marked
+_published_, not an absent button.
+
+**A consequence worth noticing:** with curation impossible on published assets,
+`apply_overlay`'s conflict policy becomes inert on the mirror path — there is
+never a local `APPROVED`, `REJECTED`, spelling or definition to defend. Its five
+verification gates remain essential and unchanged; only the conflict resolution
+is moot. That is what makes replace-then-reapply safe by construction rather
+than by discipline.
 
 **Open sub-question:** whether replace is implemented as _uninstall + reinstall_
 (simplest; delete all rows for that version, re-run apply) or as a computed diff.
@@ -166,10 +181,18 @@ a new one.
 The complaint is "too many settings". The cause is that two personas share one
 configuration surface — 15 `EPUB_CONCEPT_*` variables plus RAG model settings.
 
-| Persona                                  | Actually needs                                                                                     |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| **Publisher** (one person, occasionally) | Batch API key, endpoint, completion window, prompt profile, admin review UI, merge/split decisions |
-| **Reader** (every colleague, daily)      | Nothing                                                                                            |
+| Persona                                          | Actually needs                                                                                     |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| **Publisher** (the owner, alone — D-8)           | Batch API key, endpoint, completion window, prompt profile, admin review UI, merge/split decisions |
+| **Reader** (every colleague, daily, permanently) | Nothing                                                                                            |
+
+Because D-8 makes this permanent, the publishing surface can be hidden on
+consumer installs rather than merely de-emphasised. A clean way to decide which
+install is which, without shipping two builds or adding a setting: **gate the
+publishing surface on whether a Batch API key is configured.** With no key that
+surface is inert anyway — no Batch job can be created — so hiding it is honest
+rather than cosmetic, and the owner's own install lights up with no extra
+configuration.
 
 So the fix is not "reduce 15 settings to 5" — it is that **the reader path should
 have zero settings**, and the publisher's settings should not be visible to
@@ -202,6 +225,5 @@ overlay, copies the EPUB, and updates `manifest.json` / `version.json`.
 
 - Desktop WebUI auth model — is the local user an administrator? (§3)
 - Replace via uninstall+reinstall, or computed diff? (§4.4)
-- What happens if a reader curates a published book? Forbid, or detect and refuse? (§4.4)
 - Does the catalog need to express "this overlay supersedes versions < N", or is a
   single monotonic `overlay_version` enough?
