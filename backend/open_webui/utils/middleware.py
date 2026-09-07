@@ -2222,11 +2222,7 @@ async def load_messages_from_db(chat_id: str, message_id: str) -> Optional[list[
         return None
 
     return [
-        {
-            k: v
-            for k, v in msg.items()
-            if k in ('role', 'content', 'output', 'files', 'contextSummary', 'usage')
-        }
+        {k: v for k, v in msg.items() if k in ('role', 'content', 'output', 'files', 'contextSummary', 'usage')}
         for msg in db_messages
     ]
 
