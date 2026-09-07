@@ -122,11 +122,25 @@ Each of these shapes the implementation.
    WebView has loaded and the user has signed in, and discover a port that is
    scanned upward from a base rather than fixed.
 
-**A prerequisite that blocks the "one-click" story and is out of scope here:** on
-a stock install nobody can sign up (`ui.enable_signup = False`, users already
-exist), and the shipped account's password is in neither repository. How
-colleagues reach a signed-in state today must be established separately — the
-Library assumes a logged-in user and cannot create one.
+**How the session actually exists (resolved).** Desktop presents no account
+concept to the user, and there is no auto-login in the main process. WebViews run
+in **persistent partitions** (`persist:connection-*`), so a session survives
+restarts: someone signs in once during setup and the login screen is never seen
+again. Operationally the single shipped account is an administrator, which is why
+colleagues experience "Desktop has no accounts" while the backend still enforces
+`WEBUI_AUTH = True`.
+
+For the Library this means the token is simply there, in that partition's
+`localStorage`, exactly where the existing admin EPUB page reads it from. **No
+new authentication work is required.**
+
+Two edges to handle rather than assume away:
+
+- If a partition is ever cleared, or on a machine set up without that first
+  sign-in, there is no session and no recoverable password. The Library must show
+  a plain "not signed in" state, not an opaque failure — it cannot create a
+  session and should not pretend it might.
+- First-run sign-in is an operations step, outside this design.
 
 ## 4. Overlay update semantics — the core design problem
 
@@ -305,7 +319,7 @@ overlay, copies the EPUB, and updates `manifest.json` / `version.json`.
 _None outstanding for the design itself._ Two prerequisites sit outside it and
 block the one-click story:
 
-- **How colleagues reach a signed-in state.** A stock install permits no signup
-  and the shipped account's password is in neither repository (§3.1).
+- ~~How colleagues reach a signed-in state~~ — **resolved** (§3.1): the WebView
+  session persists across restarts, so the token is already present.
 - **`migrateDataIfNeeded` wipes the data directory** on a future
   `requiredDataVersion` bump, destroying installed books (§3.2, item 1).
