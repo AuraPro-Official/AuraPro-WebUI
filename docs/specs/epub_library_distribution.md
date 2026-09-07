@@ -65,11 +65,66 @@ Per-book catalog entry must carry, at minimum:
 Client install flow: fetch EPUB → verify sha256 → run the existing import
 pipeline (parse, passages, retrieval units) → fetch overlay → `apply_overlay`.
 
-**Permission note:** `POST /admin/import` and `POST /admin/overlays` are
-admin-gated today. Under D-2 the local user is that machine's administrator, so
-these are expected to be reusable as-is — the change is a new **UI entry point**
-("Library"), not a new permission boundary. _Confirm the Desktop WebUI auth
-model before relying on this._
+### 3.1 Permission model — confirmed
+
+**The local user is an administrator, so the Library needs no new permission
+boundary.** `POST /admin/import` and `POST /admin/overlays` are reusable as-is;
+the change is a new **UI entry point**, nothing more. The admin page already
+calls both (`src/routes/(app)/admin/epub/+page.svelte`, via `importEpub` and
+`applyEpubOverlay` with `token()` from `localStorage`).
+
+Two independent paths both yield `role = 'admin'`:
+
+- **Path A, what a stock install actually does:** Desktop ships a git-tracked
+  `data/webui.db` holding one pre-seeded admin account, copied into the data
+  directory on install. `ui.enable_signup = False` ships with it.
+- **Path B, guaranteed by source:** on an empty database the first signup is
+  forced to `admin` after insert (`routers/auths.py`), overriding
+  `DEFAULT_USER_ROLE`.
+
+Desktop passes no auth-related environment at all — `WEBUI_AUTH`,
+`DEFAULT_USER_ROLE` and `ENABLE_SIGNUP` appear nowhere in that repo — so backend
+defaults apply (`WEBUI_AUTH = True`).
+
+**Anchor the design on Path B, not Path A.** Path A is a fact about committed
+bytes; if that database is regenerated or dropped from `extraResources`, installs
+fall through to Path B. Only Path B is guaranteed by code.
+
+**Do not offer `WEBUI_AUTH=False` as a simplification.** It is a footgun here: the
+auto-provisioned account does not exist while the shipped one does, so login
+breaks outright rather than being bypassed.
+
+### 3.2 Desktop integration constraints
+
+Each of these shapes the implementation.
+
+1. **A real data-loss risk.** `migrateDataIfNeeded` runs on every startup and,
+   while `dataVersion < 3`, **deletes the entire data directory** and re-copies
+   the bundled one, preserving only glossary files by name. Imported EPUBs and
+   applied overlays live in `webui.db` under `DATA_DIR`. **A future
+   `requiredDataVersion` bump would destroy every book a colleague installed.**
+   Extend the preserve-list before the Library ships, or keep library content
+   outside the wiped path.
+2. **Glossaries never touch the backend.** The Electron main process downloads
+   them and writes them straight into the shared data directory; the backend
+   reads those paths. So the Library can reuse the whole _download_ half —
+   manifest schema, version compare, Basic auth, sha256 and size verification,
+   temp staging, atomic replace, rollback, cross-origin guard — but the _apply_
+   half has **no precedent in this codebase**. It must be an authenticated POST
+   to the two endpoints above, so the overlay lands inside a database
+   transaction.
+3. **Prefer a WebUI-frontend entry point over an Electron-main one.** A frontend
+   Library page inherits the session and backend-readiness handling for free. A
+   main-process implementation must handle a backend that is not up yet (startup
+   polls reachability for up to 600 s), obtain a token that only exists after the
+   WebView has loaded and the user has signed in, and discover a port that is
+   scanned upward from a base rather than fixed.
+
+**A prerequisite that blocks the "one-click" story and is out of scope here:** on
+a stock install nobody can sign up (`ui.enable_signup = False`, users already
+exist), and the shipped account's password is in neither repository. How
+colleagues reach a signed-in state today must be established separately — the
+Library assumes a logged-in user and cannot create one.
 
 ## 4. Overlay update semantics — the core design problem
 
@@ -223,7 +278,6 @@ overlay, copies the EPUB, and updates `manifest.json` / `version.json`.
 
 ## 8. Open questions
 
-- Desktop WebUI auth model — is the local user an administrator? (§3)
 - Replace via uninstall+reinstall, or computed diff? (§4.4)
 - Does the catalog need to express "this overlay supersedes versions < N", or is a
   single monotonic `overlay_version` enough?
