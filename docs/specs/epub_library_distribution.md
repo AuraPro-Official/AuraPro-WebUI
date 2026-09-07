@@ -27,6 +27,7 @@ colleague's machine) and **simplification** (colleagues report too many settings
 | D-6 | The library password is **distributed out of band** and entered once by the reader                                          | Not baked into the build: a build-embedded secret cannot be rotated without shipping a new installer, and it leaks to anyone who unpacks the app. The operator sends it through a separate channel; the client stores it after first entry, exactly as the official-glossary flow already does.                        |
 | D-7 | **Readers may not curate a published book.** Enforced by the service refusing curation on a published version               | Makes the one unacceptable outcome — silently discarding a colleague's work — structurally unreachable instead of merely detected.                                                                                                                                                                                     |
 | D-8 | **Exactly one publisher.** The owner alone runs the Batch extraction and uploads; every colleague is permanently a consumer | Settles the persona split in §6 as a permanent property of the deployment, not a default some installs might invert.                                                                                                                                                                                                   |
+| D-9 | **Update by uninstall-then-reinstall of the analysis layer only** — not a computed diff, and not a full re-import           | One code path that cannot drift from a fresh install, which is the failure mode a diff invites. Scoped to the analysis because the EPUB bytes are identical by D-1, so re-parsing and re-embedding would cost minutes to reproduce what is already there.                                                              |
 
 ## 3. Distribution architecture
 
@@ -201,10 +202,32 @@ verification gates remain essential and unchanged; only the conflict resolution
 is moot. That is what makes replace-then-reapply safe by construction rather
 than by discipline.
 
-**Open sub-question:** whether replace is implemented as _uninstall + reinstall_
-(simplest; delete all rows for that version, re-run apply) or as a computed diff.
-Uninstall+reinstall is recommended first — it has one code path and cannot drift
-from a fresh install, which is the failure mode a diff implementation invites.
+**Settled (D-9): uninstall then reinstall, scoped to the analysis layer.** One
+code path, no diff to keep in step with a fresh install.
+
+Two schema facts constrain the delete order, and both were verified rather than
+assumed:
+
+- **`concepts` has no version column.** Concept identity is global across the
+  library (SDD 4.2.2), so "delete this book's concepts" is not expressible — a
+  concept may also be carried by another installed book.
+- **`concept_mentions.concept_id` is `ON DELETE RESTRICT`.** A concept cannot be
+  deleted while any mention still references it, so mentions must go first.
+
+Therefore the uninstall step is:
+
+1. delete mentions whose passage belongs to this version;
+2. delete relation assertions scoped to this version, and their evidence spans;
+3. delete relations left with no assertion;
+4. delete concepts left with **no mentions at all** — orphan cleanup, now
+   permitted because step 1 satisfied the `RESTRICT`;
+5. apply the new overlay.
+
+**Do not delete the parsed book.** The EPUB is byte-identical across publications
+by D-1, so re-importing would re-parse every passage and re-embed every retrieval
+unit to reproduce exactly what is already on disk — minutes of work for no
+change. Only the analysis layer is republished, so only the analysis layer is
+replaced.
 
 ## 5. Model provisioning and progressive enhancement
 
@@ -278,6 +301,5 @@ overlay, copies the EPUB, and updates `manifest.json` / `version.json`.
 
 ## 8. Open questions
 
-- Replace via uninstall+reinstall, or computed diff? (§4.4)
 - Does the catalog need to express "this overlay supersedes versions < N", or is a
   single monotonic `overlay_version` enough?
