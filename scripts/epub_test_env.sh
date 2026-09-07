@@ -106,40 +106,23 @@ RUFF_PATHS=(
 )
 
 # ── interpreter validation ────────────────────────────────────────────────────
-VALIDATION_SNIPPET='
-import sys, sqlite3
-problems = []
-if sys.version_info[:2] not in ((3, 11), (3, 12)):
-    problems.append(
-        "python %d.%d is outside pyproject requires-python \">= 3.11, < 3.13.0a1\""
-        % sys.version_info[:2]
-    )
-try:
-    import xml.parsers.expat  # noqa: F401
-except Exception as exc:  # pragma: no cover - diagnostic path
-    problems.append("import xml.parsers.expat failed: %s" % (exc,))
-if not hasattr(sqlite3.Connection, "enable_load_extension"):
-    problems.append(
-        "sqlite3.Connection.enable_load_extension is missing "
-        "(CPython built without --enable-loadable-sqlite-extensions)"
-    )
-if problems:
-    for p in problems:
-        sys.stderr.write("  - %s\n" % p)
-    raise SystemExit(1)
-sys.stderr.write("")
-'
+# The checks themselves live in scripts/validate_test_python.py so that this
+# script and .github/workflows/backend.yaml validate byte-identical rules.
+VALIDATOR="${REPO_ROOT}/scripts/validate_test_python.py"
+[ -f "${VALIDATOR}" ] || die "missing ${VALIDATOR}"
 
 # validate_python <interpreter> [quiet]
-# Returns 0 if the interpreter satisfies every hard requirement.
+# Returns 0 if the interpreter satisfies every hard requirement.  Never writes
+# to stdout: select_python() runs inside a command substitution, so a stray
+# stdout line would be captured as part of the chosen interpreter path.
 validate_python() {
 	local py="$1"
 	local quiet="${2:-}"
 	[ -x "${py}" ] || return 1
 	if [ -n "${quiet}" ]; then
-		"${py}" -c "${VALIDATION_SNIPPET}" >/dev/null 2>&1
+		"${py}" "${VALIDATOR}" >/dev/null 2>&1
 	else
-		"${py}" -c "${VALIDATION_SNIPPET}"
+		"${py}" "${VALIDATOR}" >&2
 	fi
 }
 
