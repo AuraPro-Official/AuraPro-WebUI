@@ -867,13 +867,16 @@
 	};
 
 	const redirectToAuthAfterUnauthorized = () => {
-		if (isAuthRedirectInProgress || window.location.pathname === '/auth') {
+		if (isAuthRedirectInProgress) {
 			return;
 		}
 
-		isAuthRedirectInProgress = true;
 		user.set(null);
 		localStorage.removeItem('token');
+		if (window.location.pathname === '/auth') {
+			return;
+		}
+		isAuthRedirectInProgress = true;
 		toast.error($i18n.t('Session expired. Please sign in again.'));
 
 		const currentPath = `${window.location.pathname}${window.location.search}`;
@@ -882,12 +885,12 @@
 		});
 	};
 
-	const isCurrentSessionUnauthorized = async (originalFetch) => {
+	const isCurrentSessionUnauthorized = async (originalFetch, token) => {
 		return originalFetch(`${WEBUI_API_BASE_URL}/auths/`, {
 			method: 'GET',
 			headers: {
 				'Content-Type': 'application/json',
-				Authorization: `Bearer ${localStorage.token}`
+				Authorization: `Bearer ${token}`
 			},
 			credentials: 'include'
 		})
@@ -1058,13 +1061,16 @@
 	onMount(async () => {
 		const originalFetch = window.fetch.bind(window);
 		window.fetch = async (input, init) => {
+			const requestToken = localStorage.token;
 			const response = await originalFetch(input, init);
 
 			if (
 				response.status === 401 &&
-				localStorage.token &&
+				requestToken &&
+				localStorage.token === requestToken &&
 				isAuthenticatedBackendFetch(input, init) &&
-				(await isCurrentSessionUnauthorized(originalFetch))
+				(await isCurrentSessionUnauthorized(originalFetch, requestToken)) &&
+				localStorage.token === requestToken
 			) {
 				redirectToAuthAfterUnauthorized();
 			}
@@ -1280,8 +1286,11 @@
 						}
 					} else {
 						// Redirect Invalid Session User to /auth Page
+						user.set(null);
 						localStorage.removeItem('token');
-						await goto(`/auth?redirect=${encodedUrl}`);
+						if ($page.url.pathname !== '/auth') {
+							await goto(`/auth?redirect=${encodedUrl}`);
+						}
 					}
 				} else {
 					// Don't redirect if we're already on the auth page

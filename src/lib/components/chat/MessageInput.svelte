@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
+	import { getThinkingFilter, toggleThinkingFilter } from '$lib/utils/thinking-filter';
 
 	import { v4 as uuidv4 } from 'uuid';
 	import dayjs from '$lib/dayjs';
@@ -571,9 +572,16 @@
 	);
 
 	let toggleFilters = [];
-	$: toggleFilters = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels)
-		.map((id) => ($models.find((model) => model.id === id) || {})?.filters ?? [])
-		.reduce((acc, filters) => acc.filter((f1) => filters.some((f2) => f2.id === f1.id)));
+	$: toggleFilters =
+		(atSelectedModel?.id ? [atSelectedModel.id] : selectedModels)
+			.map((id) => ($models.find((model) => model.id === id) || {})?.filters ?? [])
+			.reduce(
+				(acc, filters) =>
+					acc === undefined ? filters : acc.filter((f1) => filters.some((f2) => f2.id === f1.id)),
+				undefined
+			) ?? [];
+
+	$: thinkingFilter = getThinkingFilter(toggleFilters);
 
 	let showToolsButton = false;
 	$: showToolsButton = ($tools ?? []).length > 0 || ($toolServers ?? []).length > 0;
@@ -2124,7 +2132,7 @@
 
 											{#each selectedFilterIds as filterId (filterId)}
 												{@const filter = toggleFilters.find((f) => f.id === filterId)}
-												{#if filter}
+												{#if filter && filter.id !== thinkingFilter?.id}
 													<Tooltip content={filter?.name} placement="top">
 														<button
 															on:click|preventDefault={() => {
@@ -2220,6 +2228,47 @@
 								</div>
 
 								<div class="self-end flex space-x-1 mr-1 shrink-0 gap-[0.5px]">
+									{#if thinkingFilter}
+										<Tooltip
+											content={$i18n.t(
+												selectedFilterIds.includes(thinkingFilter.id)
+													? 'Disable thinking'
+													: 'Enable thinking'
+											)}
+										>
+											<button
+												type="button"
+												aria-label={$i18n.t('Thinking')}
+												aria-pressed={selectedFilterIds.includes(thinkingFilter.id)}
+												class="inline-flex h-9 shrink-0 items-center gap-1.5 self-center rounded-lg px-2 text-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 {selectedFilterIds.includes(
+													thinkingFilter.id
+												)
+													? 'bg-sky-50 text-sky-600 dark:bg-sky-400/10 dark:text-sky-300'
+													: 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'}"
+												on:click={() => {
+													selectedFilterIds = toggleThinkingFilter(
+														selectedFilterIds,
+														thinkingFilter.id
+													);
+												}}
+											>
+												{#if thinkingFilter.icon}
+													<img
+														src={thinkingFilter.icon}
+														alt=""
+														aria-hidden="true"
+														class="size-4 shrink-0 {thinkingFilter.icon.includes('data:image/svg')
+															? 'dark:invert-[80%]'
+															: ''}"
+													/>
+												{:else}
+													<Sparkles className="size-4" strokeWidth="1.75" />
+												{/if}
+												<span class="hidden whitespace-nowrap sm:inline">{$i18n.t('Thinking')}</span
+												>
+											</button>
+										</Tooltip>
+									{/if}
 									<ContextUsageRing
 										{history}
 										{atSelectedModel}

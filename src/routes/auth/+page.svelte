@@ -21,6 +21,7 @@
 	import { WEBUI_NAME, config, user, socket } from '$lib/stores';
 
 	import { generateInitialsImage, canvasPixelTest, getUserTimezone } from '$lib/utils';
+	import { getPostSignInPath } from '$lib/utils/auth-redirect';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import OnBoarding from '$lib/components/OnBoarding.svelte';
@@ -62,7 +63,7 @@
 				redirectPath = $page.url.searchParams.get('redirect') || '/';
 			}
 
-			goto(redirectPath);
+			await goto(getPostSignInPath(redirectPath));
 			localStorage.removeItem('redirectPath');
 		}
 	};
@@ -166,8 +167,9 @@
 
 	onMount(async () => {
 		const redirectPath = $page.url.searchParams.get('redirect');
-		if ($user !== undefined) {
-			goto(redirectPath || '/');
+		if ($user != null) {
+			await goto(getPostSignInPath(redirectPath));
+			return;
 		} else {
 			if (redirectPath) {
 				localStorage.setItem('redirectPath', redirectPath);
