@@ -85,7 +85,7 @@ const video = (zhCN: string, enUS: string, url: string, zhTW = zhCN): TutorialLi
 	url
 });
 
-export const tutorialSections: TutorialSection[] = [
+const tutorialCatalog: TutorialSection[] = [
 	{
 		id: 'install-update',
 		title: text('软件安装/更新', 'Install and updates'),
@@ -311,8 +311,8 @@ export const tutorialSections: TutorialSection[] = [
 						'A dictionary includes source language, target language, terms, and translation preferences. Translation users should configure dictionaries first.'
 					),
 					text(
-						'官方词典不再随软件安装。请打开桌面端“设置 → 官方词典”，输入内部提供的下载密码进行安装或更新。',
-						'Official glossaries are no longer bundled with the app. Open Desktop Settings → Official Glossaries and enter the internally provided password to install or update them.'
+						'官方词典正在限量内测。请打开桌面端“设置 → 词典”，输入测试授权码即可提前加入测试、安装或更新；没有授权码可在同一页面联系邮箱申请。',
+						'Official Glossaries are in limited beta. Open Desktop Settings → Glossaries and enter a beta access code to join, install, or update. You can apply by email from the same page.'
 					),
 					text(
 						'导入导出用于备份、迁移或分享词典。导入后检查语言方向和术语是否正确。',
@@ -579,5 +579,82 @@ export const tutorialSections: TutorialSection[] = [
 				links: [video('使用·常见问题 20:40', 'Usage common issues 20:40', mainVideo(1240))]
 			}
 		]
+	}
+];
+
+const tutorialItems = new Map(
+	tutorialCatalog.flatMap((section) => section.items).map((item) => [item.id, item])
+);
+
+export const tutorialSections: TutorialSection[] = [
+	{
+		id: 'getting-started',
+		title: text('快速入门', 'Getting started', '快速入門'),
+		description: text(
+			'安装、组件选择与第一次对话。',
+			'Installation, components, and your first chat.',
+			'安裝、元件選擇與第一次對話。'
+		),
+		items: ['install-flow-modules', 'llama-variant-choice', 'basic-usage-shortcuts'].map((id) => {
+			const item = tutorialItems.get(id);
+			if (!item) throw new Error(`Missing tutorial: ${id}`);
+			return item;
+		})
+	},
+	{
+		id: 'everyday',
+		title: text('日常使用', 'Everyday use', '日常使用'),
+		description: text(
+			'词典、翻译、语音与多模态。',
+			'Dictionaries, translation, voice, and multimodal chat.',
+			'詞典、翻譯、語音與多模態。'
+		),
+		items: ['dictionary', 'translation-mode', 'voice-translation', 'multimodal-memory'].map(
+			(id) => {
+				const item = tutorialItems.get(id);
+				if (!item) throw new Error(`Missing tutorial: ${id}`);
+				return item;
+			}
+		)
+	},
+	{
+		id: 'advanced',
+		title: text('进阶配置', 'Advanced setup', '進階設定'),
+		description: text(
+			'模型、上下文、知识库与共享。',
+			'Models, context, knowledge bases, and sharing.',
+			'模型、上下文、知識庫與共享。'
+		),
+		items: [
+			'extra-models',
+			'mtp',
+			'context-size',
+			'knowledge-rag',
+			'multi-instance-sharing-feedback'
+		].map((id) => {
+			const item = tutorialItems.get(id);
+			if (!item) throw new Error(`Missing tutorial: ${id}`);
+			return item;
+		})
+	},
+	{
+		id: 'troubleshooting',
+		title: text('维护与排障', 'Maintenance & troubleshooting', '維護與排障'),
+		description: text(
+			'更新、下载、安装路径与运行异常。',
+			'Updates, downloads, install paths, and runtime issues.',
+			'更新、下載、安裝路徑與執行異常。'
+		),
+		items: [
+			'updates-changelog',
+			'disk-space',
+			'path-security',
+			'common-runtime-issues',
+			'factory-reset'
+		].map((id) => {
+			const item = tutorialItems.get(id);
+			if (!item) throw new Error(`Missing tutorial: ${id}`);
+			return item;
+		})
 	}
 ];
