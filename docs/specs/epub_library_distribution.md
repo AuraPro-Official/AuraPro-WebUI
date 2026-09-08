@@ -31,6 +31,7 @@ colleague's machine) and **simplification** (colleagues report too many settings
 | D-10 | **A single monotonic `overlay_version` is enough**; the catalog does not express supersession                               | Under D-9 an update is a whole replacement, not a replay of increments, so a client jumping v1→v5 lands in exactly the state as one that took every step. Supersession would only matter if the semantics ever became incremental.                                                                                                |
 | D-11 | **The library exists because book data must stay out of the public repositories** — not merely for convenience              | `AuraPro-Desktop` and `AuraPro-WebUI` are public. Books and overlays are therefore served from a private password-protected server and can never be bundled, whatever else changes. This is the permanent justification for the whole mechanism.                                                                                  |
 | D-12 | **Three roles, not two: one publisher, several deployers, many consumers**                                                  | Several people run Desktop + WebUI on their own machines and install books there; others reach one of those instances through a browser. D-8 still holds for _publishing_ — the owner alone generates overlays and uploads — but installing is done by each deployer, so the library client must exist on every deployer machine. |
+| D-13 | **Tier-2 uses whatever model llama.cpp is already serving.** No EPUB-specific model download                                | Desktop currently fetches a dedicated ~2.1 GB GGUF for concept resolution (`EPUB_CONCEPT_MODEL_REPOSITORY`, `ensureEpubConceptModel`). It should instead use the model the deployer chose for their hardware, shared with every non-EPUB use. Saves 2.1 GB per deployer and makes capability scale with the machine.              |
 
 ## 3. Distribution architecture
 
@@ -314,6 +315,40 @@ rather than a fallback.
 What a shared instance still buys, for the consumers hanging off one deployer:
 they install nothing, download no models and enter no password. That shape is
 already supported — reads are `get_verified_user` — and needs no work.
+
+## 6.2 Model capability varies by deployer (D-13)
+
+**Correction worth stating, because the two are easy to conflate.** The dedicated
+Qwen GGUF is used by `LlamaCppConceptResolver` for **Tier-2 concept resolution** —
+picking one already-existing concept out of a supplied shortlist. It is _not_ the
+reranker. Reranking is a BGE cross-encoder loaded in-process by
+sentence-transformers (`routers/retrieval.py:200`) and **already shared** with
+generic RAG. llama.cpp does not serve cross-encoders, so D-13 applies to Tier-2
+only; reranking is out of its scope and has no duplication to remove.
+
+Under D-13 the resolver's quality becomes a function of the deployer's hardware:
+a large model on a strong machine, a small one elsewhere. Two properties already
+in the design make that safe rather than alarming:
+
+- **The model may only select, never invent.** It is handed a bounded shortlist
+  and its answer is re-validated through the same Tier-1 matcher; a name that does
+  not exist resolves nothing. A weaker model therefore abstains or picks a
+  wrong-but-real concept — it cannot fabricate one.
+- **Tier-2 affects recall, never citation integrity.** Every excerpt is a
+  byte-exact slice of an immutable passage regardless of which concept was
+  resolved. A poor resolution yields worse results, never a false citation.
+
+So capability degrades gracefully across machines. Measured on Qwen2.5-3B: 0 of 17
+confidently wrong, 7 useful resolutions, 6 abstentions where an answer existed —
+and in 5 of those 6 the right concept was already in the shortlist, so the model
+was the ceiling. A larger model should convert some of those; a smaller one will
+abstain more. Neither breaks anything.
+
+Implementation notes: stop naming a fixed model in `EPUB_CONCEPT_LOCAL_LLM_MODEL`
+and discover what is loaded (the runtime descriptor, or llama.cpp's `/v1/models`).
+Note llama.cpp runs with `--models-max 1`, so there is exactly one resident model
+and no swap cost. With none loaded, Tier-2 already reports an explicit degraded
+component rather than failing silently.
 
 ## 7. Phased plan
 
