@@ -264,3 +264,73 @@ and must stay redacted.
   and everyone sees it. This is a much larger simplification than any
   configuration change, and it hinges on a single question: **do colleagues need
   the feature offline?**
+
+## 8. Handover — state as of 2026-09-09
+
+Design is finished and recorded. What follows is operational state a new session
+needs and that the specs above do not carry.
+
+### Read these three, in this order
+
+1. `epub_refactor_assessment.md` (this file) — why **not** to rebuild, and the
+   four problems that matter more.
+2. `epub_library_distribution.md` — the distribution design. **13 decisions,
+   zero open questions.** D-1..D-13 are settled by the owner; do not reopen them
+   without new evidence.
+3. `epub_concept_task_status.md` — the long-running tracker for the concept work
+   itself (T-000..T-215).
+
+### Open pull requests
+
+| PR          | Branch                            | State                                                                                                                                      |
+| ----------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| WebUI #32   | `docs/epub-library-distribution`  | Distribution design. Unmerged                                                                                                              |
+| WebUI #33   | `docs/epub-refactor-assessment`   | This document. Unmerged                                                                                                                    |
+| Desktop #17 | `fix/startup-seed-data-directory` | Fixes the data-directory wipe. **Merge before shipping the library**, or a future `requiredDataVersion` bump destroys every installed book |
+
+Desktop also has six untouched Dependabot PRs. **That repo has no CI at all**, so
+they would merge on the diff alone.
+
+WebUI `main` is `16e2470`. CI now runs both Python suites (303 EPUB + 58 backend)
+with a minimum-count assertion, so a green check can no longer mean "ran nothing".
+
+### Do these first, in this order
+
+1. **Fix the default-install reranker gap** (§5.1). Today a stock Desktop install
+   runs EPUB search **graph-only** — no reranking model is configured outside the
+   git-tracked `.env`, so the vector and fused channels are off for every
+   deployer. Small change, largest user-visible gain, and until it lands any
+   library work ships a half-working feature.
+2. **Drop the dedicated Tier-2 model download** (D-13). Delete
+   `EPUB_CONCEPT_MODEL_REPOSITORY` / `ensureEpubConceptModel` in
+   `AuraPro-Desktop/src/main/utils/llamacpp.ts` and discover the loaded model
+   instead of naming one. Saves ~2.1 GB per deployer.
+3. **Implement uninstall / re-index under a new profile** (§5.2). Currently a
+   one-way door, and a prerequisite for D-9.
+4. Then phase 1 of the distribution plan.
+
+Items 1 and 2 are small, independent and immediately verifiable — a good first PR.
+
+### Things that will mislead you if you do not know them
+
+- **索引模式 is not an index mode.** It is the zh-CN label for RAG Translation
+  Mode, a bilingual translation feature. EPUB is not in the chat pipeline at all.
+- **EPUB loads no models of its own.** The adapters wrap the RAG stack's
+  singletons; Tier-2 already calls Desktop's llama.cpp. Three unwired HTTP
+  adapters in `inference.py:205-265` are dead code and are the main reason people
+  believe otherwise.
+- **The wheel is at 87.9% of PyPI's limit, and EPUB is 0.22% of it.** 60% is
+  Pyodide. Do not attribute size pressure to this feature.
+- **After the history rewrites, `git merge-base --is-ancestor` gives misleading
+  answers** about whether old work landed. Judge by content. A branch stranded on
+  pre-rewrite history should be cherry-picked, never rebased.
+- The acceptance graph database at `/private/tmp/aurapro-epub-e2e/` **no longer
+  exists** — `/tmp` was purged. The source EPUB survives outside the repo. Nothing
+  in this project should live under `/tmp` again.
+
+### Standing rule
+
+The EPUB corpus is copyrighted and both repositories are public. **Never write
+book concept names, chapter titles, quoted passages or real test queries into any
+file, commit message or PR body.** Tests use an invented tidal-observation corpus;
+the real mapping lives in the gitignored `docs/specs/local/`.
