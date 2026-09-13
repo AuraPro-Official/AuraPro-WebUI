@@ -14,6 +14,8 @@ from .inference import (
     ModelAvailability,
     PrivateModelEndpoint,
     UrllibLlamaCppTransport,
+    llama_cpp_base_url,
+    resident_llama_cpp_model,
 )
 from .prompt_profiles import (
     ConceptPayloadValidation,
@@ -60,19 +62,27 @@ class LocalConceptCalibrationRunner:
         self._transport = transport
 
     def availability(self) -> ModelAvailability:
+        """Ready only when llama.cpp is actually holding a model in memory.
+
+        ``GET /health`` is not consulted: a router with nothing loaded still
+        answers it ``ok``, which reported this runner ready and then failed at
+        the first completion request with a raw HTTP error.
+        """
         try:
-            endpoint, _ = self._runtime()
-            response = self._transport_for_request().get_json(f'{endpoint.url.rstrip("/")}/health')
-            if response.get('status') in {'ok', 'no slot available'}:
-                return ModelAvailability.ready(self.component)
-            return ModelAvailability.degraded(self.component, 'local llama.cpp health check did not report ready')
+            self._resident_model()
+            return ModelAvailability.ready(self.component)
         except Exception as error:
             return ModelAvailability.degraded(self.component, _safe_reason(error))
 
     def run(self, *, passages: Sequence[Mapping[str, Any]], prompt_profile: str, sample_limit: int) -> dict[str, Any]:
         selected = select_stratified_passages(passages, limit=sample_limit)
-        endpoint, model = self._runtime()
+        endpoint, hint = self._runtime()
         transport = self._transport_for_request()
+        # One inventory read for the whole run.  Calibration borrows the model
+        # the runtime already holds for exactly the reason Tier-2 does: naming
+        # any other servable entry under `--models-max 1` evicts the model the
+        # user is chatting with, and an admin sample is dozens of requests.
+        model = resident_llama_cpp_model(transport=transport, base_url=llama_cpp_base_url(endpoint), hint=hint)
         reports = [
             self._evaluate_one(
                 endpoint=endpoint,
@@ -85,8 +95,11 @@ class LocalConceptCalibrationRunner:
         ]
         valid = sum(1 for report in reports if report.valid)
         return {
-            'mode': 'LOCAL_QWEN',
             'prompt_profile': prompt_profile,
+            # The model that actually answered, discovered from the runtime.
+            # This used to sit beside a hardcoded `mode: LOCAL_QWEN`, which
+            # became a false claim the moment the model stopped being a model
+            # AuraPro downloads and became whatever the deployer has loaded.
             'model': model,
             'sample_count': len(reports),
             'chapter_count': len({report.toc_path[:1] for report in reports}),
@@ -99,8 +112,15 @@ class LocalConceptCalibrationRunner:
         }
 
     def _runtime(self) -> tuple[PrivateModelEndpoint, str]:
-        endpoint, model = read_desktop_runtime_descriptor(self._descriptor_path)
-        return PrivateModelEndpoint(endpoint, trusted_hostnames=self._trusted_hostnames), model
+        """The approved endpoint and the descriptor's model hint."""
+        endpoint, hint = read_desktop_runtime_descriptor(self._descriptor_path)
+        return PrivateModelEndpoint(endpoint, trusted_hostnames=self._trusted_hostnames), hint
+
+    def _resident_model(self) -> str:
+        endpoint, hint = self._runtime()
+        return resident_llama_cpp_model(
+            transport=self._transport_for_request(), base_url=llama_cpp_base_url(endpoint), hint=hint
+        )
 
     def _transport_for_request(self) -> LlamaCppTransport:
         return self._transport or UrllibLlamaCppTransport(timeout_seconds=self._timeout_seconds)
@@ -128,7 +148,7 @@ class LocalConceptCalibrationRunner:
                 passage=content,
                 remote_structured_output=False,
             )
-            response = transport.post_json(f'{endpoint.url.rstrip("/")}/v1/chat/completions', request)
+            response = transport.post_json(f'{llama_cpp_base_url(endpoint)}/v1/chat/completions', request)
             payload = normalize_local_payload_offsets(_completion_payload(response), passage=content)
             validation = validate_concept_payload(payload, passage=content)
         except (PromptProfileError, LocalInferenceUnavailable, ValueError) as error:

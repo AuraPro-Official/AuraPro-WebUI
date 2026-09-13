@@ -349,14 +349,17 @@ def _llama_cpp_concept_resolver(
             log.warning('EPUB Desktop Tier-2 resolver is disabled: %s', _safe_reason(error))
             return None, ModelAvailability.degraded(LlamaCppConceptResolver.component, _safe_reason(error))
     endpoint = values.get('EPUB_CONCEPT_LOCAL_LLM_ENDPOINT', '').strip()
-    profile = values.get('EPUB_CONCEPT_LOCAL_LLM_MODEL', '').strip()
+    # The endpoint is the whole static configuration now.  A model name is no
+    # longer required -- and naming one is no longer how a model gets chosen:
+    # the resolver reads the runtime's loaded-model inventory per operation and
+    # borrows what is already in memory.  `EPUB_CONCEPT_LOCAL_LLM_MODEL` stays
+    # readable as an optional tie-breaker for a runtime that somehow holds more
+    # than one model at once, so an existing deployment that sets it keeps
+    # working; it can never make an unloaded model be requested.
+    hint = values.get('EPUB_CONCEPT_LOCAL_LLM_MODEL', '').strip()
     component = LlamaCppConceptResolver.component
-    if not endpoint and not profile:
+    if not endpoint:
         return None, ModelAvailability.degraded(component, 'not configured')
-    if not endpoint or not profile:
-        return None, ModelAvailability.degraded(
-            component, 'both EPUB_CONCEPT_LOCAL_LLM_ENDPOINT and EPUB_CONCEPT_LOCAL_LLM_MODEL are required'
-        )
     try:
         private_endpoint = PrivateModelEndpoint(
             endpoint,
@@ -368,7 +371,7 @@ def _llama_cpp_concept_resolver(
             LlamaCppConceptResolver(
                 endpoint=private_endpoint,
                 transport=UrllibLlamaCppTransport(timeout_seconds=timeout),
-                profile=profile,
+                profile=hint,
                 max_tokens=max_tokens,
             ),
             ModelAvailability.ready(component),
