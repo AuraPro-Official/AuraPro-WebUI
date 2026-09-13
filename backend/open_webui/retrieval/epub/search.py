@@ -160,6 +160,19 @@ _TIER_TWO_MIN_GRAPH_TOTAL = 3
 _TIER_TWO_VECTOR_PASSAGES = 12
 _TIER_TWO_MAX_CANDIDATES = 64
 
+# The component a search names when it served semantic results that no local
+# Cross-Encoder ranked.  It is reported exactly once per request, from
+# :meth:`EpubSearchService._vector_candidates`, because the reranker is read
+# once per request and the answer is the same for both channels that consume
+# the pool — a reader is owed "this answer is unreranked", not one notice per
+# internal channel.  The ``local-`` prefix matches ``local-vector-search`` and
+# ``local-concept-resolver``: it names a local model this deployment is
+# missing, not a remote one it declined to call.
+_CROSS_ENCODER_COMPONENT = 'local-cross-encoder'
+# Appended to every reason reported under that component, so the consequence is
+# in the message a reader sees rather than only in the component name.
+_UNRERANKED_CONSEQUENCE = 'results are ordered by embedding cosine similarity and are not reranked'
+
 
 @dataclass(frozen=True, slots=True)
 class ConceptTerm:
@@ -301,6 +314,29 @@ class _FusedCandidate:
     hit: SearchHit
     vector: tuple[float, ...]
     book_order: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _VectorPool:
+    """One query's source-validated vector candidates, and how to rank them.
+
+    ``query_vector`` travels with the candidates rather than being recomputed
+    by each channel.  A second embedding call would double the cost of every
+    request and could return a vector that is not the one these candidates
+    were actually retrieved with, which would make the ranking describe a
+    query the reader did not ask.
+
+    ``reranked`` is the one thing a channel has to know before it ranks: it is
+    true only when a local Cross-Encoder is configured *and* reports itself
+    available, and false when relevance has to come from cosine similarity
+    against ``query_vector`` instead.  It says nothing about whether a
+    candidate may be cited — every candidate in the pool has already passed
+    the profile, dimension and window checks that decide that.
+    """
+
+    candidates: tuple[DerivedVectorRecord, ...]
+    query_vector: tuple[float, ...]
+    reranked: bool
 
 
 class EpubSearchRepository(Protocol):
@@ -588,14 +624,16 @@ class EpubSearchService:
         # query and asks the local index — and reading it first is what lets the
         # Tier-2 shortlist be scoped to the passages this query actually landed
         # near.  It is still read exactly once per request.
-        vector_candidates = self._vector_candidates(
+        vector_pool = self._vector_candidates(
             query,
             candidate_limit=vector_candidate_limit,
             degraded=degraded,
         )
         resolution = self._resolve(matches)
         if self._tier_one_is_weak(resolution):
-            tier_two = self._resolve_tier_two(query, matcher, segmenter, degraded, vector_candidates)
+            tier_two = self._resolve_tier_two(
+                query, matcher, segmenter, degraded, None if vector_pool is None else vector_pool.candidates
+            )
             combined = _merged_matches(resolution.matches, tier_two)
             if len(combined) != len(resolution.matches):
                 resolution = self._resolve(combined)
@@ -620,7 +658,7 @@ class EpubSearchService:
         )
         vector_results = self._vector_hits(
             query,
-            vector_candidates=vector_candidates,
+            pool=vector_pool,
             concept_ids=graph_concept_ids,
             result_limit=vector_limit,
             degraded=degraded,
@@ -629,7 +667,7 @@ class EpubSearchService:
             self._fused_hits(
                 query,
                 graph_results=fusion_graph_results,
-                vector_candidates=vector_candidates,
+                pool=vector_pool,
                 concept_ids=graph_concept_ids,
                 result_limit=vector_limit,
                 degraded=degraded,
@@ -1292,25 +1330,58 @@ class EpubSearchService:
         *,
         candidate_limit: int,
         degraded: list[ModelAvailability],
-    ) -> tuple[DerivedVectorRecord, ...] | None:
+    ) -> _VectorPool | None:
         """Read only source-validated local vector candidates once per query.
 
         The same immutable candidate set is used by the legacy vector channel
         and by the fused graph/vector channel.  A failure returns ``None`` so
         callers do not accidentally reinterpret an unavailable local model as
-        an empty-but-successful result.
+        an empty-but-successful result.  Every check that decides whether a
+        candidate may be *cited* is such a failure and still returns ``None``:
+        no vector backend, no embedding model, an embedding model that reports
+        itself unavailable, a candidate from another embedding profile, a
+        vector whose dimensions do not match the query's, and a derived window
+        that no longer matches the immutable passage behind it.
+
+        A missing or unavailable Cross-Encoder is deliberately *not* one of
+        them.  The reranker reorders this set; it cannot add to it and it
+        verifies nothing, so its absence costs ranking quality and no part of
+        a citation.  Failing closed on it made a default install worse than
+        degraded: AuraPro persists an empty ``rag.reranking_model`` on first
+        boot, so the reranker is absent on a fresh machine, and both the
+        vector and the fused channel returned nothing at all while the graph
+        channel answered normally — a silently graph-only search.  The pool is
+        therefore returned with ``reranked=False`` instead, the channels rank
+        it by cosine similarity against the query vector, and the missing
+        model is reported once in ``degraded`` so a caller can say the results
+        are unreranked rather than discover it from their order.
         """
-        if self._vector_backend is None or self._embeddings is None or self._reranker is None:
+        if self._vector_backend is None or self._embeddings is None:
             degraded.append(ModelAvailability.degraded('local-vector-search', 'not fully configured'))
             return None
         embedding_availability = self._embeddings.availability()
         if not embedding_availability.available:
             degraded.append(embedding_availability)
             return None
-        reranker_availability = self._reranker.availability()
-        if not reranker_availability.available:
-            degraded.append(reranker_availability)
-            return None
+        reranked = False
+        if self._reranker is None:
+            degraded.append(
+                ModelAvailability.degraded(_CROSS_ENCODER_COMPONENT, f'not configured; {_UNRERANKED_CONSEQUENCE}')
+            )
+        else:
+            reranker_availability = self._reranker.availability()
+            reranked = reranker_availability.available
+            if not reranked:
+                # The reranker's own report is still appended unchanged, so a
+                # broken runtime is never reduced to "absent": the marker below
+                # says what the search did about it, and this says why.
+                degraded.append(reranker_availability)
+                degraded.append(
+                    ModelAvailability.degraded(
+                        _CROSS_ENCODER_COMPONENT,
+                        f'{reranker_availability.reason or "reported unavailable"}; {_UNRERANKED_CONSEQUENCE}',
+                    )
+                )
         try:
             vectors = self._embeddings.embed([query])
             if len(vectors) != 1:
@@ -1322,7 +1393,7 @@ class EpubSearchService:
                 limit=candidate_limit,
             )
             if not candidates:
-                return ()
+                return _VectorPool(candidates=(), query_vector=query_vector, reranked=reranked)
             for candidate in candidates:
                 if candidate.embedding_profile != self._embeddings.profile:
                     raise SearchError('vector backend returned a candidate from another embedding profile')
@@ -1338,29 +1409,48 @@ class EpubSearchService:
         except Exception as error:
             degraded.append(ModelAvailability.degraded('local-vector-search', _safe_reason(error)))
             return None
-        return tuple(candidates)
+        return _VectorPool(candidates=tuple(candidates), query_vector=query_vector, reranked=reranked)
 
     def _vector_hits(
         self,
         query: str,
         *,
-        vector_candidates: tuple[DerivedVectorRecord, ...] | None,
+        pool: _VectorPool | None,
         concept_ids: Sequence[str],
         result_limit: int,
         degraded: list[ModelAvailability],
     ) -> tuple[SearchHit, ...]:
-        """Preserve the legacy vector-only ranking contract."""
-        if not vector_candidates:
+        """Preserve the legacy vector-only ranking contract where it can run.
+
+        Wherever a local Cross-Encoder is available the contract is unchanged,
+        down to the order the calls are made in: it scores every validated
+        window, MMR diversifies its ranking, and the hits say
+        ``cross-encoder``.
+
+        Where there is none, relevance is the cosine similarity between the
+        query vector and the candidate's own indexed vector — the same number
+        the backend retrieved on — and it is handed to the identical MMR pass,
+        so diversification behaves exactly as it does with a reranker and only
+        the relevance signal is weaker.  Those hits say ``cosine`` instead,
+        because provenance is a claim about how a result was reached and
+        naming a model that did not run would be a false one.
+        """
+        if pool is None or not pool.candidates:
             return ()
-        assert self._reranker is not None
+        candidates = pool.candidates
         try:
-            documents = [self._validated_candidate_window(candidate)['content'] for candidate in vector_candidates]
-            scores = _validated_scores(self._reranker.score(query, documents), expected=len(vector_candidates))
-            ranked = sorted(zip(vector_candidates, scores), key=lambda pair: pair[1], reverse=True)
+            if pool.reranked:
+                assert self._reranker is not None
+                documents = [self._validated_candidate_window(candidate)['content'] for candidate in candidates]
+                scores = _validated_scores(self._reranker.score(query, documents), expected=len(candidates))
+            else:
+                scores = tuple(_cosine(pool.query_vector, candidate.vector) for candidate in candidates)
+            ranked = sorted(zip(candidates, scores), key=lambda pair: pair[1], reverse=True)
             selected = _mmr_select(ranked, limit=result_limit, lambda_value=self._mmr_lambda)
         except Exception as error:
             degraded.append(ModelAvailability.degraded('local-vector-search', _safe_reason(error)))
             return ()
+        relevance = 'cross-encoder' if pool.reranked else 'cosine'
 
         results: list[SearchHit] = []
         rendered_passages: set[str] = set()
@@ -1385,7 +1475,7 @@ class EpubSearchService:
                     content=passage['content'],
                     content_sha256=passage['content_sha256'],
                     matched_concepts=matched,
-                    provenance=('vector', 'cross-encoder', 'mmr'),
+                    provenance=('vector', relevance, 'mmr'),
                     excerpt=excerpt,
                     score=float(score),
                 )
@@ -1399,7 +1489,7 @@ class EpubSearchService:
         query: str,
         *,
         graph_results: Sequence[SearchHit],
-        vector_candidates: tuple[DerivedVectorRecord, ...] | None,
+        pool: _VectorPool | None,
         concept_ids: Sequence[str],
         result_limit: int,
         degraded: list[ModelAvailability],
@@ -1407,25 +1497,35 @@ class EpubSearchService:
         """Rank graph and vector candidates together with local models only.
 
         Graph matches are not merely prepended to semantic results: their
-        precise excerpts enter the same private Cross-Encoder and MMR pass as
-        verified vector windows.  If any local operation is unavailable or
-        malformed, this new derived channel fails closed while the independent
-        graph/vector response fields retain their normal compatibility.
+        precise excerpts are ranked in the same pass as verified vector
+        windows, by the private Cross-Encoder where one is available and by
+        cosine similarity against the query vector where none is, and then
+        through the same MMR selection either way.  Cosine is meaningful
+        across both channels here because :meth:`_fused_candidates` has
+        already put every candidate in one embedding space.
+
+        If any local operation is unavailable or malformed, this derived
+        channel fails closed while the independent graph/vector response
+        fields retain their normal compatibility.  A missing reranker is not
+        such an operation: see :meth:`_vector_candidates`, which decides that
+        once per request and reports it once.
         """
-        if self._embeddings is None or self._reranker is None:
+        if self._embeddings is None or pool is None:
             # _vector_candidates already reported the configuration state.
-            return ()
-        if vector_candidates is None:
             return ()
         notices: list[str] = []
         try:
-            candidates = self._fused_candidates(graph_results, vector_candidates, concept_ids=concept_ids)
+            candidates = self._fused_candidates(graph_results, pool.candidates, concept_ids=concept_ids)
             if not candidates:
                 return ()
-            scores = _validated_scores(
-                self._reranker.score(query, [candidate.hit.excerpt.content for candidate in candidates]),
-                expected=len(candidates),
-            )
+            if pool.reranked:
+                assert self._reranker is not None
+                scores = _validated_scores(
+                    self._reranker.score(query, [candidate.hit.excerpt.content for candidate in candidates]),
+                    expected=len(candidates),
+                )
+            else:
+                scores = tuple(_cosine(pool.query_vector, candidate.vector) for candidate in candidates)
             # Read over the whole pool, once, so both the selection and the
             # ordering below answer "is this node enumerated" the same way.
             parents = _enumerated_toc_parents(candidate.hit for candidate in candidates)
@@ -1439,6 +1539,7 @@ class EpubSearchService:
         for notice in notices:
             degraded.append(ModelAvailability.degraded('toc-sibling-diversity', notice))
 
+        relevance = 'cross-encoder' if pool.reranked else 'cosine'
         results: list[tuple[_FusedCandidate, SearchHit]] = []
         rendered_passages: set[str] = set()
         for candidate, score in selected:
@@ -1457,7 +1558,7 @@ class EpubSearchService:
                         content=candidate.hit.content,
                         content_sha256=candidate.hit.content_sha256,
                         matched_concepts=candidate.hit.matched_concepts,
-                        provenance=(*candidate.hit.provenance, 'cross-encoder', 'mmr', 'fused'),
+                        provenance=(*candidate.hit.provenance, relevance, 'mmr', 'fused'),
                         excerpt=candidate.hit.excerpt,
                         score=float(score),
                     ),
@@ -1651,11 +1752,29 @@ def _verified_excerpt(content: str, content_sha256: str, start: Any, end: Any) -
 def _mmr_select(
     ranked: Sequence[tuple[DerivedVectorRecord, float]], *, limit: int, lambda_value: float
 ) -> list[tuple[DerivedVectorRecord, float]]:
-    """Select reranked candidates with maximum marginal relevance.
+    """Select ranked candidates with maximum marginal relevance.
 
-    The reranker supplies relevance; cosine similarity between local embeddings
-    supplies the diversity penalty.  Stable tie-breaking keeps results
-    deterministic for a fixed backend order.
+    The caller supplies relevance — a local Cross-Encoder's score where there
+    is one, and otherwise the candidate's cosine similarity to the query
+    vector; cosine similarity between local embeddings supplies the diversity
+    penalty either way.  Stable tie-breaking keeps results deterministic for a
+    fixed backend order.
+
+    The two relevance sources are not on the same scale, and that changes how
+    much the diversity penalty can move a result.  A Cross-Encoder returns an
+    unbounded logit, so with ``lambda_value`` at its default the relevance term
+    spans an order of magnitude more than the penalty can ever subtract and
+    selection is relevance-ordered in all but the closest ties.  Cosine
+    relevance shares the penalty's [-1, 1] scale, which is what classic MMR
+    assumes, so diversity genuinely reorders there.  Results under the cosine
+    fallback are therefore more spread across passages than the same
+    ``lambda_value`` produces with a Cross-Encoder — expected, not a defect,
+    but it means the two modes cannot be compared by rank position alone and
+    that ``lambda_value`` is really only tuned for whichever mode it was
+    measured against.  Normalising the Cross-Encoder's scores would make the
+    parameter mean one thing in both modes; it would also change ranking for
+    every deployment that already has a reranker, so it is deliberately not
+    done here.
     """
     remaining = list(ranked)
     selected: list[tuple[DerivedVectorRecord, float]] = []
@@ -2012,9 +2131,12 @@ def _merged_provenance(graph: Sequence[str], vector: Sequence[str]) -> tuple[str
 def _mark_vector_results_fused(results: Sequence[SearchHit]) -> tuple[SearchHit, ...]:
     """Avoid a duplicate local rerank when there is no graph candidate.
 
-    With no graph result, the vector-only Cross-Encoder/MMR result is exactly
-    the fused candidate set.  The marker makes that derivation explicit while
+    With no graph result, the vector-only ranked/MMR result is exactly the
+    fused candidate set.  The marker makes that derivation explicit while
     retaining one local model invocation and stable legacy vector behavior.
+    The rank stage the hits already name — ``cross-encoder`` or ``cosine`` —
+    is carried through untouched, so a fused result never claims a model that
+    did not run.
     """
     return tuple(
         SearchHit(

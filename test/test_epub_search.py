@@ -2191,7 +2191,23 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(embeddings.calls, [['连接协议']])
         self.assertEqual(len(reranker.calls), 1)
 
-    def test_tampered_vector_window_or_missing_local_reranker_is_degraded_not_cloud_fallback(self) -> None:
+    def test_tampered_vector_window_or_unconfigured_channel_is_degraded_not_cloud_fallback(self) -> None:
+        """A derived window that no longer matches its source buys nothing.
+
+        The invariant is that no local failure is ever a reason to ask
+        something outside this machine: a window whose passage text has moved
+        under it, and a vector channel that was never configured, both return
+        nothing and say which component is degraded.
+
+        The two clauses that make the first case load-bearing are asserted
+        together on purpose.  With a Cross-Encoder configured the tampered
+        window is rejected before the reranker sees it; *without* one the
+        cosine fallback of
+        :meth:`test_a_missing_local_cross_encoder_serves_cosine_ranked_results_not_silence`
+        is live, and it must not become a way around the same check.  A
+        missing reranker used to be pooled in here as a third failure and is
+        no longer one: it verifies nothing, so it is degraded-but-serving.
+        """
         source = FakeSource()
         backend = FakeVectorBackend([_record(source, 'u1', (1.0, 0.0))])
         response = EpubSearchService(
@@ -2206,9 +2222,124 @@ class EpubSearchTest(unittest.TestCase):
         self.assertEqual(response.vector_results, ())
         self.assertIn('does not equal', response.degraded[-1].reason or '')
 
+        response = EpubSearchService(source=source, vector_backend=backend, embeddings=FakeEmbeddings()).search('TCP')
+        self.assertEqual(response.vector_results, ())
+        self.assertEqual(response.fused_results, ())
+        self.assertEqual(response.degraded[-1].component, 'local-vector-search')
+        self.assertIn('does not equal', response.degraded[-1].reason or '')
+
         response = EpubSearchService(source=source).search('TCP')
         self.assertEqual(response.vector_results, ())
         self.assertEqual(response.degraded[-1].component, 'local-vector-search')
+
+    def test_a_missing_local_cross_encoder_serves_cosine_ranked_results_not_silence(self) -> None:
+        """No reranker is a weaker ranking, never a dead channel.
+
+        A default install persists an empty reranking model, so the
+        Cross-Encoder adapter is never built and this service is handed
+        ``reranker=None``.  Gating the candidate read on it made that install
+        silently graph-only: two of the three channels returned nothing at all
+        while the graph channel answered normally, which reads to a user as a
+        thin library rather than as a missing model.  The reranker reorders
+        candidates — it cannot add to them and it verifies nothing — so its
+        absence costs ranking quality and no part of a citation.
+
+        Both derived channels therefore serve, ordered by the same cosine
+        similarity the backend retrieved on, and the search says so exactly
+        once: one component for the request, not one notice per channel.  The
+        hits name ``cosine`` in place of ``cross-encoder`` rather than
+        crediting a model that did not run.
+        """
+        source = FakeSource()
+        backend = FakeVectorBackend([_record(source, 'u2', (0.8, 0.6)), _record(source, 'u3', (0.6, 0.8))])
+        embeddings = FakeEmbeddings()
+        response = EpubSearchService(
+            source=source,
+            vector_backend=backend,
+            embeddings=embeddings,
+            mmr_lambda=1.0,
+        ).search('TCP', graph_limit=1, graph_fusion_limit=1, vector_limit=3, vector_candidate_limit=3)
+
+        self.assertEqual([hit.passage_id for hit in response.vector_results], ['p2', 'p3'])
+        self.assertEqual(response.vector_results[0].provenance, ('vector', 'cosine', 'mmr'))
+        self.assertEqual(response.vector_results[0].excerpt.content, source.units['u2']['content'])
+
+        # The graph excerpt is ranked in the same pass, against the same query
+        # vector, and lands ahead of both windows on its own similarity.
+        self.assertEqual([hit.passage_id for hit in response.fused_results], ['p1', 'p2', 'p3'])
+        self.assertEqual(response.fused_results[0].provenance, ('graph', 'cosine', 'mmr', 'fused'))
+        self.assertEqual(response.fused_results[1].provenance, ('vector', 'cosine', 'mmr', 'fused'))
+
+        unreranked = [item for item in response.degraded if item.component == 'local-cross-encoder']
+        self.assertEqual(len(unreranked), 1)
+        self.assertFalse(unreranked[0].available)
+        self.assertIn('not configured', unreranked[0].reason or '')
+        self.assertIn('not reranked', unreranked[0].reason or '')
+        # Neither derived channel reported a failure of its own, and the query
+        # was still embedded exactly once per channel that needed a vector.
+        self.assertEqual([item for item in response.degraded if item.component.endswith('-search')], [])
+        self.assertEqual(embeddings.calls, [['TCP'], ['TCP']])
+
+    def test_an_unavailable_local_cross_encoder_degrades_the_way_an_absent_one_does(self) -> None:
+        """A broken reranker is reported twice and swallowed once: never silently.
+
+        A runtime that stopped is the same loss of ranking quality as a
+        reranker that was never configured, so it takes the same fallback
+        rather than a second, stricter rule.  Both entries survive: the
+        adapter's own report says *why* the model is gone, and the
+        ``local-cross-encoder`` marker says what the search did about it.
+        """
+        source = FakeSource()
+        backend = FakeVectorBackend([_record(source, 'u2', (0.8, 0.6)), _record(source, 'u3', (0.6, 0.8))])
+        response = EpubSearchService(
+            source=source,
+            vector_backend=backend,
+            embeddings=FakeEmbeddings(),
+            reranker=FakeReranker(available=False),
+            mmr_lambda=1.0,
+        ).search('连接协议', vector_limit=2, vector_candidate_limit=2)
+
+        self.assertEqual([hit.passage_id for hit in response.vector_results], ['p2', 'p3'])
+        self.assertEqual(response.vector_results[0].provenance, ('vector', 'cosine', 'mmr'))
+        reported = [item for item in response.degraded if item.component in ('local-reranker', 'local-cross-encoder')]
+        self.assertEqual([item.component for item in reported], ['local-reranker', 'local-cross-encoder'])
+        self.assertEqual(reported[0].reason, 'runtime stopped')
+        self.assertIn('runtime stopped', reported[1].reason or '')
+        self.assertIn('not reranked', reported[1].reason or '')
+
+    def test_the_cosine_fallback_ranks_by_similarity_to_the_query_vector(self) -> None:
+        """The fallback is a ranking, and the backend's own order is not it.
+
+        The three windows arrive in an order no cosine would produce, and each
+        one's similarity to the query vector is a round number this test can
+        name: 1.0, 0.8, 0.6.  What comes back is that order, carrying those
+        scores — which is the claim, rather than merely that something came
+        back.  ``mmr_lambda`` is 1 so relevance alone decides; that the same
+        numbers then feed the ordinary MMR pass is what
+        :meth:`test_vector_candidates_are_cross_encoder_reranked_then_mmr_diversified`
+        pins for the reranked path and is unchanged here.
+        """
+        source = FakeSource()
+        backend = FakeVectorBackend(
+            [
+                _record(source, 'u1', (0.6, 0.8)),
+                _record(source, 'u2', (1.0, 0.0)),
+                _record(source, 'u3', (0.8, 0.6)),
+            ]
+        )
+        response = EpubSearchService(
+            source=source,
+            vector_backend=backend,
+            embeddings=FakeEmbeddings(),
+            mmr_lambda=1.0,
+        ).search('连接协议', vector_limit=3, vector_candidate_limit=3)
+
+        self.assertEqual([hit.passage_id for hit in response.vector_results], ['p2', 'p3', 'p1'])
+        for hit, expected in zip(response.vector_results, (1.0, 0.8, 0.6)):
+            self.assertAlmostEqual(hit.score, expected)
+        # With no graph candidate the fused field is the vector answer marked
+        # as such, so the same ranking reaches it rather than a second one.
+        self.assertEqual([hit.passage_id for hit in response.fused_results], ['p2', 'p3', 'p1'])
 
     def test_graph_and_vector_candidates_share_local_cross_encoder_and_mmr_fusion(self) -> None:
         source = FakeSource()
