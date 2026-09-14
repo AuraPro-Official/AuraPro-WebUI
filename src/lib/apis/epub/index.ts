@@ -268,8 +268,8 @@ export type LocalCalibrationInput = {
 };
 
 export type LocalCalibrationReport = {
-	mode: 'LOCAL_QWEN';
 	prompt_profile: string;
+	/** The model llama.cpp actually had loaded and that answered this run. */
 	model: string;
 	sample_count: number;
 	chapter_count: number;
