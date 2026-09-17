@@ -1,7 +1,8 @@
 # EPUB Wiki Library Distribution — Design Proposal
 
-**Status:** Proposal, under discussion. No code written yet.
-**Last updated:** 2026-09-07
+**Status:** Proposal, under discussion. No code written for the distribution
+mechanism itself; D-13 has implementations in review (§6.2).
+**Last updated:** 2026-09-17
 **Related:** [`epub_concept_sdd.md`](./epub_concept_sdd.md) (T-170a portable overlay),
 [`epub_concept_task_status.md`](./epub_concept_task_status.md)
 
@@ -103,13 +104,21 @@ breaks outright rather than being bypassed.
 
 Each of these shapes the implementation.
 
-1. **A real data-loss risk.** `migrateDataIfNeeded` runs on every startup and,
-   while `dataVersion < 3`, **deletes the entire data directory** and re-copies
-   the bundled one, preserving only glossary files by name. Imported EPUBs and
-   applied overlays live in `webui.db` under `DATA_DIR`. **A future
-   `requiredDataVersion` bump would destroy every book a colleague installed.**
-   Extend the preserve-list before the Library ships, or keep library content
-   outside the wiped path.
+1. **A data-loss risk — fixed upstream, no longer a constraint.**
+   `migrateDataIfNeeded` used to **delete the entire data directory** while
+   `dataVersion < REQUIRED_DATA_VERSION` and re-copy the bundled one, preserving
+   only glossary files by name. Imported EPUBs and applied overlays live in
+   `webui.db` under `DATA_DIR`, so a future version bump would have destroyed
+   every book a colleague installed, along with chats, `uploads/`, `vector_db/`
+   and the `.key` secret. **`AuraPro-Desktop` PR #17 merged on 2026-09-13** and
+   replaced the wipe with additive seeding
+   (`src/main/utils/data-seed.ts`): a bundled top-level entry is copied only when
+   the target does not already have it, and nothing is removed. The Library
+   therefore needs no preserve-list and no path outside the data directory. One
+   obligation survives: a seed change that cannot be applied in place has to name
+   the file in that step's `replace` list, which overwrites it after moving the
+   existing copy into a timestamped backup — so `webui.db` must never appear
+   there.
 2. **Glossaries never touch the backend.** The Electron main process downloads
    them and writes them straight into the shared data directory; the backend
    reads those paths. So the Library can reuse the whole _download_ half —
@@ -221,25 +230,193 @@ is moot. That is what makes replace-then-reapply safe by construction rather
 than by discipline.
 
 **Settled (D-9): uninstall then reinstall, scoped to the analysis layer.** One
-code path, no diff to keep in step with a fresh install.
+code path, no diff to keep in step with a fresh install. That decision stands.
+What follows replaces the _mechanism_ this section published earlier, which
+could not execute as written.
 
-Two schema facts constrain the delete order, and both were verified rather than
-assumed:
+#### The correction, stated plainly
 
-- **`concepts` has no version column.** Concept identity is global across the
-  library (SDD 4.2.2), so "delete this book's concepts" is not expressible — a
-  concept may also be carried by another installed book.
-- **`concept_mentions.concept_id` is `ON DELETE RESTRICT`.** A concept cannot be
-  deleted while any mention still references it, so mentions must go first.
+An earlier revision of this section listed two schema facts and said both "were
+verified rather than assumed". Both facts are true. The claim was still wrong,
+because it was a claim about the _set_: verifying two facts is not the same as
+verifying that two facts are all of them, and the set was incomplete.
+`concepts(concept_id)` is referenced by four foreign keys. That revision named
+one of them, and the two it missed are the two that abort the operation.
 
-Therefore the uninstall step is:
+Reproduced against the real schema — the migration DDL executed verbatim with
+`PRAGMA foreign_keys = ON`:
 
-1. delete mentions whose passage belongs to this version;
-2. delete relation assertions scoped to this version, and their evidence spans;
-3. delete relations left with no assertion;
-4. delete concepts left with **no mentions at all** — orphan cleanup, now
-   permitted because step 1 satisfied the `RESTRICT`;
-5. apply the new overlay.
+- On any store where an administrator has ever merged concepts, step 4 of the
+  published order failed with `FOREIGN KEY constraint failed`. Steps 1–3 had by
+  then already deleted the mentions. The audit table vetoed the cleanup it exists
+  to outlive.
+- With no merge in the store the order ran to completion and deleted an
+  administrator-curated `APPROVED` concept, with a hand-written definition,
+  belonging to a **different book** — because the orphan test was global where it
+  had to be version-scoped. `PRAGMA foreign_key_check` returned clean afterwards,
+  so nothing in the schema would have reported the loss.
+
+Both failures are one mistake seen twice: the section reasoned about the tables
+it had in mind rather than about everything that points at `concepts`. A reader
+who took the earlier order as verified should re-read this whole subsection.
+
+#### What actually constrains the delete order
+
+**`concepts` has no version column.** Concept identity is global across the
+library (SDD 4.2.2), so "delete this book's concepts" is not expressible directly
+— a concept may also be carried by another installed book, or by no book at all.
+That fact was right, and it is the reason every other one matters.
+
+Every reference to `concepts(concept_id)`, in
+`backend/open_webui/retrieval/epub/store.py` (line numbers as of `origin/main`,
+2026-09-17):
+
+| Referencing column                                                         | On delete  | What it means for the uninstall                                              |
+| -------------------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------- |
+| `concept_mentions.concept_id` (:267)                                       | `RESTRICT` | Mentions must go first. Known, and correct.                                  |
+| `concept_relations.subject_concept_id` (:334), `.object_concept_id` (:336) | `RESTRICT` | A relation another version still asserts vetoes the delete.                  |
+| `concept_merges.target_concept_id` (:408)                                  | `RESTRICT` | A merge audit row vetoes the delete of its surviving target.                 |
+| `concept_aliases.concept_id` (:255)                                        | `CASCADE`  | Deleting a concept silently destroys its alias spellings — no error to miss. |
+
+The `CASCADE` is the one with nothing to raise, so it is the one to watch.
+`merge_concepts` deliberately keeps a folded-away concept's canonical spelling as
+an alias of the survivor, because that spelling is exactly what the next model
+response will match on (:1983). Those aliases cannot be rebuilt from the audit
+tables: `concept_merges.source_canonical_name` is one spelling, not an alias set,
+and `concept_splits` records no alias movement at all. A concept deleted in error
+takes vocabulary with it that nothing can reconstruct.
+
+Two further facts about the `RESTRICT` pair, both of which the order has to
+respect rather than discover at runtime:
+
+- A `concept_merges` target can have **no mentions of its own**, which is exactly
+  the shape the veto fires on.
+- The relations veto is reachable through `split_concept`, which moves mentions
+  but **deliberately never repoints relations** (:2281). A split that moves a
+  concept's whole footprint in one version leaves that concept still anchoring a
+  relation asserted there, with no mention of its own left to justify it.
+
+And the orphan test has to be scoped because a mention-less concept is an
+ordinary object here, not a leftover: `upsert_concept` (:1830), reachable over
+`PUT /admin/concepts` (`routers/epub.py`:451), creates a concept with a
+definition and a status and no mentions at all.
+
+#### The corrected order
+
+All of it inside **one** transaction, opened `BEGIN IMMEDIATE`.
+
+0. **Capture the candidate set first**, before anything is deleted: the concepts
+   holding at least one mention whose passage belongs to this version. After step
+   1 that evidence is gone, and with it every way to scope the cleanup. This is
+   what turns the global sweep into a version-scoped one.
+1. Delete mentions whose passage belongs to this version.
+2. Delete the relation assertions scoped to this version. Their evidence spans go
+   with them — `concept_relation_evidence.assertion_id` is `ON DELETE CASCADE`
+   (:363) — so deleting evidence separately is belt-and-braces, not a
+   requirement.
+3. Delete relations left with no assertion at all.
+4. **From the candidate set only**, delete the concepts that now have no mentions,
+   are not a `concept_merges` target, and are not an endpoint of any surviving
+   relation. Both `RESTRICT` references are excluded _by the query_, so a foreign
+   key never has to abort the transaction.
+5. Apply the new overlay.
+
+Sketch, with `:version_id` bound once:
+
+```sql
+CREATE TEMP TABLE uninstall_candidates AS          -- step 0, before any delete
+SELECT DISTINCT m.concept_id
+  FROM concept_mentions AS m
+  JOIN passages AS p ON p.passage_id = m.passage_id
+ WHERE p.version_id = :version_id;
+
+DELETE FROM concept_mentions                       -- step 1
+ WHERE passage_id IN (SELECT passage_id FROM passages WHERE version_id = :version_id);
+
+DELETE FROM concept_relation_assertions            -- step 2 (evidence CASCADEs)
+ WHERE version_id = :version_id;
+
+DELETE FROM concept_relations                      -- step 3
+ WHERE relation_id NOT IN (SELECT relation_id FROM concept_relation_assertions);
+
+DELETE FROM concepts WHERE concept_id IN (         -- step 4
+    SELECT concept_id FROM uninstall_candidates
+    EXCEPT SELECT concept_id         FROM concept_mentions
+    EXCEPT SELECT target_concept_id  FROM concept_merges
+    EXCEPT SELECT subject_concept_id FROM concept_relations
+    EXCEPT SELECT object_concept_id  FROM concept_relations
+);
+```
+
+**A concept that survives step 4 because it is a merge target, or because a
+relation still names it, is correct behaviour and not a leak.** In both cases
+another durable record still depends on that identifier — the audit row saying
+what an administrator folded into it, or a relation another installed version
+still asserts. Deleting it would break that record; keeping it leaves a concept
+with no mentions, which this schema already treats as ordinary. Report the count
+so an operator can see it happened; do not treat it as an error to be cleaned up
+later.
+
+#### One transaction, and `BEGIN IMMEDIATE`
+
+The steps above are not five statements issued in turn. They are **one
+transaction**. `_write()` (:727) is already exactly that — `BEGIN`, yield,
+`commit()`, with `rollback()` on any exception — so an abort inside it unwinds
+the whole thing and leaves the store as it was. Run as separate statements, the
+step-4 abort described above leaves the analysis layer half destroyed, with no
+way to finish and no way to undo.
+
+`_write()` opens with plain `BEGIN`, which is `DEFERRED`. Under WAL a deferred
+transaction that reads before it writes — and step 0 is a read — takes its read
+snapshot first; if another connection commits in between, the first write fails
+with `SQLITE_BUSY_SNAPSHOT`. The busy handler is not invoked for that error, so
+`PRAGMA busy_timeout = 5000` (:685) does not cover it and the only recovery is to
+roll back and start over. **This operation must open `BEGIN IMMEDIATE`**, taking
+the write lock up front so the snapshot is stable across the whole read-then-write
+sequence. That is a requirement on how this one operation begins its transaction,
+not a proposal to change `_write()` for every caller.
+
+#### The overlay export is not a restore point
+
+The update story assumes that reapplying an overlay reproduces the state. That is
+true of the published analysis and false of the store, so "we can always reapply"
+is not available as a fallback for a wrong uninstall:
+
+- **No vectors.** `ConceptOverlay` (`overlay.py`) carries concepts, aliases,
+  definitions, mentions and relations. Retrieval units and their embeddings are
+  not in it. This costs nothing under D-9, because the parsed book is not deleted
+  — but an overlay is not a backup of a book.
+- **Unanchored mentions are dropped.** The export filters
+  `m.start_codepoint IS NOT NULL` (:2738), so a mention recorded without offsets
+  does not survive a round trip.
+- **Mention-less concepts are excluded.** The export reaches concepts by joining
+  through `concept_mentions` (:2709) — precisely the concepts step 4 deletes, and
+  precisely the ones an administrator creates by hand. A curated concept with no
+  mention in the version is not in the overlay and cannot come back from one.
+- **`ADMIN` provenance is re-imported as `MODEL`.** `apply_overlay` writes every
+  mention with `source='MODEL'` (:2946) and every alias likewise (:3024),
+  deliberately, so published output can never masquerade as the local operator's
+  decision. A round trip therefore launders provenance.
+- **`apply_overlay` can never delete.** It is strictly additive; there is no
+  `DELETE` in it. It cannot undo a merge, a split or a deletion — which is the
+  whole reason D-9 exists.
+
+So the uninstall must be right the first time.
+
+#### If a version row is ever deleted
+
+D-9 does not delete the book version, and should not. Any future path that does
+must clear `books.current_version_id` in the same transaction.
+`books.current_version_id` is a plain `TEXT` column with **no foreign key**
+(:154), and `set_version_status` only ever _sets_ it, on the transition to
+`READY` (:866) — nothing clears it. A deleted version therefore leaves a dangling
+pointer that `PRAGMA foreign_key_check` cannot see, because there is no
+constraint for it to check.
+
+Related, and worth stating because it looks like a safety net and is not: the
+`passages_content_is_immutable` trigger (:217) fires `BEFORE UPDATE OF`. It stops
+a passage being rewritten. It does not fire on `DELETE` and protects nothing in
+this operation.
 
 **Do not delete the parsed book.** The EPUB is byte-identical across publications
 by D-1, so re-importing would re-parse every passage and re-embed every retrieval
@@ -318,6 +495,12 @@ already supported — reads are `get_verified_user` — and needs no work.
 
 ## 6.2 Model capability varies by deployer (D-13)
 
+**Implementation status (2026-09-17): open for review, not merged.**
+`AuraPro-WebUI` PR #36 and `AuraPro-Desktop` PR #19 implement D-13 and are both
+green in CI; neither has been merged. Shipped behaviour is still the dedicated
+GGUF download, so the 2.1 GB saving is pending rather than banked, and the rest
+of this section describes the design those two PRs implement.
+
 **Correction worth stating, because the two are easy to conflate.** The dedicated
 Qwen GGUF is used by `LlamaCppConceptResolver` for **Tier-2 concept resolution** —
 picking one already-existing concept out of a supplied shortlist. It is _not_ the
@@ -367,10 +550,12 @@ overlay, copies the EPUB, and updates `manifest.json` / `version.json`.
 
 ## 8. Open questions
 
-_None outstanding for the design itself._ Two prerequisites sit outside it and
-block the one-click story:
+_None outstanding for the design itself._ The two prerequisites that sat outside
+it and blocked the one-click story are both resolved:
 
 - ~~How colleagues reach a signed-in state~~ — **resolved** (§3.1): the WebView
   session persists across restarts, so the token is already present.
-- **`migrateDataIfNeeded` wipes the data directory** on a future
-  `requiredDataVersion` bump, destroying installed books (§3.2, item 1).
+- ~~`migrateDataIfNeeded` wipes the data directory~~ — **resolved** (§3.2, item
+  1): `AuraPro-Desktop` PR #17 merged on 2026-09-13 and replaced the wipe with
+  additive seeding, so a `REQUIRED_DATA_VERSION` bump no longer destroys
+  installed books.
