@@ -34,7 +34,7 @@ from .overlay import (
 )
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 class IntegrityError(ValueError):
@@ -615,6 +615,43 @@ _MIGRATION_11: tuple[str, ...] = (
 )
 
 
+_MIGRATION_12: tuple[str, ...] = (
+    # ``books.current_version_id`` points at a ``book_versions`` row but has
+    # never been a foreign key, and cannot cheaply become one: adding a REFERENCES
+    # clause to an existing column needs the 12-step table rebuild, and
+    # ``PRAGMA foreign_keys`` is a no-op inside the transaction this migration
+    # runs in.  The consequence is that deleting a version leaves the pointer
+    # dangling and *nothing notices*: ``PRAGMA foreign_key_check`` is blind to a
+    # column that declares no reference, so the catalogue read in
+    # ``list_books`` simply LEFT JOINs to NULLs and reports a book whose current
+    # version has no status, no hash and no passages.
+    #
+    # This trigger is the ``ON DELETE SET NULL`` the column could not declare.
+    # It is deliberately in the schema rather than in a Python helper: the
+    # forthcoming delete/re-index feature removes versions from more than one
+    # path (an uninstall, a re-index that discards a bad parse, a failed
+    # import's cleanup), and a helper only holds the invariant on the paths
+    # somebody remembers to route through it.  A trigger holds it for raw SQL
+    # and for a future migration too.
+    #
+    # NULL, not "the next newest version": which version should become current
+    # after one is deleted is a product decision, and guessing it here would
+    # silently republish a version an administrator did not choose.  Clearing
+    # the pointer is the honest floor; ``set_current_version`` is how the
+    # deletion feature will state the intended repoint explicitly.
+    """
+    CREATE TRIGGER book_versions_clear_current_version
+    AFTER DELETE ON book_versions
+    FOR EACH ROW
+    BEGIN
+        UPDATE books
+           SET current_version_id = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE current_version_id = OLD.version_id;
+    END
+    """,
+)
+
+
 def _sha256_text(value: str) -> str:
     return sha256(value.encode('utf-8')).hexdigest()
 
@@ -708,6 +745,7 @@ class SQLiteEpubStore:
                 (9, _MIGRATION_9),
                 (10, _MIGRATION_10),
                 (11, _MIGRATION_11),
+                (12, _MIGRATION_12),
             )
             try:
                 connection.execute('BEGIN')
@@ -725,9 +763,27 @@ class SQLiteEpubStore:
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
+        """Open a write transaction that takes its write lock up front.
+
+        ``BEGIN IMMEDIATE`` rather than a plain (deferred) ``BEGIN``: every
+        caller of this helper writes, and most of them read first -- checking a
+        parent exists, or looking for the row they are about to update.  Under
+        WAL a deferred transaction takes only a read snapshot for those, and
+        upgrading it at the first write against a database another connection
+        has written since raises ``SQLITE_BUSY_SNAPSHOT``, which ``busy_timeout``
+        does **not** retry (the snapshot is already stale; waiting cannot mend
+        it).  Taking the write lock at ``BEGIN`` turns that unrecoverable
+        upgrade collision into ordinary lock contention, which ``busy_timeout``
+        does retry.
+
+        This helper is write-only -- no read path shares it, so nothing pays
+        for the lock that did not already intend to write.  ``_migrate`` keeps
+        its own ``BEGIN``: it runs once per store under a process-wide lock,
+        before any caller holds this connection.
+        """
         connection = self._connection()
         try:
-            connection.execute('BEGIN')
+            connection.execute('BEGIN IMMEDIATE')
             yield connection
             connection.commit()
         except Exception:
@@ -867,6 +923,57 @@ class SQLiteEpubStore:
                        WHERE book_id = (SELECT book_id FROM book_versions WHERE version_id = ?)""",
                     (version_id, version_id),
                 )
+
+    def set_current_version(self, book_id: str, version_id: str | None) -> None:
+        """Repoint, or clear, the version a book currently answers from.
+
+        ``set_version_status`` can only ever *set* this pointer, which was
+        sufficient while nothing removed a version.  A deletion or re-index
+        needs the other direction: repoint the book at a version that still
+        exists, or clear it while none does.  The migration-12 trigger already
+        guarantees the pointer never dangles; this is how a caller states
+        which version it meant instead of accepting the trigger's NULL.
+
+        The version must belong to the book.  Silently accepting another
+        book's version would make ``list_books`` render a title beside a
+        different book's hash and status, and nothing downstream re-checks it.
+        """
+        with self._write() as connection:
+            if connection.execute('SELECT 1 FROM books WHERE book_id = ?', (book_id,)).fetchone() is None:
+                raise IntegrityError(f'unknown book_id: {book_id}')
+            if version_id is not None:
+                owner = connection.execute(
+                    'SELECT book_id FROM book_versions WHERE version_id = ?', (version_id,)
+                ).fetchone()
+                if owner is None:
+                    raise IntegrityError(f'unknown version_id: {version_id}')
+                if owner['book_id'] != book_id:
+                    raise IntegrityError('a book cannot be pointed at another book version')
+            connection.execute(
+                'UPDATE books SET current_version_id = ?, updated_at = CURRENT_TIMESTAMP WHERE book_id = ?',
+                (version_id, book_id),
+            )
+
+    def dangling_current_version_book_ids(self) -> list[str]:
+        """List books whose ``current_version_id`` names a version that is gone.
+
+        ``PRAGMA foreign_key_check`` cannot report this: the column declares no
+        reference, so as far as SQLite's integrity checks are concerned there
+        is nothing to violate.  This is the check that replaces it, for tests
+        and for an administrator's integrity surface.  It should always return
+        an empty list.
+        """
+        return [
+            str(row[0])
+            for row in self._connection()
+            .execute(
+                """SELECT book_id FROM books
+                   WHERE current_version_id IS NOT NULL
+                     AND current_version_id NOT IN (SELECT version_id FROM book_versions)
+                   ORDER BY book_id"""
+            )
+            .fetchall()
+        ]
 
     def add_toc_nodes(self, version_id: str, nodes: Iterable[Mapping[str, Any]]) -> list[str]:
         ids: list[str] = []
