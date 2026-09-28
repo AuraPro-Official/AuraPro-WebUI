@@ -54,9 +54,28 @@ class DerivedSourceRepository(Protocol):
 
 
 class DerivedVectorBackend(Protocol):
-    """Storage implementation for vectors produced from verified source windows."""
+    """Storage implementation for vectors produced from verified source windows.
+
+    Removal is part of the contract because a derived vector outlives nothing:
+    when the immutable window it was produced from goes away, or the embedding
+    profile that produced it is retired, the vector has to go with it or it
+    becomes an unattributable candidate that search would still return.
+
+    ``delete`` is defined as **idempotent**: removing a retrieval unit the
+    backend does not hold is a no-op that reports ``False``, not an error.
+    The alternative -- raising -- would force every caller to read before
+    writing and then act on an answer that another writer may already have
+    invalidated, and it would make a retried or resumed uninstall fail on
+    exactly the rows the interrupted first attempt had already cleaned up.
+    The boolean (and ``delete_many``'s count) is there for the callers that
+    genuinely need to know how much was removed.
+    """
 
     def upsert(self, record: DerivedVectorRecord) -> None: ...
+
+    def delete(self, retrieval_unit_id: str) -> bool: ...
+
+    def delete_many(self, retrieval_unit_ids: Sequence[str]) -> int: ...
 
 
 class InMemoryDerivedVectorBackend:
@@ -70,6 +89,16 @@ class InMemoryDerivedVectorBackend:
         if existing is not None and _identity(existing) != _identity(record):
             raise VectorIndexError('a retrieval-unit ID cannot be rebound to a different source window or profile')
         self.records[record.retrieval_unit_id] = record
+
+    def delete(self, retrieval_unit_id: str) -> bool:
+        """Drop one derived vector, reporting whether this backend held it."""
+        return self.records.pop(retrieval_unit_id, None) is not None
+
+    def delete_many(self, retrieval_unit_ids: Sequence[str]) -> int:
+        """Drop several derived vectors, returning how many were actually held."""
+        if isinstance(retrieval_unit_ids, str):
+            raise VectorIndexError('delete_many takes a sequence of retrieval-unit IDs, not a single ID')
+        return sum(1 for unit_id in dict.fromkeys(retrieval_unit_ids) if self.delete(unit_id))
 
     def search(self, query_vector: Sequence[float], *, embedding_profile: str, limit: int) -> list[DerivedVectorRecord]:
         """Return nearest derived windows for deterministic tests/diagnostics.

@@ -4506,7 +4506,7 @@ class EpubBatchDiagnosticsMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute('SELECT version FROM schema_migrations')},
-            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
         )
         self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], STORE.SCHEMA_VERSION)
         item = connection.execute('SELECT * FROM batch_items').fetchone()
@@ -4608,10 +4608,10 @@ class EpubBatchPromptProfileMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute('SELECT version FROM schema_migrations')},
-            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
         )
         self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], STORE.SCHEMA_VERSION)
-        self.assertEqual(STORE.SCHEMA_VERSION, 11)
+        self.assertEqual(STORE.SCHEMA_VERSION, 12)
         jobs = {row['batch_job_id']: row for row in connection.execute('SELECT * FROM batch_jobs')}
         self.assertEqual(set(jobs), {'legacy-sample', 'legacy-full'})
         # The submitted full run keeps every field it had; it simply has no
@@ -4726,10 +4726,10 @@ class EpubBatchAmbiguousConceptMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute('SELECT version FROM schema_migrations')},
-            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
         )
         self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], STORE.SCHEMA_VERSION)
-        self.assertEqual(STORE.SCHEMA_VERSION, 11)
+        self.assertEqual(STORE.SCHEMA_VERSION, 12)
 
         item = connection.execute('SELECT * FROM batch_items').fetchone()
         # Not measured, not zero.  The counters the row *did* record are
@@ -4849,10 +4849,10 @@ class EpubBatchUngroundedEvidenceMigrationTest(unittest.TestCase):
 
         self.assertEqual(
             {row[0] for row in connection.execute('SELECT version FROM schema_migrations')},
-            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11},
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
         )
         self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], STORE.SCHEMA_VERSION)
-        self.assertEqual(STORE.SCHEMA_VERSION, 11)
+        self.assertEqual(STORE.SCHEMA_VERSION, 12)
 
         item = connection.execute('SELECT * FROM batch_items').fetchone()
         self.assertIsNone(item['skipped_ungrounded_evidence'])

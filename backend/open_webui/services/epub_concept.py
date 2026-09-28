@@ -847,13 +847,29 @@ class EpubConceptService:
         degraded local embedding runtime leaves the existing state untouched:
         a previously ready vector remains usable and a pending unit can be
         retried after the private runtime recovers.
+
+        Only units belonging to the *currently configured* embedding profile
+        are considered.  A version can hold windows from more than one profile
+        -- that is the whole point of ``retrieval_units`` keying uniqueness on
+        ``embedding_profile`` -- and the indexer refuses, by design, to embed a
+        unit whose profile is not the configured one.  Without this filter that
+        refusal arrived here as an ordinary exception and was written back as
+        ``FAILED``, which was wrong twice over: a coexisting second profile's
+        units were permanently reported as failures, and after an embedding
+        profile change a ``rebuild`` flipped healthy ``READY`` units to
+        ``FAILED`` -- destroying the only record that their vectors were good
+        -- after which the non-rebuild run re-selected those same units (they
+        were no longer ``READY``) and re-failed them on every subsequent run.
+        Units that genuinely fail to embed are untouched by this and are still
+        recorded as ``FAILED``.
         """
         if self._vector_indexer is None:
             raise EpubServiceUnavailable('the server has no private EPUB vector indexer configured')
         if self._store.get_version(version_id) is None:
             raise EpubServiceError('unknown EPUB version')
 
-        all_units = self._store.list_retrieval_units_for_version(version_id)
+        every_unit = self._store.list_retrieval_units_for_version(version_id)
+        all_units = [unit for unit in every_unit if unit.get('embedding_profile') == self._retrieval_embedding_profile]
         selected = all_units if rebuild else [unit for unit in all_units if unit.get('vector_state') != 'READY']
         errors: list[dict[str, str]] = []
         ready = degraded = failed = 0
@@ -892,6 +908,10 @@ class EpubConceptService:
             'total_retrieval_units': len(all_units),
             'selected_retrieval_units': len(selected),
             'skipped_ready': len(all_units) - len(selected),
+            # Reported rather than merely subtracted, so a profile change is
+            # visible as a number an operator can act on instead of a total
+            # that quietly shrank.
+            'skipped_other_profile': len(every_unit) - len(all_units),
             'ready': ready,
             'degraded': degraded,
             'failed': failed,
