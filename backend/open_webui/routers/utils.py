@@ -13,8 +13,10 @@ import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from open_webui.config import DATA_DIR, ENABLE_ADMIN_EXPORT
 from open_webui.constants import ERROR_MESSAGES
+from open_webui.env import SENTENCE_TRANSFORMERS_BACKEND, SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND
 from open_webui.models.chats import ChatTitleMessagesForm
 from open_webui.models.config import Config
+from open_webui.retrieval.model_download import matches_any, select_ignore_patterns
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.misc import get_gravatar_url
 from pydantic import BaseModel, Field, field_validator
@@ -229,12 +231,6 @@ async def _get_repo_files(
             return files
 
 
-def _should_ignore(filename: str, ignore_patterns: list[str]) -> bool:
-    import fnmatch
-
-    return any(fnmatch.fnmatch(filename, pat) for pat in ignore_patterns)
-
-
 async def _download_file(
     session: aiohttp.ClientSession,
     repo_id: str,
@@ -307,9 +303,19 @@ async def _snapshot_stream(
         yield emit({'status': 'fetching_file_list'})
         files = await _get_repo_files(req.repo_id, req.token)
 
-        # 过滤忽略项
-        if req.ignore_patterns:
-            files = [f for f in files if not _should_ignore(f['rfilename'], req.ignore_patterns)]
+        # 过滤忽略项：先按仓库实际内容跳过用不到的权重副本（ONNX/OpenVINO/TF/
+        # Flax 等格式，以及已有 safetensors 时的 pickle 权重），再叠加调用方显式
+        # 传入的规则。默认清单由服务端统一决定，因此前端不必重复维护一份，这条
+        # 下载路径与 retrieval.utils.get_model_path 的行为保持一致。
+        ignore_patterns = [
+            *select_ignore_patterns(
+                [f['rfilename'] for f in files],
+                backends=(SENTENCE_TRANSFORMERS_BACKEND, SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND),
+            ),
+            *req.ignore_patterns,
+        ]
+        if ignore_patterns:
+            files = [f for f in files if not matches_any(f['rfilename'], ignore_patterns)]
 
         if not files:
             yield emit({'error': f'No files found in {req.repo_id}'})
@@ -374,7 +380,11 @@ async def huggingface_snapshot_download(
     user=Depends(get_admin_user),  # 仅管理员可下载
 ):
     """
-    从 HuggingFace 下载整个模型仓库，以 NDJSON 流实时推送进度。
+    从 HuggingFace 下载模型仓库，以 NDJSON 流实时推送进度。
+
+    默认跳过本应用加载不到的权重副本（ONNX/OpenVINO/TensorFlow/Flax/Rust 等），
+    以及仓库同时提供 safetensors 时的 pickle 权重，因此无需调用方自行传入这份
+    清单；ignore_patterns 只是在默认规则之上追加。
 
     与前端 downloadModelWithProgress 完全兼容：
     - 进度通过 completed / total 字段计算百分比
@@ -384,7 +394,7 @@ async def huggingface_snapshot_download(
     {
         "repo_id": "BAAI/bge-reranker-v2-m3",
         "token": "hf_xxx",            // 可选
-        "ignore_patterns": ["*.msgpack", "flax_model*"]  // 可选
+        "ignore_patterns": ["*.md", "assets/*"]  // 可选，追加在默认规则之后
     }
     """
 
