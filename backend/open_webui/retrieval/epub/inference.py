@@ -267,9 +267,10 @@ class LlamaCppTransport(Protocol):
     """The narrow HTTP surface exposed by ``llama-server``.
 
     It is intentionally separate from the generic EPUB JSON transport: llama.cpp
-    exposes ``GET /health`` and OpenAI-compatible ``POST /v1/chat/completions``.
-    Keeping these requests explicit prevents a resolver from accidentally
-    inheriting an OpenAI cloud endpoint or a generic chat-client fallback.
+    exposes ``GET /v1/models`` and OpenAI-compatible ``POST
+    /v1/chat/completions``.  Keeping these requests explicit prevents a resolver
+    from accidentally inheriting an OpenAI cloud endpoint or a generic
+    chat-client fallback.
     """
 
     def get_json(self, url: str) -> Mapping[str, Any]: ...
@@ -306,6 +307,138 @@ class UrllibLlamaCppTransport:
         return decoded
 
 
+LLAMA_CPP_LOADED_STATUS = 'loaded'
+
+
+def llama_cpp_base_url(endpoint: PrivateModelEndpoint) -> str:
+    """Normalize an approved endpoint to ``llama-server``'s root URL.
+
+    Desktop registers ``${result.url}/v1`` with Open WebUI.  Administrators can
+    configure either that familiar form or the llama-server root URL, so both
+    are reduced to the root here and every llama.cpp path is appended to it.
+    """
+    base = endpoint.url.rstrip('/')
+    return base[:-3] if base.endswith('/v1') else base
+
+
+# Three degrade classes an operator has to be able to tell apart.  Holding
+# nothing is the ordinary cold-start state and resolves itself at the user's
+# first chat message; an inventory that cannot be read is a misconfiguration
+# and will not resolve itself; an ambiguous one is a runtime in a shape this
+# policy will not act on.
+NOTHING_RESIDENT_REASON = (
+    'no model is loaded in the local llama.cpp runtime; this tier borrows the model already in '
+    'memory and never triggers a load, so it is unavailable until something else loads one'
+)
+INVENTORY_UNREADABLE_REASON = 'the local llama.cpp model inventory could not be read'
+INVENTORY_AMBIGUOUS_REASON = 'the local llama.cpp model inventory is ambiguous'
+INVENTORY_UNREACHABLE_REASON = 'the local llama.cpp model inventory is unreachable'
+
+
+def _llama_cpp_model_id(entry: Mapping[str, Any]) -> str:
+    identifier = entry.get('id')
+    # llama-server reports whatever it was given, and a plain single-model
+    # launch reports the model's full filesystem path rather than a short name.
+    # That is why a configured model name is a tie-breaker and never a selector:
+    # on such a runtime it could not match, and matching is not how this chooses.
+    return identifier.strip() if isinstance(identifier, str) and identifier.strip() else ''
+
+
+def _llama_cpp_entry_is_loaded(entry: Mapping[str, Any]) -> bool:
+    status = entry.get('status')
+    value = status.get('value') if isinstance(status, Mapping) else None
+    # Only an explicit `loaded` counts.  `unloaded`, an unrecognised value and a
+    # malformed status member are all "we cannot prove this is in memory".
+    return value == LLAMA_CPP_LOADED_STATUS
+
+
+def select_resident_llama_cpp_model(inventory: Mapping[str, Any], *, hint: str = '') -> str:
+    """Return the model llama.cpp already holds in memory, or fail closed.
+
+    llama.cpp's model router answers ``GET /v1/models`` with every *servable*
+    entry, each carrying a ``status.value`` of ``loaded`` or ``unloaded``.  Only
+    a loaded entry may be named in a completion request.  Desktop runs the
+    router with ``--models-max 1``: naming any other servable entry evicts
+    whatever the user is currently chatting with, and their next message evicts
+    ours and reloads theirs.  A deployer's chat model can be several gigabytes,
+    so a Tier-2 concept lookup that costs two model loads is far worse than a
+    Tier-2 lookup that does not happen.  This tier therefore *borrows* the
+    resident model and can never cause a load.
+
+    A plain, non-router ``llama-server`` -- one model given on the command line,
+    which is what the documented static-configuration route points at -- answers
+    the same path with entries that carry **no** ``status`` member at all, only
+    ``id``/``object``/``owned_by``/``created``/``meta``/``tags``/``aliases``.
+    Requiring a status there would permanently degrade a runtime whose single
+    model is loaded and serving, and report it as "no model is loaded".  So load
+    state is read when the runtime reports it and inferred only when the runtime
+    reports none *anywhere*: a lone entry on a server that has no concept of
+    loading is the resident model, and there is nothing it could evict.  The
+    exception cannot fire on a router, which stamps a status on every entry, so
+    the eviction guarantee is untouched.  More than one status-less entry is
+    left alone: residency is unprovable, and a single-model server cannot
+    produce that shape.
+
+    ``hint`` is the model named by Desktop's runtime descriptor or by static
+    configuration.  It is a tie-breaker only: it can never promote an unloaded
+    entry, and it is not consulted at all when exactly one model is resident --
+    which is the only shape ``--models-max 1`` can normally produce.  When
+    several are somehow resident and none matches, this refuses to guess rather
+    than risk borrowing the wrong one.
+    """
+    # `data` and never `models`: llama-server answers with an OpenAI-style
+    # `data` array *and* an ollama-style `models` array of a different shape,
+    # and only `data` carries the router's load state.
+    data = inventory.get('data')
+    if not isinstance(data, list):
+        raise LocalInferenceUnavailable(f'{INVENTORY_UNREADABLE_REASON}: it has no OpenAI-style `data` list')
+    if not data:
+        raise LocalInferenceUnavailable(NOTHING_RESIDENT_REASON)
+    entries = tuple(entry for entry in data if isinstance(entry, Mapping))
+    if not entries:
+        raise LocalInferenceUnavailable(f'{INVENTORY_UNREADABLE_REASON}: its entries are not objects')
+
+    if any('status' in entry for entry in entries):
+        loaded: list[str] = []
+        for entry in entries:
+            identifier = _llama_cpp_model_id(entry)
+            if identifier and _llama_cpp_entry_is_loaded(entry):
+                loaded.append(identifier)
+        resident = tuple(dict.fromkeys(loaded))
+        if not resident:
+            raise LocalInferenceUnavailable(NOTHING_RESIDENT_REASON)
+        if len(resident) == 1:
+            return resident[0]
+        normalized = hint.strip() if isinstance(hint, str) else ''
+        if normalized and normalized in resident:
+            return normalized
+        raise LocalInferenceUnavailable(
+            f'{INVENTORY_AMBIGUOUS_REASON}: {len(resident)} models are loaded and none of them is the '
+            'configured model; refusing to guess which one to borrow'
+        )
+
+    if len(data) != 1:
+        raise LocalInferenceUnavailable(
+            f'{INVENTORY_AMBIGUOUS_REASON}: it lists {len(data)} models and reports load state for '
+            'none of them; refusing to guess which one to borrow'
+        )
+    identifier = _llama_cpp_model_id(entries[0])
+    if not identifier:
+        raise LocalInferenceUnavailable(f'{INVENTORY_UNREADABLE_REASON}: its only entry has no model id')
+    return identifier
+
+
+def resident_llama_cpp_model(*, transport: LlamaCppTransport, base_url: str, hint: str = '') -> str:
+    """Ask a private llama.cpp runtime which model it currently holds."""
+    try:
+        inventory = transport.get_json(f'{base_url}/v1/models')
+    except Exception as error:
+        raise LocalInferenceUnavailable(f'{INVENTORY_UNREACHABLE_REASON}: {_safe_reason(error)}') from error
+    if not isinstance(inventory, Mapping):
+        raise LocalInferenceUnavailable(f'{INVENTORY_UNREADABLE_REASON}: it is not a JSON object')
+    return select_resident_llama_cpp_model(inventory, hint=hint)
+
+
 class LlamaCppConceptResolver:
     """Tier-2 resolver for AuraPro Desktop's local ``llama-server``.
 
@@ -314,6 +447,10 @@ class LlamaCppConceptResolver:
     ``resolve_async`` is supplied for future native async orchestration and
     similarly moves the blocking stdlib transport off the event loop.  Neither
     method can select any endpoint other than the validated private one.
+
+    ``profile`` is the model *hint* a deployment configured, not an instruction.
+    Which model is actually requested is decided per operation by
+    :func:`select_resident_llama_cpp_model` from the runtime's own inventory.
     """
 
     component = 'llama.cpp-concept-resolver'
@@ -323,49 +460,51 @@ class LlamaCppConceptResolver:
         *,
         endpoint: PrivateModelEndpoint,
         transport: LlamaCppTransport | None = None,
-        profile: str,
+        profile: str = '',
         max_tokens: int = 96,
     ) -> None:
-        if not profile or not profile.strip():
-            raise LocalInferenceError('model profile cannot be empty')
+        if not isinstance(profile, str):
+            raise LocalInferenceError('model profile hint must be a string')
         if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or not 1 <= max_tokens <= 512:
             raise LocalInferenceError('llama.cpp max_tokens must be an integer between 1 and 512')
         self._endpoint = endpoint
         self._transport = transport or UrllibLlamaCppTransport()
-        self.profile = profile
+        self.profile = profile.strip()
         self._max_tokens = max_tokens
-        # Desktop registers `${result.url}/v1` with Open WebUI.  Administrators
-        # can use either that familiar form or the llama-server root URL here.
-        self._base_url = endpoint.url.rstrip('/')
-        if self._base_url.endswith('/v1'):
-            self._base_url = self._base_url[:-3]
+        self._base_url = llama_cpp_base_url(endpoint)
 
     def availability(self) -> ModelAvailability:
+        """Report whether a model is actually resident, not merely reachable.
+
+        ``GET /health`` deliberately is not used: a llama.cpp router with zero
+        models in memory still answers it with ``{"status": "ok"}``, so health
+        alone reported this tier ready and let it degrade later with a raw HTTP
+        error from the completion request.  Reading the inventory instead is one
+        loopback GET, the same cost the health request had, and it answers the
+        question the caller is really asking.
+        """
         try:
-            response = self._transport.get_json(f'{self._base_url}/health')
+            self.resident_model()
         except Exception as error:
             return ModelAvailability.degraded(self.component, _safe_reason(error))
-        if not isinstance(response, Mapping):
-            return ModelAvailability.degraded(
-                self.component, 'llama.cpp health endpoint returned a non-object response'
-            )
-        status = response.get('status')
-        # llama-server reports `no slot available` while it is otherwise a
-        # healthy local process.  A request may still fail closed later.
-        if status in {'ok', 'no slot available'}:
-            return ModelAvailability.ready(self.component)
-        return ModelAvailability.degraded(
-            self.component,
-            str(response.get('error') or response.get('reason') or f'unexpected health status: {status!r}')[:240],
-        )
+        return ModelAvailability.ready(self.component)
+
+    def resident_model(self) -> str:
+        """The model this runtime currently holds; raises when none is loaded."""
+        return resident_llama_cpp_model(transport=self._transport, base_url=self._base_url, hint=self.profile)
 
     def resolve(self, query: str, candidates: Sequence[str]) -> str | None:
         if not isinstance(query, str) or not query.strip():
             raise LocalInferenceError('concept query cannot be empty')
         _require_nonempty_texts(candidates, 'concept candidates')
         unique_candidates = tuple(dict.fromkeys(candidates))
+        # Deliberately re-read immediately before the completion request rather
+        # than reusing what `availability()` just saw: a stale identifier is the
+        # one way this tier could still name a model the runtime has since
+        # evicted, which would load it back and evict the user's chat model.
+        model = self.resident_model()
         payload = {
-            'model': self.profile,
+            'model': model,
             'messages': [
                 {
                     'role': 'system',

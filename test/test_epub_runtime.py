@@ -19,6 +19,7 @@ from open_webui.retrieval.epub.vector_index import DerivedVectorRecord  # noqa: 
 from open_webui.services.epub_runtime import (  # noqa: E402
     EpubRuntimeConfigurationError,
     _aurapro_rag_models,
+    _llama_cpp_concept_resolver,
     close_epub_concept_service,
     configure_epub_rag_inference_policy,
     initialize_epub_concept_service,
@@ -252,6 +253,33 @@ class EpubRuntimeTest(unittest.TestCase):
         self.assertEqual(len(unreranked), 1)
         self.assertIn('not reranked', unreranked[0].reason or '')
         self.assertEqual([item for item in response.degraded if item.component.endswith('-search')], [])
+
+    def test_static_configuration_needs_only_an_endpoint_and_treats_a_model_as_a_hint(self) -> None:
+        """A deployment with no Desktop descriptor still configures in one line.
+
+        Naming a model is no longer how one gets chosen, so requiring the name
+        would only be a way to configure this wrong.  It stays *readable* as the
+        tie-breaker for a runtime holding several models at once.
+        """
+        endpoint_only, availability = _llama_cpp_concept_resolver(
+            {'EPUB_CONCEPT_LOCAL_LLM_ENDPOINT': 'http://127.0.0.1:18881'}
+        )
+        self.assertIsNotNone(endpoint_only)
+        self.assertTrue(availability.available)
+        self.assertEqual(endpoint_only.profile, '')
+
+        with_hint, _ = _llama_cpp_concept_resolver(
+            {
+                'EPUB_CONCEPT_LOCAL_LLM_ENDPOINT': 'http://127.0.0.1:18881',
+                'EPUB_CONCEPT_LOCAL_LLM_MODEL': 'optional-tie-breaker',
+            }
+        )
+        self.assertEqual(with_hint.profile, 'optional-tie-breaker')
+
+        # A model name on its own configures nothing at all.
+        unconfigured, degraded = _llama_cpp_concept_resolver({'EPUB_CONCEPT_LOCAL_LLM_MODEL': 'orphaned-name'})
+        self.assertIsNone(unconfigured)
+        self.assertEqual(degraded.reason, 'not configured')
 
     def test_invalid_llama_cpp_configuration_is_degraded_without_startup_failure(self) -> None:
         initialize_epub_concept_service(

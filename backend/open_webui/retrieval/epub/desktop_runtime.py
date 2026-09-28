@@ -12,6 +12,15 @@ Desktop atomically replaces the descriptor named by
         "endpoint": "http://127.0.0.1:18881", "model": "desktop-model-id"
     }}
 
+``model`` is a *hint*, not an instruction. Desktop writes the descriptor as soon
+as llama.cpp reports healthy, which -- with ``load-on-startup = false`` -- is
+exactly when nothing is resident, so the descriptor can name a candidate but
+cannot report what is actually in memory. The model that is actually requested
+is chosen per operation from ``GET /v1/models``; see
+:func:`.inference.select_resident_llama_cpp_model`. The schema is unchanged and
+stays required so a Desktop build and a WebUI build of different ages keep
+interoperating.
+
 An absent, partial, or invalid descriptor is a degraded local runtime, never a
 reason to use a static endpoint or a cloud fallback.
 """
@@ -40,7 +49,8 @@ class DesktopManagedLlamaCppConceptResolver:
     """Resolve concepts through Desktop's current private llama.cpp runtime."""
 
     component = LlamaCppConceptResolver.component
-    # The actual model profile is sourced from every descriptor snapshot.
+    # The model hint is sourced from every descriptor snapshot; the model that
+    # is actually borrowed comes from the runtime's own loaded-model inventory.
     profile = 'aurapro-desktop-managed'
 
     def __init__(

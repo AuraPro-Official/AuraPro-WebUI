@@ -777,8 +777,8 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
                 test_case.assertEqual(prompt_profile, DEFAULT_CONCEPT_PROMPT_PROFILE)
                 test_case.assertEqual(sample_limit, 20)
                 return {
-                    'mode': 'LOCAL_QWEN',
                     'prompt_profile': prompt_profile,
+                    # The model llama.cpp actually had resident, not a hint.
                     'model': 'test-local-model',
                     'sample_count': 1,
                     'chapter_count': 1,

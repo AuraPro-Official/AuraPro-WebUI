@@ -41,6 +41,7 @@ AuraProRerankerAdapter = INFERENCE.AuraProRerankerAdapter
 LocalInferenceUnavailable = INFERENCE.LocalInferenceUnavailable
 ModelAvailability = INFERENCE.ModelAvailability
 PrivateModelEndpoint = INFERENCE.PrivateModelEndpoint
+select_resident_llama_cpp_model = INFERENCE.select_resident_llama_cpp_model
 DerivedVectorIndexer = VECTOR_INDEX.DerivedVectorIndexer
 InMemoryDerivedVectorBackend = VECTOR_INDEX.InMemoryDerivedVectorBackend
 VectorIndexError = VECTOR_INDEX.VectorIndexError
@@ -59,19 +60,67 @@ class FakeTransport:
         return response
 
 
+def inventory(*entries: tuple[str, str]) -> dict[str, object]:
+    """A *router* ``GET /v1/models`` snapshot from ``(model id, status)`` pairs.
+
+    llama.cpp's router lists every *servable* model and stamps each one
+    ``loaded`` or ``unloaded``, so an entry appearing here is not on its own
+    permission to request it.  The real response also carries an ollama-style
+    ``models`` array with a different shape and no load state at all, so it is
+    included here -- listing every id, resident or not -- to keep any reader
+    that reached for it visibly wrong.
+    """
+    return {
+        'object': 'list',
+        'data': [{'id': identifier, 'object': 'model', 'status': {'value': status}} for identifier, status in entries],
+        'models': [{'name': identifier, 'model': identifier, 'size': 0} for identifier, _status in entries],
+    }
+
+
+def plain_server_inventory(*identifiers: str) -> dict[str, object]:
+    """A non-router ``llama-server`` snapshot, as observed from build b10106.
+
+    One model named on the command line, no model router.  Entry keys are
+    exactly ``aliases``/``created``/``id``/``meta``/``object``/``owned_by``/
+    ``tags`` -- there is no ``status`` member to read, and ``id`` is the model's
+    full filesystem path rather than a short name.  This is what the documented
+    static-configuration route points at.
+    """
+    return {
+        'object': 'list',
+        'data': [
+            {
+                'aliases': [],
+                'created': 1757000000,
+                'id': identifier,
+                'meta': {'n_ctx_train': 32768, 'n_params': 3000000000},
+                'object': 'model',
+                'owned_by': 'llamacpp',
+                'tags': [],
+            }
+            for identifier in identifiers
+        ],
+        'models': [{'name': identifier, 'model': identifier, 'size': 0} for identifier in identifiers],
+    }
+
+
 class FakeLlamaCppTransport:
-    def __init__(self, *, health: object, completions: list[object] | None = None):
-        self.health = health
+    def __init__(self, *, models: object, completions: list[object] | None = None):
+        self.models = models
         self.completions = list(completions or [])
         self.calls: list[tuple[str, str, object | None]] = []
         self.thread_ids: list[int] = []
 
+    @property
+    def posted_models(self) -> list[object]:
+        return [payload['model'] for method, _url, payload in self.calls if method == 'POST']
+
     def get_json(self, url: str):
         self.thread_ids.append(threading.get_ident())
         self.calls.append(('GET', url, None))
-        if isinstance(self.health, Exception):
-            raise self.health
-        return self.health
+        if isinstance(self.models, Exception):
+            raise self.models
+        return self.models
 
     def post_json(self, url: str, payload: object):
         self.thread_ids.append(threading.get_ident())
@@ -215,7 +264,7 @@ class LocalOnlyInferenceTest(unittest.TestCase):
 
     def test_llama_cpp_resolver_uses_desktop_openai_endpoint_and_strict_json(self) -> None:
         transport = FakeLlamaCppTransport(
-            health={'status': 'ok'},
+            models=inventory(('resident.gguf', 'loaded')),
             completions=[{'choices': [{'message': {'content': '{"concept":"拥塞控制"}'}}]}],
         )
         resolver = LlamaCppConceptResolver(
@@ -225,8 +274,8 @@ class LocalOnlyInferenceTest(unittest.TestCase):
         )
         self.assertTrue(resolver.availability().available)
         self.assertEqual(resolver.resolve('网络为什么变慢', ['拥塞控制', '流量整形']), '拥塞控制')
-        self.assertEqual(transport.calls[0][:2], ('GET', 'http://127.0.0.1:18881/health'))
-        method, url, payload = transport.calls[1]
+        self.assertEqual(transport.calls[0][:2], ('GET', 'http://127.0.0.1:18881/v1/models'))
+        method, url, payload = transport.calls[-1]
         self.assertEqual((method, url), ('POST', 'http://127.0.0.1:18881/v1/chat/completions'))
         self.assertEqual(payload['response_format'], {'type': 'json_object'})
         self.assertEqual(payload['temperature'], 0)
@@ -249,7 +298,8 @@ class LocalOnlyInferenceTest(unittest.TestCase):
         abstained = LlamaCppConceptResolver(
             endpoint=PrivateModelEndpoint('http://127.0.0.1:18881'),
             transport=FakeLlamaCppTransport(
-                health={'status': 'ok'}, completions=[{'choices': [{'message': {'content': 'null'}}]}]
+                models=inventory(('resident.gguf', 'loaded')),
+                completions=[{'choices': [{'message': {'content': 'null'}}]}],
             ),
             profile='qwen-local.gguf',
         )
@@ -258,7 +308,7 @@ class LocalOnlyInferenceTest(unittest.TestCase):
         chatty = LlamaCppConceptResolver(
             endpoint=PrivateModelEndpoint('http://127.0.0.1:18881'),
             transport=FakeLlamaCppTransport(
-                health={'status': 'ok'},
+                models=inventory(('resident.gguf', 'loaded')),
                 completions=[{'choices': [{'message': {'content': '{"concept":"已有概念","why":"因为"}'}}]}],
             ),
             profile='qwen-local.gguf',
@@ -270,7 +320,8 @@ class LocalOnlyInferenceTest(unittest.TestCase):
         invalid = LlamaCppConceptResolver(
             endpoint=PrivateModelEndpoint('http://127.0.0.1:18881'),
             transport=FakeLlamaCppTransport(
-                health={'status': 'ok'}, completions=[{'choices': [{'message': {'content': 'not json'}}]}]
+                models=inventory(('resident.gguf', 'loaded')),
+                completions=[{'choices': [{'message': {'content': 'not json'}}]}],
             ),
             profile='qwen-local.gguf',
         )
@@ -279,7 +330,8 @@ class LocalOnlyInferenceTest(unittest.TestCase):
         unknown = LlamaCppConceptResolver(
             endpoint=PrivateModelEndpoint('http://127.0.0.1:18881'),
             transport=FakeLlamaCppTransport(
-                health={'status': 'ok'}, completions=[{'choices': [{'message': {'content': '{"concept":"新概念"}'}}]}]
+                models=inventory(('resident.gguf', 'loaded')),
+                completions=[{'choices': [{'message': {'content': '{"concept":"新概念"}'}}]}],
             ),
             profile='qwen-local.gguf',
         )
@@ -287,14 +339,14 @@ class LocalOnlyInferenceTest(unittest.TestCase):
             unknown.resolve('查询', ['已有概念'])
         unavailable = LlamaCppConceptResolver(
             endpoint=PrivateModelEndpoint('http://127.0.0.1:18881'),
-            transport=FakeLlamaCppTransport(health=ConnectionError('offline')),
+            transport=FakeLlamaCppTransport(models=ConnectionError('offline')),
             profile='qwen-local.gguf',
         )
         self.assertFalse(unavailable.availability().available)
 
     def test_llama_cpp_resolve_async_runs_blocking_transport_off_the_event_loop(self) -> None:
         transport = FakeLlamaCppTransport(
-            health={'status': 'ok'},
+            models=inventory(('resident.gguf', 'loaded')),
             completions=[{'choices': [{'message': {'content': '{"concept":null}'}}]}],
         )
         resolver = LlamaCppConceptResolver(
@@ -426,6 +478,264 @@ class LocalOnlyInferenceTest(unittest.TestCase):
         with self.assertRaises(LocalInferenceUnavailable):
             adapter.score('查询', ['不会发送'])
         self.assertEqual(calls, [])
+
+
+class ResidentModelBorrowingTest(unittest.TestCase):
+    """Tier-2 names the model llama.cpp already holds, or it does not run.
+
+    llama.cpp is launched with ``--models-max 1``, which bounds how many models
+    can be resident at once but leaves *every* preset entry servable.  A
+    completion request naming an entry that is not resident therefore evicts the
+    one that is -- the model the user is chatting with -- and the user's next
+    message evicts ours to load theirs back.  Two multi-gigabyte loads to answer
+    one concept lookup is strictly worse than not answering it, so this tier
+    borrows whatever is already in memory and otherwise degrades.
+
+    The configured model name survives only as a tie-breaker.  It cannot be
+    trusted as an instruction: Desktop writes its runtime descriptor the moment
+    llama.cpp reports healthy, which -- with ``load-on-startup = false`` -- is
+    exactly the moment nothing is loaded.
+    """
+
+    ENDPOINT = PrivateModelEndpoint('http://127.0.0.1:18881')
+    HINT = 'descriptor-hint.gguf'
+
+    def _resolver(self, transport, *, hint: str | None = None):
+        return LlamaCppConceptResolver(
+            endpoint=self.ENDPOINT,
+            transport=transport,
+            profile=self.HINT if hint is None else hint,
+        )
+
+    @staticmethod
+    def _answer() -> list[object]:
+        return [{'choices': [{'message': {'content': '{"concept":"已有概念"}'}}]}]
+
+    def test_the_one_resident_model_is_borrowed_even_when_the_hint_names_another(self) -> None:
+        transport = FakeLlamaCppTransport(
+            models=inventory(
+                (self.HINT, 'unloaded'),
+                ('what-the-deployer-loaded.gguf', 'loaded'),
+                ('another-preset-entry.gguf', 'unloaded'),
+            ),
+            completions=self._answer(),
+        )
+        resolver = self._resolver(transport)
+
+        self.assertTrue(resolver.availability().available)
+        # Availability is the inventory read itself.  `GET /health` is not
+        # consulted at all: a router holding nothing still answers it `ok`.
+        self.assertEqual(transport.calls, [('GET', 'http://127.0.0.1:18881/v1/models', None)])
+
+        self.assertEqual(resolver.resolve('查询', ['已有概念']), '已有概念')
+        self.assertEqual(transport.posted_models, ['what-the-deployer-loaded.gguf'])
+
+    def test_nothing_resident_degrades_with_that_reason_and_asks_for_no_completion(self) -> None:
+        transport = FakeLlamaCppTransport(
+            models=inventory((self.HINT, 'unloaded'), ('the-users-chat-model.gguf', 'unloaded')),
+            completions=self._answer(),
+        )
+        resolver = self._resolver(transport)
+
+        availability = resolver.availability()
+        self.assertFalse(availability.available)
+        self.assertEqual(availability.component, 'llama.cpp-concept-resolver')
+        # The reason has to say what is wrong.  Before discovery, availability
+        # reported ready here and the tier degraded one step later with a raw
+        # HTTP error from the completion request.
+        self.assertIn('no model is loaded', availability.reason or '')
+        self.assertIn('never triggers a load', availability.reason or '')
+
+        with self.assertRaisesRegex(LocalInferenceUnavailable, 'no model is loaded'):
+            resolver.resolve('查询', ['已有概念'])
+        self.assertEqual(transport.posted_models, [])
+
+    def test_a_hint_breaks_a_tie_only_among_models_that_are_already_resident(self) -> None:
+        transport = FakeLlamaCppTransport(
+            models=inventory((self.HINT, 'loaded'), ('the-users-chat-model.gguf', 'loaded')),
+            completions=self._answer(),
+        )
+        self.assertEqual(self._resolver(transport).resolve('查询', ['已有概念']), '已有概念')
+        self.assertEqual(transport.posted_models, [self.HINT])
+
+    def test_several_resident_models_without_a_hint_match_degrade_rather_than_guess(self) -> None:
+        for hint in (self.HINT, ''):
+            with self.subTest(hint=hint or '<no hint configured>'):
+                transport = FakeLlamaCppTransport(
+                    models=inventory(('the-users-chat-model.gguf', 'loaded'), ('a-second-model.gguf', 'loaded')),
+                    completions=self._answer(),
+                )
+                resolver = self._resolver(transport, hint=hint)
+                availability = resolver.availability()
+                self.assertFalse(availability.available)
+                self.assertIn('refusing to guess', availability.reason or '')
+                with self.assertRaisesRegex(LocalInferenceUnavailable, 'refusing to guess'):
+                    resolver.resolve('查询', ['已有概念'])
+                self.assertEqual(transport.posted_models, [])
+
+    def test_an_unreachable_or_malformed_inventory_fails_closed(self) -> None:
+        for label, models in (
+            ('transport error', ConnectionError('connection refused')),
+            ('not a JSON object', 'a bare string'),
+            ('no data member', {'object': 'list'}),
+            ('data is not a list', {'object': 'list', 'data': {'id': 'the-users-chat-model.gguf'}}),
+            ('entries are not objects', {'object': 'list', 'data': ['the-users-chat-model.gguf']}),
+            # An ollama-style `models` array is never a substitute for `data`.
+            ('only the ollama-style array', {'models': [{'name': 'the-users-chat-model.gguf'}]}),
+        ):
+            with self.subTest(inventory=label):
+                transport = FakeLlamaCppTransport(models=models, completions=self._answer())
+                resolver = self._resolver(transport)
+                availability = resolver.availability()
+                self.assertFalse(availability.available)
+                self.assertTrue(availability.reason)
+                with self.assertRaises(LocalInferenceUnavailable):
+                    resolver.resolve('查询', ['已有概念'])
+                self.assertEqual(transport.posted_models, [])
+
+    def test_no_inventory_shape_can_select_an_entry_that_is_not_reported_loaded(self) -> None:
+        """On a runtime that reports load state, only ``loaded`` is usable.
+
+        Every entry below carries a ``status`` member, which is what puts the
+        inventory on the router path.  Anything but the exact string ``loaded``
+        -- and a malformed status is "anything but" -- keeps it out of a
+        request, because on a router an entry it names may well be the user's
+        chat model sitting in memory.
+        """
+        not_resident = (
+            {'id': 'the-users-chat-model.gguf', 'status': {'value': 'unloaded'}},
+            {'id': 'the-users-chat-model.gguf', 'status': {'value': 'LOADED'}},
+            {'id': 'the-users-chat-model.gguf', 'status': {'value': 'loading'}},
+            {'id': 'the-users-chat-model.gguf', 'status': {'value': True}},
+            {'id': 'the-users-chat-model.gguf', 'status': {'value': None}},
+            {'id': 'the-users-chat-model.gguf', 'status': {}},
+            {'id': 'the-users-chat-model.gguf', 'status': 'loaded'},
+            {'id': 'the-users-chat-model.gguf', 'status': None},
+            # A resident entry with no usable id is still not requestable.
+            {'status': {'value': 'loaded'}},
+            {'id': '   ', 'status': {'value': 'loaded'}},
+        )
+        for entry in not_resident:
+            with self.subTest(entry=entry):
+                transport = FakeLlamaCppTransport(
+                    models={'object': 'list', 'data': [entry]}, completions=self._answer()
+                )
+                # The hint names this very entry, so nothing but the reported
+                # status is keeping it out of the completion request.
+                resolver = self._resolver(transport, hint='the-users-chat-model.gguf')
+                self.assertFalse(resolver.availability().available)
+                with self.assertRaisesRegex(LocalInferenceUnavailable, 'no model is loaded'):
+                    resolver.resolve('查询', ['已有概念'])
+                self.assertEqual(transport.posted_models, [])
+
+    def test_selection_is_a_pure_function_of_one_inventory_snapshot(self) -> None:
+        self.assertEqual(
+            select_resident_llama_cpp_model(inventory(('only.gguf', 'loaded'), ('other.gguf', 'unloaded'))),
+            'only.gguf',
+        )
+        # A duplicated entry is one resident model, not an ambiguous pair.
+        self.assertEqual(
+            select_resident_llama_cpp_model(inventory(('only.gguf', 'loaded'), ('only.gguf', 'loaded'))),
+            'only.gguf',
+        )
+        with self.assertRaisesRegex(LocalInferenceUnavailable, 'no model is loaded'):
+            select_resident_llama_cpp_model(inventory(('only.gguf', 'unloaded')), hint='only.gguf')
+
+    def test_a_plain_single_model_server_reports_no_load_state_and_is_borrowed(self) -> None:
+        """A non-router ``llama-server`` has one model and nothing to evict.
+
+        Observed on build b10106, the build Desktop pins: a plain
+        ``llama-server -m <model>.gguf`` answers ``/v1/models`` with one entry
+        whose keys are aliases/created/id/meta/object/owned_by/tags.  There is
+        no ``status`` member -- not ``unloaded``, absent.  Demanding one would
+        permanently degrade the documented static-configuration route and tell
+        its operator "no model is loaded" about a model that is loaded and
+        serving.  The eviction hazard needs a router with several servable
+        entries, and a router stamps a status on every one of them, so reading
+        load state only where it is reported gives up none of the guarantee.
+        """
+        path_id = '/opt/models/an-instruct-model-q4_k_m.gguf'
+        transport = FakeLlamaCppTransport(models=plain_server_inventory(path_id), completions=self._answer())
+        resolver = self._resolver(transport)
+
+        self.assertTrue(resolver.availability().available)
+        self.assertEqual(resolver.resolve('查询', ['已有概念']), '已有概念')
+        # `id` is the full filesystem path, which is also why a configured model
+        # name could never have selected anything on a runtime like this one.
+        self.assertEqual(transport.posted_models, [path_id])
+
+    def test_several_models_with_no_reported_load_state_degrade_rather_than_guess(self) -> None:
+        transport = FakeLlamaCppTransport(
+            models=plain_server_inventory('/opt/models/first.gguf', '/opt/models/second.gguf'),
+            completions=self._answer(),
+        )
+        resolver = self._resolver(transport, hint='/opt/models/first.gguf')
+        availability = resolver.availability()
+
+        self.assertFalse(availability.available)
+        self.assertIn('ambiguous', availability.reason or '')
+        self.assertIn('refusing to guess', availability.reason or '')
+        with self.assertRaises(LocalInferenceUnavailable):
+            resolver.resolve('查询', ['已有概念'])
+        self.assertEqual(transport.posted_models, [])
+
+    def test_one_entry_reporting_load_state_puts_the_whole_inventory_on_the_router_path(self) -> None:
+        """A status anywhere means a router, and a router is never inferred from.
+
+        The status-less entries in a mixed inventory are exactly the ones that
+        must not be borrowed: on a router they are entries whose load state was
+        not reported, not entries from a server that has no load state.
+        """
+        stamped = {'id': '/opt/models/stamped.gguf', 'object': 'model', 'status': {'value': 'unloaded'}}
+        bare = {'id': '/opt/models/bare.gguf', 'object': 'model'}
+
+        nothing_loaded = FakeLlamaCppTransport(
+            models={'object': 'list', 'data': [stamped, bare]}, completions=self._answer()
+        )
+        resolver = self._resolver(nothing_loaded, hint='/opt/models/bare.gguf')
+        self.assertFalse(resolver.availability().available)
+        with self.assertRaisesRegex(LocalInferenceUnavailable, 'no model is loaded'):
+            resolver.resolve('查询', ['已有概念'])
+        self.assertEqual(nothing_loaded.posted_models, [])
+
+        # The stamped-and-loaded entry wins outright; the bare one is not a
+        # second candidate, so this is not even an ambiguous inventory.
+        one_loaded = FakeLlamaCppTransport(
+            models={
+                'object': 'list',
+                'data': [{**stamped, 'status': {'value': 'loaded'}}, bare],
+            },
+            completions=self._answer(),
+        )
+        self.assertEqual(self._resolver(one_loaded).resolve('查询', ['已有概念']), '已有概念')
+        self.assertEqual(one_loaded.posted_models, ['/opt/models/stamped.gguf'])
+
+    def test_a_cold_runtime_and_a_misconfigured_one_report_different_reasons(self) -> None:
+        """An operator has to be able to tell these apart.
+
+        Holding nothing is the ordinary state after llama.cpp starts and fixes
+        itself at the user's first chat message.  An inventory that cannot be
+        read is a misconfiguration and will not fix itself.
+        """
+        cold = self._resolver(FakeLlamaCppTransport(models=inventory(('a.gguf', 'unloaded')))).availability()
+        empty = self._resolver(FakeLlamaCppTransport(models={'object': 'list', 'data': []})).availability()
+        unreadable = self._resolver(FakeLlamaCppTransport(models={'object': 'list'})).availability()
+        unreachable = self._resolver(FakeLlamaCppTransport(models=ConnectionError('refused'))).availability()
+        ambiguous = self._resolver(
+            FakeLlamaCppTransport(models=inventory(('a.gguf', 'loaded'), ('b.gguf', 'loaded')))
+        ).availability()
+
+        for availability in (cold, empty, unreadable, unreachable, ambiguous):
+            self.assertFalse(availability.available)
+        for holds_nothing in (cold, empty):
+            self.assertIn('no model is loaded', holds_nothing.reason or '')
+        self.assertIn('could not be read', unreadable.reason or '')
+        self.assertIn('unreachable', unreachable.reason or '')
+        self.assertIn('ambiguous', ambiguous.reason or '')
+        # The cold-start reason must not read as a misconfiguration, or an
+        # operator goes looking for a broken endpoint that is working.
+        for misread in ('could not be read', 'unreachable', 'ambiguous'):
+            self.assertNotIn(misread, cold.reason or '')
 
 
 if __name__ == '__main__':

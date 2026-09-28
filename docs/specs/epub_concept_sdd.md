@@ -113,19 +113,56 @@ enough to have consulted the resolver reports `local-concept-resolver` as a
 degraded component with the reason `not configured`. That is the intended
 signal, not a warning to suppress — a reader is told the tier could have helped
 and did not run. Administrator-managed or development deployments may configure
-`EPUB_CONCEPT_LOCAL_LLM_ENDPOINT`
-and `EPUB_CONCEPT_LOCAL_LLM_MODEL`; the endpoint is validated with the same
+`EPUB_CONCEPT_LOCAL_LLM_ENDPOINT`; the endpoint is validated with the same
 private-address policy and accepts an explicit private-DNS allowlist through
 `EPUB_CONCEPT_LOCAL_LLM_TRUSTED_HOSTNAMES`. In a Desktop-managed local
 deployment, WebUI instead receives an absolute
 `AURAPRO_DESKTOP_LLM_RUNTIME_FILE` path. Desktop atomically writes the
 versioned, credential-free JSON descriptor containing its current loopback
-endpoint and selected model identifier. WebUI re-reads it for every resolver
+endpoint and a model identifier. WebUI re-reads it for every resolver
 operation and validates the endpoint; a missing or malformed descriptor is
 degraded/fail-closed and does not fall back to static settings. Optional
 llama.cpp timeout and output limit settings are
 `EPUB_CONCEPT_LOCAL_LLM_TIMEOUT_SECONDS` and
 `EPUB_CONCEPT_LOCAL_LLM_MAX_TOKENS`.
+
+Neither route selects the model (D-13). The descriptor's `model`, and the
+optional static `EPUB_CONCEPT_LOCAL_LLM_MODEL`, are hints only: Desktop writes
+the descriptor the moment llama.cpp reports healthy, which — with
+`load-on-startup = false` — is exactly when nothing is resident, so neither can
+state what is in memory. Before each operation WebUI reads `GET /v1/models` and
+**borrows** the entry whose `status.value` is `loaded`. It never requests an
+unloaded entry and never triggers a load: llama.cpp runs with `--models-max 1`,
+so naming any other servable entry evicts the model the user is chatting with
+and their next message evicts ours, costing two multi-gigabyte loads to answer
+one concept lookup. If nothing is loaded, the tier reports
+`local-concept-resolver` degraded with that reason and stays unavailable until
+the user's own first inference request has loaded something; if several are
+somehow loaded, the hint breaks the tie and otherwise the tier degrades rather
+than guess. Availability is the same inventory read, so a runtime that is
+reachable but empty is reported as such instead of appearing ready and failing
+at the completion request.
+
+Load state is read where the runtime reports it and inferred only where it
+reports none anywhere. A plain, non-router `llama-server` — one model on the
+command line, which is what the static route typically points at — lists that
+model with no `status` member at all (verified on build b10106, the build
+Desktop pins; the entry carries only
+`aliases`/`created`/`id`/`meta`/`object`/`owned_by`/`tags`, and `id` is the
+model's full filesystem path). Requiring a status there would permanently
+degrade a server whose only model is loaded and serving. So: if any entry
+carries a `status`, the runtime is a router and only `status.value == "loaded"`
+is usable; if no entry anywhere carries one, a single listed model is borrowed
+and several are refused. The exception cannot fire on a router, which stamps
+every entry, so the eviction guarantee is unchanged. The read takes the
+OpenAI-style `data` array, never the ollama-style `models` array the same
+response also carries.
+
+The degraded reason distinguishes three cases, because they call for different
+responses: holding nothing is the ordinary cold-start state and clears at the
+user's first chat message; an inventory that cannot be read or reached is a
+misconfiguration; an ambiguous one is a runtime shape this policy will not act
+on.
 
 Startup and the administrator runtime-status endpoint report the independent
 vector extension, embedding, reranker, and resolver separately. The response
