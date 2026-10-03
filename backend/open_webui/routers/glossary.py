@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -63,6 +63,7 @@ class GlossarySettings(BaseModel):
     max_terms_injected: Optional[int] = None
     max_turns: Optional[int] = None
     token_limit: Optional[int] = None
+    kv_cache_type: Optional[Literal['q8_0', 'q4_0', 'f16']] = None
     mtp_enabled: Optional[bool] = None
     multimodal_enabled: Optional[bool] = None
     debug: Optional[bool] = None

@@ -917,6 +917,10 @@
 	};
 
 	const desktopEventHandler = async (event) => {
+		if (event.type === 'llamacpp:settings-updated') {
+			window.dispatchEvent(new Event('aurapro:runtime-settings-updated'));
+			return;
+		}
 		// Events that don't require auth
 		if (event.type === 'page:reload') {
 			location.reload();

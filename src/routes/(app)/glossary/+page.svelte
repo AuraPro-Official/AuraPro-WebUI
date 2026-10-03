@@ -5,6 +5,10 @@
 	import { showArchivedChats, showSidebar, mobile, user } from '$lib/stores';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import {
+		mergeGlossaryRuntimeSettings,
+		type GlossaryRuntimeSettings
+	} from '$lib/utils/glossaryRuntimeSettings';
+	import {
 		buildGlossaryLanguageSelectItems,
 		normalizeGlossaryLanguage
 	} from '$lib/utils/glossaryLanguages';
@@ -69,7 +73,7 @@
 		path?: string;
 	};
 
-	type GlossarySettings = {
+	type GlossarySettings = GlossaryRuntimeSettings & {
 		active_glossary_id?: string;
 		glossary_mode?: 'smart' | 'fixed';
 		smart_source_lang?: string;
@@ -82,7 +86,6 @@
 		max_turns?: number;
 		source_lang?: string;
 		target_lang?: string;
-		token_limit?: number;
 	};
 
 	type ImportHelpItem = {
@@ -108,6 +111,9 @@
 	let query = '';
 	let entries: GlossaryEntry[] = [];
 	let settings: GlossarySettings = {};
+	let savedRuntimeSettings: GlossaryRuntimeSettings = {};
+	let runtimeSettingsVersion = 0;
+	let refreshingRuntimeSettings = false;
 	let glossaryRoutes: GlossaryRoute[] = [];
 	let availableLanguages: string[] = [];
 	let importText = '';
@@ -246,6 +252,7 @@
 	]);
 
 	const load = async () => {
+		runtimeSettingsVersion++;
 		loading = true;
 		try {
 			const [glossary, glossarySettings] = await Promise.all([
@@ -264,6 +271,7 @@
 				}))
 				.reverse();
 			settings = glossarySettings ?? {};
+			savedRuntimeSettings = { ...settings };
 			glossaryRoutes = glossary?.routes ?? [];
 			availableLanguages = glossary?.languages ?? [];
 			selectedEntries = new Set();
@@ -419,6 +427,7 @@
 	};
 
 	const saveSettings = async () => {
+		runtimeSettingsVersion++;
 		savingSettings = true;
 		try {
 			settings = await updateGlossarySettings(localStorage.token, {
@@ -432,7 +441,12 @@
 				glossary_lang: settings.target_lang,
 				max_terms_injected: Number(settings.max_terms_injected || 10),
 				max_turns: Number(settings.max_turns || 0),
-				token_limit: Number(settings.token_limit || 0)
+				...(settings.token_limit !== savedRuntimeSettings.token_limit
+					? { token_limit: Number(settings.token_limit || 0) }
+					: {}),
+				...(settings.kv_cache_type !== savedRuntimeSettings.kv_cache_type
+					? { kv_cache_type: settings.kv_cache_type ?? 'q8_0' }
+					: {})
 			});
 			toast.success($i18n.t('Glossary settings updated'));
 			await load();
@@ -650,7 +664,34 @@
 		}
 	};
 
-	onMount(load);
+	const refreshRuntimeSettings = async () => {
+		if (loading || savingSettings || refreshingRuntimeSettings || document.hidden) return;
+		const version = runtimeSettingsVersion;
+		refreshingRuntimeSettings = true;
+		try {
+			const latest: GlossaryRuntimeSettings = await getGlossarySettings(localStorage.token);
+			if (version !== runtimeSettingsVersion || savingSettings || loading) return;
+			settings = mergeGlossaryRuntimeSettings(settings, savedRuntimeSettings, latest);
+			savedRuntimeSettings = latest;
+		} catch {
+			// Keep the current selection when the service is temporarily unavailable.
+		} finally {
+			refreshingRuntimeSettings = false;
+		}
+	};
+
+	onMount(() => {
+		void load();
+		const timer = window.setInterval(refreshRuntimeSettings, 5000);
+		window.addEventListener('focus', refreshRuntimeSettings);
+		window.addEventListener('aurapro:runtime-settings-updated', refreshRuntimeSettings);
+		return () => {
+			runtimeSettingsVersion++;
+			window.clearInterval(timer);
+			window.removeEventListener('focus', refreshRuntimeSettings);
+			window.removeEventListener('aurapro:runtime-settings-updated', refreshRuntimeSettings);
+		};
+	});
 </script>
 
 <div
@@ -1215,6 +1256,20 @@
 										class="w-full rounded-lg bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
 										bind:value={settings.token_limit}
 									/>
+								</label>
+								<label class="block space-y-1">
+									<div class="text-xs text-gray-500">{$i18n.t('KV cache precision')}</div>
+									<select
+										class="w-full rounded-lg bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-800 px-3 py-2 text-sm outline-none"
+										bind:value={settings.kv_cache_type}
+									>
+										<option value="q8_0">{$i18n.t('Q8 (Default)')}</option>
+										<option value="q4_0">{$i18n.t('Q4 (Save memory)')}</option>
+										<option value="f16">{$i18n.t('F16 (No quantization)')}</option>
+									</select>
+									<div class="text-xs text-gray-500">
+										{$i18n.t('Saving restarts local llama.cpp managed by AuraPro Desktop.')}
+									</div>
 								</label>
 							</div>
 							<button

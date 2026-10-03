@@ -525,6 +525,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'max_terms_injected': 10,
     'max_turns': 3,
     'token_limit': 16384,
+    'kv_cache_type': 'q8_0',
     'mtp_enabled': False,
     'multimodal_enabled': True,
     'debug': False,
@@ -799,6 +800,8 @@ def normalize_settings(settings: dict[str, Any]) -> dict[str, Any]:
     settings['smart_source_lang'] = normalize_term(str(legacy_smart_source_lang or active['source_lang']))
     settings['smart_target_lang'] = normalize_term(str(legacy_smart_target_lang or active['target_lang']))
     settings['mtp_enabled'] = _normalize_bool_setting(settings.get('mtp_enabled'), False)
+    if settings.get('kv_cache_type') not in ('q8_0', 'q4_0', 'f16'):
+        settings['kv_cache_type'] = DEFAULT_SETTINGS['kv_cache_type']
     settings['multimodal_enabled'] = _normalize_bool_setting(settings.get('multimodal_enabled'), True)
     return settings
 
