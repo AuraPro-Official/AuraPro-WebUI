@@ -1,9 +1,13 @@
 import ast
+import asyncio
 import importlib.util
+import logging
 import sys
 import unittest
+from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Optional
 from unittest.mock import AsyncMock, Mock
 
 
@@ -23,6 +27,9 @@ def load_prompt_functions():
         '_build_translation_text_prompt',
         'build_translation_prompt',
         'build_rag_translation_prompt',
+        'apply_chat_translation',
+        '_latest_user_text_ref',
+        '_set_message_text',
     }
     constants = {
         'TRANSLATION_PROMPT',
@@ -40,6 +47,15 @@ def load_prompt_functions():
     ]
     namespace = {
         'Any': Any,
+        'Optional': Optional,
+        'ChatTranslationRequest': SimpleNamespace,
+        'asyncio': asyncio,
+        'deepcopy': deepcopy,
+        'log': logging.getLogger(__name__),
+        'same_language': ROUTING.same_language,
+        'normalize_settings': lambda settings: settings,
+        '_detect_chat_translation_source': Mock(return_value='zh'),
+        'read_entries': AsyncMock(return_value=({'退款': 'remboursement'}, None)),
         '_language_key': ROUTING.language_key,
         '_glossary_language_pair': lambda settings: (settings['source'], settings['target']),
         '_smart_language_detect': Mock(return_value=('中文', '法语')),
@@ -128,6 +144,56 @@ class TranslationPromptTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('只参考重叠部分对应的译文片段', prompt)
         self.assertIn('reference', prompt)
         self.assertEqual(sources, ['source'])
+
+    async def test_automatic_translation_routes_actual_pair_without_mutating_history_or_settings(self):
+        settings = {'source': 'Chinese', 'target': 'English', 'glossary_mode': 'fixed'}
+        form = {
+            'model': 'high_Q4',
+            'messages': [
+                {'role': 'user', 'content': '之前的聊天'},
+                {'role': 'assistant', 'content': '之前的回答'},
+                {'role': 'user', 'content': '翻译成法语：退款还需审批。'},
+            ],
+        }
+        original = deepcopy(form)
+        self.prompts['_build_glossary_block'].return_value = '退款 -> remboursement'
+        result = await self.prompts['apply_chat_translation'](
+            form,
+            SimpleNamespace(text='退款还需审批。', target='French'),
+            settings,
+        )
+        self.assertEqual(form, original)
+        self.assertEqual(result['messages'][:-1], original['messages'][:-1])
+        self.assertEqual(settings['glossary_mode'], 'fixed')
+        lookup_settings = self.prompts['read_entries'].call_args.args[0]
+        self.assertEqual(lookup_settings['glossary_mode'], 'smart')
+        self.assertEqual(lookup_settings['smart_source_lang'], 'zh')
+        self.assertEqual(lookup_settings['smart_target_lang'], 'French')
+        prompt = result['messages'][-1]['content']
+        self.assertTrue(prompt.startswith('将【原文】完整翻译成French'))
+        self.assertTrue(prompt.endswith('【原文】\n退款还需审批。'))
+        self.assertIn('退款 -> remboursement', prompt)
+        self.prompts['_smart_language_detect'].assert_not_called()
+
+    async def test_automatic_translation_respects_a_matching_fixed_dictionary(self):
+        settings = {'source': 'Chinese', 'target': 'Spanish', 'glossary_mode': 'fixed'}
+        form = {'messages': [{'role': 'user', 'content': '翻译成西语：退款'}]}
+        await self.prompts['apply_chat_translation'](form, SimpleNamespace(text='退款', target='Spanish'), settings)
+        self.assertEqual(self.prompts['read_entries'].call_args.args[0]['glossary_mode'], 'fixed')
+
+    async def test_dictionary_failure_keeps_translation_working(self):
+        self.prompts['read_entries'].side_effect = OSError('dictionary unavailable')
+        form = {'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': '翻译成法语：hello'}]}]}
+        with self.assertLogs(level='WARNING'):
+            result = await self.prompts['apply_chat_translation'](
+                form,
+                SimpleNamespace(text='hello', target='French'),
+                {'source': 'Chinese', 'target': 'English'},
+            )
+        prompt = result['messages'][-1]['content'][0]['text']
+        self.assertIn('只输出译文', prompt)
+        self.assertTrue(prompt.endswith('【原文】\nhello'))
+        self.assertEqual(form['messages'][-1]['content'][0]['text'], '翻译成法语：hello')
 
 
 if __name__ == '__main__':

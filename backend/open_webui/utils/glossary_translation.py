@@ -8,6 +8,7 @@ import re
 import tempfile
 import time
 import unicodedata
+from copy import deepcopy
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -30,6 +31,7 @@ from open_webui.utils.glossary_routing import (
     same_language,
 )
 from open_webui.utils.glossary_selection import apply_conversation_glossary
+from open_webui.utils.chat_translation import ChatTranslationRequest
 from open_webui.utils.lazy_model import LazyModel
 from rapidfuzz import fuzz
 
@@ -3036,6 +3038,55 @@ async def apply_translation_mode(
 
     form_data['messages'] = _truncate_messages(messages, settings)
     return form_data
+
+
+def _detect_chat_translation_source(text: str) -> str:
+    from fast_langdetect import detect_language
+
+    return detect_language(text).lower()
+
+
+async def apply_chat_translation(
+    form_data: dict[str, Any],
+    translation: ChatTranslationRequest,
+    settings: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    glossary_block = ''
+    try:
+        settings = normalize_settings(deepcopy(settings if settings is not None else await read_settings()))
+        source_lang = await asyncio.to_thread(_detect_chat_translation_source, translation.text)
+        configured_source, configured_target = _glossary_language_pair(settings)
+        fixed_pair_matches = (
+            same_language(source_lang, configured_source) and same_language(translation.target, configured_target)
+        ) or (same_language(source_lang, configured_target) and same_language(translation.target, configured_source))
+        if settings.get('glossary_mode') == 'smart' or not fixed_pair_matches:
+            settings.update(
+                glossary_mode='smart',
+                smart_source_lang=source_lang,
+                smart_target_lang=translation.target,
+            )
+        entries, _updated_at = await read_entries(settings)
+        glossary_block = _build_glossary_block(
+            translation.text,
+            entries,
+            settings,
+            source_lang,
+            translation.target,
+        )
+    except Exception:
+        # Dictionary failure must not prevent an otherwise valid translation.
+        log.warning('Automatic translation glossary lookup failed', exc_info=True)
+
+    messages = deepcopy(form_data.get('messages') or [])
+    message, part_index, _text = _latest_user_text_ref(messages)
+    if message:
+        _set_message_text(
+            message,
+            _build_translation_text_prompt(translation.text, translation.target, glossary_block),
+            part_index,
+        )
+    # Keep normal chat history and its existing context-compaction policy.
+    return {**form_data, 'messages': messages}
 
 
 async def apply_manuscript_translation_mode(

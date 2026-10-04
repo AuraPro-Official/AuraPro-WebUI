@@ -96,7 +96,9 @@ from open_webui.utils.filter import (
 )
 
 from open_webui.utils.mcp.client import MCPClient
+from open_webui.utils.chat_translation import detect_chat_translation
 from open_webui.utils.glossary_translation import (
+    apply_chat_translation,
     apply_context_cleanup,
     apply_interpretation_mode,
     apply_learning_mode,
@@ -2684,6 +2686,21 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if isinstance(payload_features, dict):
         features.update(payload_features)
     extra_params['__features__'] = features
+    automatic_translation = (
+        detect_chat_translation(form_data.get('messages') or [], features) if not form_data.get('files') else None
+    )
+    if automatic_translation:
+        try:
+            glossary_selection = features.get('glossary')
+            if not isinstance(glossary_selection, dict) and chat_id and user:
+                stored_chat = await Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+                if stored_chat and isinstance(stored_chat.chat, dict):
+                    glossary_selection = stored_chat.chat.get('glossary')
+            glossary_settings = await resolve_conversation_glossary_settings(glossary_selection)
+        except Exception:
+            log.warning('Automatic translation glossary settings unavailable', exc_info=True)
+            glossary_settings = {}
+        form_data = await apply_chat_translation(form_data, automatic_translation, glossary_settings)
     if features:
         glossary_settings = None
         if any(
