@@ -1,0 +1,593 @@
+{
+	"source": "https://translate.google.com/",
+	"languages": {
+		"af": {
+			"name": "Afrikaans",
+			"aliases": ["Afrikaans", "afrikáans", "南非文", "南非荷兰语"]
+		},
+		"ak": {
+			"name": "Twi",
+			"aliases": ["Twi", "twi", "契維文", "契维语"]
+		},
+		"am": {
+			"name": "Amharic",
+			"aliases": ["Amharic", "Amharique", "amhárico", "阿姆哈拉文", "阿姆哈拉语"]
+		},
+		"ar": {
+			"name": "Arabic",
+			"aliases": ["Arabe", "Arabic", "árabe", "阿拉伯文", "阿拉伯语"]
+		},
+		"as": {
+			"name": "Assamese",
+			"aliases": ["Assamais", "Assamese", "asamés", "阿萨姆语", "阿薩姆文"]
+		},
+		"ay": {
+			"name": "Aymara",
+			"aliases": ["Aymara", "aimara", "艾馬拉文", "艾马拉语"]
+		},
+		"az": {
+			"name": "Azerbaijani",
+			"aliases": ["Azerbaijani", "Azéri", "azerí", "亞塞拜然文", "阿塞拜疆语"]
+		},
+		"be": {
+			"name": "Belarusian",
+			"aliases": ["Belarusian", "Biélorusse", "bielorruso", "白俄罗斯语", "白俄羅斯文"]
+		},
+		"bg": {
+			"name": "Bulgarian",
+			"aliases": ["Bulgare", "Bulgarian", "búlgaro", "保加利亚语", "保加利亞文"]
+		},
+		"bho": {
+			"name": "Bhojpuri",
+			"aliases": ["Bhodjpouri", "Bhojpuri", "bhoyapurí", "博杰普尔语", "博杰普爾文"]
+		},
+		"bm": {
+			"name": "Bambara",
+			"aliases": ["Bambara", "bambara", "班巴拉文", "班巴拉语"]
+		},
+		"bn": {
+			"name": "Bengali",
+			"aliases": ["Bengali", "bengalí", "孟加拉文", "孟加拉语"]
+		},
+		"bo": {
+			"name": "Tibetan",
+			"aliases": ["Tibetan", "Tibétain", "tibetano", "藏文", "藏语"]
+		},
+		"bs": {
+			"name": "Bosnian",
+			"aliases": ["Bosnian", "Bosniaque", "bosnio", "波士尼亞文", "波斯尼亚语"]
+		},
+		"ca": {
+			"name": "Catalan",
+			"aliases": ["Catalan", "catalán", "加泰罗尼亚语", "加泰隆尼亞文"]
+		},
+		"ceb": {
+			"name": "Cebuano",
+			"aliases": ["Cebuano", "cebuano", "宿务语", "宿霧文"]
+		},
+		"ckb": {
+			"name": "Kurdish (Sorani)",
+			"aliases": [
+				"Kurde (Sorani)",
+				"Kurdish (Sorani)",
+				"kurdo (sorani)",
+				"库尔德语（索拉尼）",
+				"庫德文 (索拉尼文)"
+			]
+		},
+		"co": {
+			"name": "Corsican",
+			"aliases": ["Corse", "Corsican", "corso", "科西嘉文", "科西嘉语"]
+		},
+		"cs": {
+			"name": "Czech",
+			"aliases": ["Czech", "Tchèque", "checo", "捷克文", "捷克语"]
+		},
+		"cy": {
+			"name": "Welsh",
+			"aliases": ["Gallois", "Welsh", "galés", "威尔士语", "威爾斯文"]
+		},
+		"da": {
+			"name": "Danish",
+			"aliases": ["Danish", "Danois", "danés", "丹麥文", "丹麦语"]
+		},
+		"de": {
+			"name": "German",
+			"aliases": ["Allemand", "German", "alemán", "德文", "德语"]
+		},
+		"doi": {
+			"name": "Dogri",
+			"aliases": ["Dogri", "dogri", "多格拉语", "道格里文"]
+		},
+		"dv": {
+			"name": "Dhivehi",
+			"aliases": ["Dhivehi", "Divéhi", "divehi", "迪維希文", "迪维希语"]
+		},
+		"ee": {
+			"name": "Ewe",
+			"aliases": ["Ewe", "ewé", "埃維文", "埃维语"]
+		},
+		"el": {
+			"name": "Greek",
+			"aliases": ["Grec", "Greek", "griego", "希腊语", "希臘文"]
+		},
+		"en": {
+			"name": "English",
+			"aliases": ["Anglais", "English", "inglés", "英文", "英语"]
+		},
+		"eo": {
+			"name": "Esperanto",
+			"aliases": ["Esperanto", "Espéranto", "esperanto", "世界語", "世界语"]
+		},
+		"es": {
+			"name": "Spanish",
+			"aliases": ["Espagnol", "Spanish", "español", "西班牙文", "西班牙语"]
+		},
+		"et": {
+			"name": "Estonian",
+			"aliases": ["Estonian", "Estonien", "estonio", "愛沙尼亞文", "爱沙尼亚语"]
+		},
+		"eu": {
+			"name": "Basque",
+			"aliases": ["Basque", "euskera", "巴斯克文", "巴斯克语"]
+		},
+		"fa": {
+			"name": "Persian",
+			"aliases": ["Persan", "Persian", "persa", "波斯文", "波斯语"]
+		},
+		"fi": {
+			"name": "Finnish",
+			"aliases": ["Finnish", "Finnois", "finlandés", "芬兰语", "芬蘭文"]
+		},
+		"fr": {
+			"name": "French",
+			"aliases": ["Français", "French", "francés", "法文", "法语"]
+		},
+		"fy": {
+			"name": "Frisian",
+			"aliases": ["Frisian", "Frison", "frisio", "弗利然文", "弗里西语"]
+		},
+		"ga": {
+			"name": "Irish",
+			"aliases": ["Irish", "Irlandais", "irlandés", "愛爾蘭文", "爱尔兰语"]
+		},
+		"gd": {
+			"name": "Scots Gaelic",
+			"aliases": [
+				"Gaélique (Écosse)",
+				"Scots Gaelic",
+				"gaélico escocés",
+				"苏格兰盖尔语",
+				"蘇格蘭蓋爾文"
+			]
+		},
+		"gl": {
+			"name": "Galician",
+			"aliases": ["Galician", "Galicien", "gallego", "加利西亚语", "加里西亞文"]
+		},
+		"gn": {
+			"name": "Guarani",
+			"aliases": ["Guarani", "guaraní", "瓜拉尼文", "瓜拉尼语"]
+		},
+		"gom": {
+			"name": "Konkani",
+			"aliases": ["Konkani", "konkaní", "貢根文", "贡根语"]
+		},
+		"gu": {
+			"name": "Gujarati",
+			"aliases": ["Gujarati", "gujarati", "古加拉特文", "古吉拉特语"]
+		},
+		"ha": {
+			"name": "Hausa",
+			"aliases": ["Haoussa", "Hausa", "hausa", "豪沙文", "豪萨语"]
+		},
+		"haw": {
+			"name": "Hawaiian",
+			"aliases": ["Hawaiian", "Hawaïen", "hawaiano", "夏威夷文", "夏威夷语"]
+		},
+		"hi": {
+			"name": "Hindi",
+			"aliases": ["Hindi", "hindi", "北印度文", "印地语"]
+		},
+		"hmn": {
+			"name": "Hmong",
+			"aliases": ["Hmong", "hmong", "苗文", "苗语"]
+		},
+		"hr": {
+			"name": "Croatian",
+			"aliases": ["Croate", "Croatian", "croata", "克罗地亚语", "克羅埃西亞文"]
+		},
+		"ht": {
+			"name": "Haitian Creole",
+			"aliases": [
+				"Créole haïtien",
+				"Haitian Creole",
+				"criollo haitiano",
+				"海地克里奥尔语",
+				"海地克里奧文"
+			]
+		},
+		"hu": {
+			"name": "Hungarian",
+			"aliases": ["Hongrois", "Hungarian", "húngaro", "匈牙利文", "匈牙利语"]
+		},
+		"hy": {
+			"name": "Armenian",
+			"aliases": ["Armenian", "Arménien", "armenio", "亚美尼亚语", "亞美尼亞文"]
+		},
+		"id": {
+			"name": "Indonesian",
+			"aliases": ["Indonesian", "Indonésien", "indonesio", "印尼文", "印尼语"]
+		},
+		"ig": {
+			"name": "Igbo",
+			"aliases": ["Igbo", "igbo", "伊博文", "伊博语"]
+		},
+		"ilo": {
+			"name": "Ilocano",
+			"aliases": ["Ilocano", "ilocano", "伊洛卡諾文", "伊洛卡诺语"]
+		},
+		"is": {
+			"name": "Icelandic",
+			"aliases": ["Icelandic", "Islandais", "islandés", "冰岛语", "冰島文"]
+		},
+		"it": {
+			"name": "Italian",
+			"aliases": ["Italian", "Italien", "italiano", "意大利语", "義大利文"]
+		},
+		"iw": {
+			"name": "Hebrew",
+			"aliases": ["Hebrew", "Hébreu", "hebreo", "希伯來文", "希伯来语"]
+		},
+		"ja": {
+			"name": "Japanese",
+			"aliases": ["Japanese", "Japonais", "japonés", "日文", "日语"]
+		},
+		"jw": {
+			"name": "Javanese",
+			"aliases": ["Javanais", "Javanese", "javanés", "爪哇文", "爪哇语"]
+		},
+		"ka": {
+			"name": "Georgian",
+			"aliases": ["Georgian", "Géorgien", "georgiano", "喬治亞文", "格鲁吉亚语"]
+		},
+		"kk": {
+			"name": "Kazakh",
+			"aliases": ["Kazakh", "kazajo", "哈萨克语", "哈薩克文"]
+		},
+		"km": {
+			"name": "Khmer",
+			"aliases": ["Khmer", "camboyano", "高棉文", "高棉语"]
+		},
+		"kn": {
+			"name": "Kannada",
+			"aliases": ["Kannada", "canarés", "卡納達文", "卡纳达语"]
+		},
+		"ko": {
+			"name": "Korean",
+			"aliases": ["Coréen", "Korean", "coreano", "韓文", "韩语"]
+		},
+		"kri": {
+			"name": "Krio",
+			"aliases": ["Krio", "krio", "克里奧文", "塞拉利昂克里奥尔语"]
+		},
+		"ku": {
+			"name": "Kurdish (Kurmanji)",
+			"aliases": [
+				"Kurde (Kurmandji)",
+				"Kurdish (Kurmanji)",
+				"kurdo (kurmanyi)",
+				"库尔德语（库尔曼吉语）",
+				"庫德文 (庫爾曼吉文)"
+			]
+		},
+		"ky": {
+			"name": "Kyrgyz",
+			"aliases": ["Kirghiz", "Kyrgyz", "kirguís", "吉尔吉斯语", "吉爾吉斯文"]
+		},
+		"la": {
+			"name": "Latin",
+			"aliases": ["Latin", "latín", "拉丁文", "拉丁语"]
+		},
+		"lb": {
+			"name": "Luxembourgish",
+			"aliases": ["Luxembourgeois", "Luxembourgish", "luxemburgués", "卢森堡语", "盧森堡文"]
+		},
+		"lg": {
+			"name": "Luganda",
+			"aliases": ["Luganda", "luganda", "卢干达语", "烏干達文"]
+		},
+		"ln": {
+			"name": "Lingala",
+			"aliases": ["Lingala", "lingala", "林加拉语", "林格拉文"]
+		},
+		"lo": {
+			"name": "Lao",
+			"aliases": ["Lao", "Laotien", "lao", "寮文", "老挝语"]
+		},
+		"lt": {
+			"name": "Lithuanian",
+			"aliases": ["Lithuanian", "Lituanien", "lituano", "立陶宛文", "立陶宛语"]
+		},
+		"lus": {
+			"name": "Mizo",
+			"aliases": ["Mizo", "mizo", "米佐文", "米佐语"]
+		},
+		"lv": {
+			"name": "Latvian",
+			"aliases": ["Latvian", "Letton", "letón", "拉脫維亞文", "拉脱维亚语"]
+		},
+		"mai": {
+			"name": "Maithili",
+			"aliases": ["Maithili", "Maïthili", "maithili", "迈蒂利语", "邁蒂利文"]
+		},
+		"mg": {
+			"name": "Malagasy",
+			"aliases": ["Malagasy", "Malgache", "malgache", "馬拉加斯文", "马尔加什语"]
+		},
+		"mi": {
+			"name": "Maori",
+			"aliases": ["Maori", "maorí", "毛利文", "毛利语"]
+		},
+		"mk": {
+			"name": "Macedonian",
+			"aliases": ["Macedonian", "Macédonien", "macedonio", "馬其頓文", "马其顿语"]
+		},
+		"ml": {
+			"name": "Malayalam",
+			"aliases": ["Malayalam", "malayalam", "馬拉雅拉姆文", "马拉雅拉姆语"]
+		},
+		"mn": {
+			"name": "Mongolian",
+			"aliases": ["Mongol", "Mongolian", "mongol", "蒙古文", "蒙古语"]
+		},
+		"mni-Mtei": {
+			"name": "Meiteilon (Manipuri)",
+			"aliases": [
+				"Meitei (Manipuri)",
+				"Meiteilon (Manipuri)",
+				"meiteilon (manipurí)",
+				"梅泰文 (曼尼普爾文)",
+				"梅泰语（曼尼普尔语）"
+			]
+		},
+		"mr": {
+			"name": "Marathi",
+			"aliases": ["Marathi", "maratí", "馬拉地文", "马拉地语"]
+		},
+		"ms": {
+			"name": "Malay",
+			"aliases": ["Malaisien", "Malay", "malayo", "馬來文", "马来语"]
+		},
+		"mt": {
+			"name": "Maltese",
+			"aliases": ["Maltais", "Maltese", "maltés", "馬耳他文", "马耳他语"]
+		},
+		"my": {
+			"name": "Myanmar (Burmese)",
+			"aliases": ["Myanmar (Birman)", "Myanmar (Burmese)", "birmano", "緬甸文", "缅甸语"]
+		},
+		"ne": {
+			"name": "Nepali",
+			"aliases": ["Nepali", "Népalais", "nepalí", "尼泊尔语", "尼泊爾文"]
+		},
+		"nl": {
+			"name": "Dutch",
+			"aliases": ["Dutch", "Néerlandais", "neerlandés", "荷兰语", "荷蘭文"]
+		},
+		"no": {
+			"name": "Norwegian",
+			"aliases": ["Norvégien", "Norwegian", "noruego", "挪威文", "挪威语"]
+		},
+		"nso": {
+			"name": "Sepedi",
+			"aliases": ["Sepedi", "sepedi", "佩蒂文", "北索托语"]
+		},
+		"ny": {
+			"name": "Chichewa",
+			"aliases": ["Chichewa", "chichewa", "奇切瓦文", "齐切瓦语"]
+		},
+		"om": {
+			"name": "Oromo",
+			"aliases": ["Oromo", "oromo", "奥罗莫语", "奧羅莫文"]
+		},
+		"or": {
+			"name": "Odia (Oriya)",
+			"aliases": ["Odia (Oriya)", "odia (oriya)", "奥迪亚语（奥利亚语）", "歐利亞文 (奧里雅文)"]
+		},
+		"pa": {
+			"name": "Punjabi (Gurmukhi)",
+			"aliases": [
+				"Panjabi (Gurmukhi)",
+				"Punjabi (Gurmukhi)",
+				"panyabí (gurmukhi)",
+				"旁遮普文 (古木基)",
+				"旁遮普语（果鲁穆奇文）"
+			]
+		},
+		"pl": {
+			"name": "Polish",
+			"aliases": ["Polish", "Polonais", "polaco", "波兰语", "波蘭文"]
+		},
+		"ps": {
+			"name": "Pashto",
+			"aliases": ["Pachtô", "Pashto", "pastún", "帕施圖文", "普什图语"]
+		},
+		"pt": {
+			"name": "Portuguese",
+			"aliases": ["Portuguese", "Portugais", "portugués", "葡萄牙文", "葡萄牙语"]
+		},
+		"qu": {
+			"name": "Quechua",
+			"aliases": ["Quechua", "quechua", "克丘亚语", "克丘亞文"]
+		},
+		"ro": {
+			"name": "Romanian",
+			"aliases": ["Romanian", "Roumain", "rumano", "罗马尼亚语", "羅馬尼亞文"]
+		},
+		"ru": {
+			"name": "Russian",
+			"aliases": ["Russe", "Russian", "ruso", "俄文", "俄语"]
+		},
+		"rw": {
+			"name": "Kinyarwanda",
+			"aliases": ["Kinyarwanda", "kinyarwanda", "卢旺达语", "盧安達文"]
+		},
+		"sa": {
+			"name": "Sanskrit",
+			"aliases": ["Sanskrit", "sánscrito", "梵文", "梵语"]
+		},
+		"sd": {
+			"name": "Sindhi",
+			"aliases": ["Sindhi", "Sindhî", "sindhi", "信德文", "信德语"]
+		},
+		"si": {
+			"name": "Sinhala",
+			"aliases": ["Cinghalais", "Sinhala", "cingalés", "僧伽罗语", "錫蘭文"]
+		},
+		"sk": {
+			"name": "Slovak",
+			"aliases": ["Slovak", "Slovaque", "eslovaco", "斯洛伐克文", "斯洛伐克语"]
+		},
+		"sl": {
+			"name": "Slovenian",
+			"aliases": ["Slovenian", "Slovène", "esloveno", "斯洛文尼亚语", "斯洛維尼亞文"]
+		},
+		"sm": {
+			"name": "Samoan",
+			"aliases": ["Samoan", "samoano", "萨摩亚语", "薩摩亞文"]
+		},
+		"sn": {
+			"name": "Shona",
+			"aliases": ["Shona", "shona", "修纳语", "紹納文"]
+		},
+		"so": {
+			"name": "Somali",
+			"aliases": ["Somali", "somalí", "索馬里文", "索马里语"]
+		},
+		"sq": {
+			"name": "Albanian",
+			"aliases": ["Albanais", "Albanian", "albanés", "阿尔巴尼亚语", "阿爾巴尼亞文"]
+		},
+		"sr": {
+			"name": "Serbian",
+			"aliases": ["Serbe", "Serbian", "serbio", "塞尔维亚语", "塞爾維亞文"]
+		},
+		"st": {
+			"name": "Sesotho",
+			"aliases": ["Sesotho", "sesoto", "南索托语", "瑟索托文"]
+		},
+		"su": {
+			"name": "Sundanese",
+			"aliases": ["Soundanais", "Sundanese", "sundanés", "印尼巽他文", "巽他语"]
+		},
+		"sv": {
+			"name": "Swedish",
+			"aliases": ["Suédois", "Swedish", "sueco", "瑞典文", "瑞典语"]
+		},
+		"sw": {
+			"name": "Swahili",
+			"aliases": ["Swahili", "suajili", "斯瓦希里文", "斯瓦希里语"]
+		},
+		"ta": {
+			"name": "Tamil",
+			"aliases": ["Tamil", "Tamoul", "tamil", "泰米尔语", "泰米爾文"]
+		},
+		"te": {
+			"name": "Telugu",
+			"aliases": ["Telugu", "telugu", "泰卢固语", "泰盧固文"]
+		},
+		"tg": {
+			"name": "Tajik",
+			"aliases": ["Tadjik", "Tajik", "tayiko", "塔吉克文", "塔吉克语"]
+		},
+		"th": {
+			"name": "Thai",
+			"aliases": ["Thai", "Thaï", "tailandés", "泰文", "泰语"]
+		},
+		"ti": {
+			"name": "Tigrinya",
+			"aliases": ["Tigrigna", "Tigrinya", "tigrinya", "提格里尼亚语", "蒂格里亞文"]
+		},
+		"tk": {
+			"name": "Turkmen",
+			"aliases": ["Turkmen", "Turkmène", "turkmeno", "土库曼语", "土庫曼文"]
+		},
+		"tl": {
+			"name": "Filipino",
+			"aliases": ["Filipino", "Philippin", "filipino", "菲律宾语", "菲律賓文"]
+		},
+		"tr": {
+			"name": "Turkish",
+			"aliases": ["Turc", "Turkish", "turco", "土耳其文", "土耳其语"]
+		},
+		"ts": {
+			"name": "Tsonga",
+			"aliases": ["Tsonga", "tsonga", "宗卡文", "聪加语"]
+		},
+		"tt": {
+			"name": "Tatar",
+			"aliases": ["Tatar", "tártaro", "鞑靼语", "韃靼文"]
+		},
+		"ug": {
+			"name": "Uyghur",
+			"aliases": ["Ouïgour", "Uyghur", "uigur", "維吾爾文", "维吾尔语"]
+		},
+		"uk": {
+			"name": "Ukrainian",
+			"aliases": ["Ukrainian", "Ukrainien", "ucraniano", "乌克兰语", "烏克蘭文"]
+		},
+		"ur": {
+			"name": "Urdu",
+			"aliases": ["Urdu", "urdu", "乌尔都语", "烏爾都文"]
+		},
+		"uz": {
+			"name": "Uzbek",
+			"aliases": ["Ouzbek", "Uzbek", "uzbeco", "乌兹别克语", "烏茲別克文"]
+		},
+		"vi": {
+			"name": "Vietnamese",
+			"aliases": ["Vietnamese", "Vietnamien", "vietnamita", "越南文", "越南语"]
+		},
+		"xh": {
+			"name": "Xhosa",
+			"aliases": ["Xhosa", "xhosa", "南非柯薩文", "科萨语"]
+		},
+		"yi": {
+			"name": "Yiddish",
+			"aliases": ["Yiddish", "yidis", "意第緒文", "意第绪语"]
+		},
+		"yo": {
+			"name": "Yoruba",
+			"aliases": ["Yoruba", "yoruba", "優魯巴文", "约鲁巴语"]
+		},
+		"yue": {
+			"name": "Cantonese",
+			"aliases": ["Cantonais", "Cantonese", "cantonés", "粤语", "粵語"]
+		},
+		"zh-CN": {
+			"name": "Chinese (Simplified)",
+			"aliases": [
+				"Chinese (Simplified)",
+				"Chinois (simplifié)",
+				"chino (simplificado)",
+				"中文 (簡體)",
+				"中文（简体）"
+			]
+		},
+		"zh-TW": {
+			"name": "Chinese (Traditional)",
+			"aliases": [
+				"Chinese (Traditional)",
+				"Chinois (traditionnel)",
+				"chino (tradicional)",
+				"中文 (繁體)",
+				"中文（繁体）"
+			]
+		},
+		"zu": {
+			"name": "Zulu",
+			"aliases": ["Zoulou", "Zulu", "zulú", "南非祖魯文", "祖鲁语"]
+		}
+	}
+}

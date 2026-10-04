@@ -57,7 +57,104 @@ class ChatTranslationIntentTest(unittest.TestCase):
             '继续翻译：你好',
             '翻译成火星语：你好',
             '翻译成西语：   ',
+            '翻译英文的方法是什么？',
+            '英文翻译应该怎么学？',
+            '不要翻译英文：你好',
+            '你好\n不用翻译英文',
+            '你好\n翻译英文并解释语法',
+            '翻译一下英文，并解释语法：你好',
+            '翻译英文',
+            '英文翻译',
+            '你好\n英文',
+            '翻译英文你好',
         ):
+            with self.subTest(text=text):
+                self.assertIsNone(MODULE.parse_translation_request(text))
+
+    def test_short_colloquial_commands_before_and_after_source(self):
+        commands = (
+            ('翻译英文', 'English'),
+            ('翻译一下英文', 'English'),
+            ('翻译下英文', 'English'),
+            ('翻译成英文', 'English'),
+            ('请帮我翻译英文', 'English'),
+            ('麻烦帮我翻译为英文', 'English'),
+            ('译成英文', 'English'),
+            ('英文翻译', 'English'),
+            ('英文翻译一下', 'English'),
+            ('翻譯英文', 'English'),
+            ('請幫我翻譯一下法文', 'French'),
+            ('翻译西班牙文', 'Spanish'),
+            ('翻译德文', 'German'),
+            ('翻译韩文', 'Korean'),
+            ('翻译俄文', 'Russian'),
+            ('翻译繁体中文', '繁體中文'),
+        )
+        body = '交货期还没确认。\n请先别答应客户。'
+        for command, target in commands:
+            for text in (f'{command}\n{body}', f'{command}：{body}', f'{body}\n{command}', f'{command} {body}'):
+                with self.subTest(text=text):
+                    request = MODULE.parse_translation_request(text)
+                    self.assertIsNotNone(request)
+                    self.assertEqual((request.text, request.target), (body, target))
+        for text in (f'{body}\n翻译英文吧。', f'翻译英文谢谢\n{body}'):
+            self.assertEqual(MODULE.parse_translation_request(text).text, body)
+        for text in ('Translate English:\n你好', '你好\nTranslate English', 'Translate to English\n你好'):
+            request = MODULE.parse_translation_request(text)
+            self.assertEqual((request.text, request.target), ('你好', 'English'))
+
+    def test_short_commands_reach_dictionary_path_and_continue(self):
+        messages = [
+            {'role': 'user', 'content': '你好\n翻译英文'},
+            {'role': 'assistant', 'content': 'Hello'},
+            {'role': 'user', 'content': '继续翻译：再见'},
+        ]
+        request = MODULE.detect_chat_translation(messages, {})
+        self.assertEqual((request.text, request.target), ('再见', 'English'))
+
+    def test_common_offline_language_catalog(self):
+        catalog = MODULE._CATALOG['languages']
+        self.assertGreaterEqual(len(catalog), 120)
+        self.assertLessEqual(len(catalog), 150)
+        self.assertTrue({'en', 'es', 'fr', 'ar', 'hi', 'th', 'vi', 'bo', 'yue', 'zh-CN', 'zh-TW'} <= catalog.keys())
+        self.assertTrue({'pt-PT', 'fr-CA', 'crh-Latn', 'bm-Nkoo'}.isdisjoint(catalog))
+        aliases = {}
+        for code, entry in catalog.items():
+            expected = {'zh-CN': '简体中文', 'zh-TW': '繁體中文'}.get(code, entry['name'])
+            for alias in entry['aliases']:
+                with self.subTest(code=code, alias=alias):
+                    key = alias.casefold()
+                    self.assertEqual(aliases.setdefault(key, code), code)
+                    for text in (f'翻译{alias}：你好', f'你好\n翻译{alias}', f'Translate to {alias}: 你好'):
+                        request = MODULE.parse_translation_request(text)
+                        self.assertIsNotNone(request)
+                        self.assertEqual((request.text, request.target), ('你好', expected))
+
+    def test_common_language_aliases_and_distinct_variants(self):
+        cases = {
+            '西语': 'Spanish',
+            '西班牙语': 'Spanish',
+            '英文': 'English',
+            '英語': 'English',
+            '阿语': 'Arabic',
+            '荷文': 'Dutch',
+            '泰文': 'Thai',
+            '印尼语': 'Indonesian',
+            '塔加洛语': 'Filipino',
+            'Farsi': 'Persian',
+            'Burmese': 'Myanmar (Burmese)',
+            '藏文': 'Tibetan',
+            '维语': 'Uyghur',
+            '广东话': 'Cantonese',
+            '葡语': 'Portuguese',
+            '中文（繁体）': '繁體中文',
+            '中文 (簡體)': '简体中文',
+        }
+        for alias, target in cases.items():
+            with self.subTest(alias=alias):
+                request = MODULE.parse_translation_request(f'翻译{alias}\n你好')
+                self.assertEqual((request.text, request.target), ('你好', target))
+        for text in ('翻译语言：你好', '翻译自动检测：你好', '翻译火星语：你好', '藏语难学吗？', '不要翻译粤语：你好'):
             with self.subTest(text=text):
                 self.assertIsNone(MODULE.parse_translation_request(text))
 
@@ -163,6 +260,15 @@ class ChatTranslationMiddlewareTest(unittest.IsolatedAsyncioTestCase):
         await self.namespace['run']({**form, 'files': [{'type': 'file'}]})
         self.apply.assert_not_awaited()
         self.settings.assert_not_awaited()
+
+    async def test_short_commands_reach_automatic_dictionary_path(self):
+        for text in ('你好\n翻译英文', '翻译英文\n你好', '英文翻译：你好'):
+            with self.subTest(text=text):
+                self.apply.reset_mock()
+                await self.namespace['run']({'messages': [{'role': 'user', 'content': text}]})
+                self.apply.assert_awaited_once()
+                request = self.apply.call_args.args[1]
+                self.assertEqual((request.text, request.target), ('你好', 'English'))
 
     async def test_saved_conversation_dictionary_is_resolved(self):
         self.namespace.update(chat_id='chat-id', user=SimpleNamespace(id='user-id'))

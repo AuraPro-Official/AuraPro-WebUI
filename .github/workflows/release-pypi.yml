@@ -33,7 +33,7 @@ jobs:
           ls -lh dist
       - name: Validate wheel contents
         run: |
-          python -c "from pathlib import Path; import zipfile; wheel = next(Path('dist').glob('*.whl')); names = set(zipfile.ZipFile(wheel).namelist()); required = {'open_webui/env.py', 'open_webui/migrations/env.py'}; missing = required - names; assert not missing, f'Missing required wheel files: {sorted(missing)}'"
+          python -c "from pathlib import Path; import zipfile; wheel = next(Path('dist').glob('*.whl')); names = set(zipfile.ZipFile(wheel).namelist()); required = {'open_webui/env.py', 'open_webui/migrations/env.py', 'open_webui/utils/chat_translation_languages.json'}; missing = required - names; assert not missing, f'Missing required wheel files: {sorted(missing)}'"
       - name: Validate desktop platform dependencies
         run: |
           pip install uv
