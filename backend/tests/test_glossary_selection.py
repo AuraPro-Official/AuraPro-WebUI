@@ -3,12 +3,7 @@ import unittest
 from pathlib import Path
 
 
-MODULE_PATH = (
-    Path(__file__).resolve().parents[1]
-    / 'open_webui'
-    / 'utils'
-    / 'glossary_selection.py'
-)
+MODULE_PATH = Path(__file__).resolve().parents[1] / 'open_webui' / 'utils' / 'glossary_selection.py'
 SPEC = importlib.util.spec_from_file_location('glossary_selection', MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -76,9 +71,7 @@ class ConversationGlossarySelectionTest(unittest.TestCase):
         self.assertEqual(result['target_lang'], 'French')
 
     def test_unknown_fixed_glossary_falls_back_to_global_settings(self):
-        result = apply_conversation_glossary(
-            self.settings, {'mode': 'fixed', 'glossary_id': 'missing'}
-        )
+        result = apply_conversation_glossary(self.settings, {'mode': 'fixed', 'glossary_id': 'missing'})
 
         self.assertEqual(result, self.settings)
 

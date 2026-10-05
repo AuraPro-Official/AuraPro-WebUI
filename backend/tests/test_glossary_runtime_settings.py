@@ -21,19 +21,36 @@ def load_settings_functions(data_dir):
     source = BACKEND / 'open_webui/utils/glossary_translation.py'
     tree = ast.parse(source.read_text(encoding='utf-8'))
     functions = {
-        '_data_dir', 'make_relative_glossary_path', '_safe_glossary_id',
-        'normalize_term', '_normalize_bool_setting', 'normalize_settings',
-        'active_glossary', 'read_settings', 'write_settings',
+        '_data_dir',
+        'make_relative_glossary_path',
+        '_safe_glossary_id',
+        'normalize_term',
+        '_normalize_bool_setting',
+        'normalize_settings',
+        'active_glossary',
+        'read_settings',
+        'write_settings',
     }
     personal = {
-        'id': 'user', 'name': 'User', 'path': 'glossaries/user.json',
-        'version': '1', 'source_lang': 'Chinese', 'glossary_lang': 'English',
+        'id': 'user',
+        'name': 'User',
+        'path': 'glossaries/user.json',
+        'version': '1',
+        'source_lang': 'Chinese',
+        'glossary_lang': 'English',
         'target_lang': 'English',
     }
     namespace = {
-        'Any': Any, 'Optional': Optional, 'Path': Path,
-        'asyncio': asyncio, 'json': json, 'os': os, 're': re, 'tempfile': tempfile,
-        'log': logging.getLogger(__name__), 'DATA_DIR': data_dir,
+        'Any': Any,
+        'Optional': Optional,
+        'Path': Path,
+        'asyncio': asyncio,
+        'json': json,
+        'os': os,
+        're': re,
+        'tempfile': tempfile,
+        'log': logging.getLogger(__name__),
+        'DATA_DIR': data_dir,
         'SETTINGS_PATH': data_dir / 'glossary.settings.json',
         'DEFAULT_GLOSSARY_ID': 'user',
         'DEFAULT_GLOSSARY_PATH': 'glossaries/user.json',
@@ -46,10 +63,14 @@ def load_settings_functions(data_dir):
         'invalidate_cache': AsyncMock(),
     }
     nodes = [
-        node for node in tree.body
+        node
+        for node in tree.body
         if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in functions)
-        or (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-            and node.target.id == 'DEFAULT_SETTINGS')
+        or (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == 'DEFAULT_SETTINGS'
+        )
     ]
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), namespace)
     return namespace
