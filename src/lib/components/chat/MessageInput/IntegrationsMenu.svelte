@@ -383,7 +383,6 @@
 		});
 	};
 
-
 	const resetOpenCodeAgentSession = async () => {
 		if (!chatId || !openCodeStatus?.session?.id || openCodeSessionResetting) return;
 		if (!confirm($i18n.t('Start a new Agent session?'))) return;
