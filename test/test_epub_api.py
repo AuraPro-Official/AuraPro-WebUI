@@ -777,7 +777,7 @@ class EpubAuthenticatedApiTest(unittest.TestCase):
                 test_case.assertEqual(prompt_profile, DEFAULT_CONCEPT_PROMPT_PROFILE)
                 test_case.assertEqual(sample_limit, 20)
                 return {
-                    'mode': 'LOCAL_QWEN',
+                    'mode': 'LOCAL_ACTIVE_MODEL',
                     'prompt_profile': prompt_profile,
                     'model': 'test-local-model',
                     'sample_count': 1,

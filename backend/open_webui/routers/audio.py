@@ -677,7 +677,7 @@ async def _transcribe_whisper(request, file_path, languages, file_dir, id):
 
 async def _transcribe_sherpa(request, file_path, filename, metadata, file_dir, id, user=None):
     payload = {'model': await Config.get('audio.stt.model') or 'sherpa-asr'}
-    explicit_language = metadata.get('language') if not WHISPER_LANGUAGE else WHISPER_LANGUAGE
+    explicit_language = metadata.get('language') or WHISPER_LANGUAGE
     if explicit_language:
         payload['language'] = explicit_language
     elif metadata.get('language_candidates'):

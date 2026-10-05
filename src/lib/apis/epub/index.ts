@@ -268,7 +268,7 @@ export type LocalCalibrationInput = {
 };
 
 export type LocalCalibrationReport = {
-	mode: 'LOCAL_QWEN';
+	mode: 'LOCAL_ACTIVE_MODEL';
 	prompt_profile: string;
 	model: string;
 	sample_count: number;

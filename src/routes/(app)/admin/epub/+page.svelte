@@ -611,7 +611,7 @@
 	>
 		<h2 class="font-medium">本地 Prompt 校准</h2>
 		<p class="mt-1 text-xs text-gray-500">
-			先在 Desktop 托管的 Qwen 上做跨章节结构与 offset
+			使用 WebUI 聊天当前激活的本地模型做跨章节结构与 offset
 			校验。本地通过不代表云端模型质量，且不会发送任何段落到云端。
 		</p>
 		<div class="mt-3 grid gap-3 sm:grid-cols-2">

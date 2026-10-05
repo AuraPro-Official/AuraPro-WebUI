@@ -508,10 +508,12 @@ async def lifespan(app: FastAPI):
     await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_STARTED, source='system')
 
     # Shutdown: clean up shared resources
+    from open_webui.services.pi_rpc import shutdown as close_pi_sessions
     from open_webui.services.epub_runtime import close_epub_concept_service
     from open_webui.utils.session_pool import close_session
 
     close_epub_concept_service(app)
+    await close_pi_sessions()
     await close_session()
 
     if hasattr(app.state, 'redis_task_command_listener'):

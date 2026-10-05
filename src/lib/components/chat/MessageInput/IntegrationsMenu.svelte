@@ -1,4 +1,5 @@
 <script lang="ts">
+	import PiSettings from './PiSettings.svelte';
 	import { getContext, onMount, tick } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
@@ -580,7 +581,7 @@
 					{/if}
 
 					{#if $user?.role === 'admin'}
-						<Tooltip content={$i18n.t('Use OpenCode as a Code Agent')} placement="top-start">
+						<Tooltip content="使用 PI Agent" placement="top-start">
 							<button
 								class="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/50"
 								aria-pressed={$openCodeModeEnabled}
@@ -589,7 +590,7 @@
 							>
 								<div class="flex min-w-0 flex-1 items-center gap-2">
 									<Terminal className="size-3.5 shrink-0" strokeWidth="1.75" />
-									<span class="truncate">{$i18n.t('Code Agent')}</span>
+									<span class="truncate">PI Agent</span>
 									<span
 										class="truncate text-[10px] {openCodeStatus?.available
 											? 'text-green-600 dark:text-green-400'
@@ -674,7 +675,7 @@
 											on:change={(event) =>
 												void setOpenCodeModel((event.currentTarget as HTMLSelectElement).value)}
 										>
-											<option value="">{$i18n.t('OpenCode default')}</option>
+											<option value="">PI 默认模型</option>
 											{#if openCodeConfig.model && !openCodeCapabilities?.models.some((item) => item.id === openCodeConfig.model)}
 												<option value={openCodeConfig.model}>{openCodeConfig.model}</option>
 											{/if}
@@ -684,6 +685,13 @@
 										</select>
 									</label>
 								</div>
+								<PiSettings
+									directory={openCodeConfig.directory}
+									onConfigured={async (model) => {
+										await setOpenCodeModel(model);
+										await loadOpenCodeCapabilities(openCodeConfig.directory, true);
+									}}
+								/>
 								{#if openCodeCapabilityLoading}
 									<div class="flex items-center gap-2 text-[11px] text-gray-500">
 										<Spinner className="size-3.5" />

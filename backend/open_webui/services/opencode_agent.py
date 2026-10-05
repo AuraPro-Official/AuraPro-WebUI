@@ -60,6 +60,16 @@ def _normalize_runtime_url(value: str) -> str:
 
 
 def _load_runtime() -> OpenCodeRuntime:
+    from open_webui.services import pi_rpc
+
+    try:
+        data = pi_rpc.descriptor()
+    except (OSError, ValueError, KeyError, RuntimeError) as error:
+        raise OpenCodeError(str(error)) from error
+    return OpenCodeRuntime(url='pi://local', username='', password='', version=data['piVersion'])
+
+
+def _load_legacy_runtime() -> OpenCodeRuntime:
     runtime_file = os.getenv('AURAPRO_OPENCODE_RUNTIME_FILE', '').strip()
     if runtime_file:
         try:
@@ -129,6 +139,15 @@ async def _request_json(
     query: dict[str, str] | None = None,
     timeout: float = 15,
 ) -> Any:
+    if runtime.url == 'pi://local':
+        from open_webui.services import pi_rpc
+
+        try:
+            return await asyncio.wait_for(
+                pi_rpc.request(method, path, directory, payload, query), timeout=max(timeout, 35)
+            )
+        except (OSError, ValueError, KeyError, RuntimeError, TimeoutError) as error:
+            raise OpenCodeError(str(error)) from error
     params = dict(query or {})
     if directory:
         params['directory'] = directory
@@ -254,6 +273,10 @@ def _event_payload(value: Any) -> dict:
 
 async def _read_sse(response: aiohttp.ClientResponse, queue: asyncio.Queue) -> None:
     try:
+        if hasattr(response, 'queue'):
+            async for raw_line in response:
+                await queue.put(json.loads(raw_line.decode('utf-8').strip()[5:]))
+            return
         while not response.content.at_eof():
             raw_line = await response.content.readline()
             if not raw_line:
@@ -323,7 +346,7 @@ def _tool_description(part: dict) -> tuple[str, bool]:
         or ''
     )
     detail = ' '.join(str(detail).split())[:180]
-    description = f'OpenCode · {tool}' + (f': {detail}' if detail else '')
+    description = f'PI · {tool}' + (f': {detail}' if detail else '')
     if status == 'error':
         description += f' ({str(state.get("error") or "failed")[:160]})'
     return description, status in {'completed', 'error'}
@@ -349,7 +372,7 @@ def _progress_status(
     idle_for = max(0, int(idle_seconds))
     return {
         'action': 'opencode_progress',
-        'description': f'OpenCode · {phases[phase]} · {elapsed // 60:02d}:{elapsed % 60:02d}',
+        'description': f'PI · {phases[phase]} · {elapsed // 60:02d}:{elapsed % 60:02d}',
         'phase': phase,
         'elapsed_seconds': elapsed,
         'idle_seconds': idle_for,
@@ -771,7 +794,7 @@ async def _ensure_session(
         if not chat:
             raise OpenCodeError('The chat no longer exists or is not owned by this user.')
         binding = (chat.chat or {}).get('opencode')
-        if isinstance(binding, dict) and binding.get('directory') == directory:
+        if isinstance(binding, dict) and binding.get('engine') == 'pi' and binding.get('directory') == directory:
             session_id = str(binding.get('session_id') or '')
             if session_id:
                 try:
@@ -801,6 +824,7 @@ async def _ensure_session(
         updated = {
             **(chat.chat or {}),
             'opencode': {
+                'engine': 'pi',
                 'enabled': True,
                 'session_id': session_id,
                 'directory': directory,
@@ -853,7 +877,7 @@ async def run_agent_chat(  # noqa: C901
     await event_emitter(
         {
             'type': 'status',
-            'data': {'action': 'opencode_connect', 'description': 'Connecting to OpenCode', 'done': False},
+            'data': {'action': 'opencode_connect', 'description': 'Connecting to PI', 'done': False},
         }
     )
 
@@ -861,14 +885,14 @@ async def run_agent_chat(  # noqa: C901
     async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
         health = await _request_json(session, runtime, 'GET', '/global/health', timeout=5)
         if not health or not health.get('healthy'):
-            raise OpenCodeError('OpenCode is not ready.')
+            raise OpenCodeError('PI is not ready.')
 
         session_id = await _ensure_session(session, runtime, chat_id, user.id, directory, agent, model_value)
         _active_sessions[chat_id] = (session_id, directory)
         await event_emitter(
             {
                 'type': 'status',
-                'data': {'action': 'opencode_connect', 'description': 'Connected to OpenCode', 'done': True},
+                'data': {'action': 'opencode_connect', 'description': 'Connected to PI', 'done': True},
             }
         )
         log.info('OpenCode task started session=%s agent=%s directory=%s', session_id, agent, directory)
@@ -879,12 +903,9 @@ async def run_agent_chat(  # noqa: C901
             if isinstance(item, dict) and (item.get('info') or {}).get('id')
         }
 
-        event_response = await session.get(
-            f'{runtime.url}/event',
-            params={'directory': directory},
-            auth=_auth(runtime),
-            headers={'Accept': 'text/event-stream'},
-        )
+        from open_webui.services.pi_rpc import EventStream
+
+        event_response = EventStream(directory)
         if event_response.status >= 400:
             text = await event_response.text()
             raise OpenCodeError(_error_detail(text, event_response.status))
@@ -946,7 +967,73 @@ async def run_agent_chat(  # noqa: C901
                     if event_type == 'aurapro.sse.error':
                         log.warning('OpenCode SSE stream ended: %s', properties.get('message'))
                     elif event_session_id == session_id:
-                        if event_type == 'session.diff':
+                        if event_type == 'pi.ui':
+                            ui = properties.get('request') or {}
+                            method = ui.get('method')
+                            if method in {'confirm', 'select', 'input', 'editor'}:
+                                if event_caller:
+                                    response = await event_caller(
+                                        {
+                                            'type': 'confirmation' if method == 'confirm' else 'input',
+                                            'data': {
+                                                'title': ui.get('title') or 'PI',
+                                                'message': ui.get('message') or '',
+                                                'placeholder': ui.get('placeholder') or '',
+                                                'value': ui.get('prefill') or '',
+                                                'input': {
+                                                    'type': 'select'
+                                                    if method == 'select'
+                                                    else 'textarea'
+                                                    if method == 'editor'
+                                                    else 'text',
+                                                    'options': ui.get('options') or [],
+                                                },
+                                            },
+                                        }
+                                    )
+                                else:
+                                    response = False
+                                answer = {'id': ui['id']}
+                                if method == 'confirm':
+                                    answer['confirmed'] = response is True
+                                elif response is False or response is None:
+                                    answer['cancelled'] = True
+                                else:
+                                    answer['value'] = str(response)
+                                await _request_json(
+                                    session,
+                                    runtime,
+                                    'POST',
+                                    f'/session/{session_id}/ui',
+                                    directory=directory,
+                                    payload=answer,
+                                )
+                            elif method == 'notify':
+                                await event_emitter(
+                                    {
+                                        'type': 'notification',
+                                        'data': {
+                                            'type': ui.get('notifyType') or 'info',
+                                            'content': ui.get('message') or '',
+                                        },
+                                    }
+                                )
+                            elif method == 'set_editor_text':
+                                await event_emitter({'type': 'input:prompt', 'data': {'text': ui.get('text') or ''}})
+                            elif method in {'setStatus', 'setWidget', 'setTitle'}:
+                                await event_emitter(
+                                    {
+                                        'type': 'status',
+                                        'data': {
+                                            'action': 'pi_extension',
+                                            'description': str(
+                                                ui.get('text') or ui.get('title') or ui.get('widgetLines') or ''
+                                            ),
+                                            'done': True,
+                                        },
+                                    }
+                                )
+                        elif event_type == 'session.diff':
                             event_diffs = properties.get('diff')
                             if isinstance(event_diffs, list):
                                 live_session_diffs = event_diffs
@@ -1130,7 +1217,7 @@ async def run_agent_chat(  # noqa: C901
             )
             if isinstance(final_messages, list):
                 latest_messages = final_messages
-            final_text, _, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
+            final_text, final_tools, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
             if assistant_message_id:
                 latest_assistant_message_id = assistant_message_id
                 latest_user_message_id = _resolve_user_message_id(
@@ -1170,7 +1257,7 @@ async def run_agent_chat(  # noqa: C901
                 baseline_ids,
             )
             if not latest_text:
-                latest_text = 'OpenCode completed the task.'
+                latest_text = 'PI completed the task.'
             diff_count = len(changed_files)
             completed_at = time.monotonic()
             await event_emitter(
@@ -1185,7 +1272,7 @@ async def run_agent_chat(  # noqa: C901
                         'type': 'status',
                         'data': {
                             'action': 'opencode_diff',
-                            'description': f'OpenCode · {diff_count} file(s) changed',
+                            'description': f'PI · {diff_count} file(s) changed',
                             'done': True,
                         },
                     }
@@ -1203,6 +1290,29 @@ async def run_agent_chat(  # noqa: C901
                 'diffs': _compact_changed_files(changed_files),
                 'todos': _normalize_todos(todos),
                 'vcs': _normalize_vcs(vcs),
+                'tools': [
+                    {
+                        'name': part.get('tool'),
+                        'status': (part.get('state') or {}).get('status'),
+                        'content': [
+                            {'type': 'text', 'text': str(block.get('text', ''))[:20000]}
+                            if block.get('type') == 'text'
+                            else {'type': 'image', 'data': block['data'], 'mimeType': block.get('mimeType')}
+                            for block in ((part.get('state') or {}).get('output') or [])
+                            if isinstance(block, dict)
+                            and (
+                                block.get('type') == 'text'
+                                or (
+                                    block.get('type') == 'image'
+                                    and block.get('mimeType') in {'image/png', 'image/jpeg', 'image/webp'}
+                                    and isinstance(block.get('data'), str)
+                                    and len(block['data']) <= 2000000
+                                )
+                            )
+                        ][:4],
+                    }
+                    for part in final_tools[-12:]
+                ],
             }
             await _persist_message(
                 chat_id,

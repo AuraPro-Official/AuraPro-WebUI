@@ -162,3 +162,29 @@ export const unrevertOpenCodeChat = async (
 	chatId: string
 ): Promise<{ restored: boolean }> =>
 	request(token, `/chats/${encodeURIComponent(chatId)}/unrevert`, { method: 'POST' });
+
+export const configurePiModel = (
+	token: string,
+	configuration: {
+		base_url: string;
+		model: string;
+		api_key: string;
+		api: string;
+		vision: boolean;
+		context_window: number;
+	}
+) =>
+	request<{ configured: boolean; model: string }>(token, '/pi/model', {
+		method: 'POST',
+		body: JSON.stringify(configuration)
+	});
+
+export const checkPiExtensions = (token: string, directory: string) =>
+	request<{
+		tools: string[];
+		commands: string[];
+		checks: { tool: string; available?: boolean; error?: string; detail?: string }[];
+	}>(token, '/pi/extensions/check', {
+		method: 'POST',
+		body: JSON.stringify({ directory })
+	});

@@ -262,7 +262,7 @@ class OpenCodeAgentHelpersTest(unittest.TestCase):
                 'state': {'status': 'running', 'input': {'command': 'npm test'}},
             }
         )
-        self.assertEqual(description, 'OpenCode · bash: npm test')
+        self.assertEqual(description, 'PI · bash: npm test')
         self.assertFalse(done)
 
         description, done = _tool_description(
@@ -271,7 +271,7 @@ class OpenCodeAgentHelpersTest(unittest.TestCase):
                 'state': {'status': 'error', 'error': 'permission denied'},
             }
         )
-        self.assertEqual(description, 'OpenCode · edit (permission denied)')
+        self.assertEqual(description, 'PI · edit (permission denied)')
         self.assertTrue(done)
 
     def test_model_reference_requires_safe_provider_and_model_ids(self):

@@ -49,6 +49,7 @@
 	import RegenerateMenu from './ResponseMessage/RegenerateMenu.svelte';
 	import StatusHistory from './ResponseMessage/StatusHistory.svelte';
 	import OpenCodeChanges from './ResponseMessage/OpenCodeChanges.svelte';
+	import PiToolResults from './ResponseMessage/PiToolResults.svelte';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
 	import OutputEditView from './OutputEditView.svelte';
 	import { getOutputText, replaceOutputMessageText, type OutputItem } from './structuredOutput';
@@ -114,6 +115,11 @@
 			diffs?: Record<string, unknown>[];
 			todos?: { id: string; content: string; status: string; priority: string }[];
 			vcs?: { branch: string; root: string };
+			tools?: {
+				name: string;
+				status: string;
+				content: { type: string; text?: string; data?: string; mimeType?: string }[];
+			}[];
 		};
 	}
 
@@ -834,6 +840,7 @@
 							{/if}
 
 							{#if message?.opencode}
+								<PiToolResults tools={message.opencode.tools ?? []} />
 								<OpenCodeChanges
 									{chatId}
 									messageId={message.opencode.message_id ?? ''}

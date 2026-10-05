@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .desktop_runtime import read_desktop_runtime_descriptor
+from .desktop_runtime import resolve_desktop_runtime
 from .inference import (
     LlamaCppTransport,
     LocalInferenceUnavailable,
@@ -85,7 +85,7 @@ class LocalConceptCalibrationRunner:
         ]
         valid = sum(1 for report in reports if report.valid)
         return {
-            'mode': 'LOCAL_QWEN',
+            'mode': 'LOCAL_ACTIVE_MODEL',
             'prompt_profile': prompt_profile,
             'model': model,
             'sample_count': len(reports),
@@ -99,8 +99,11 @@ class LocalConceptCalibrationRunner:
         }
 
     def _runtime(self) -> tuple[PrivateModelEndpoint, str]:
-        endpoint, model = read_desktop_runtime_descriptor(self._descriptor_path)
-        return PrivateModelEndpoint(endpoint, trusted_hostnames=self._trusted_hostnames), model
+        return resolve_desktop_runtime(
+            self._descriptor_path,
+            transport=self._transport_for_request(),
+            trusted_hostnames=self._trusted_hostnames,
+        )
 
     def _transport_for_request(self) -> LlamaCppTransport:
         return self._transport or UrllibLlamaCppTransport(timeout_seconds=self._timeout_seconds)

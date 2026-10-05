@@ -81,6 +81,57 @@ class DesktopRuntimeResolverTest(unittest.TestCase):
         self.assertIn('http://127.0.0.1:18882/v1/chat/completions', self.transport.urls)
         self.assertEqual(self.transport.payloads[-1]['model'], 'second-model')
 
+    def test_active_model_follows_chat_switch_and_never_loads_idle_models(self) -> None:
+        self.path.write_text(
+            json.dumps(
+                {
+                    'version': 1,
+                    'llama_cpp': {
+                        'endpoint': 'http://127.0.0.1:18881',
+                        'active_model': True,
+                    },
+                }
+            ),
+            encoding='utf-8',
+        )
+        transport = FakeCalibrationTransport()
+        model_list = {
+            'data': [
+                {'id': 'idle-model', 'status': {'value': 'unloaded'}},
+                {'id': 'chat-model', 'status': {'value': 'loaded'}},
+            ]
+        }
+        transport.get_json = lambda url: model_list if url.endswith('/v1/models') else {'status': 'ok'}
+        resolver = DesktopManagedLlamaCppConceptResolver(descriptor_path=self.path, transport=transport)
+        self.assertTrue(resolver.availability().available)
+        runner = LocalConceptCalibrationRunner(descriptor_path=self.path, transport=transport)
+        report = runner.run(
+            passages=[{'passage_id': 'p', 'ordinal': 1, 'content': 'text'}],
+            prompt_profile='zh-glossary-v1',
+            sample_limit=1,
+        )
+        self.assertEqual(report['model'], 'chat-model')
+        self.assertEqual(transport.payloads[-1]['model'], 'chat-model')
+        model_list['data'][1] = {'id': 'next-model', 'status': {'value': 'sleeping'}}
+        transport.post_json = lambda url, payload: (
+            transport.urls.append(url),
+            transport.payloads.append(payload),
+            {'choices': [{'message': {'content': '{"concept":null}'}}]},
+        )[-1]
+        resolver.resolve('query', ['candidate'])
+        self.assertEqual(transport.payloads[-1]['model'], 'next-model')
+        model_list['data'].pop()
+        self.assertFalse(resolver.availability().available)
+        with self.assertRaisesRegex(Exception, 'Activate one local model'):
+            runner.run(
+                passages=[{'passage_id': 'p', 'ordinal': 1, 'content': 'text'}],
+                prompt_profile='zh-glossary-v1',
+                sample_limit=1,
+            )
+        self.assertTrue(all(url.endswith('/v1/chat/completions') for url in transport.urls))
+        model_list['data'] = [{'id': 'single-model'}]
+        self.assertTrue(resolver.availability().available)
+
     def test_missing_or_public_descriptor_fails_closed(self) -> None:
         resolver = DesktopManagedLlamaCppConceptResolver(
             descriptor_path=self.path,
@@ -111,7 +162,7 @@ class DesktopRuntimeResolverTest(unittest.TestCase):
             prompt_profile='zh-glossary-v1',
             sample_limit=2,
         )
-        self.assertEqual(report['mode'], 'LOCAL_QWEN')
+        self.assertEqual(report['mode'], 'LOCAL_ACTIVE_MODEL')
         self.assertEqual((report['sample_count'], report['chapter_count']), (2, 2))
         self.assertEqual((report['valid_items'], report['invalid_items']), (2, 0))
         self.assertNotIn('词条', repr(report))

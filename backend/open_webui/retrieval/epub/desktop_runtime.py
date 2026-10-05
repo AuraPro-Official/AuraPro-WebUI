@@ -9,7 +9,7 @@ Desktop atomically replaces the descriptor named by
 ``AURAPRO_DESKTOP_LLM_RUNTIME_FILE``. Version 1 is credential-free::
 
     {"version": 1, "llama_cpp": {
-        "endpoint": "http://127.0.0.1:18881", "model": "desktop-model-id"
+        "endpoint": "http://127.0.0.1:18881", "active_model": true
     }}
 
 An absent, partial, or invalid descriptor is a degraded local runtime, never a
@@ -71,19 +71,20 @@ class DesktopManagedLlamaCppConceptResolver:
         return self._resolver().resolve(query, candidates)
 
     def _resolver(self) -> LlamaCppConceptResolver:
-        endpoint, profile = self._read_descriptor()
+        endpoint, profile = resolve_desktop_runtime(
+            self._descriptor_path,
+            transport=self._transport or UrllibLlamaCppTransport(timeout_seconds=self._timeout_seconds),
+            trusted_hostnames=self._trusted_hostnames,
+        )
         return LlamaCppConceptResolver(
-            endpoint=PrivateModelEndpoint(endpoint, trusted_hostnames=self._trusted_hostnames),
+            endpoint=endpoint,
             transport=self._transport or UrllibLlamaCppTransport(timeout_seconds=self._timeout_seconds),
             profile=profile,
             max_tokens=self._max_tokens,
         )
 
-    def _read_descriptor(self) -> tuple[str, str]:
-        return read_desktop_runtime_descriptor(self._descriptor_path)
 
-
-def read_desktop_runtime_descriptor(descriptor_path: str | Path) -> tuple[str, str]:
+def read_desktop_runtime_descriptor(descriptor_path: str | Path) -> tuple[str, str | None]:
     """Read one atomic Desktop runtime descriptor snapshot without caching it."""
     path = Path(descriptor_path).expanduser()
     if not path.is_absolute():
@@ -105,11 +106,52 @@ def read_desktop_runtime_descriptor(descriptor_path: str | Path) -> tuple[str, s
     model = llama_cpp.get('model')
     if not isinstance(endpoint, str) or not endpoint.strip():
         raise DesktopRuntimeDescriptorError('Desktop runtime descriptor has no local endpoint')
+    if llama_cpp.get('active_model') is True:
+        return endpoint.strip(), None
     if not isinstance(model, str) or not model.strip() or len(model) > 256:
         raise DesktopRuntimeDescriptorError('Desktop runtime descriptor has no valid model identifier')
     if any(character in model for character in '\r\n\x00'):
         raise DesktopRuntimeDescriptorError('Desktop runtime descriptor has no valid model identifier')
     return endpoint.strip(), model.strip()
+
+
+def resolve_desktop_runtime(
+    descriptor_path: str | Path,
+    *,
+    transport: LlamaCppTransport,
+    trusted_hostnames: frozenset[str] = frozenset(),
+) -> tuple[PrivateModelEndpoint, str]:
+    """Use the model currently loaded by chat without loading another model.
+
+    Router mode reports loaded/sleeping states; a single-model server omits
+    status. Re-read on every operation so chat model switches take effect.
+    """
+    url, model = read_desktop_runtime_descriptor(descriptor_path)
+    endpoint = PrivateModelEndpoint(url, trusted_hostnames=trusted_hostnames)
+    if model is not None:
+        return endpoint, model
+    response = transport.get_json(f'{endpoint.url.rstrip("/")}/v1/models')
+    data = response.get('data')
+    if not isinstance(data, list):
+        raise DesktopRuntimeDescriptorError('Desktop local runtime returned no model list')
+    active = []
+    for entry in data:
+        if not isinstance(entry, Mapping):
+            continue
+        status = entry.get('status')
+        if 'status' in entry and (not isinstance(status, Mapping) or status.get('value') not in {'loaded', 'sleeping'}):
+            continue
+        identifier = entry.get('id')
+        if (
+            isinstance(identifier, str)
+            and identifier.strip()
+            and len(identifier) <= 256
+            and not any(character in identifier for character in '\r\n\x00')
+        ):
+            active.append(identifier.strip())
+    if len(active) != 1:
+        raise DesktopRuntimeDescriptorError('Activate one local model in WebUI chat before using EPUB model features')
+    return endpoint, active[0]
 
 
 def _safe_reason(error: Exception) -> str:
