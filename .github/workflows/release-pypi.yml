@@ -1,5 +1,8 @@
 name: Release to PyPI
 
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
 on:
   workflow_dispatch:
 

@@ -1,5 +1,16 @@
 import { OPENAI_API_BASE_URL, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
+export const prepareDesktopRuntime = async (token: string, model: string) => {
+	const response = await fetch(`${OPENAI_API_BASE_URL}/runtime/prepare`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}` },
+		body: JSON.stringify({ model })
+	});
+	const result = await response.json();
+	if (!response.ok) throw new Error(result.detail ?? 'Server connection failed');
+	return result;
+};
+
 export const getOpenAIConfig = async (token: string = '') => {
 	let error = null;
 

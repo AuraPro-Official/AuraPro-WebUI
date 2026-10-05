@@ -6,6 +6,7 @@
 	import Tooltip from '../common/Tooltip.svelte';
 
 	import { updateUserSettings } from '$lib/apis/users';
+	import { prepareDesktopRuntime } from '$lib/apis/openai';
 	import equal from 'fast-deep-equal';
 	const i18n = getContext('i18n');
 
@@ -13,6 +14,19 @@
 	export let disabled = false;
 
 	export let showSetDefault = true;
+
+	const prepareRuntime = async (modelId: string) => {
+		const model = $models.find((item) => item.id === modelId);
+		if (!model || !('connection_type' in model) || model.connection_type !== 'local') return;
+		const notice = toast.loading($i18n.t('Loading...'));
+		try {
+			await prepareDesktopRuntime(localStorage.token, modelId);
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : String(error));
+		} finally {
+			toast.dismiss(notice);
+		}
+	};
 
 	const saveDefaultModel = async () => {
 		const hasEmptyModel = selectedModels.filter((it) => it === '');
@@ -65,6 +79,7 @@
 						}))}
 						{pinModelHandler}
 						bind:value={selectedModel}
+						on:change={(event) => prepareRuntime(event.detail)}
 					/>
 				</div>
 			</div>

@@ -432,6 +432,8 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
 
 async def get_all_models_responses(request: Request, user: UserModel) -> list:
+    from open_webui.utils.inference_runtime import desktop_models, runtime_for_url
+
     enable_openai_api, api_base_urls, api_keys, api_configs = await get_openai_runtime_config()
     if not enable_openai_api:
         return []
@@ -443,7 +445,28 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
         api_keys = await normalize_openai_api_keys(api_base_urls, api_keys)
 
     request_tasks = []
+    managed = await desktop_models()
     for idx, url in enumerate(api_base_urls):
+        local_config = api_configs.get(str(idx), api_configs.get(url, {}))
+        if (
+            managed
+            and managed.get('active') != 'standard'
+            and runtime_for_url(url) == 'standard'
+            and local_config.get('enable', True)
+            and not local_config.get('model_ids')
+        ):
+            request_tasks.append(
+                asyncio.sleep(
+                    0,
+                    {
+                        'data': [
+                            {'id': model_id, 'name': model_id, 'provider': 'llama.cpp', 'connection_type': 'local'}
+                            for model_id in managed.get('standard', [])
+                        ]
+                    },
+                )
+            )
+            continue
         if (str(idx) not in api_configs) and (url not in api_configs):  # Legacy support
             request_tasks.append(get_models_request(request, url, api_keys[idx], user=user))
         else:
@@ -621,6 +644,19 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
         return models
 
     models = get_merged_models(map(extract_data, responses))
+    from open_webui.utils.inference_runtime import PRO_MODEL_ID, desktop_models
+
+    managed = await desktop_models()
+    if managed and managed.get('pro'):
+        models[PRO_MODEL_ID] = {
+            'id': PRO_MODEL_ID,
+            'name': 'Pro_V1',
+            'owned_by': 'openai',
+            'connection_type': 'local',
+            'provider': 'strata',
+            'urlIdx': None,
+            'aurapro_runtime': 'pro',
+        }
     log.debug(f'models: {models}')
 
     request.app.state.OPENAI_MODELS = models
@@ -1111,6 +1147,38 @@ def convert_responses_result(response: dict) -> dict:
     }
 
 
+@router.post('/runtime/prepare')
+async def prepare_desktop_runtime(request: Request, form_data: dict, user=Depends(get_verified_user)):
+    from open_webui.utils.inference_runtime import (
+        PRO_MODEL_ID,
+        control_config,
+        control_request,
+        runtime_for_url,
+    )
+
+    if not control_config():
+        return {'managed': False}
+    model_id = form_data.get('model')
+    if not isinstance(model_id, str):
+        raise HTTPException(400, 'Model is required')
+    model_info = await Models.get_model_by_id(model_id)
+    await check_model_access(user, model_info, BYPASS_MODEL_ACCESS_CONTROL)
+    if model_info and model_info.base_model_id:
+        model_id = model_info.base_model_id
+    models = (await get_all_models(request, user=user))['data']
+    model = next((item for item in models if item['id'] == model_id), None)
+    if not model:
+        raise HTTPException(404, ERROR_MESSAGES.MODEL_NOT_FOUND())
+    if model_id == PRO_MODEL_ID and model.get('aurapro_runtime') == 'pro':
+        runtime = 'pro'
+    else:
+        url, _, _ = await get_openai_connection(model['urlIdx'])
+        runtime = runtime_for_url(url)
+    if runtime:
+        await control_request('/prepare', {'runtime': runtime})
+    return {'managed': bool(runtime)}
+
+
 @router.post('/chat/completions')
 async def generate_chat_completion(
     request: Request,
@@ -1176,7 +1244,12 @@ async def generate_chat_completion(
             detail=ERROR_MESSAGES.MODEL_NOT_FOUND(),
         )
 
-    url, key, api_config = await get_openai_connection(idx)
+    from open_webui.utils.inference_runtime import PRO_BASE_URL, PRO_MODEL_ID, RuntimeLease, control_config
+
+    if model_id == PRO_MODEL_ID and model.get('aurapro_runtime') == 'pro' and control_config():
+        url, key, api_config = PRO_BASE_URL, '', {}
+    else:
+        url, key, api_config = await get_openai_connection(idx)
 
     prefix_id = api_config.get('prefix_id', None)
     if prefix_id:
@@ -1261,8 +1334,10 @@ async def generate_chat_completion(
     r = None
     streaming = False
     response = None
+    runtime_lease = None
 
     try:
+        runtime_lease = await RuntimeLease.acquire(url)
         session = await get_session()
 
         r = await session.request(
@@ -1317,8 +1392,9 @@ async def generate_chat_completion(
                     )
 
             streaming = True
+            content = stream_wrapper(r, content_handler=stream_chunks_handler)
             return StreamingResponse(
-                stream_wrapper(r, content_handler=stream_chunks_handler),
+                runtime_lease.stream(content) if runtime_lease else content,
                 status_code=r.status,
                 headers=_clean_proxy_headers(r.headers),
             )
@@ -1350,6 +1426,8 @@ async def generate_chat_completion(
                 response = convert_responses_result(response)
 
             return response
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(e)
 
@@ -1359,7 +1437,11 @@ async def generate_chat_completion(
         )
     finally:
         if not streaming:
-            await cleanup_response(r)
+            try:
+                await cleanup_response(r)
+            finally:
+                if runtime_lease:
+                    await asyncio.shield(runtime_lease.release())
 
 
 async def embeddings(request: Request, form_data: dict, user):

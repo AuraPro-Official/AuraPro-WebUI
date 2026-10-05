@@ -572,6 +572,7 @@
 								on:keydown={(e) => {
 									if (e.code === 'Enter' && filteredItems.length > 0) {
 										value = filteredItems[selectedModelIdx].value;
+										dispatch('change', value);
 										show = false;
 										return; // dont need to scroll on selection
 									} else if (e.code === 'ArrowDown') {
@@ -748,6 +749,7 @@
 										{selectionOnly}
 										onClick={() => {
 											value = item.value;
+											dispatch('change', value);
 											selectedModelIdx = index;
 
 											show = false;
