@@ -1,5 +1,4 @@
 <script lang="ts">
-	import PiSettings from './PiSettings.svelte';
 	import { getContext, onMount, tick } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
@@ -154,13 +153,8 @@
 			const agent = capabilities.agents.some((item) => item.id === openCodeConfig.agent)
 				? openCodeConfig.agent
 				: (capabilities.agents[0]?.id ?? 'build');
-			const model =
-				!openCodeConfig.model ||
-				capabilities.models.some((item) => item.id === openCodeConfig.model)
-					? openCodeConfig.model
-					: '';
-			if (agent !== openCodeConfig.agent || model !== openCodeConfig.model) {
-				await persistOpenCodeConfig({ ...openCodeConfig, agent, model });
+			if (agent !== openCodeConfig.agent || openCodeConfig.model) {
+				await persistOpenCodeConfig({ ...openCodeConfig, agent, model: '' });
 			}
 		} catch (error) {
 			openCodeError = getOpenCodeError(error);
@@ -389,12 +383,6 @@
 		});
 	};
 
-	const setOpenCodeModel = async (model: string) => {
-		await persistOpenCodeConfig({
-			...openCodeConfig,
-			model
-		});
-	};
 
 	const resetOpenCodeAgentSession = async () => {
 		if (!chatId || !openCodeStatus?.session?.id || openCodeSessionResetting) return;
@@ -650,7 +638,7 @@
 										</button>
 									</Tooltip>
 								</div>
-								<div class="grid grid-cols-2 gap-2">
+								<div class="grid gap-2">
 									<label class="min-w-0 text-[11px] text-gray-500 dark:text-gray-400">
 										<span>{$i18n.t('Coding agent')}</span>
 										<select
@@ -667,41 +655,7 @@
 											{/each}
 										</select>
 									</label>
-									<label class="min-w-0 text-[11px] text-gray-500 dark:text-gray-400">
-										<span>{$i18n.t('Model')}</span>
-										<select
-											class="mt-1 w-full rounded-md border border-gray-200 bg-transparent px-2 py-1.5 text-xs text-gray-900 outline-hidden focus:border-gray-400 dark:border-gray-700 dark:text-gray-100"
-											value={openCodeConfig.model}
-											on:change={(event) =>
-												void setOpenCodeModel((event.currentTarget as HTMLSelectElement).value)}
-										>
-											<option value="">PI 默认模型</option>
-											{#if openCodeConfig.model && !openCodeCapabilities?.models.some((item) => item.id === openCodeConfig.model)}
-												<option value={openCodeConfig.model}>{openCodeConfig.model}</option>
-											{/if}
-											{#each openCodeCapabilities?.models ?? [] as model}
-												<option value={model.id}>{model.provider_name} · {model.name}</option>
-											{/each}
-										</select>
-									</label>
 								</div>
-								<PiSettings
-									directory={openCodeConfig.directory}
-									onConfigured={async (model) => {
-										await setOpenCodeModel(model);
-										await loadOpenCodeCapabilities(openCodeConfig.directory, true);
-									}}
-								/>
-								{#if openCodeCapabilityLoading}
-									<div class="flex items-center gap-2 text-[11px] text-gray-500">
-										<Spinner className="size-3.5" />
-										<span>{$i18n.t('Loading coding models')}</span>
-									</div>
-								{:else if openCodeCapabilities && openCodeCapabilities.models.length === 0}
-									<div class="text-[11px] text-gray-500 dark:text-gray-400">
-										{$i18n.t('No connected coding models')}
-									</div>
-								{/if}
 								{#if openCodeCapabilities?.vcs.branch}
 									<div class="truncate text-[11px] text-gray-500 dark:text-gray-400">
 										{$i18n.t('Branch')}:

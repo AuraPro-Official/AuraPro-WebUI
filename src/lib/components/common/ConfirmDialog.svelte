@@ -45,12 +45,18 @@
 	};
 
 	const handleKeyDown = (event: KeyboardEvent) => {
+		if (event.isComposing) return;
 		if (event.key === 'Escape') {
 			console.log('Escape');
 			cancelHandler();
 		}
 
 		if (event.key === 'Enter') {
+			if (
+				event.target instanceof HTMLTextAreaElement &&
+				(inputType === 'textarea' || event.shiftKey) &&
+				!event.ctrlKey && !event.metaKey
+			) return;
 			console.log('Enter');
 			event.preventDefault();
 			event.stopPropagation();

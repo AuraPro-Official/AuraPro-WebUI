@@ -12,6 +12,7 @@
 		type OpenCodeVcs
 	} from '$lib/apis/opencode';
 	import Spinner from '$lib/components/common/Spinner.svelte';
+	import PiDiffPreview from './PiDiffPreview.svelte';
 	import CodeBracket from '$lib/components/icons/CodeBracket.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import ChevronUp from '$lib/components/icons/ChevronUp.svelte';
@@ -140,8 +141,8 @@
 
 	const restoreChanges = async () => {
 		if (!chatId || actionLoading) return;
-		actionLoading = true;
 		if (!confirm($i18n.t('Restore reverted changes?'))) return;
+		actionLoading = true;
 		error = '';
 		actionMessage = '';
 		try {
@@ -284,15 +285,7 @@
 								{/if}
 							</div>
 							{#if getPreview(item)}
-								<div
-									class="max-h-96 overflow-auto border-t border-gray-100 bg-gray-50 py-2 font-mono text-[11px] leading-5 dark:border-gray-800 dark:bg-gray-900"
-								>
-									{#each getPreview(item).split('\n') as line}
-										<div class="min-w-max whitespace-pre px-3 {getDiffLineClass(line)}">
-											{line || ' '}
-										</div>
-									{/each}
-								</div>
+								<PiDiffPreview patch={getPreview(item)} />
 							{/if}
 							{#if item.truncated === true}
 								<div

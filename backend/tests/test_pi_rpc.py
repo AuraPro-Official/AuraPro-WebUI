@@ -50,6 +50,18 @@ class SnapshotTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 rpc._safe_path(temporary, '../outside.txt')
 
+    def test_diff_without_final_newline_keeps_changes_on_separate_lines(self):
+        before = {'file.txt': base64.b64encode(b'before').decode()}
+        after = {'file.txt': base64.b64encode(b'after').decode()}
+        result = rpc.changes(before, after, [])
+        self.assertIn('-before\n', result[0]['patch'])
+        self.assertIn('+after\n', result[0]['patch'])
+        self.assertEqual((result[0]['additions'], result[0]['deletions']), (1, 1))
+
+    def test_partial_snapshot_does_not_report_unscanned_file_as_deleted(self):
+        before = {'unscanned.txt': base64.b64encode(b'keep').decode()}
+        self.assertEqual(rpc.changes(before, {}, ['[snapshot scan limit reached]']), [])
+
 
 class ModelServer(BaseHTTPRequestHandler):
     def log_message(self, *_args):
@@ -160,7 +172,7 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
             os.environ['AURAPRO_PI_RUNTIME_FILE'] = self.old_runtime
         self.temp.cleanup()
 
-    async def run_turn(self, confirmed=True):
+    async def run_turn(self, confirmed=True, provider='test'):
         directory = str(self.workspace)
         created = await rpc.request('POST', '/session', directory, {}, None)
         session_id = created['id']
@@ -169,7 +181,7 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
             'POST',
             f'/session/{session_id}/prompt_async',
             directory,
-            {'model': {'providerID': 'test', 'modelID': 'test'}, 'parts': [{'text': 'Edit the file'}]},
+            {'model': {'providerID': provider, 'modelID': 'test'}, 'parts': [{'text': 'Edit the file'}]},
             None,
         )
         seen_confirmation = False
@@ -225,6 +237,104 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
         session = rpc._sessions[created['id']]
         await session.command('prompt', message='/aurapro-check find_roots')
         self.assertFalse(session.probe['available'])
+
+    async def test_extension_preflight_confirmation_does_not_block_submission(self):
+        extension = self.root / 'confirmation.mjs'
+        extension.write_text(
+            'import bridge from ' + json.dumps(self.extension.as_posix()) + ';\n'
+            'export default async function(pi) { await bridge(pi); '
+            'pi.registerCommand("ask-test", {handler: async (_args, ctx) => {'
+            'await ctx.ui.confirm("Startup confirmation", "Continue?"); }}); }',
+            encoding='utf-8',
+        )
+        settings_file = self.agent / 'settings.json'
+        settings = json.loads(settings_file.read_text())
+        settings['extensions'] = [str(extension)]
+        settings_file.write_text(json.dumps(settings))
+        directory = str(self.workspace)
+        created = await rpc.request('POST', '/session', directory, {}, None)
+        session_id = created['id']
+        stream = rpc.EventStream(directory)
+        try:
+            accepted = await asyncio.wait_for(rpc.request(
+                'POST', f'/session/{session_id}/prompt_async', directory,
+                {'parts': [{'text': '/ask-test'}]}, None,
+            ), 2)
+            self.assertTrue(accepted['accepted'])
+            confirmed = False
+            while True:
+                event = await asyncio.wait_for(stream.queue.get(), 10)
+                if event['type'] == 'pi.ui' and event['properties']['request'].get('method') == 'confirm':
+                    confirmed = True
+                    await rpc.request('POST', f'/session/{session_id}/ui', directory,
+                                      {'id': event['properties']['request']['id'], 'confirmed': True}, None)
+                if event['type'] == 'session.error':
+                    self.fail(event)
+                if event['type'] == 'session.idle':
+                    break
+            self.assertTrue(confirmed)
+        finally:
+            stream.close()
+
+    async def test_rpc_timeout_has_visible_error_message(self):
+        from unittest.mock import AsyncMock
+        session = rpc.PiSession(rpc.descriptor(), 'timeout-test', str(self.workspace))
+        session.send = AsyncMock()
+        with self.assertRaisesRegex(RuntimeError, 'PI command get_state did not respond'):
+            await session.command('get_state', timeout=0.01)
+
+    async def test_extension_select_input_editor_and_cancellation(self):
+        extension = self.root / 'dialogs.mjs'
+        extension.write_text(
+            'import bridge from ' + json.dumps(self.extension.as_posix()) + ';\n'
+            'export default async function(pi) { await bridge(pi); '
+            'pi.registerCommand("dialogs-test", {handler: async (_args, ctx) => {'
+            'const selected = await ctx.ui.select("Choose", ["one", "two"]);'
+            'const input = await ctx.ui.input("Input", "placeholder");'
+            'const edited = await ctx.ui.editor("Editor", "initial");'
+            'const cancelled = await ctx.ui.input("Cancel");'
+            'ctx.ui.setEditorText("draft text");'
+            'ctx.ui.notify(JSON.stringify({selected,input,edited,cancelled:cancelled===undefined}), "info");'
+            '}}); }', encoding='utf-8')
+        settings = json.loads((self.agent / 'settings.json').read_text())
+        settings['extensions'] = [str(extension)]
+        (self.agent / 'settings.json').write_text(json.dumps(settings))
+        directory = str(self.workspace)
+        created = await rpc.request('POST', '/session', directory, {}, None)
+        stream = rpc.EventStream(directory)
+        methods, outcome = [], None
+        try:
+            await rpc.request('POST', f'/session/{created["id"]}/prompt_async', directory,
+                              {'parts': [{'text': '/dialogs-test'}]}, None)
+            while True:
+                event = await asyncio.wait_for(stream.queue.get(), 20)
+                if event['type'] == 'session.error': self.fail(event)
+                if event['type'] == 'pi.ui':
+                    ui = event['properties']['request']
+                    method = ui['method']
+                    if method in {'select', 'input', 'editor'}:
+                        methods.append(method)
+                        answer = {'id': ui['id']}
+                        if ui.get('title') == 'Cancel': answer['cancelled'] = True
+                        else: answer['value'] = {'select':'two','input':'中文输入','editor':'line1\nline2'}[method]
+                        await rpc.request('POST', f'/session/{created["id"]}/ui', directory, answer, None)
+                    elif method == 'notify' and '"selected"' in ui.get('message', ''):
+                        outcome = json.loads(ui['message'])
+                if event['type'] == 'session.idle': break
+            self.assertEqual(methods, ['select', 'input', 'editor', 'input'])
+            self.assertEqual(outcome, {'selected':'two','input':'中文输入','edited':'line1\nline2','cancelled':True})
+        finally:
+            stream.close()
+
+    async def test_webui_transport_model_requires_no_pi_model_configuration(self):
+        (self.agent / 'models.json').unlink()
+        data = json.loads(self.descriptor.read_text())
+        data['environment']['AURAPRO_WEBUI_MODEL'] = json.dumps({
+            'baseUrl': f'http://127.0.0.1:{self.server.server_port}/v1', 'apiKey': 'temporary-webui-token', 'id': 'test',
+        })
+        self.descriptor.write_text(json.dumps(data))
+        await self.run_turn(provider='aurapro-webui')
+        self.assertEqual((self.workspace / '中文.txt').read_text(encoding='utf-8'), 'after\n')
 
 
 if __name__ == '__main__':

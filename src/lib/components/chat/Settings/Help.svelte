@@ -23,13 +23,21 @@
 					const summary = getTutorialText(item.summary, language);
 					const steps = item.steps.map((step) => getTutorialText(step, language));
 					const tips = item.tips?.map((tip) => getTutorialText(tip, language)) ?? [];
+					const table = item.table
+						? {
+								headers: item.table.headers.map((cell) => getTutorialText(cell, language)),
+								rows: item.table.rows.map((row) =>
+									row.map((cell) => getTutorialText(cell, language))
+								)
+							}
+						: undefined;
 					const links =
 						item.links?.map((link) => ({
 							label: getTutorialText(link.label, language),
 							url: link.url
 						})) ?? [];
 					const searchText =
-						`${itemTitle} ${summary} ${steps.join(' ')} ${tips.join(' ')} ${links.map((link) => link.label).join(' ')}`.toLowerCase();
+						`${itemTitle} ${summary} ${steps.join(' ')} ${tips.join(' ')} ${table?.rows.flat().join(' ') ?? ''} ${links.map((link) => link.label).join(' ')}`.toLowerCase();
 
 					return {
 						id: item.id,
@@ -37,6 +45,7 @@
 						summary,
 						steps,
 						tips,
+						table,
 						links,
 						searchText
 					};
@@ -106,6 +115,25 @@
 								<span class="help-summary">{item.summary}</span>
 							</summary>
 							<div class="help-body">
+								{#if item.table}
+									<div class="help-table" role="region" aria-label={item.title} tabindex="0">
+										<table>
+											<thead
+												><tr
+													>{#each item.table.headers as header (header)}<th scope="col">{header}</th
+														>{/each}</tr
+												></thead
+											>
+											<tbody
+												>{#each item.table.rows as row (row[0])}<tr
+														>{#each row as cell, index (index)}{#if index === 0}<th scope="row"
+																	>{cell}</th
+																>{:else}<td>{cell}</td>{/if}{/each}</tr
+													>{/each}</tbody
+											>
+										</table>
+									</div>
+								{/if}
 								<ol>
 									{#each item.steps as step}
 										<li>{step}</li>
@@ -287,5 +315,30 @@
 		padding: 24px 0;
 		text-align: center;
 		color: var(--help-muted);
+	}
+	.help-table {
+		overflow-x: auto;
+		max-width: 100%;
+		margin: 12px 0;
+	}
+	.help-table table {
+		width: 100%;
+		min-width: 640px;
+		border-collapse: collapse;
+		font-size: 12px;
+		line-height: 1.6;
+	}
+	.help-table th,
+	.help-table td {
+		padding: 10px 8px;
+		text-align: left;
+		vertical-align: top;
+		border-bottom: 1px solid var(--help-border);
+	}
+	.help-table th {
+		font-weight: 500;
+	}
+	.help-table th:first-child {
+		min-width: 100px;
 	}
 </style>

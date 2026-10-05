@@ -147,7 +147,7 @@ async def _request_json(
                 pi_rpc.request(method, path, directory, payload, query), timeout=max(timeout, 35)
             )
         except (OSError, ValueError, KeyError, RuntimeError, TimeoutError) as error:
-            raise OpenCodeError(str(error)) from error
+            raise OpenCodeError(str(error) or f'PI request timed out while handling {path}. Check the model connection and extension setup.') from error
     params = dict(query or {})
     if directory:
         params['directory'] = directory
@@ -237,12 +237,11 @@ async def get_capabilities(value: str) -> dict:
     directory = _normalize_directory(value)
     runtime = _load_runtime()
     async with aiohttp.ClientSession(trust_env=False) as session:
-        providers, agents, vcs = await asyncio.gather(
-            _request_json(session, runtime, 'GET', '/provider', directory=directory),
+        agents, vcs = await asyncio.gather(
             _request_json(session, runtime, 'GET', '/agent', directory=directory),
             _request_json_optional(session, runtime, 'GET', '/vcs', {}, directory=directory),
         )
-    normalized = _normalize_capabilities(providers, agents)
+    normalized = _normalize_capabilities({}, agents)
     return {
         'directory': directory,
         'models': normalized['models'],
@@ -862,8 +861,10 @@ async def run_agent_chat(  # noqa: C901
 
     directory = _normalize_directory(str(feature.get('directory') or ''))
     agent = _safe_identifier(feature.get('agent'), 'build')
-    model_value = _safe_identifier(feature.get('model'))
-    model_ref = _split_model(model_value)
+    model_value = str(form_data.get('model') or '')
+    if not model_value:
+        raise OpenCodeError('Select a model in WebUI before starting an agent task.')
+    model_ref = ('aurapro-webui', model_value)
     prompt = _message_text((metadata.get('user_message') or {}).get('content'))
     if not prompt:
         raise OpenCodeError('Code Agent requires a text prompt.')
@@ -929,7 +930,18 @@ async def run_agent_chat(  # noqa: C901
         current_detail = ''
         live_session_diffs: list[dict] = []
 
+        transport = None
         try:
+            from open_webui.services import pi_rpc
+            from open_webui.services.pi_webui_model import WebUIModelTransport
+            pi_session = await pi_rpc.get_session(session_id, directory)
+            if pi_session.busy:
+                raise OpenCodeError('A PI task is already running in this conversation.')
+            transport = WebUIModelTransport(request, user, form_data)
+            environment = await transport.start()
+            await pi_session.close()
+            pi_session.model_environment = environment
+            await pi_session.start()
             await asyncio.sleep(0)
             await _request_json(
                 session,
@@ -996,7 +1008,7 @@ async def run_agent_chat(  # noqa: C901
                                 answer = {'id': ui['id']}
                                 if method == 'confirm':
                                     answer['confirmed'] = response is True
-                                elif response is False or response is None:
+                                elif response is False or response is None or isinstance(response, dict):
                                     answer['cancelled'] = True
                                 else:
                                     answer['value'] = str(response)
@@ -1358,6 +1370,8 @@ async def run_agent_chat(  # noqa: C901
         finally:
             event_task.cancel()
             event_response.close()
+            if transport:
+                await transport.close()
             try:
                 await event_task
             except (asyncio.CancelledError, Exception):

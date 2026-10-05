@@ -17,7 +17,7 @@ _sessions: dict[str, PiSession] = {}
 _subscribers: dict[str, set[asyncio.Queue]] = {}
 _creation_lock = asyncio.Lock()
 _workspace_locks: dict[str, asyncio.Lock] = {}
-_IGNORED = {'.git', 'node_modules', '.venv', '__pycache__', '.pi', '.tmp', 'dist', '.svelte-kit'}
+_IGNORED = {'.git', 'node_modules', '.venv', '__pycache__', '.pi', '.tmp', 'dist', '.svelte-kit', 'AppData', '.cache', '.npm', '.codex', '.conda'}
 
 
 def descriptor() -> dict:
@@ -71,11 +71,18 @@ def snapshot(directory: str) -> tuple[dict[str, str], list[str]]:
     skipped: list[str] = []
     total = 0
     count = 0
+    deadline = time.monotonic() + 3
     for parent, directories, files in os.walk(directory, followlinks=False):
+        if time.monotonic() >= deadline or count >= 10000:
+            skipped.append('[snapshot scan limit reached]')
+            break
         directories[:] = [
             name for name in directories if name not in _IGNORED and not (Path(parent) / name).is_symlink()
         ]
         for name in files:
+            if time.monotonic() >= deadline or count >= 10000:
+                skipped.append('[snapshot scan limit reached]')
+                return result, skipped
             file = Path(parent) / name
             relative = file.relative_to(directory).as_posix()
             count += 1
@@ -97,16 +104,21 @@ def changes(before: dict, after: dict, skipped: list[str]) -> list[dict]:
     for name in sorted(before.keys() | after.keys()):
         if before.get(name) == after.get(name) or name in skipped:
             continue
+        if '[snapshot scan limit reached]' in skipped and (name not in before or name not in after):
+            # A partial scan cannot establish whether a missing file was added/deleted.
+            continue
         old = base64.b64decode(before.get(name, ''))
         new = base64.b64decode(after.get(name, ''))
         patch = ''
         try:
             old_text, new_text = old.decode('utf-8'), new.decode('utf-8')
             if '\x00' not in old_text + new_text:
+                lines = difflib.unified_diff(
+                    old_text.splitlines(True), new_text.splitlines(True), fromfile=f'a/{name}', tofile=f'b/{name}'
+                )
                 patch = ''.join(
-                    difflib.unified_diff(
-                        old_text.splitlines(True), new_text.splitlines(True), fromfile=f'a/{name}', tofile=f'b/{name}'
-                    )
+                    line if line.endswith('\n') else line + '\n\\ No newline at end of file\n'
+                    for line in lines
                 )[:120000]
         except UnicodeDecodeError:
             pass
@@ -169,6 +181,7 @@ class PiSession:
         self.busy = False
         self.interactive = interactive
         self.mode = 'build'
+        self.model_environment: dict[str, str] = {}
         self.ui: dict[str, dict] = {}
         self.before: dict | None = None
         self.skipped: list[str] = []
@@ -190,6 +203,7 @@ class PiSession:
         env = {
             **os.environ,
             **self.data.get('environment', {}),
+            **self.model_environment,
             'PI_CODING_AGENT_DIR': self.data['agentDir'],
             'AURAPRO_PI_PLAN': '1' if mode == 'plan' else '0',
         }
@@ -258,6 +272,8 @@ class PiSession:
         try:
             await self.send({'id': request_id, 'type': kind, **values})
             return await asyncio.wait_for(future, timeout)
+        except TimeoutError as error:
+            raise RuntimeError(f'PI command {kind} did not respond within {timeout} seconds. Check the model connection and extension setup.') from error
         finally:
             self.pending.pop(request_id, None)
 
@@ -556,11 +572,26 @@ async def request(method: str, endpoint: str, directory: str | None, payload: di
             session.busy = True
             try:
                 session.before, session.skipped = await asyncio.to_thread(snapshot, directory)
-                result = await session.command(
-                    'prompt', message='\n'.join(part.get('text', '') for part in payload.get('parts', []))
-                )
-                if (result or {}).get('disposition') == 'handled':
-                    await session.finish()
+                message = '\n'.join(part.get('text', '') for part in payload.get('parts', []))
+                if message.startswith('/computer-use'):
+                    task = message[len('/computer-use'):].strip()
+                    if task:
+                        message = 'Use the installed computer-use tools to carry out this desktop task:\n' + task
+                async def submit():
+                    try:
+                        # Preflight may itself request UI confirmation. The WebUI event
+                        # consumer must run while PI waits for that response.
+                        result = await session.command('prompt', message=message, timeout=1800)
+                        if (result or {}).get('disposition') == 'handled':
+                            await session.finish()
+                    except Exception as error:
+                        await session.close()
+                        session.busy = False
+                        session.before = None
+                        await emit(directory, 'session.error', session.id, error=str(error) or 'PI could not start the task.')
+                task = asyncio.create_task(submit())
+                session.tasks.append(task)
+                task.add_done_callback(lambda completed: session.tasks.remove(completed) if completed in session.tasks else None)
             except Exception:
                 session.busy = False
                 session.before = None

@@ -1,3 +1,5 @@
+import { proModelTutorial } from './pro-model-tutorial';
+
 export interface TutorialText {
 	'zh-CN': string;
 	'zh-TW': string;
@@ -16,6 +18,7 @@ export interface TutorialItem {
 	steps: TutorialText[];
 	tips?: TutorialText[];
 	links?: TutorialLink[];
+	table?: { headers: TutorialText[]; rows: TutorialText[][] };
 }
 
 export interface TutorialSection {
@@ -586,6 +589,8 @@ const tutorialItems = new Map(
 	tutorialCatalog.flatMap((section) => section.items).map((item) => [item.id, item])
 );
 
+tutorialItems.set(proModelTutorial.id, proModelTutorial);
+
 export const tutorialSections: TutorialSection[] = [
 	{
 		id: 'getting-started',
@@ -627,6 +632,7 @@ export const tutorialSections: TutorialSection[] = [
 		),
 		items: [
 			'extra-models',
+			'pro-model-requirements',
 			'mtp',
 			'context-size',
 			'knowledge-rag',
