@@ -12,6 +12,25 @@ PRO_MODEL_ID = 'aurapro-pro'
 PRO_BASE_URL = 'http://127.0.0.1:18882/v1'
 
 
+def apply_runtime_thinking(payload: dict, runtime: str | None) -> dict:
+    if runtime not in ('standard', 'pro'):
+        return payload
+    raw_template = payload.get('chat_template_kwargs')
+    template = dict(raw_template) if isinstance(raw_template, dict) else {}
+    raw_effort = payload.get('reasoning_effort')
+    effort = str(raw_effort).strip().lower() if raw_effort is not None else ''
+    # WebUI's Default/null is opt-out; Custom selects a reasoning level.
+    enabled = effort not in ('', 'none', 'off', 'disabled', 'false', 'minimal')
+    template['enable_thinking'] = enabled
+    payload['reasoning_effort'] = effort if enabled else 'none'
+    if enabled:
+        template['reasoning_effort'] = 'xhigh' if runtime == 'pro' and effort == 'high' else effort
+    else:
+        template.pop('reasoning_effort', None)
+    payload['chat_template_kwargs'] = template
+    return payload
+
+
 def control_config():
     url = os.environ.get('AURAPRO_INFERENCE_CONTROL_URL', '')
     token = os.environ.get('AURAPRO_INFERENCE_CONTROL_TOKEN', '')

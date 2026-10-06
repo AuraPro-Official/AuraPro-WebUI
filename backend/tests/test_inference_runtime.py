@@ -18,6 +18,28 @@ ENV = {
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_managed_thinking_defaults_off_and_preserves_template_options(self):
+        for engine in ('standard', 'pro'):
+            for effort in (None, '', 'none', 'off'):
+                payload = {'reasoning_effort': effort, 'chat_template_kwargs': {'other': 'kept', 'reasoning_effort': 'high'}}
+                result = runtime.apply_runtime_thinking(payload, engine)
+                self.assertFalse(result['chat_template_kwargs']['enable_thinking'])
+                self.assertEqual(result['reasoning_effort'], 'none')
+                self.assertEqual(result['chat_template_kwargs']['other'], 'kept')
+                self.assertNotIn('reasoning_effort', result['chat_template_kwargs'])
+
+    def test_managed_thinking_enables_requested_level(self):
+        for engine in ('standard', 'pro'):
+            for effort in ('low', 'medium', 'high', 'xhigh'):
+                result = runtime.apply_runtime_thinking({'reasoning_effort': effort}, engine)
+                self.assertTrue(result['chat_template_kwargs']['enable_thinking'])
+                expected = 'xhigh' if engine == 'pro' and effort == 'high' else effort
+                self.assertEqual(result['chat_template_kwargs']['reasoning_effort'], expected)
+
+    def test_external_provider_thinking_unchanged(self):
+        payload = {'reasoning_effort': 'high'}
+        self.assertEqual(runtime.apply_runtime_thinking(dict(payload), None), payload)
+
     def test_control_is_opt_in_and_loopback_only(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(runtime.control_config())

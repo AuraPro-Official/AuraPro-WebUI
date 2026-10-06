@@ -1253,6 +1253,10 @@ async def generate_chat_completion(
     else:
         url, key, api_config = await get_openai_connection(idx)
 
+    from open_webui.utils.inference_runtime import apply_runtime_thinking, runtime_for_url
+
+    payload = apply_runtime_thinking(payload, runtime_for_url(url))
+
     prefix_id = api_config.get('prefix_id', None)
     if prefix_id:
         payload['model'] = payload['model'].replace(f'{prefix_id}.', '')
