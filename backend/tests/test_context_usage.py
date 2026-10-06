@@ -18,6 +18,14 @@ from open_webui.utils.middleware import load_messages_from_db, strip_compaction_
 
 
 class ContextUsageTest(unittest.TestCase):
+    def test_pro_context_overrides_standard_request_context(self):
+        size, source = _resolve_context_size_details(
+            {'params': {'num_ctx': 16384}}, 'aurapro-pro',
+            {'aurapro-pro': {'aurapro_runtime': 'pro', 'meta': {'context_length': 65536}}},
+        )
+        self.assertEqual(size, 65536)
+        self.assertEqual(source, 'model_metadata')
+
     def test_missing_model_usage_does_not_expose_estimate(self):
         snapshot = {
             'limit_tokens': 32768,

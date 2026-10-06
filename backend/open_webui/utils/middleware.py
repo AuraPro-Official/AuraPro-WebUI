@@ -2430,6 +2430,14 @@ async def connect_mcp_server(
 
 
 async def process_chat_payload(request, form_data, user, metadata, model):
+    if model.get('aurapro_runtime') == 'pro':
+        from open_webui.utils.inference_runtime import desktop_models
+
+        managed = await desktop_models()
+        if managed and managed.get('proContext'):
+            model = {**model, 'context_length': managed['proContext'],
+                     'meta': {**(model.get('meta') or {}), 'context_length': managed['proContext']}}
+            request.app.state.MODELS[model['id']] = model
     # Ensure chat_id is always a string — external API clients may omit it.
     if not isinstance(metadata.get('chat_id'), str):
         metadata['chat_id'] = ''
@@ -2698,6 +2706,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 if stored_chat and isinstance(stored_chat.chat, dict):
                     glossary_selection = stored_chat.chat.get('glossary')
             glossary_settings = await resolve_conversation_glossary_settings(glossary_selection)
+            if model.get('aurapro_runtime') == 'pro' and model.get('context_length'):
+                glossary_settings = {**glossary_settings, 'token_limit': model['context_length']}
         except Exception:
             log.warning('Automatic translation glossary settings unavailable', exc_info=True)
             glossary_settings = {}
@@ -3146,7 +3156,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         form_data['messages'] = await apply_source_context_to_messages(request, form_data['messages'], sources, prompt)
 
     if uses_hard_context_truncation(features):
-        form_data = await apply_context_cleanup(form_data)
+        form_data = await apply_context_cleanup(form_data, model)
 
     # If there are citations, add them to the data_items
     sources = [

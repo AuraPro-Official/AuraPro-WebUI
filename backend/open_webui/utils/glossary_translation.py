@@ -2971,14 +2971,17 @@ def _context_limit_from_form_data(form_data: dict[str, Any], settings: dict[str,
     return min(configured_limit, provider_limit) if configured_limit > 0 else provider_limit
 
 
-async def apply_context_cleanup(form_data: dict[str, Any]) -> dict[str, Any]:
+async def apply_context_cleanup(form_data: dict[str, Any], model: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     settings = await read_settings()
+    limit = None
+    if model and model.get('aurapro_runtime') == 'pro':
+        limit = _safe_int((model.get('meta') or {}).get('context_length'), 0) or None
     messages = form_data.get('messages') or []
     form_data['messages'] = _truncate_messages(
         messages,
         settings,
         use_max_turns=False,
-        token_limit_override=_context_limit_from_form_data(form_data, settings),
+        token_limit_override=limit or _context_limit_from_form_data(form_data, settings),
     )
     return form_data
 

@@ -11,6 +11,14 @@ const model = {
 };
 
 describe('resolveContextUsage', () => {
+	it('uses the independent Pro window instead of standard request parameters', () => {
+		const details = resolveContextUsage({
+			history: { currentId: null, messages: {} },
+			model: { id: 'aurapro-pro', aurapro_runtime: 'pro', meta: { context_length: 65536 } },
+			requestParams: { num_ctx: 16384 }
+		});
+		expect(details.limitTokens).toBe(65536);
+	});
 	it('uses the persisted post-compaction snapshot', () => {
 		const details = resolveContextUsage({
 			history: {

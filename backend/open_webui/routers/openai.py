@@ -656,6 +656,8 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
             'provider': 'strata',
             'urlIdx': None,
             'aurapro_runtime': 'pro',
+            'context_length': managed.get('proContext'),
+            'meta': {'context_length': managed.get('proContext')},
         }
     log.debug(f'models: {models}')
 

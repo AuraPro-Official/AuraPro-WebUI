@@ -85,6 +85,10 @@ const resolveModelContextLimit = (model: unknown, requestParams: Record<string, 
 	const modelMeta = asRecord(modelInfo.meta);
 	const providerMeta = asRecord(asRecord(modelRecord.openai).meta);
 	const baseMeta = asRecord(modelRecord.meta);
+	if (modelRecord.aurapro_runtime === 'pro') {
+		const limit = toPositiveNumber(baseMeta.context_length ?? modelRecord.context_length);
+		if (limit !== null) return limit;
+	}
 	const candidates = [
 		requestParams?.num_ctx,
 		requestParams?.n_ctx,
@@ -170,8 +174,11 @@ export const resolveContextUsage = ({
 	const inputTokens = snapshotInput ?? legacyUsage?.inputTokens ?? 0;
 	const outputTokens = snapshotOutput ?? legacyUsage?.outputTokens ?? 0;
 	const usedTokens = snapshotUsed ?? legacyUsage?.usedTokens ?? 0;
+	const modelLimit = resolveModelContextLimit(model, requestParams);
 	const limitTokens =
-		toPositiveNumber(snapshot?.limit_tokens) ?? resolveModelContextLimit(model, requestParams);
+		asRecord(model).aurapro_runtime === 'pro'
+			? (modelLimit ?? toPositiveNumber(snapshot?.limit_tokens))
+			: (toPositiveNumber(snapshot?.limit_tokens) ?? modelLimit);
 	const thresholdTokens =
 		toPositiveNumber(snapshot?.threshold_tokens) ??
 		(limitTokens !== null ? Math.round(limitTokens * 0.75) : null);

@@ -259,6 +259,7 @@ def _resolve_context_size_details(metadata: dict, model_id: str, models: dict) -
     base_meta = model.get('meta') if isinstance(model, dict) and isinstance(model.get('meta'), dict) else {}
 
     candidates = (
+        (base_meta.get('context_length') if model.get('aurapro_runtime') == 'pro' else None, 'model_metadata'),
         (params.get('num_ctx'), 'request'),
         (params.get('n_ctx'), 'request'),
         (params.get('ctx_size'), 'request'),
