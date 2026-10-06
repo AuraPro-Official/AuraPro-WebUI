@@ -7,6 +7,7 @@ export type OpenCodeChatConfig = {
 	directory: string;
 	agent: OpenCodeAgent;
 	model: string;
+	approval_mode?: 'task' | 'step' | 'full';
 };
 
 export type OpenCodeAgentOption = {

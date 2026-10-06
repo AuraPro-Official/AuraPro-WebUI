@@ -29,6 +29,8 @@ class WebUIModelTransport:
             payload = await incoming.json()
             payload['model'] = self.model
             payload['params'] = self.params
+            if payload.get('stream'):
+                payload['stream_options'] = {**(payload.get('stream_options') or {}), 'include_usage': True}
             scope = {**self.request.scope, 'state': dict(self.request.scope.get('state', {}))}
             if 'metadata' in scope['state']:
                 scope['state']['metadata'] = copy.deepcopy(scope['state']['metadata'])

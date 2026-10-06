@@ -1,5 +1,6 @@
 <script>
 	import { getContext } from 'svelte';
+	import { piToolLabel } from '$lib/utils/pi-language';
 	const i18n = getContext('i18n');
 	import Search from '$lib/components/icons/Search.svelte';
 
@@ -28,12 +29,17 @@
 				return 'OpenCode is preparing the result';
 			case 'completed':
 				return 'OpenCode task completed';
+			case 'failed':
+				return 'PI task not completed';
 			default:
 				return 'OpenCode is working';
 		}
 	};
 
-	const getOpenCodeDetail = (value) => String(value ?? '').replace(/^OpenCode\s*·\s*/, '');
+	const getOpenCodeDetail = (value) =>
+		String(value ?? '')
+			.replace(/^(?:OpenCode|PI)\s*·\s*/, '')
+			.replace(/^([\w]+)(?=:|$)/, (name) => piToolLabel(name, $i18n));
 </script>
 
 {#if !status?.hidden}
@@ -45,7 +51,7 @@
 						? 'shimmer'
 						: ''} text-base text-gray-500 dark:text-gray-500"
 				>
-					{$i18n.t(getOpenCodePhaseLabel(status?.phase))}
+					{$i18n.t(getOpenCodePhaseLabel(status?.phase)).replaceAll('OpenCode', 'PI')}
 					<span class="ml-1 whitespace-nowrap font-normal tabular-nums">
 						· {$i18n.t('Elapsed {{time}}', {
 							time: formatDuration(status?.elapsed_seconds)
@@ -59,7 +65,7 @@
 				{/if}
 				{#if status?.delayed}
 					<div class="text-xs text-amber-700 dark:text-amber-400">
-						{$i18n.t('This OpenCode step is taking longer than usual')}
+						{$i18n.t('This OpenCode step is taking longer than usual').replaceAll('OpenCode', 'PI')}
 						<span class="whitespace-nowrap">
 							· {$i18n.t('No new activity for {{time}}', {
 								time: formatDuration(status?.idle_seconds)

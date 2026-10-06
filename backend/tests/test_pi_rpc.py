@@ -70,10 +70,22 @@ class ModelServer(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         has_tool = any(message.get('role') == 'tool' for message in body['messages'])
+        recovering = getattr(self.server, 'test_overflow', False)
+        summary = recovering and '# Conversation' in json.dumps(body, ensure_ascii=False)
+        if recovering and has_tool and not summary and not getattr(self.server, 'overflow_sent', False):
+            self.server.overflow_sent = True
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': {'message': 'maximum context length exceeded'}}).encode())
+            return
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.end_headers()
-        if has_tool:
+        if summary:
+            self.server.summary_seen = True
+            events = [({'role': 'assistant', 'content': 'Task: edit 中文.txt. Written after. Continue verification.'}, None), ({}, 'stop')]
+        elif has_tool or (recovering and getattr(self.server, 'summary_seen', False)):
             events = [({'role': 'assistant', 'content': '完成\u2028验证'}, None), ({}, 'stop')]
         else:
             events = [
@@ -106,6 +118,9 @@ class ModelServer(BaseHTTPRequestHandler):
             }
             self.wfile.write(('data: ' + json.dumps(record) + '\n\n').encode())
             self.wfile.flush()
+        self.wfile.write(('data: ' + json.dumps({'choices': [], 'usage': {
+            'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120
+        }}) + '\n\n').encode())
         self.wfile.write(b'data: [DONE]\n\n')
 
 
@@ -172,7 +187,7 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
             os.environ['AURAPRO_PI_RUNTIME_FILE'] = self.old_runtime
         self.temp.cleanup()
 
-    async def run_turn(self, confirmed=True, provider='test'):
+    async def run_turn(self, confirmed=True, provider='test', expect_confirmation=True):
         directory = str(self.workspace)
         created = await rpc.request('POST', '/session', directory, {}, None)
         session_id = created['id']
@@ -185,10 +200,15 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
             None,
         )
         seen_confirmation = False
+        self.confirmation_titles = []
+        self.compaction_events = []
         while True:
             event = await asyncio.wait_for(stream.queue.get(), 20)
+            if event['type'] == 'pi.compaction':
+                self.compaction_events.append(event['properties'])
             if event['type'] == 'pi.ui' and event['properties']['request'].get('method') == 'confirm':
                 seen_confirmation = True
+                self.confirmation_titles.append(event['properties']['request'].get('title'))
                 await rpc.request(
                     'POST',
                     f'/session/{session_id}/ui',
@@ -197,11 +217,11 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
                     None,
                 )
             if event['type'] == 'session.error':
-                self.fail(event)
+                self.fail((event, self.compaction_events))
             if event['type'] == 'session.idle':
                 break
         stream.close()
-        self.assertTrue(seen_confirmation)
+        self.assertEqual(seen_confirmation, expect_confirmation)
         return session_id
 
     async def test_real_rpc_write_unicode_restore_and_conflict(self):
@@ -211,6 +231,9 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(file.read_text(encoding='utf-8'), 'after\n')
         messages = await rpc.request('GET', f'/session/{session_id}/message', str(self.workspace), None, None)
         self.assertIn('完成\u2028验证', messages[-1]['parts'][0]['text'])
+        assistants = [item for item in messages if item['info']['role'] == 'assistant']
+        self.assertEqual(sum(item['info']['usage']['input'] for item in assistants), 200)
+        self.assertEqual(sum(item['info']['usage']['output'] for item in assistants), 40)
         diffs = await rpc.request('GET', f'/session/{session_id}/diff', str(self.workspace), None, None)
         self.assertEqual(diffs[0]['file'], '中文.txt')
         turn = rpc._sessions[session_id].saved['turns'][-1]
@@ -334,6 +357,34 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
         })
         self.descriptor.write_text(json.dumps(data))
         await self.run_turn(provider='aurapro-webui')
+        self.assertEqual((self.workspace / '中文.txt').read_text(encoding='utf-8'), 'after\n')
+
+    async def test_auto_approval_only_confirms_first_operation(self):
+        descriptor = json.loads(self.descriptor.read_text())
+        descriptor['environment']['AURAPRO_PI_APPROVAL_MODE'] = 'task'
+        self.descriptor.write_text(json.dumps(descriptor))
+        await self.run_turn()
+        self.assertEqual(len(self.confirmation_titles), 1)
+        self.assertNotIn('当前任务授权', self.confirmation_titles[0])
+
+    async def test_full_control_writes_without_confirmations(self):
+        descriptor = json.loads(self.descriptor.read_text())
+        descriptor['environment']['AURAPRO_PI_APPROVAL_MODE'] = 'full'
+        self.descriptor.write_text(json.dumps(descriptor))
+        await self.run_turn(expect_confirmation=False)
+        self.assertEqual(self.confirmation_titles, [])
+        self.assertEqual((self.workspace / '中文.txt').read_text(encoding='utf-8'), 'after\n')
+
+    async def test_context_overflow_compacts_and_continues_real_pi(self):
+        settings = json.loads((self.agent / 'settings.json').read_text())
+        settings['compaction'] = {'enabled': True, 'reserveTokens': 2048, 'keepRecentTokens': 0}
+        (self.agent / 'settings.json').write_text(json.dumps(settings))
+        self.server.test_overflow = True
+        await self.run_turn()
+        self.assertTrue(self.server.overflow_sent)
+        self.assertTrue(self.server.summary_seen)
+        self.assertTrue(any(item['type'] == 'compaction_start' for item in self.compaction_events))
+        self.assertTrue(any(item['type'] == 'compaction_end' and item.get('result') for item in self.compaction_events))
         self.assertEqual((self.workspace / '中文.txt').read_text(encoding='utf-8'), 'after\n')
 
 

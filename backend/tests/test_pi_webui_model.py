@@ -44,5 +44,6 @@ class WebUITransportTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(args[1]['model'], 'selected-webui-model')
             self.assertEqual(args[1]['tools'], tools)
             self.assertEqual(args[1]['params']['temperature'], 0.3)
+            self.assertTrue(args[1]['stream_options']['include_usage'])
         finally:
             await transport.close()

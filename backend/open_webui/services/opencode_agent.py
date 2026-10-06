@@ -331,6 +331,63 @@ def _assistant_snapshot(messages: Any, baseline_ids: set[str]) -> tuple[str, lis
     return text, tools, str((current.get('info') or {}).get('id') or '') or None
 
 
+def _turn_failure(messages: list, baseline_ids: set[str], tools: list) -> str:
+    assistants = [item for item in messages if (item.get('info') or {}).get('role') == 'assistant'
+                  and (item.get('info') or {}).get('id') not in baseline_ids]
+    if assistants and (assistants[-1].get('info') or {}).get('stopReason') == 'length':
+        return 'PI 未完成任务：模型输出达到长度限制且未成功恢复。请分段生成文件，或在 WebUI 增加输出长度。'
+    pending = {}
+    for part in tools:
+        state = part.get('state') or {}
+        values = state.get('input') or {}
+        key = (part.get('tool'), str(values.get('path') or values.get('filePath') or values.get('command') or ''))
+        if state.get('status') == 'error': pending[key] = True
+        elif state.get('status') == 'completed': pending.pop(key, None)
+    if pending:
+        return 'PI 未完成任务：有工具操作失败且未成功重试，请查看下方工具结果。'
+    return ''
+
+
+def _turn_usage(messages: Any, baseline_ids: set[str]) -> dict | None:
+    totals = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0,
+              'cache_read_tokens': 0, 'cache_write_tokens': 0}
+    seen = set()
+    available = False
+    for message in messages if isinstance(messages, list) else []:
+        info = message.get('info') or {}
+        message_id = info.get('id')
+        usage = info.get('usage')
+        if info.get('role') != 'assistant' or message_id in baseline_ids or message_id in seen or not isinstance(usage, dict):
+            continue
+        seen.add(message_id)
+        def count(key):
+            value = usage.get(key)
+            return max(0, int(value)) if isinstance(value, (int, float)) else 0
+        if not any(count(key) for key in ('input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens')):
+            continue
+        available = True
+        prompt = count('input') + count('cacheRead') + count('cacheWrite')
+        output = count('output')
+        totals['prompt_tokens'] += prompt
+        totals['completion_tokens'] += output
+        totals['total_tokens'] += prompt + output
+        totals['cache_read_tokens'] += count('cacheRead')
+        totals['cache_write_tokens'] += count('cacheWrite')
+    return totals if available else None
+
+
+def _turn_context_usage(messages: Any, baseline_ids: set[str], limit: int) -> dict | None:
+    # Context occupancy is the last model call, not cumulative task consumption.
+    for message in reversed(messages if isinstance(messages, list) else []):
+        info = message.get('info') or {}
+        usage = _turn_usage([message], baseline_ids)
+        if info.get('role') == 'assistant' and usage:
+            return {'limit_tokens': limit, 'limit_source': 'pi_runtime',
+                    'used_tokens': usage['total_tokens'], 'input_tokens': usage['prompt_tokens'],
+                    'output_tokens': usage['completion_tokens']}
+    return None
+
+
 def _tool_description(part: dict) -> tuple[str, bool]:
     state = part.get('state') or {}
     tool = str(part.get('tool') or 'tool')
@@ -365,6 +422,7 @@ def _progress_status(
         'waiting': 'Waiting for the current step',
         'finishing': 'Preparing the result',
         'completed': 'Completed',
+        'failed': 'Not completed',
     }
     phase = phase if phase in phases else 'working'
     elapsed = max(0, int(elapsed_seconds))
@@ -917,6 +975,10 @@ async def run_agent_chat(  # noqa: C901
         latest_assistant_message_id: str | None = None
         latest_user_message_id: str | None = None
         latest_messages = baseline if isinstance(baseline, list) else []
+        latest_usage = None
+        task_approved = False
+        compacting = False
+        was_compacted = False
         seen_activity = False
         idle = False
         last_poll = 0.0
@@ -939,6 +1001,10 @@ async def run_agent_chat(  # noqa: C901
                 raise OpenCodeError('A PI task is already running in this conversation.')
             transport = WebUIModelTransport(request, user, form_data)
             environment = await transport.start()
+            approval_mode = feature.get('approval_mode', 'task')
+            environment['AURAPRO_PI_APPROVAL_MODE'] = approval_mode if approval_mode in {'task', 'step', 'full'} else 'task'
+            language = str(feature.get('language') or 'zh-CN')
+            environment['AURAPRO_PI_LANGUAGE'] = language if re.fullmatch(r'[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}', language) else 'zh-CN'
             await pi_session.close()
             pi_session.model_environment = environment
             await pi_session.start()
@@ -979,17 +1045,32 @@ async def run_agent_chat(  # noqa: C901
                     if event_type == 'aurapro.sse.error':
                         log.warning('OpenCode SSE stream ended: %s', properties.get('message'))
                     elif event_session_id == session_id:
+                        if event_type == 'pi.compaction':
+                            compacting = properties.get('type') == 'compaction_start'
+                            was_compacted = was_compacted or bool(properties.get('result'))
+                            description = ('正在精简上下文，完成后继续任务' if compacting else
+                                           '上下文精简已完成，继续执行' if properties.get('result') else
+                                           '上下文精简未完成：' + str(properties.get('errorMessage') or '已取消'))
+                            await event_emitter({'type': 'status', 'data': {'action': 'context_compaction', 'description': description, 'done': not compacting}})
+                            await event_emitter({'type': 'context_compaction', 'data': {'action': 'context_compaction', 'done': not compacting, 'error': not compacting and not properties.get('result')}})
+                            continue
                         if event_type == 'pi.ui':
                             ui = properties.get('request') or {}
                             method = ui.get('method')
                             if method in {'confirm', 'select', 'input', 'editor'}:
-                                if event_caller:
+                                if method == 'confirm' and agent != 'plan' and (approval_mode == 'full' or (approval_mode == 'task' and task_approved)):
+                                    response = True
+                                elif event_caller:
                                     response = await event_caller(
                                         {
                                             'type': 'confirmation' if method == 'confirm' else 'input',
                                             'data': {
                                                 'title': ui.get('title') or 'PI',
-                                                'message': ui.get('message') or '',
+                                                'message': (ui.get('message') or '') + (
+                                                    '\n\n同意后，本次任务的后续操作将自动批准。任务结束后失效。'
+                                                    if method == 'confirm' and approval_mode == 'task' and not task_approved and agent != 'plan'
+                                                    else ''
+                                                ),
                                                 'placeholder': ui.get('placeholder') or '',
                                                 'value': ui.get('prefill') or '',
                                                 'input': {
@@ -1008,6 +1089,8 @@ async def run_agent_chat(  # noqa: C901
                                 answer = {'id': ui['id']}
                                 if method == 'confirm':
                                     answer['confirmed'] = response is True
+                                    if response is True and approval_mode == 'task' and agent != 'plan':
+                                        task_approved = True
                                 elif response is False or response is None or isinstance(response, dict):
                                     answer['cancelled'] = True
                                 else:
@@ -1124,6 +1207,14 @@ async def run_agent_chat(  # noqa: C901
                         timeout=10,
                     )
                     latest_messages = messages if isinstance(messages, list) else latest_messages
+                    usage = _turn_usage(latest_messages, baseline_ids)
+                    if usage and usage != latest_usage:
+                        latest_usage = usage
+                        context_usage = _turn_context_usage(latest_messages, baseline_ids, transport.context_window)
+                        if context_usage:
+                            context_usage.update(compaction_enabled=True, compacted=was_compacted)
+                        await event_emitter({'type': 'chat:completion', 'data': {'usage': usage, 'contextUsage': context_usage, 'done': False}})
+                        await _persist_message(chat_id, message_id, latest_text, done=False, usage=usage, contextUsage=context_usage)
                     text, tools, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
                     if assistant_message_id:
                         seen_activity = True
@@ -1165,7 +1256,7 @@ async def run_agent_chat(  # noqa: C901
                                 }
                             )
                     if latest_text and now - last_persist >= 1.0:
-                        await _persist_message(chat_id, message_id, latest_text, done=False)
+                        await _persist_message(chat_id, message_id, latest_text, done=False, **({'usage': latest_usage} if latest_usage else {}))
                         last_persist = now
 
                     status_map = await _request_json(
@@ -1268,14 +1359,17 @@ async def run_agent_chat(  # noqa: C901
                 directory,
                 baseline_ids,
             )
-            if not latest_text:
-                latest_text = 'PI completed the task.'
+            failure = _turn_failure(latest_messages, baseline_ids, final_tools)
+            if failure:
+                latest_text = failure + ('\n\n' + latest_text if latest_text.strip() else '')
+            elif not latest_text.strip():
+                latest_text = 'PI 本轮已结束。请检查工具结果和文件变更。'
             diff_count = len(changed_files)
             completed_at = time.monotonic()
             await event_emitter(
                 {
                     'type': 'status',
-                    'data': _progress_status('completed', completed_at - started_at, done=True),
+                    'data': _progress_status('failed' if failure else 'completed', completed_at - started_at, done=True),
                 }
             )
             if diff_count:
@@ -1297,6 +1391,8 @@ async def run_agent_chat(  # noqa: C901
                 'directory': directory,
                 'agent': agent,
                 'diff_count': diff_count,
+                'outcome': 'failed' if failure else 'completed',
+                'error': failure or None,
                 'diff_source': diff_source,
                 'model': model_value,
                 'diffs': _compact_changed_files(changed_files),
@@ -1326,12 +1422,18 @@ async def run_agent_chat(  # noqa: C901
                     for part in final_tools[-12:]
                 ],
             }
+            latest_usage = _turn_usage(latest_messages, baseline_ids) or latest_usage
+            latest_context_usage = _turn_context_usage(latest_messages, baseline_ids, transport.context_window)
+            if latest_context_usage:
+                latest_context_usage.update(compaction_enabled=True, compacted=was_compacted)
             await _persist_message(
                 chat_id,
                 message_id,
                 latest_text,
                 done=True,
                 opencode=open_code_result,
+                **({'usage': latest_usage} if latest_usage else {}),
+                **({'contextUsage': latest_context_usage} if latest_context_usage else {}),
             )
             await event_emitter(
                 {
@@ -1340,6 +1442,8 @@ async def run_agent_chat(  # noqa: C901
                         'content': latest_text,
                         'done': True,
                         'opencode': open_code_result,
+                        **({'usage': latest_usage} if latest_usage else {}),
+                        **({'contextUsage': latest_context_usage} if latest_context_usage else {}),
                     },
                 }
             )
@@ -1349,7 +1453,7 @@ async def run_agent_chat(  # noqa: C901
                 int(completed_at - started_at),
                 diff_count,
             )
-            return {'status': True, 'session_id': session_id, 'content': latest_text}
+            return {'status': not bool(failure), 'session_id': session_id, 'content': latest_text}
         except asyncio.CancelledError:
             log.info('OpenCode task cancelled session=%s', session_id)
             try:
@@ -1366,6 +1470,9 @@ async def run_agent_chat(  # noqa: C901
             raise
         except Exception:
             log.exception('OpenCode task failed session=%s', session_id)
+            await event_emitter({'type': 'status', 'data': _progress_status(
+                'failed', time.monotonic() - started_at, done=True,
+            )})
             raise
         finally:
             event_task.cancel()

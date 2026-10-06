@@ -109,6 +109,7 @@
 	import Voice from '../icons/Voice.svelte';
 	import Terminal from '../icons/Terminal.svelte';
 	import IntegrationsMenu from './MessageInput/IntegrationsMenu.svelte';
+	import AgentControls from './MessageInput/AgentControls.svelte';
 	import TerminalMenu from './MessageInput/TerminalMenu.svelte';
 	import Component from '../icons/Component.svelte';
 	import PlusAlt from '../icons/PlusAlt.svelte';
@@ -1857,6 +1858,13 @@
 									{/if}
 
 									<div class="flex flex-1 items-center min-w-0 overflow-x-auto scrollbar-none">
+										{#if $openCodeModeEnabled}
+											<AgentControls
+												config={openCodeConfig}
+												onChange={onOpenCodeConfigChange}
+												disabled={isActive}
+											/>
+										{/if}
 										{#if showTranslationModeButton || showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || showSkillsButton || (toggleFilters && toggleFilters.length > 0)}
 											<IntegrationsMenu
 												{chatId}
@@ -1970,15 +1978,9 @@
 													aria-pressed="true"
 													on:click|preventDefault={disableOpenCodeMode}
 													type="button"
-													class="group flex max-w-full items-center gap-1.5 overflow-hidden rounded-full border border-orange-200/50 bg-orange-50 px-2.5 py-[7px] text-sm text-orange-700 transition-colors duration-300 hover:bg-orange-100 dark:border-orange-500/20 dark:bg-orange-400/10 dark:text-orange-300 dark:hover:bg-orange-700/10"
+													class="flex size-8 shrink-0 items-center justify-center rounded-full border border-orange-200/50 bg-orange-50 text-orange-700 transition-colors duration-300 hover:bg-orange-100 dark:border-orange-500/20 dark:bg-orange-400/10 dark:text-orange-300 dark:hover:bg-orange-700/10"
 												>
 													<Terminal className="size-3.5 shrink-0" strokeWidth="2" />
-													<span class="hidden max-w-32 truncate sm:block"
-														>{$i18n.t('Code Agent')}</span
-													>
-													<div class="hidden shrink-0 group-hover:block">
-														<XMark className="size-4" strokeWidth="1.75" />
-													</div>
 												</button>
 											</Tooltip>
 										{/if}

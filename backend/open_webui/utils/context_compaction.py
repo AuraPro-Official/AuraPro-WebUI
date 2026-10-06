@@ -71,7 +71,7 @@ async def compact_messages_for_request(
     if (
         token_threshold is None
         or len(conversation_messages) <= 3
-        or not _exceeds_token_threshold(conversation_messages, token_threshold)
+        or not _exceeds_token_threshold(active_messages, token_threshold)
     ):
         return active_messages, previous_summary, False
 
@@ -330,12 +330,18 @@ def _exceeds_token_threshold(messages: list[dict], threshold: int) -> bool:
     if threshold <= 0:
         return False
 
-    for message in reversed(messages):
+    # Estimates are used only to trigger preventive compaction, never displayed
+    # as exact usage. Include this request's new content, which previous usage lacks.
+    estimated = sum(_estimate_message_tokens(message) for message in messages)
+    if estimated >= threshold:
+        return True
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
         usage = message.get('usage') or (message.get('info') or {}).get('usage')
         if isinstance(usage, dict):
             llama_usage = _llamacpp_context_usage(usage)
             if llama_usage is not None:
-                return llama_usage[2] >= threshold
+                return llama_usage[2] + sum(_estimate_message_tokens(item) for item in messages[index + 1:]) >= threshold
 
             input_tokens = _parse_nonnegative_int(
                 usage.get('input_tokens')
@@ -349,11 +355,19 @@ def _exceeds_token_threshold(messages: list[dict], threshold: int) -> bool:
             )
             total_tokens = _parse_nonnegative_int(usage.get('total_tokens'))
             if total_tokens is not None:
-                return total_tokens >= threshold
+                return total_tokens + sum(_estimate_message_tokens(item) for item in messages[index + 1:]) >= threshold
             if input_tokens is not None or output_tokens is not None:
-                return (input_tokens or 0) + (output_tokens or 0) >= threshold
+                return (input_tokens or 0) + (output_tokens or 0) + sum(_estimate_message_tokens(item) for item in messages[index + 1:]) >= threshold
 
     return False
+
+
+def _estimate_message_tokens(message: dict) -> int:
+    text = get_content_from_message(message) or ''
+    if message.get('tool_calls'):
+        text += json.dumps(message['tool_calls'], ensure_ascii=False)
+    # Conservative multilingual approximation; model tokenizers vary.
+    return 8 + (len(str(text).encode('utf-8')) + 2) // 3
 
 
 def _find_compaction_boundary(messages: list[dict]) -> int:
@@ -383,6 +397,7 @@ async def _generate_summary(
     recent_messages: list[dict],
     previous_summary: str | None,
     summary_prompt_template: str,
+    _single_batch: bool = False,
 ) -> str:
     from open_webui.utils.chat import generate_chat_completion
 
@@ -396,6 +411,29 @@ async def _generate_summary(
         task_model_id = model_id
     if task_model_id not in models:
         raise ValueError('No available model for context compaction')
+
+    window = _resolve_context_size({}, task_model_id, models)
+    if window and not _single_batch and sum(_estimate_message_tokens(item) for item in compacted_messages) > window // 3:
+        # Summarize bounded batches in sequence so the summary request itself fits.
+        budget = max(256, window // 4)
+        batches, batch, size = [], [], 0
+        for message in compacted_messages:
+            content = str(get_content_from_message(message) or '')
+            pieces = [content[index:index + budget] for index in range(0, len(content), budget)] or ['']
+            for piece in pieces:
+                item = {'role': message.get('role', 'user'), 'content': piece}
+                tokens = _estimate_message_tokens(item)
+                if batch and size + tokens > budget:
+                    batches.append(batch)
+                    batch, size = [], 0
+                batch.append(item)
+                size += tokens
+        if batch:
+            batches.append(batch)
+        summary = previous_summary
+        for batch in batches:
+            summary = await _generate_summary(request, user, model_id, models, batch, [], summary, summary_prompt_template, _single_batch=True)
+        return summary
 
     summary_prompt_template = summary_prompt_template.strip() or DEFAULT_CONTEXT_COMPACTION_PROMPT
     summary_recent_messages = recent_messages[-SUMMARY_RECENT_MESSAGE_LIMIT:]
@@ -428,12 +466,7 @@ async def _generate_summary(
     if summary:
         return summary
 
-    parts = [previous_summary] if previous_summary else []
-    for message in compacted_messages:
-        content = get_content_from_message(message)
-        if content:
-            parts.append(f'- {message.get("role", "unknown")}: {content[:500]}')
-    return '\n'.join(parts)[:4000]
+    raise ValueError('Context summary was empty. Retry compaction instead of truncating history.')
 
 
 def _response_text(response: Any) -> str:

@@ -655,6 +655,30 @@
 										</select>
 									</label>
 								</div>
+								<label class="block text-xs">
+									{$i18n.t('Approval rules')}
+									<select
+										class="mt-1 w-full rounded-md border px-2 py-1.5 text-xs dark:bg-gray-900"
+										value={openCodeConfig.approval_mode ?? 'task'}
+										on:change={(event) =>
+											void persistOpenCodeConfig({
+												...openCodeConfig,
+												approval_mode: (event.currentTarget as HTMLSelectElement)
+													.value as OpenCodeChatConfig['approval_mode']
+											})}
+									>
+										<option value="task">{$i18n.t('Approve once per task')}</option>
+										<option value="step">{$i18n.t('Confirm each action')}</option>
+										<option value="full">{$i18n.t('Full control')}</option>
+									</select>
+									<span class="mt-1 block text-[11px] text-gray-500"
+										>{$i18n.t(
+											openCodeConfig.approval_mode === 'full'
+												? 'All operation confirmations are automatically approved.'
+												: 'Approve the first requested operation to approve the rest of this task.'
+										)}</span
+									>
+								</label>
 								{#if openCodeCapabilities?.vcs.branch}
 									<div class="truncate text-[11px] text-gray-500 dark:text-gray-400">
 										{$i18n.t('Branch')}:

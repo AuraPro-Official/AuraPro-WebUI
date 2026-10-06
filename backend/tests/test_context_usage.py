@@ -122,13 +122,18 @@ class ContextUsageTest(unittest.TestCase):
             )
         )
 
-    def test_messages_without_exact_usage_do_not_trigger_compaction(self):
+    def test_large_messages_without_usage_trigger_preventive_compaction(self):
         messages = [
             {'role': 'user', 'content': 'A' * 100000},
             {'role': 'assistant', 'content': 'B' * 100000},
         ]
 
-        self.assertFalse(_exceeds_token_threshold(messages, 100))
+        self.assertTrue(_exceeds_token_threshold(messages, 100))
+
+    def test_new_input_is_added_to_previous_model_usage(self):
+        messages = [{'role': 'assistant', 'content': 'answer', 'usage': {'total_tokens': 70}},
+                    {'role': 'user', 'content': '新问题' * 12}]
+        self.assertTrue(_exceeds_token_threshold(messages, 100))
 
     def test_latest_exact_usage_is_reused_after_model_switch(self):
         messages = [
@@ -185,6 +190,19 @@ class ContextUsageTest(unittest.TestCase):
 
 
 class ContextCompactionFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_large_history_is_summarized_in_batches_with_previous_summary(self):
+        completion = AsyncMock(return_value={'choices': [{'message': {'content': 'running summary'}}]})
+        with patch('open_webui.models.config.Config.get', AsyncMock(return_value='')), patch('open_webui.utils.chat.generate_chat_completion', completion):
+            result = await _generate_summary(SimpleNamespace(state=SimpleNamespace(metadata={})), object(),
+                'model-1', {'model-1': {'info': {'params': {'num_ctx': 4096, 'max_tokens': 100}}}},
+                [{'role': 'user', 'content': 'begin-marker ' + '长历史' * 3000 + ' end-marker'}], [], None, '')
+        prompts = [call.kwargs['form_data']['messages'][0]['content'] for call in completion.await_args_list]
+        self.assertGreater(len(prompts), 1)
+        self.assertIn('begin-marker', prompts[0])
+        self.assertIn('end-marker', prompts[-1])
+        self.assertIn('running summary', prompts[-1])
+        self.assertEqual(result, 'running summary')
+
     async def test_pre_request_snapshot_contains_no_estimated_token_values(self):
         config = {
             'enable': True,

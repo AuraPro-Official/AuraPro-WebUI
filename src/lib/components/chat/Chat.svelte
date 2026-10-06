@@ -330,7 +330,8 @@
 			enabled: $user?.role === 'admin' && data.enabled === true,
 			directory: typeof data.directory === 'string' ? data.directory : '',
 			agent: typeof data.agent === 'string' && data.agent ? data.agent : 'build',
-			model: typeof data.model === 'string' ? data.model : ''
+			model: typeof data.model === 'string' ? data.model : '',
+			approval_mode: ['step', 'full'].includes(data.approval_mode) ? data.approval_mode : 'task'
 		};
 	};
 
@@ -345,7 +346,8 @@
 			enabled: value.enabled,
 			directory: value.directory,
 			agent: value.agent,
-			model: value.model
+			model: value.model,
+			approval_mode: value.approval_mode ?? 'task'
 		};
 	};
 
@@ -2813,7 +2815,9 @@
 				enabled: true,
 				directory: openCodeConfig.directory,
 				agent: openCodeConfig.agent,
-				model: openCodeConfig.model
+				model: openCodeConfig.model,
+				approval_mode: openCodeConfig.approval_mode ?? 'task',
+				language: $i18n.resolvedLanguage || $i18n.language || 'zh-CN'
 			};
 		}
 

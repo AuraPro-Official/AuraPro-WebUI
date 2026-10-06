@@ -54,6 +54,30 @@ _tool_description = opencode_agent._tool_description
 
 
 class OpenCodeAgentHelpersTest(unittest.TestCase):
+    def test_turn_usage_sums_calls_including_cache_without_history_or_duplicates(self):
+        def message(mid, **usage):
+            return {'info': {'id': mid, 'role': 'assistant', 'usage': usage}}
+        first = message('first', input=100, output=20, cacheRead=30, cacheWrite=10)
+        result = opencode_agent._turn_usage([message('old', input=999), first, first,
+            message('second', input=50, output=5), message('live')], {'old'})
+        self.assertEqual(result, {'prompt_tokens': 190, 'completion_tokens': 25,
+            'total_tokens': 215, 'cache_read_tokens': 30, 'cache_write_tokens': 10})
+        self.assertIsNone(opencode_agent._turn_usage([message('empty', input=0, output=0)], set()))
+        context = opencode_agent._turn_context_usage([first, message('second', input=50, output=5)], set(), 32768)
+        self.assertEqual(context['used_tokens'], 55)
+        self.assertEqual(context['limit_tokens'], 32768)
+
+    def test_truncated_turn_is_not_success(self):
+        message = {'info': {'id': 'new', 'role': 'assistant', 'stopReason': 'length'}}
+        self.assertIn('未完成', opencode_agent._turn_failure([message], set(), []))
+        self.assertEqual(opencode_agent._turn_failure([message], {'new'}, []), '')
+
+    def test_failed_tool_requires_successful_retry(self):
+        failed = {'tool': 'write', 'state': {'status': 'error', 'input': {'path': 'game.html'}}}
+        success = {'tool': 'write', 'state': {'status': 'completed', 'input': {'path': 'game.html'}}}
+        self.assertIn('未完成', opencode_agent._turn_failure([], set(), [failed]))
+        self.assertEqual(opencode_agent._turn_failure([], set(), [failed, success]), '')
+
     def test_runtime_url_accepts_only_loopback_http_services(self):
         self.assertEqual(_normalize_runtime_url('http://127.0.0.1:4096/'), 'http://127.0.0.1:4096')
         self.assertEqual(_normalize_runtime_url('https://localhost:4096'), 'https://localhost:4096')

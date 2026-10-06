@@ -179,6 +179,7 @@ class PiSession:
         self.live_text = ''
         self.live_id = ''
         self.busy = False
+        self.pending_model_error = ''
         self.interactive = interactive
         self.mode = 'build'
         self.model_environment: dict[str, str] = {}
@@ -200,6 +201,20 @@ class PiSession:
                 raise RuntimeError('Cannot change mode while PI is running.')
             await self.close()
         self.mode = mode
+        if self.model_environment.get('AURAPRO_WEBUI_MODEL'):
+            model = json.loads(self.model_environment['AURAPRO_WEBUI_MODEL'])
+            window = int(model.get('contextWindow') or 32768)
+            # Keep summary/recent-history budgets proportional to the selected model.
+            # PI defaults retain 20k tokens, which can prevent useful small-window recovery.
+            settings_file = Path(self.data['agentDir']) / 'settings.json'
+            settings = json.loads(settings_file.read_text()) if settings_file.exists() else {}
+            compaction = settings.setdefault('compaction', {})
+            overrides = compaction.setdefault('modelOverrides', {})
+            overrides[f'aurapro-webui/{model["id"]}'] = {
+                'reserveTokens': min(16384, max(2048, window // 4)),
+                'keepRecentTokens': min(12000, max(512, window // 5)),
+            }
+            settings_file.write_text(json.dumps(settings, ensure_ascii=False), encoding='utf-8')
         env = {
             **os.environ,
             **self.data.get('environment', {}),
@@ -237,6 +252,7 @@ class PiSession:
             asyncio.create_task(self.watch_runtime()),
         ]
         await self.command('get_state', timeout=30)
+        await self.command('set_auto_compaction', enabled=True)
         if not self.diagnostics.get('auraproDiagnostics'):
             await self.close()
             raise RuntimeError(
@@ -323,14 +339,14 @@ class PiSession:
                     self.live_text = ''
                     self.live_id = ''
                     if event.get('message', {}).get('stopReason') == 'error':
-                        await emit(
-                            self.directory,
-                            'session.error',
-                            self.id,
-                            error=event['message'].get('errorMessage') or 'PI model request failed.',
-                        )
+                        # PI may compact/retry this error before the run settles.
+                        self.pending_model_error = event['message'].get('errorMessage') or 'PI model request failed.'
                     else:
+                        if event.get('message', {}).get('role') == 'assistant':
+                            self.pending_model_error = ''
                         await emit(self.directory, 'message.part.updated', self.id)
+                elif kind in {'compaction_start', 'compaction_end'}:
+                    await emit(self.directory, 'pi.compaction', self.id, **event)
                 elif kind == 'agent_settled':
                     # The RPC reader must stay free to receive the get_messages response.
                     asyncio.create_task(self.finish())
@@ -353,6 +369,10 @@ class PiSession:
 
     async def finish(self):
         try:
+            if self.pending_model_error:
+                self.busy = False
+                await emit(self.directory, 'session.error', self.id, error=self.pending_model_error)
+                return
             if self.before is not None:
                 after, skipped = await asyncio.to_thread(snapshot, self.directory)
                 messages = await self.messages()
@@ -417,7 +437,7 @@ class PiSession:
                         }
                         tools[part['id']] = tool
                         parts.append(tool)
-                result.append({'info': {'id': message_id, 'role': role, 'parentID': parent}, 'parts': parts})
+                result.append({'info': {'id': message_id, 'role': role, 'parentID': parent, 'stopReason': message.get('stopReason'), 'errorMessage': message.get('errorMessage'), 'usage': message.get('usage')}, 'parts': parts})
             elif role == 'toolResult' and message.get('toolCallId') in tools:
                 tools[message['toolCallId']]['state'].update(
                     {
@@ -570,6 +590,7 @@ async def request(method: str, endpoint: str, directory: str | None, payload: di
             if model:
                 await session.command('set_model', provider=model['providerID'], modelId=model['modelID'])
             session.busy = True
+            session.pending_model_error = ''
             try:
                 session.before, session.skipped = await asyncio.to_thread(snapshot, directory)
                 message = '\n'.join(part.get('text', '') for part in payload.get('parts', []))

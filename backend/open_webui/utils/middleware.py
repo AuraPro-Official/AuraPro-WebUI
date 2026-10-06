@@ -2526,8 +2526,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     form_data['messages'],
                     append=True,
                 )
-        except Exception:
-            log.exception('Context compaction failed; continuing with full chat history')
+        except Exception as error:
+            log.exception('Context compaction failed')
+            raise HTTPException(status_code=400, detail='上下文精简失败，请重试；聊天历史已保留。') from error
 
     form_data['messages'] = strip_compaction_fields(form_data.get('messages', []))
 
