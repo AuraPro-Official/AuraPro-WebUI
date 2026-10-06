@@ -40,6 +40,43 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         payload = {'reasoning_effort': 'high'}
         self.assertEqual(runtime.apply_runtime_thinking(dict(payload), None), payload)
 
+    def test_thinking_filter_toggle_beats_default_reasoning_effort(self):
+        for engine in ('standard', 'pro'):
+            for effort in (None, '', 'none', 'off'):
+                payload = {
+                    'reasoning_effort': effort,
+                    'reasoning_budget': 8192,
+                    'chat_template_kwargs': {'enable_thinking': True, 'other': 'kept'},
+                }
+                result = runtime.apply_runtime_thinking(payload, engine)
+                self.assertTrue(result['chat_template_kwargs']['enable_thinking'])
+                self.assertEqual(result['reasoning_effort'], 'medium')
+                self.assertEqual(result['chat_template_kwargs']['reasoning_effort'], 'medium')
+                self.assertEqual(result['reasoning_budget'], 8192)
+                self.assertEqual(result['chat_template_kwargs']['other'], 'kept')
+
+    def test_explicit_thinking_off_beats_saved_reasoning_level(self):
+        for engine in ('standard', 'pro'):
+            payload = {
+                'reasoning_effort': 'high',
+                'reasoning_budget': 0,
+                'chat_template_kwargs': {'enable_thinking': False},
+            }
+            result = runtime.apply_runtime_thinking(payload, engine)
+            self.assertFalse(result['chat_template_kwargs']['enable_thinking'])
+            self.assertEqual(result['reasoning_effort'], 'none')
+            self.assertEqual(result['reasoning_budget'], 0)
+
+    def test_filter_toggle_preserves_requested_reasoning_level(self):
+        for engine in ('standard', 'pro'):
+            result = runtime.apply_runtime_thinking({
+                'reasoning_effort': 'high',
+                'chat_template_kwargs': {'enable_thinking': True},
+            }, engine)
+            self.assertEqual(result['reasoning_effort'], 'high')
+            self.assertEqual(result['chat_template_kwargs']['reasoning_effort'],
+                             'xhigh' if engine == 'pro' else 'high')
+
     def test_control_is_opt_in_and_loopback_only(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(runtime.control_config())

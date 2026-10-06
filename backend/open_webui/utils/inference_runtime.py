@@ -19,8 +19,12 @@ def apply_runtime_thinking(payload: dict, runtime: str | None) -> dict:
     template = dict(raw_template) if isinstance(raw_template, dict) else {}
     raw_effort = payload.get('reasoning_effort')
     effort = str(raw_effort).strip().lower() if raw_effort is not None else ''
-    # WebUI's Default/null is opt-out; Custom selects a reasoning level.
-    enabled = effort not in ('', 'none', 'off', 'disabled', 'false', 'minimal')
+    # Filters explicitly control thinking; Default/null must not undo their toggle.
+    explicit = template.get('enable_thinking')
+    disabled_efforts = ('', 'none', 'off', 'disabled', 'false', 'minimal')
+    enabled = explicit if isinstance(explicit, bool) else effort not in disabled_efforts
+    if enabled and effort in disabled_efforts:
+        effort = 'medium'
     template['enable_thinking'] = enabled
     payload['reasoning_effort'] = effort if enabled else 'none'
     if enabled:
