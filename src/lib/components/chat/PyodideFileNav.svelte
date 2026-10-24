@@ -6,7 +6,7 @@
 	import { getContext, onMount, onDestroy, tick } from 'svelte';
 	import { pyodideWorker } from '$lib/stores';
 	import { createPyodideWorker } from '$lib/pyodide/createPyodideWorker';
-	import type { FileEntry } from '$lib/apis/terminal';
+	import type { FileEntry } from './FileNav/types';
 
 	import FileNavToolbar from './FileNav/FileNavToolbar.svelte';
 	import FileEntryRow from './FileNav/FileEntryRow.svelte';

@@ -2176,20 +2176,3 @@ export const parseFrontmatter = (content) => {
 export const formatSkillName = (name) => {
 	return name.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 };
-
-/**
- * Open the file browser panel to display a specific file.
- * Used by both the direct tool execution path (client-side) and the
- * backend event path (server-side) so behaviour is consistent.
- *
- * Stores are passed in by the caller to keep this utility pure.
- */
-export const displayFileHandler = (
-	path: string,
-	stores: { showControls: Writable<boolean>; showFileNavPath: Writable<string | null> }
-) => {
-	if (path) {
-		stores.showControls.set(true);
-		stores.showFileNavPath.set(path);
-	}
-};

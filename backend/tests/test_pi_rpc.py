@@ -8,7 +8,9 @@ import os
 import sys
 import tempfile
 import threading
+import types
 import unittest
+from unittest.mock import AsyncMock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -63,6 +65,110 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(rpc.changes(before, {}, ['[snapshot scan limit reached]']), [])
 
 
+class SessionActivityTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.session = rpc.PiSession({'agentDir': self.temporary.name}, 'test-session', self.temporary.name)
+        self.session.send = AsyncMock()
+
+    async def asyncTearDown(self):
+        await self.session.close()
+        self.temporary.cleanup()
+
+    async def test_journal_is_bounded_incremental_and_persisted(self):
+        for index in range(510):
+            self.session.record('tool', id='tool-id', text=str(index))
+        activity = await self.session.activity(507)
+        self.assertEqual([item['id'] for item in activity['items']], [508, 509, 510])
+        self.assertEqual(len(self.session.saved['activity']), 500)
+        self.assertTrue((await self.session.activity(1))['truncated'])
+        self.session.save()
+        saved = json.loads(self.session.file.read_text())
+        restored = rpc.PiSession(self.session.data, self.session.id, self.session.directory, saved)
+        self.assertEqual((await restored.activity())['cursor'], 510)
+        self.assertEqual((await restored.activity())['items'][-1]['text'], '509')
+
+    async def test_interaction_reply_is_validated_and_consumed_once(self):
+        self.session.ui['choice'] = {'id': 'choice', 'method': 'select', 'options': ['A', 'B']}
+        with self.assertRaisesRegex(RuntimeError, 'Choose one'):
+            await self.session.answer({'id': 'choice', 'value': 'unlisted'})
+        self.assertIn('choice', self.session.ui)
+        await self.session.answer({'id': 'choice', 'value': 'B', 'type': 'prompt'})
+        self.session.send.assert_awaited_once_with({'type': 'extension_ui_response', 'id': 'choice', 'value': 'B'})
+        with self.assertRaisesRegex(RuntimeError, 'expired'):
+            await self.session.answer({'id': 'choice', 'value': 'A'})
+
+    async def test_confirmation_requires_boolean_and_close_cancels_dialogs(self):
+        self.session.ui['approve'] = {'id': 'approve', 'method': 'confirm'}
+        with self.assertRaisesRegex(RuntimeError, 'accepted or declined'):
+            await self.session.answer({'id': 'approve', 'confirmed': 'true'})
+        await self.session.dismiss_dialogs()
+        self.session.send.assert_awaited_once_with(
+            {'type': 'extension_ui_response', 'id': 'approve', 'cancelled': True}
+        )
+        self.assertEqual(self.session.ui, {})
+
+    async def test_failed_task_keeps_file_changes_and_settles_once(self):
+        file = Path(self.temporary.name) / 'result.txt'
+        file.write_text('before')
+        self.session.before, self.session.skipped = rpc.snapshot(self.temporary.name)
+        file.write_text('after')
+        self.session.busy = True
+        self.session.pending_model_error = 'Model connection failed'
+        self.session.messages = AsyncMock(return_value=[{'info': {'id': 'user-1', 'role': 'user'}}])
+        await asyncio.gather(self.session.finish(), self.session.finish())
+        self.assertFalse(self.session.busy)
+        self.assertEqual(len(self.session.saved['turns']), 1)
+        turn = self.session.saved['turns'][0]
+        self.assertEqual(turn['message_id'], 'user-1')
+        self.assertIn('+after', next(item for item in turn['diffs'] if item['file'] == 'result.txt')['patch'])
+        self.assertEqual(len([item for item in self.session.saved['activity'] if item['kind'] == 'error']), 1)
+
+    async def test_abort_cancels_manual_compaction_without_starting_another_process(self):
+        from unittest.mock import patch
+
+        session_id = 'b2ba9087-bf48-4be7-b733-44fd3ceaa6b1'
+        self.session.id = session_id
+        self.session.directory = str(Path(self.session.directory).resolve())
+        self.session.compacting = True
+        self.session.start = AsyncMock()
+        self.session.maintenance_task = asyncio.create_task(asyncio.sleep(60))
+        with (
+            patch.object(rpc, 'descriptor', return_value=self.session.data),
+            patch.dict(rpc._sessions, {session_id: self.session}),
+        ):
+            self.assertTrue(await rpc.request('POST', f'/session/{session_id}/abort', self.session.directory, {}, None))
+        self.assertTrue(self.session.maintenance_task.cancelled())
+        self.session.start.assert_not_called()
+
+    async def test_rpc_events_preserve_partial_tool_output_and_compaction(self):
+        events = [
+            {
+                'type': 'tool_execution_start',
+                'toolCallId': 'call',
+                'toolName': 'bash',
+                'args': {'command': 'echo hello'},
+            },
+            {
+                'type': 'tool_execution_update',
+                'toolCallId': 'call',
+                'toolName': 'bash',
+                'partialResult': {'content': [{'type': 'text', 'text': 'hello'}]},
+            },
+            {'type': 'compaction_start', 'reason': 'threshold'},
+            {'type': 'compaction_end', 'result': {'tokensBefore': 30000, 'estimatedTokensAfter': 5000}},
+        ]
+        reader = asyncio.StreamReader()
+        for event in events:
+            reader.feed_data(json.dumps(event).encode() + b'\n')
+        reader.feed_eof()
+        self.session.process = types.SimpleNamespace(stdout=reader, returncode=0)
+        await self.session.read()
+        self.assertEqual(self.session.live_tools['call']['output'], 'hello')
+        self.assertFalse(self.session.compacting)
+        self.assertEqual(self.session.saved['activity'][-1]['tokens_after'], 5000)
+
+
 class ModelServer(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
@@ -84,7 +190,10 @@ class ModelServer(BaseHTTPRequestHandler):
         self.end_headers()
         if summary:
             self.server.summary_seen = True
-            events = [({'role': 'assistant', 'content': 'Task: edit 中文.txt. Written after. Continue verification.'}, None), ({}, 'stop')]
+            events = [
+                ({'role': 'assistant', 'content': 'Task: edit 中文.txt. Written after. Continue verification.'}, None),
+                ({}, 'stop'),
+            ]
         elif has_tool or (recovering and getattr(self.server, 'summary_seen', False)):
             events = [({'role': 'assistant', 'content': '完成\u2028验证'}, None), ({}, 'stop')]
         else:
@@ -108,6 +217,39 @@ class ModelServer(BaseHTTPRequestHandler):
                 ),
                 ({}, 'tool_calls'),
             ]
+        if getattr(self.server, 'test_planning', False):
+            results = [message for message in body['messages'] if message.get('role') == 'tool']
+            if len(results) >= 2:
+                events = [({'role': 'assistant', 'content': 'Selected CSV; plan complete.'}, None), ({}, 'stop')]
+            else:
+                tool = 'ask_user' if results else 'update_plan'
+                arguments = (
+                    {'question': 'Choose format', 'options': ['JSON', 'CSV']}
+                    if results
+                    else {
+                        'steps': [
+                            {'content': 'Choose a format', 'status': 'in_progress'},
+                            {'content': 'Verify', 'status': 'pending'},
+                        ]
+                    }
+                )
+                events = [
+                    (
+                        {
+                            'role': 'assistant',
+                            'tool_calls': [
+                                {
+                                    'index': 0,
+                                    'id': f'call_{tool}',
+                                    'type': 'function',
+                                    'function': {'name': tool, 'arguments': json.dumps(arguments)},
+                                }
+                            ],
+                        },
+                        None,
+                    ),
+                    ({}, 'tool_calls'),
+                ]
         for delta, finish in events:
             record = {
                 'id': 'chatcmpl-test',
@@ -118,9 +260,15 @@ class ModelServer(BaseHTTPRequestHandler):
             }
             self.wfile.write(('data: ' + json.dumps(record) + '\n\n').encode())
             self.wfile.flush()
-        self.wfile.write(('data: ' + json.dumps({'choices': [], 'usage': {
-            'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120
-        }}) + '\n\n').encode())
+        self.wfile.write(
+            (
+                'data: '
+                + json.dumps(
+                    {'choices': [], 'usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120}}
+                )
+                + '\n\n'
+            ).encode()
+        )
         self.wfile.write(b'data: [DONE]\n\n')
 
 
@@ -279,18 +427,29 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
         session_id = created['id']
         stream = rpc.EventStream(directory)
         try:
-            accepted = await asyncio.wait_for(rpc.request(
-                'POST', f'/session/{session_id}/prompt_async', directory,
-                {'parts': [{'text': '/ask-test'}]}, None,
-            ), 2)
+            accepted = await asyncio.wait_for(
+                rpc.request(
+                    'POST',
+                    f'/session/{session_id}/prompt_async',
+                    directory,
+                    {'parts': [{'text': '/ask-test'}]},
+                    None,
+                ),
+                2,
+            )
             self.assertTrue(accepted['accepted'])
             confirmed = False
             while True:
                 event = await asyncio.wait_for(stream.queue.get(), 10)
                 if event['type'] == 'pi.ui' and event['properties']['request'].get('method') == 'confirm':
                     confirmed = True
-                    await rpc.request('POST', f'/session/{session_id}/ui', directory,
-                                      {'id': event['properties']['request']['id'], 'confirmed': True}, None)
+                    await rpc.request(
+                        'POST',
+                        f'/session/{session_id}/ui',
+                        directory,
+                        {'id': event['properties']['request']['id'], 'confirmed': True},
+                        None,
+                    )
                 if event['type'] == 'session.error':
                     self.fail(event)
                 if event['type'] == 'session.idle':
@@ -301,9 +460,10 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_rpc_timeout_has_visible_error_message(self):
         from unittest.mock import AsyncMock
+
         session = rpc.PiSession(rpc.descriptor(), 'timeout-test', str(self.workspace))
         session.send = AsyncMock()
-        with self.assertRaisesRegex(RuntimeError, 'PI command get_state did not respond'):
+        with self.assertRaisesRegex(RuntimeError, 'Agent command get_state did not respond'):
             await session.command('get_state', timeout=0.01)
 
     async def test_extension_select_input_editor_and_cancellation(self):
@@ -318,7 +478,9 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
             'const cancelled = await ctx.ui.input("Cancel");'
             'ctx.ui.setEditorText("draft text");'
             'ctx.ui.notify(JSON.stringify({selected,input,edited,cancelled:cancelled===undefined}), "info");'
-            '}}); }', encoding='utf-8')
+            '}}); }',
+            encoding='utf-8',
+        )
         settings = json.loads((self.agent / 'settings.json').read_text())
         settings['extensions'] = [str(extension)]
         (self.agent / 'settings.json').write_text(json.dumps(settings))
@@ -327,34 +489,49 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
         stream = rpc.EventStream(directory)
         methods, outcome = [], None
         try:
-            await rpc.request('POST', f'/session/{created["id"]}/prompt_async', directory,
-                              {'parts': [{'text': '/dialogs-test'}]}, None)
+            await rpc.request(
+                'POST',
+                f'/session/{created["id"]}/prompt_async',
+                directory,
+                {'parts': [{'text': '/dialogs-test'}]},
+                None,
+            )
             while True:
                 event = await asyncio.wait_for(stream.queue.get(), 20)
-                if event['type'] == 'session.error': self.fail(event)
+                if event['type'] == 'session.error':
+                    self.fail(event)
                 if event['type'] == 'pi.ui':
                     ui = event['properties']['request']
                     method = ui['method']
                     if method in {'select', 'input', 'editor'}:
                         methods.append(method)
                         answer = {'id': ui['id']}
-                        if ui.get('title') == 'Cancel': answer['cancelled'] = True
-                        else: answer['value'] = {'select':'two','input':'中文输入','editor':'line1\nline2'}[method]
+                        if ui.get('title') == 'Cancel':
+                            answer['cancelled'] = True
+                        else:
+                            answer['value'] = {'select': 'two', 'input': '中文输入', 'editor': 'line1\nline2'}[method]
                         await rpc.request('POST', f'/session/{created["id"]}/ui', directory, answer, None)
                     elif method == 'notify' and '"selected"' in ui.get('message', ''):
                         outcome = json.loads(ui['message'])
-                if event['type'] == 'session.idle': break
+                if event['type'] == 'session.idle':
+                    break
             self.assertEqual(methods, ['select', 'input', 'editor', 'input'])
-            self.assertEqual(outcome, {'selected':'two','input':'中文输入','edited':'line1\nline2','cancelled':True})
+            self.assertEqual(
+                outcome, {'selected': 'two', 'input': '中文输入', 'edited': 'line1\nline2', 'cancelled': True}
+            )
         finally:
             stream.close()
 
     async def test_webui_transport_model_requires_no_pi_model_configuration(self):
         (self.agent / 'models.json').unlink()
         data = json.loads(self.descriptor.read_text())
-        data['environment']['AURAPRO_WEBUI_MODEL'] = json.dumps({
-            'baseUrl': f'http://127.0.0.1:{self.server.server_port}/v1', 'apiKey': 'temporary-webui-token', 'id': 'test',
-        })
+        data['environment']['AURAPRO_WEBUI_MODEL'] = json.dumps(
+            {
+                'baseUrl': f'http://127.0.0.1:{self.server.server_port}/v1',
+                'apiKey': 'temporary-webui-token',
+                'id': 'test',
+            }
+        )
         self.descriptor.write_text(json.dumps(data))
         await self.run_turn(provider='aurapro-webui')
         self.assertEqual((self.workspace / '中文.txt').read_text(encoding='utf-8'), 'after\n')
@@ -386,6 +563,50 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item['type'] == 'compaction_start' for item in self.compaction_events))
         self.assertTrue(any(item['type'] == 'compaction_end' and item.get('result') for item in self.compaction_events))
         self.assertEqual((self.workspace / '中文.txt').read_text(encoding='utf-8'), 'after\n')
+
+    async def test_model_can_publish_plan_and_wait_for_user_choice_in_plan_mode(self):
+        self.server.test_planning = True
+        directory = str(self.workspace)
+        created = await rpc.request('POST', '/session', directory, {}, None)
+        session_id = created['id']
+        stream = rpc.EventStream(directory)
+        try:
+            await rpc.request(
+                'POST',
+                f'/session/{session_id}/prompt_async',
+                directory,
+                {
+                    'agent': 'plan',
+                    'model': {'providerID': 'test', 'modelID': 'test'},
+                    'parts': [{'text': 'Plan an export and ask which format to use'}],
+                },
+                None,
+            )
+            selected = False
+            while True:
+                event = await asyncio.wait_for(stream.queue.get(), 20)
+                if event['type'] == 'session.error':
+                    self.fail(event)
+                if event['type'] == 'pi.ui' and event['properties']['request'].get('method') == 'select':
+                    session = await rpc.get_session(session_id, directory, start=False)
+                    state = await session.activity()
+                    self.assertEqual(state['todos'][0]['status'], 'in_progress')
+                    self.assertEqual(state['requests'][0]['options'], ['JSON', 'CSV'])
+                    await session.answer({'id': state['requests'][0]['id'], 'value': 'CSV'})
+                    selected = True
+                if event['type'] == 'session.idle':
+                    break
+            self.assertTrue(
+                selected, (await rpc._sessions[session_id].messages(), await rpc._sessions[session_id].activity())
+            )
+            session = rpc._sessions[session_id]
+            state = await session.activity()
+            self.assertEqual(state['requests'], [])
+            self.assertTrue(any(item['kind'] == 'answer' and item['text'] == 'CSV' for item in state['items']))
+            self.assertIn('Selected CSV', (await session.messages())[-1]['parts'][0]['text'])
+            self.assertEqual(list(self.workspace.iterdir()), [])
+        finally:
+            stream.close()
 
 
 if __name__ == '__main__':

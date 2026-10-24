@@ -27,12 +27,6 @@
 			label: $i18n.t('Code Interpreter'),
 			description: $i18n.t('Model can execute code and perform calculations')
 		},
-		terminal: {
-			label: $i18n.t('Terminal'),
-			description: $i18n.t(
-				'Model can access Open Terminal for command execution and file management'
-			)
-		},
 		usage: {
 			label: $i18n.t('Usage'),
 			description: $i18n.t(
@@ -61,7 +55,6 @@
 		file_upload?: boolean;
 		image_generation?: boolean;
 		code_interpreter?: boolean;
-		terminal?: boolean;
 		usage?: boolean;
 		citations?: boolean;
 		status_updates?: boolean;
@@ -69,7 +62,9 @@
 	} = {};
 
 	// Hide file_context when file_upload is disabled
-	$: visibleCapabilities = Object.keys(capabilityLabels).filter((cap) => {
+	$: visibleCapabilities = (
+		Object.keys(capabilityLabels) as (keyof typeof capabilityLabels)[]
+	).filter((cap) => {
 		if (cap === 'file_context' && !capabilities.file_upload) {
 			return false;
 		}

@@ -31,11 +31,9 @@
 		tools,
 		skills,
 		toolServers,
-		terminalServers,
 		user as _user,
 		showControls,
 		showSettings,
-		selectedTerminalId,
 		temporaryChatEnabled,
 		openCodeModeEnabled,
 		translationModeEnabled,
@@ -110,7 +108,7 @@
 	import Terminal from '../icons/Terminal.svelte';
 	import IntegrationsMenu from './MessageInput/IntegrationsMenu.svelte';
 	import AgentControls from './MessageInput/AgentControls.svelte';
-	import TerminalMenu from './MessageInput/TerminalMenu.svelte';
+	import AgentWorkspace from './MessageInput/AgentWorkspace.svelte';
 	import Component from '../icons/Component.svelte';
 	import PlusAlt from '../icons/PlusAlt.svelte';
 	import Dropdown from '../common/Dropdown.svelte';
@@ -164,7 +162,7 @@
 
 	export let selectedToolIds = [];
 	export let selectedSkillIds = [];
-	export let selectedFilterIds = [];
+	export let selectedFilterIds: string[] = [];
 	export let webSearchEnabled = false;
 
 	export let showTranslationModeButton = true;
@@ -186,8 +184,6 @@
 	export let onOpenCodeSessionReset: () => void = () => {};
 
 	export let pendingOAuthTools = [];
-
-	let showTerminalMenu = false;
 
 	export let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
 	export let onQueueSendNow: (id: string) => void = () => {};
@@ -519,8 +515,7 @@
 		| 'file_upload'
 		| 'web_search'
 		| 'image_generation'
-		| 'code_interpreter'
-		| 'terminal';
+		| 'code_interpreter';
 	type ModelCapabilitiesById = Record<string, Partial<Record<ModelCapability, boolean>>>;
 
 	let modelCapabilitiesById: ModelCapabilitiesById = {};
@@ -565,14 +560,13 @@
 		modelCapabilitiesById
 	);
 
-	let terminalCapableModels = [];
-	$: terminalCapableModels = getCapableModelIds(
-		selectedModelIds,
-		'terminal',
-		modelCapabilitiesById
-	);
-
-	let toggleFilters = [];
+	let toggleFilters: {
+		id: string;
+		name: string;
+		description?: string;
+		icon?: string;
+		has_user_valves?: boolean;
+	}[] = [];
 	$: toggleFilters =
 		(atSelectedModel?.id ? [atSelectedModel.id] : selectedModels)
 			.map((id) => ($models.find((model) => model.id === id) || {})?.filters ?? [])
@@ -604,20 +598,9 @@
 
 	let showCodeInterpreterButton = false;
 	$: showCodeInterpreterButton =
-		!$selectedTerminalId &&
 		selectedModelIds.length === codeInterpreterCapableModels.length &&
 		$config?.features?.enable_code_interpreter &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter);
-
-	// Disable code interpreter when terminal is active (mutually exclusive)
-	$: if ($selectedTerminalId && $codeInterpreterEnabled) {
-		codeInterpreterEnabled.set(false);
-	}
-
-	// Clear selected terminal when model doesn't support terminal
-	$: if ($selectedTerminalId && terminalCapableModels.length === 0) {
-		selectedTerminalId.set(null);
-	}
 
 	const scrollToBottom = () => {
 		const element = document.getElementById('messages-container');
@@ -1303,6 +1286,17 @@
 
 {#if loaded}
 	<div class="w-full font-primary">
+		{#if $openCodeModeEnabled}
+			<div class="mx-auto px-3 {($settings?.widescreenMode ?? null) ? 'max-w-full' : 'max-w-6xl'}">
+				<AgentWorkspace
+					{chatId}
+					active={isActive}
+					autoCompaction={openCodeConfig.auto_compaction !== false}
+					onCompactionChange={(enabled) =>
+						onOpenCodeConfigChange({ ...openCodeConfig, auto_compaction: enabled })}
+				/>
+			</div>
+		{/if}
 		<div class=" mx-auto inset-x-0 bg-transparent flex justify-center">
 			<div
 				class="flex flex-col px-3 {($settings?.widescreenMode ?? null)
@@ -2353,7 +2347,7 @@
 											</Tooltip>
 										</div>
 									{:else}
-										{#if prompt !== '' && !history?.currentId && !$selectedTerminalId && ($config?.features?.enable_notes ?? false) && ($_user?.role === 'admin' || ($_user?.permissions?.features?.notes ?? true))}
+										{#if prompt !== '' && !history?.currentId && ($config?.features?.enable_notes ?? false) && ($_user?.role === 'admin' || ($_user?.permissions?.features?.notes ?? true))}
 											<!-- {$i18n.t('Create Note')}  -->
 											<Tooltip content={$i18n.t('Create note')} className=" flex items-center">
 												<button
@@ -2368,16 +2362,6 @@
 													<Note className="size-4.5 translate-y-[0.5px]" />
 												</button>
 											</Tooltip>
-										{/if}
-
-										{#if !history?.currentId || history.messages[history.currentId]?.done == true}
-											<!-- Terminal Server Selector -->
-											{@const hasDirectToolServerAccess =
-												$_user?.role === 'admin' ||
-												($_user?.permissions?.features?.direct_tool_servers ?? true)}
-											{#if terminalCapableModels.length > 0 && (($terminalServers ?? []).some((t) => t.id) || (hasDirectToolServerAccess && (($terminalServers ?? []).some((t) => !t.id) || ($settings?.terminalServers ?? []).some((s) => s.url))))}
-												<TerminalMenu bind:show={showTerminalMenu} />
-											{/if}
 										{/if}
 
 										{#if $_user?.role === 'admin' || ($_user?.permissions?.chat?.stt ?? true)}

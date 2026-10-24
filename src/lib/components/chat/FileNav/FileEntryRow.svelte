@@ -2,7 +2,7 @@
 	import { toast } from 'svelte-sonner';
 	import { getContext, tick, onDestroy } from 'svelte';
 	import { formatFileSize } from '$lib/utils';
-	import type { FileEntry } from '$lib/apis/terminal';
+	import type { FileEntry } from './types';
 
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
 	import Folder from '../../icons/Folder.svelte';
@@ -15,8 +15,6 @@
 
 	export let entry: FileEntry;
 	export let currentPath: string;
-	export let terminalUrl: string = '';
-	export let terminalKey: string = '';
 
 	export let onOpen: (entry: FileEntry) => void = () => {};
 	export let onDownload: (path: string) => void = () => {};
@@ -142,7 +140,7 @@
 		role={entry.type === 'directory' ? 'button' : undefined}
 		on:dragover={(e) => {
 			if (entry.type !== 'directory') return;
-			if (!e.dataTransfer?.types.includes('application/x-terminal-file-move')) return;
+			if (!e.dataTransfer?.types.includes('application/x-pyodide-file-move')) return;
 			e.preventDefault();
 			e.stopPropagation();
 			dragOverFolder = true;
@@ -154,7 +152,7 @@
 		}}
 		on:drop={(e) => {
 			if (entry.type !== 'directory') return;
-			const raw = e.dataTransfer?.getData('application/x-terminal-file-move');
+			const raw = e.dataTransfer?.getData('application/x-pyodide-file-move');
 			if (!raw) return;
 			e.preventDefault();
 			e.stopPropagation();
@@ -178,7 +176,7 @@
 				// If dragging a selected item, drag all selected
 				if (selected && selectedPaths.size > 1) {
 					e.dataTransfer?.setData(
-						'application/x-terminal-file-move',
+						'application/x-pyodide-file-move',
 						JSON.stringify({ paths: [...selectedPaths] })
 					);
 					// Custom drag ghost showing count
@@ -191,19 +189,8 @@
 					requestAnimationFrame(() => ghost.remove());
 				} else {
 					e.dataTransfer?.setData(
-						'application/x-terminal-file-move',
+						'application/x-pyodide-file-move',
 						JSON.stringify({ path: filePath, name: entry.name })
-					);
-				}
-				if (entry.type === 'file') {
-					e.dataTransfer?.setData(
-						'application/x-terminal-file',
-						JSON.stringify({
-							path: filePath,
-							name: entry.name,
-							url: terminalUrl,
-							key: terminalKey
-						})
 					);
 				}
 			}}

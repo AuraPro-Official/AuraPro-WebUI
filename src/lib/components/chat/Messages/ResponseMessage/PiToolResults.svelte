@@ -11,7 +11,7 @@
 
 {#if tools.length}
 	<details class="my-2 rounded-lg border border-gray-200 p-3 text-xs dark:border-gray-800">
-		<summary class="cursor-pointer">PI · {$i18n.t('Tool results')} ({tools.length})</summary>
+		<summary class="cursor-pointer">Agent · {$i18n.t('Tool results')} ({tools.length})</summary>
 		{#each tools as tool}
 			<div class="mt-3 border-t border-gray-100 pt-2 dark:border-gray-800">
 				<strong>{piToolLabel(tool.name, $i18n)} · {piStatusLabel(tool.status, $i18n)}</strong>

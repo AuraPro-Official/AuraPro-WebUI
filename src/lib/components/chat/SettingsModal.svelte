@@ -234,9 +234,6 @@
 				'manage tools',
 				'manage tool servers',
 				'managetoolservers',
-				'open terminal',
-				'openterminal',
-				'terminal',
 				'settings'
 			]
 		},

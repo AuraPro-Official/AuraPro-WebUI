@@ -12,7 +12,6 @@
 	import { getModels, getToolServersData, getVersionUpdates } from '$lib/apis';
 	import { getTools } from '$lib/apis/tools';
 	import { getBanners } from '$lib/apis/configs';
-	import { getTerminalServers } from '$lib/apis/terminal';
 	import { getUserSettings } from '$lib/apis/users';
 	import { setTextScale } from '$lib/utils/text-scale';
 
@@ -36,8 +35,6 @@
 		showChangelog,
 		temporaryChatEnabled,
 		toolServers,
-		terminalServers,
-		selectedTerminalId,
 		showSearch,
 		showSidebar,
 		showControls,
@@ -160,53 +157,6 @@
 			return true;
 		});
 		toolServers.set(toolServersData);
-
-		// Inject enabled terminal servers as always-on tool servers
-		const enabledTerminals = ($settings?.terminalServers ?? []).filter((s) => s.enabled);
-		if (enabledTerminals.length > 0) {
-			let terminalServersData = await getToolServersData(
-				enabledTerminals.map((t) => ({
-					url: t.url,
-					auth_type: t.auth_type ?? 'bearer',
-					key: t.key ?? '',
-					path: t.path ?? '/openapi.json',
-					config: { enable: true }
-				}))
-			);
-			terminalServersData = terminalServersData
-				.filter((data) => {
-					if (!data || data.error) {
-						toast.error(
-							$i18n.t(`Failed to connect to {{URL}} terminal server`, {
-								URL: data?.url
-							})
-						);
-						return false;
-					}
-					return true;
-				})
-				.map((data, i) => ({
-					...data,
-					key: enabledTerminals[i]?.key ?? ''
-				}));
-
-			terminalServers.set(terminalServersData);
-		} else {
-			terminalServers.set([]);
-		}
-
-		// Fetch terminal servers the user has access to (for FileNav + terminal_id)
-		const systemTerminals = await getTerminalServers(localStorage.token);
-		if (systemTerminals.length > 0) {
-			// Store with proxy URL and session key for FileNav file browsing
-			const terminalEntries = systemTerminals.map((t) => ({
-				id: t.id,
-				url: `${WEBUI_API_BASE_URL}/terminals/${t.id}`,
-				name: t.name,
-				key: localStorage.token
-			}));
-			terminalServers.update((existing) => [...existing, ...terminalEntries]);
-		}
 	};
 
 	const setBanners = async () => {
@@ -381,16 +331,6 @@
 		await showControls.set(!$mobile ? localStorage.showControls === 'true' : false);
 		showControls.subscribe((value) => {
 			localStorage.showControls = value ? 'true' : 'false';
-		});
-
-		// Persist selectedTerminalId across page loads
-		selectedTerminalId.set(localStorage.selectedTerminalId ?? null);
-		selectedTerminalId.subscribe((value) => {
-			if (value === null) {
-				delete localStorage.selectedTerminalId;
-			} else {
-				localStorage.selectedTerminalId = value;
-			}
 		});
 
 		await tick();

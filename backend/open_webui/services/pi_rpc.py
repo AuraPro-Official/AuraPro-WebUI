@@ -17,18 +17,32 @@ _sessions: dict[str, PiSession] = {}
 _subscribers: dict[str, set[asyncio.Queue]] = {}
 _creation_lock = asyncio.Lock()
 _workspace_locks: dict[str, asyncio.Lock] = {}
-_IGNORED = {'.git', 'node_modules', '.venv', '__pycache__', '.pi', '.tmp', 'dist', '.svelte-kit', 'AppData', '.cache', '.npm', '.codex', '.conda'}
+_IGNORED = {
+    '.git',
+    'node_modules',
+    '.venv',
+    '__pycache__',
+    '.pi',
+    '.tmp',
+    'dist',
+    '.svelte-kit',
+    'AppData',
+    '.cache',
+    '.npm',
+    '.codex',
+    '.conda',
+}
 
 
 def descriptor() -> dict:
     file = os.getenv('AURAPRO_PI_RUNTIME_FILE') or os.getenv('AURAPRO_OPENCODE_RUNTIME_FILE', '')
     if not file:
-        raise RuntimeError('PI is not configured. Install and start PI in Desktop settings.')
+        raise RuntimeError('Agent is not configured. Install and start Agent in Desktop settings.')
     data = json.loads(Path(file).read_text(encoding='utf-8'))
     if data.get('engine') != 'pi' or data.get('version') != 2:
-        raise RuntimeError('The PI runtime descriptor is invalid. Restart PI in Desktop settings.')
+        raise RuntimeError('The Agent runtime descriptor is invalid. Restart Agent in Desktop settings.')
     if not Path(data['executable']).is_file():
-        raise RuntimeError('The installed PI executable is missing.')
+        raise RuntimeError('The installed Agent executable is missing.')
     if data.get('ownerPid'):
         try:
             if os.name == 'nt':
@@ -47,7 +61,7 @@ def descriptor() -> dict:
             else:
                 os.kill(int(data['ownerPid']), 0)
         except OSError as error:
-            raise RuntimeError('Desktop is no longer running. Restart PI from Desktop settings.') from error
+            raise RuntimeError('Desktop is no longer running. Restart Agent from Desktop settings.') from error
     return data
 
 
@@ -117,8 +131,7 @@ def changes(before: dict, after: dict, skipped: list[str]) -> list[dict]:
                     old_text.splitlines(True), new_text.splitlines(True), fromfile=f'a/{name}', tofile=f'b/{name}'
                 )
                 patch = ''.join(
-                    line if line.endswith('\n') else line + '\n\\ No newline at end of file\n'
-                    for line in lines
+                    line if line.endswith('\n') else line + '\n\\ No newline at end of file\n' for line in lines
                 )[:120000]
         except UnicodeDecodeError:
             pass
@@ -184,11 +197,71 @@ class PiSession:
         self.mode = 'build'
         self.model_environment: dict[str, str] = {}
         self.ui: dict[str, dict] = {}
+        self.ui_expires: dict[str, float] = {}
+        self.answer_lock = asyncio.Lock()
+        self.finish_lock = asyncio.Lock()
+        self.closing = False
         self.before: dict | None = None
         self.skipped: list[str] = []
         self.prompt_lock = _workspace_locks.setdefault(directory, asyncio.Lock())
+        self.compacting = False
+        self.maintenance_task: asyncio.Task | None = None
+        self.live_tools: dict[str, dict] = {}
+        self.queue: dict = {'steering': [], 'followUp': []}
+        self.stats: dict = {}
+        self.stats_at = 0.0
+        self.save_handle = None
+        self.saved.setdefault('activity', [])
+        self.saved.setdefault('sequence', 0)
+        self.saved.setdefault('auto_compaction', True)
+        self.saved.setdefault('todos', [])
+        for item in self.saved['activity']:
+            if item.get('kind') == 'tool' and item.get('tool_id'):
+                self.live_tools[item['tool_id']] = {**item, 'id': item['tool_id']}
+
+    def record(self, kind: str, **values):
+        self.saved['sequence'] += 1
+        item = {**values, 'id': self.saved['sequence'], 'time': time.time(), 'kind': kind}
+        self.saved['activity'].append(item)
+        self.saved['activity'] = self.saved['activity'][-500:]
+        if self.save_handle is None:
+            self.save_handle = asyncio.get_running_loop().call_later(0.5, self.save)
+
+    async def activity(self, after=0):
+        for ui_id, deadline in list(self.ui_expires.items()):
+            if time.monotonic() >= deadline:
+                self.ui.pop(ui_id, None)
+                self.ui_expires.pop(ui_id, None)
+        if self.process and self.process.returncode is None and time.monotonic() - self.stats_at > 3:
+            self.stats_at = time.monotonic()
+            try:
+                self.stats = await self.command('get_session_stats', timeout=3) or {}
+            except RuntimeError:
+                pass
+        items = self.saved['activity']
+        if after > self.saved['sequence']:
+            after = 0
+        return {
+            'session_id': self.id,
+            'busy': self.busy,
+            'compacting': self.compacting,
+            'auto_compaction': self.saved['auto_compaction'],
+            'cursor': self.saved['sequence'],
+            'truncated': bool(items and after and after < items[0]['id'] - 1),
+            'items': [item for item in items if item['id'] > after],
+            'requests': list(self.ui.values()),
+            'tools': list(self.live_tools.values()),
+            'text': self.live_text[-16000:],
+            'todos': self.saved['todos'],
+            'queue': self.queue,
+            'stats': self.stats,
+            'error': self.saved.get('last_error', ''),
+        }
 
     def save(self):
+        if self.save_handle is not None:
+            self.save_handle.cancel()
+            self.save_handle = None
         temporary = self.file.with_suffix('.tmp')
         temporary.write_text(json.dumps(self.saved), encoding='utf-8')
         temporary.replace(self.file)
@@ -198,23 +271,28 @@ class PiSession:
             if mode == self.mode:
                 return
             if self.busy:
-                raise RuntimeError('Cannot change mode while PI is running.')
+                raise RuntimeError('Cannot change mode while Agent is running.')
             await self.close()
         self.mode = mode
+        self.closing = False
+        self.diagnostics = {}
+        self.probe = {}
         if self.model_environment.get('AURAPRO_WEBUI_MODEL'):
             model = json.loads(self.model_environment['AURAPRO_WEBUI_MODEL'])
             window = int(model.get('contextWindow') or 32768)
             # Keep summary/recent-history budgets proportional to the selected model.
-            # PI defaults retain 20k tokens, which can prevent useful small-window recovery.
+            # Agent defaults retain 20k tokens, which can prevent useful small-window recovery.
             settings_file = Path(self.data['agentDir']) / 'settings.json'
-            settings = json.loads(settings_file.read_text()) if settings_file.exists() else {}
+            settings = json.loads(settings_file.read_text(encoding='utf-8')) if settings_file.exists() else {}
             compaction = settings.setdefault('compaction', {})
             overrides = compaction.setdefault('modelOverrides', {})
             overrides[f'aurapro-webui/{model["id"]}'] = {
-                'reserveTokens': min(16384, max(2048, window // 4)),
+                'reserveTokens': min(16384, max(256, window // 4)),
                 'keepRecentTokens': min(12000, max(512, window // 5)),
             }
-            settings_file.write_text(json.dumps(settings, ensure_ascii=False), encoding='utf-8')
+            temporary = settings_file.with_suffix(f'.{uuid.uuid4()}.tmp')
+            temporary.write_text(json.dumps(settings, ensure_ascii=False), encoding='utf-8')
+            temporary.replace(settings_file)
         env = {
             **os.environ,
             **self.data.get('environment', {}),
@@ -235,7 +313,7 @@ class PiSession:
             '--offline',
         ]
         if mode == 'plan':
-            args += ['--tools', 'read,grep,find,ls']
+            args += ['--tools', 'read,grep,find,ls,ask_user,update_plan']
         self.process = await asyncio.create_subprocess_exec(
             *args,
             cwd=self.directory,
@@ -251,12 +329,15 @@ class PiSession:
             asyncio.create_task(self.drain_errors()),
             asyncio.create_task(self.watch_runtime()),
         ]
-        await self.command('get_state', timeout=30)
-        await self.command('set_auto_compaction', enabled=True)
+        state = await self.command('get_state', timeout=30)
+        if isinstance(state, dict):
+            self.saved['session_file'] = state.get('sessionFile')
+        await self.command('set_auto_compaction', enabled=self.saved['auto_compaction'])
+        await self.command('set_auto_retry', enabled=True)
         if not self.diagnostics.get('auraproDiagnostics'):
             await self.close()
             raise RuntimeError(
-                'The AuraPro PI bridge did not load. Restart PI in Desktop settings and check extension installation.'
+                'The AuraPro Agent bridge did not load. Restart Agent in Desktop settings and check extension installation.'
             )
 
     async def watch_runtime(self):
@@ -265,7 +346,7 @@ class PiSession:
             try:
                 current = descriptor()
                 if current != self.data:
-                    raise RuntimeError('PI runtime settings changed. Start a new turn.')
+                    raise RuntimeError('Agent runtime settings changed. Start a new turn.')
             except Exception:
                 await self.close()
                 return
@@ -273,11 +354,13 @@ class PiSession:
     async def drain_errors(self):
         assert self.process and self.process.stderr
         while line := await self.process.stderr.readline():
-            self.saved['last_error'] = line.decode('utf-8', errors='replace').strip()[:2000]
+            detail = line.decode('utf-8', errors='replace').strip()[:2000]
+            self.saved['last_error'] = detail
+            self.record('diagnostic', text=detail)
 
     async def send(self, value: dict):
         if not self.process or self.process.returncode is not None or not self.process.stdin:
-            raise RuntimeError('PI process is not running.')
+            raise RuntimeError('Agent process is not running.')
         self.process.stdin.write(json.dumps(value, ensure_ascii=False).encode('utf-8') + b'\n')
         await self.process.stdin.drain()
 
@@ -289,14 +372,17 @@ class PiSession:
             await self.send({'id': request_id, 'type': kind, **values})
             return await asyncio.wait_for(future, timeout)
         except TimeoutError as error:
-            raise RuntimeError(f'PI command {kind} did not respond within {timeout} seconds. Check the model connection and extension setup.') from error
+            raise RuntimeError(
+                f'Agent command {kind} did not respond within {timeout} seconds. Check the model connection and extension setup.'
+            ) from error
         finally:
             self.pending.pop(request_id, None)
 
     async def read(self):
         assert self.process and self.process.stdout
+        process = self.process
         try:
-            while line := await self.process.stdout.readline():
+            while line := await process.stdout.readline():
                 event = json.loads(line)
                 kind = event.get('type')
                 if kind == 'response':
@@ -305,7 +391,7 @@ class PiSession:
                         if event.get('success'):
                             future.set_result(event.get('data'))
                         else:
-                            future.set_exception(RuntimeError(str(event.get('error') or 'PI command failed.')))
+                            future.set_exception(RuntimeError(str(event.get('error') or 'Agent command failed.')))
                 elif kind == 'extension_ui_request':
                     try:
                         diagnostic = json.loads(event.get('message') or '')
@@ -315,16 +401,31 @@ class PiSession:
                         self.diagnostics = diagnostic
                     elif diagnostic.get('auraproProbe'):
                         self.probe = diagnostic
+                    elif diagnostic.get('auraproPlan'):
+                        self.saved['todos'] = diagnostic.get('steps', [])[:30]
+                        self.record('plan', steps=self.saved['todos'])
                     else:
                         if event.get('method') in {'confirm', 'select', 'input', 'editor'} and (
                             not self.interactive or not _subscribers.get(self.directory)
                         ):
                             await self.send({'type': 'extension_ui_response', 'id': event['id'], 'cancelled': True})
                         else:
-                            self.ui[event['id']] = event
+                            if event.get('method') in {'confirm', 'select', 'input', 'editor'}:
+                                self.ui[event['id']] = event
+                                if isinstance(event.get('timeout'), (int, float)) and event['timeout'] > 0:
+                                    self.ui_expires[event['id']] = time.monotonic() + event['timeout'] / 1000
+                                self.record('question', request=event)
+                            elif event.get('method') == 'notify':
+                                self.record(
+                                    'notice',
+                                    text=str(event.get('message') or '')[:6000],
+                                    status=event.get('notifyType'),
+                                )
                             await emit(self.directory, 'pi.ui', self.id, request=event)
                 elif kind == 'agent_start':
                     self.busy = True
+                    self.saved.pop('last_error', None)
+                    self.record('started')
                     await emit(self.directory, 'session.status', self.id, status={'type': 'busy'})
                 elif kind == 'message_start' and event.get('message', {}).get('role') == 'assistant':
                     self.live_text = ''
@@ -336,43 +437,107 @@ class PiSession:
                         self.live_text += update.get('delta', '')
                     await emit(self.directory, 'message.part.updated', self.id)
                 elif kind == 'message_end':
+                    message = event.get('message') or {}
+                    if message.get('role') == 'assistant':
+                        content = message.get('content', [])
+                        text = (
+                            content
+                            if isinstance(content, str)
+                            else '\n'.join(block.get('text', '') for block in content if block.get('type') == 'text')
+                        )
+                        if text:
+                            self.record('message', text=text[:20000])
                     self.live_text = ''
                     self.live_id = ''
                     if event.get('message', {}).get('stopReason') == 'error':
-                        # PI may compact/retry this error before the run settles.
-                        self.pending_model_error = event['message'].get('errorMessage') or 'PI model request failed.'
+                        # Agent may compact/retry this error before the run settles.
+                        self.pending_model_error = event['message'].get('errorMessage') or 'Agent model request failed.'
                     else:
                         if event.get('message', {}).get('role') == 'assistant':
                             self.pending_model_error = ''
                         await emit(self.directory, 'message.part.updated', self.id)
                 elif kind in {'compaction_start', 'compaction_end'}:
+                    self.compacting = kind == 'compaction_start'
+                    result = event.get('result') or {}
+                    self.record(
+                        kind,
+                        reason=event.get('reason'),
+                        error=event.get('errorMessage'),
+                        tokens_before=result.get('tokensBefore'),
+                        tokens_after=result.get('estimatedTokensAfter'),
+                        text=event.get('errorMessage'),
+                    )
+                    if result:
+                        self.pending_model_error = ''
+                        self.stats = {}
+                        self.stats_at = time.monotonic()
                     await emit(self.directory, 'pi.compaction', self.id, **event)
+                elif kind in {'tool_execution_start', 'tool_execution_update', 'tool_execution_end'}:
+                    tool_id = str(event.get('toolCallId') or '')
+                    tool = self.live_tools.setdefault(
+                        tool_id, {'id': tool_id, 'name': event.get('toolName'), 'input': event.get('args', {})}
+                    )
+                    result = event.get('result') or event.get('partialResult') or {}
+                    tool['status'] = (
+                        ('error' if event.get('isError') or result.get('isError') else 'completed')
+                        if kind == 'tool_execution_end'
+                        else 'running'
+                    )
+                    tool['output'] = '\n'.join(
+                        str(block.get('text', '')) for block in result.get('content', []) if block.get('type') == 'text'
+                    )[-20000:]
+                    if len(self.live_tools) > 100:
+                        self.live_tools.pop(next(iter(self.live_tools)))
+                    if kind != 'tool_execution_update':
+                        self.record('tool', tool_id=tool_id, **tool)
+                    await emit(self.directory, 'message.part.updated', self.id)
+                elif kind == 'queue_update':
+                    self.queue = {key: event.get(key, []) for key in ('steering', 'followUp')}
+                elif kind in {'auto_retry_start', 'auto_retry_end', 'extension_error'}:
+                    self.record(
+                        kind,
+                        text=str(event.get('errorMessage') or event.get('finalError') or event.get('error') or '')[
+                            :4000
+                        ],
+                        attempt=event.get('attempt'),
+                    )
                 elif kind == 'agent_settled':
                     # The RPC reader must stay free to receive the get_messages response.
-                    asyncio.create_task(self.finish())
+                    task = asyncio.create_task(self.finish())
+                    self.tasks.append(task)
+                    task.add_done_callback(
+                        lambda completed: self.tasks.remove(completed) if completed in self.tasks else None
+                    )
                 else:
                     await emit(self.directory, 'message.part.updated', self.id)
         except (ValueError, OSError) as error:
             self.saved['last_error'] = str(error)
         finally:
-            for future in self.pending.values():
+            for future in tuple(self.pending.values()):
                 if not future.done():
-                    future.set_exception(RuntimeError(self.saved.get('last_error') or 'PI process exited.'))
-            if self.busy:
+                    future.set_exception(RuntimeError(self.saved.get('last_error') or 'Agent process exited.'))
+            if self.busy and not self.closing:
                 self.busy = False
+                self.compacting = False
+                self.ui.clear()
+                self.ui_expires.clear()
+                self.queue = {'steering': [], 'followUp': []}
+                self.record('error', text=self.saved.get('last_error') or 'Agent process exited before completion.')
                 await emit(
                     self.directory,
                     'session.error',
                     self.id,
-                    error=self.saved.get('last_error') or 'PI process exited before completion.',
+                    error=self.saved.get('last_error') or 'Agent process exited before completion.',
                 )
 
     async def finish(self):
-        try:
-            if self.pending_model_error:
-                self.busy = False
-                await emit(self.directory, 'session.error', self.id, error=self.pending_model_error)
+        async with self.finish_lock:
+            if not self.busy:
                 return
+            await self._finish()
+
+    async def _finish(self):
+        try:
             if self.before is not None:
                 after, skipped = await asyncio.to_thread(snapshot, self.directory)
                 messages = await self.messages()
@@ -404,9 +569,17 @@ class PiSession:
                         },
                     )
             self.busy = False
+            await self.dismiss_dialogs()
+            if self.pending_model_error:
+                self.record('error', text=self.pending_model_error)
+                await emit(self.directory, 'session.error', self.id, error=self.pending_model_error)
+                return
+            self.record('settled')
             await emit(self.directory, 'session.idle', self.id)
         except Exception as error:
             self.busy = False
+            self.record('error', text=str(error))
+            await self.dismiss_dialogs()
             await emit(self.directory, 'session.error', self.id, error=str(error))
 
     async def messages(self):
@@ -437,7 +610,19 @@ class PiSession:
                         }
                         tools[part['id']] = tool
                         parts.append(tool)
-                result.append({'info': {'id': message_id, 'role': role, 'parentID': parent, 'stopReason': message.get('stopReason'), 'errorMessage': message.get('errorMessage'), 'usage': message.get('usage')}, 'parts': parts})
+                result.append(
+                    {
+                        'info': {
+                            'id': message_id,
+                            'role': role,
+                            'parentID': parent,
+                            'stopReason': message.get('stopReason'),
+                            'errorMessage': message.get('errorMessage'),
+                            'usage': message.get('usage'),
+                        },
+                        'parts': parts,
+                    }
+                )
             elif role == 'toolResult' and message.get('toolCallId') in tools:
                 tools[message['toolCallId']]['state'].update(
                     {
@@ -446,6 +631,10 @@ class PiSession:
                         'metadata': message.get('details', {}),
                     }
                 )
+        for tool in tools.values():
+            live = self.live_tools.get(tool['id'])
+            if live and live.get('output') and tool['state']['status'] == 'running':
+                tool['state']['output'] = [{'type': 'text', 'text': live['output']}]
         if self.live_text:
             result.append(
                 {
@@ -455,7 +644,56 @@ class PiSession:
             )
         return result
 
+    async def dismiss_dialogs(self):
+        for ui_id in list(self.ui):
+            try:
+                await self.send({'type': 'extension_ui_response', 'id': ui_id, 'cancelled': True})
+            except (RuntimeError, OSError):
+                pass
+        self.ui.clear()
+        self.ui_expires.clear()
+
+    async def answer(self, payload):
+        async with self.answer_lock:
+            await self._answer(payload)
+
+    async def _answer(self, payload):
+        event = self.ui.get(payload.get('id'))
+        if not event or time.monotonic() >= self.ui_expires.get(payload.get('id'), float('inf')):
+            self.ui.pop(payload.get('id'), None)
+            self.ui_expires.pop(payload.get('id'), None)
+            raise RuntimeError('This Agent dialog expired.')
+        answer = {'type': 'extension_ui_response', 'id': event['id']}
+        if payload.get('cancelled') is True:
+            answer['cancelled'] = True
+        elif event['method'] == 'confirm':
+            if not isinstance(payload.get('confirmed'), bool):
+                raise RuntimeError('A confirmation must be accepted or declined.')
+            answer['confirmed'] = payload['confirmed']
+        else:
+            value = payload.get('value')
+            if not isinstance(value, str) or len(value) > 20000:
+                raise RuntimeError('Enter a valid Agent response.')
+            if event['method'] == 'select' and value not in event.get('options', []):
+                raise RuntimeError('Choose one of the available options.')
+            answer['value'] = value
+        await self.send(answer)
+        self.ui.pop(event['id'], None)
+        self.ui_expires.pop(event['id'], None)
+        self.record(
+            'answer',
+            request_id=event['id'],
+            text=answer.get('value')
+            or ('Cancelled' if answer.get('cancelled') else 'Approved' if answer.get('confirmed') else 'Declined'),
+            confirmed=answer.get('confirmed'),
+            cancelled=answer.get('cancelled', False),
+        )
+
     async def close(self):
+        if self.closing:
+            return
+        self.closing = True
+        await self.dismiss_dialogs()
         current = asyncio.current_task()
         process = self.process
         if process and process.returncode is None:
@@ -466,13 +704,19 @@ class PiSession:
             except TimeoutError:
                 process.kill()
                 await process.wait()
-        for task in self.tasks:
+        tasks = [task for task in self.tasks if task is not current]
+        for task in tasks:
             if task is not current:
                 task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.tasks = [current] if current in self.tasks else []
         self.process = None
+        self.compacting = False
+        self.busy = False
+        self.save()
 
 
-async def get_session(session_id: str, directory: str) -> PiSession:
+async def get_session(session_id: str, directory: str, *, start=True) -> PiSession:
     uuid.UUID(session_id)
     directory = str(Path(directory).resolve(strict=True))
     async with _creation_lock:
@@ -483,12 +727,13 @@ async def get_session(session_id: str, directory: str) -> PiSession:
             _sessions[session_id] = PiSession(data, session_id, saved['directory'], saved)
         session = _sessions[session_id]
         if session.directory != directory:
-            raise RuntimeError('PI session belongs to a different workspace.')
+            raise RuntimeError('Agent session belongs to a different workspace.')
         current = descriptor()
         if current != session.data:
             await session.close()
             session.data = current
-        await session.start(session.mode)
+        if start:
+            await session.start(session.mode)
         return session
 
 
@@ -532,7 +777,7 @@ async def request(method: str, endpoint: str, directory: str | None, payload: di
             {
                 'name': mode,
                 'mode': 'primary',
-                'description': 'Read-only workspace analysis' if mode == 'plan' else 'PI with installed extensions',
+                'description': 'Read-only workspace analysis' if mode == 'plan' else 'Agent with installed extensions',
             }
             for mode in ('build', 'plan')
         ]
@@ -567,9 +812,11 @@ async def request(method: str, endpoint: str, directory: str | None, payload: di
         return []
     parts = endpoint.strip('/').split('/')
     if len(parts) < 2 or parts[0] != 'session':
-        raise RuntimeError(f'Unsupported PI endpoint: {endpoint}')
-    session = await get_session(parts[1], directory)
+        raise RuntimeError(f'Unsupported Agent endpoint: {endpoint}')
     action = parts[2] if len(parts) > 2 else ''
+    session = await get_session(
+        parts[1], directory, start=action in {'', 'message', 'prompt_async'} and method != 'DELETE'
+    )
     if not action:
         if method == 'DELETE':
             await session.close()
@@ -579,8 +826,8 @@ async def request(method: str, endpoint: str, directory: str | None, payload: di
         return await session.messages()
     if action == 'prompt_async':
         async with session.prompt_lock:
-            if any(item.busy and item.directory == directory for item in _sessions.values()):
-                raise RuntimeError('A PI task is already running in this workspace. Wait or stop it first.')
+            if any((item.busy or item.compacting) and item.directory == directory for item in _sessions.values()):
+                raise RuntimeError('An Agent task is already running in this workspace. Wait or stop it first.')
             if session.saved.get('reverted'):
                 raise RuntimeError(
                     'Restore the reverted files or reset this conversation before starting another task.'
@@ -591,17 +838,21 @@ async def request(method: str, endpoint: str, directory: str | None, payload: di
                 await session.command('set_model', provider=model['providerID'], modelId=model['modelID'])
             session.busy = True
             session.pending_model_error = ''
+            session.live_tools.clear()
+            session.saved['todos'] = []
             try:
                 session.before, session.skipped = await asyncio.to_thread(snapshot, directory)
                 message = '\n'.join(part.get('text', '') for part in payload.get('parts', []))
+                session.record('prompt', text=message[:20000])
                 if message.startswith('/computer-use'):
-                    task = message[len('/computer-use'):].strip()
+                    task = message[len('/computer-use') :].strip()
                     if task:
                         message = 'Use the installed computer-use tools to carry out this desktop task:\n' + task
+
                 async def submit():
                     try:
                         # Preflight may itself request UI confirmation. The WebUI event
-                        # consumer must run while PI waits for that response.
+                        # consumer must run while Agent waits for that response.
                         result = await session.command('prompt', message=message, timeout=1800)
                         if (result or {}).get('disposition') == 'handled':
                             await session.finish()
@@ -609,28 +860,47 @@ async def request(method: str, endpoint: str, directory: str | None, payload: di
                         await session.close()
                         session.busy = False
                         session.before = None
-                        await emit(directory, 'session.error', session.id, error=str(error) or 'PI could not start the task.')
+                        await emit(
+                            directory,
+                            'session.error',
+                            session.id,
+                            error=str(error) or 'Agent could not start the task.',
+                        )
+
                 task = asyncio.create_task(submit())
                 session.tasks.append(task)
-                task.add_done_callback(lambda completed: session.tasks.remove(completed) if completed in session.tasks else None)
+                task.add_done_callback(
+                    lambda completed: session.tasks.remove(completed) if completed in session.tasks else None
+                )
             except Exception:
                 session.busy = False
                 session.before = None
                 raise
             return {'accepted': True}
     if action == 'abort':
+        maintenance = session.maintenance_task
+        if maintenance and not maintenance.done():
+            maintenance.cancel()
+            await asyncio.gather(maintenance, return_exceptions=True)
+            session.record('aborted')
+            return True
+        if not session.process or session.process.returncode is not None:
+            return True
+        await session.dismiss_dialogs()
         await session.command('clear_queue')
+        if session.compacting:
+            await session.close()
+            session.record('aborted')
+            return True
         await session.command('abort', timeout=15)
+        session.queue = {'steering': [], 'followUp': []}
+        session.record('aborted')
         return True
     if action == 'ui':
-        ui_id = payload.get('id')
-        event = session.ui.pop(ui_id, None)
-        if not event:
-            raise RuntimeError('This PI dialog expired.')
-        await session.send({'type': 'extension_ui_response', **payload})
+        await session.answer(payload)
         return True
     if action == 'todo':
-        return []
+        return session.saved['todos']
     if action == 'diff':
         turns = session.saved['turns']
         turn = next(
@@ -644,7 +914,7 @@ async def request(method: str, endpoint: str, directory: str | None, payload: di
         return turn['diffs'] if turn else []
     if action in {'revert', 'unrevert'}:
         if any(item.busy and item.directory == directory for item in _sessions.values()):
-            raise RuntimeError('Stop the PI task before reverting files.')
+            raise RuntimeError('Stop the Agent task before reverting files.')
         turns = session.saved['turns']
         turn = next(
             (
@@ -676,7 +946,7 @@ async def request(method: str, endpoint: str, directory: str | None, payload: di
         session.saved['reverted'] = turn['message_id'] if action == 'revert' else None
         session.save()
         return True
-    raise RuntimeError(f'Unsupported PI session action: {action}')
+    raise RuntimeError(f'Unsupported Agent session action: {action}')
 
 
 async def shutdown():

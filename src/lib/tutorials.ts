@@ -114,10 +114,6 @@ const tutorialCatalog: TutorialSection[] = [
 						'llama.cpp is the local model runtime. Install it for local models; remote-only users do not need it.'
 					),
 					text(
-						'Open Terminal 是可选工具，用于让模型访问终端能力。普通翻译和聊天用户可以不安装。',
-						'Open Terminal is optional and lets models use terminal capabilities. Normal translation/chat users can skip it.'
-					),
-					text(
 						'sherpa 是可选语音服务，用于语音输入、语音输出和语音翻译，首次启动会下载语音模型。',
 						'sherpa is optional speech service for voice input, voice output, and speech translation. First start downloads speech models.'
 					)

@@ -34,10 +34,7 @@
 		playingNotificationSound,
 		channels,
 		channelId,
-		terminalServers,
 		showControls,
-		showFileNavPath,
-		showFileNavDir,
 		pyodideWorker,
 		desktopEvent
 	} from '$lib/stores';
@@ -61,19 +58,11 @@
 	import {
 		addOpenAIConnection,
 		removeOpenAIConnection,
-		addTerminalConnection,
-		removeTerminalConnection,
 		normalizeAuraProLocalLlamaConnections
 	} from '$lib/utils/connections';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL, WEBUI_HOSTNAME } from '$lib/constants';
-	import {
-		bestMatchingLanguage,
-		cleanText,
-		displayFileHandler,
-		getUserTimezone,
-		removeAllDetails
-	} from '$lib/utils';
+	import { bestMatchingLanguage, cleanText, getUserTimezone, removeAllDetails } from '$lib/utils';
 	import { setTextScale } from '$lib/utils/text-scale';
 
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
@@ -409,23 +398,8 @@
 
 	const resolveToolServer = (serverUrl) => {
 		let toolServer = $settings?.toolServers?.find((server) => server.url === serverUrl);
-		if (!toolServer) {
-			const terminalServer = ($settings?.terminalServers ?? []).find(
-				(server) => server.url === serverUrl
-			);
-			if (terminalServer) {
-				toolServer = {
-					url: terminalServer.url,
-					auth_type: terminalServer.auth_type ?? 'bearer',
-					key: terminalServer.key ?? '',
-					path: terminalServer.path ?? '/openapi.json'
-				};
-			}
-		}
 
-		let toolServerData =
-			$toolServers?.find((server) => server.url === serverUrl) ??
-			$terminalServers?.find((server) => server.url === serverUrl);
+		let toolServerData = $toolServers?.find((server) => server.url === serverUrl);
 
 		let token = null;
 		if (toolServer) {
@@ -453,16 +427,6 @@
 			);
 
 			console.log('executeToolServer', res);
-
-			if (data?.name === 'display_file' && data?.params?.path) {
-				if (res?.exists !== false) {
-					displayFileHandler(data.params.path, { showControls, showFileNavPath });
-				}
-			}
-
-			if (['write_file'].includes(data?.name) && data?.params?.path) {
-				showFileNavDir.set(res?.path ?? data.params.path);
-			}
 
 			if (cb) {
 				cb(structuredClone(res));
@@ -987,17 +951,7 @@
 		if ($user?.role !== 'admin') return;
 
 		try {
-			if (event.type === 'connections:terminal') {
-				if (event.data.action === 'add') {
-					await addTerminalConnection(token, {
-						url: event.data.url,
-						key: event.data.key,
-						name: 'Local Open Terminal'
-					});
-				} else if (event.data.action === 'remove') {
-					await removeTerminalConnection(token, event.data.url);
-				}
-			} else if (event.type === 'connections:openai') {
+			if (event.type === 'connections:openai') {
 				if (event.data.action === 'add') {
 					await addOpenAIConnection(token, {
 						url: event.data.url,

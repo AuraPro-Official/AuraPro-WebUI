@@ -76,11 +76,6 @@ class EventDefinitions(BaseModel):
         description='Tool server configuration was updated.',
         message='Config Tool Servers updated',
     )
-    CONFIG_TERMINAL_SERVERS_UPDATED: EventDefinition = EventDefinition(
-        name='config.terminal_servers.updated',
-        description='Terminal server configuration was updated.',
-        message='Config Terminal Servers updated',
-    )
     CONFIG_CODE_EXECUTION_UPDATED: EventDefinition = EventDefinition(
         name='config.code_execution.updated',
         description='Code execution configuration was updated.',
@@ -616,12 +611,6 @@ class EventDefinitions(BaseModel):
         name='audio.transcription_requested',
         description='Audio transcription was requested.',
         message='Transcription requested',
-    )
-    TERMINAL_SESSION_OPENED: EventDefinition = EventDefinition(
-        name='terminal.session.opened', description='A terminal session was opened.', message='Terminal Session opened'
-    )
-    TERMINAL_SESSION_CLOSED: EventDefinition = EventDefinition(
-        name='terminal.session.closed', description='A terminal session was closed.', message='Terminal Session closed'
     )
 
 

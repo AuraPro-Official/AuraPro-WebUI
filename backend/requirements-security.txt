@@ -1,0 +1,25 @@
+# Keep synchronized with tool.uv.constraint-dependencies in pyproject.toml.
+# Constraints do not install optional packages; they bound them when requested.
+anyio>=4.14.2
+brotlicffi>=1.2.1.0
+certifi>=2026.10.19
+datasets>=5.0.1; sys_platform != "linux" or platform_machine != "aarch64"
+# Last security-clean 3.x before the affected implementations; unstructured requires <4.
+filelock==3.20.3
+fsspec>=2026.6.0; sys_platform != "linux" or platform_machine != "aarch64"
+GitPython>=3.2.1
+h2>=4.4.1
+hpack>=4.2.0
+httplib2>=0.32.0
+langgraph-sdk>=0.4.4
+mako>=1.4.2
+multidict>=6.9.1
+oauthlib>=4.0.0
+opentelemetry-api>=1.45.1
+pyasn1>=0.6.4
+setuptools>=84.1.0
+soupsieve>=2.9.0
+# Desktop selects compatible wheels on macOS, including older OS releases.
+torch>=2.13.0; sys_platform != "darwin"
+urllib3>=2.8.0
+werkzeug>=3.1.9

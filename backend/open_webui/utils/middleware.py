@@ -140,7 +140,6 @@ from open_webui.utils.task import (
 from open_webui.utils.tools import (
     build_tool_server_headers,
     get_builtin_tools,
-    get_terminal_tools,
     get_tools,
     get_updated_tool_function,
 )
@@ -822,7 +821,7 @@ async def process_tool_result(
     user=None,
 ):
     tool_result_embeds = []
-    EXTERNAL_TOOL_TYPES = ('external', 'action', 'terminal')
+    EXTERNAL_TOOL_TYPES = ('external', 'action')
 
     # Support (HTMLResponse, result_context) tuples: the optional second
     # element lets tool authors provide the LLM with actionable context
@@ -1026,60 +1025,6 @@ async def process_tool_result(
     return tool_result, tool_result_files, tool_result_embeds
 
 
-async def terminal_event_handler(
-    tool_function_name: str,
-    tool_function_params: dict,
-    tool_result,
-    event_emitter,
-):
-    """Emit terminal:* events for Open Terminal tools.
-
-    - display_file  → emits 'terminal:display_file' to open the file preview.
-    - write_file / replace_file_content → emits 'terminal:write_file' to refresh.
-    - run_command → emits 'terminal:run_command' with cwd to refresh if relevant.
-    """
-    if not event_emitter:
-        return
-
-    if tool_function_name == 'display_file':
-        path = tool_function_params.get('path', '')
-        if not path:
-            return
-        # Only emit if the file actually exists
-        parsed = tool_result
-        if isinstance(parsed, str):
-            try:
-                parsed = json.loads(parsed)
-            except (json.JSONDecodeError, TypeError):
-                pass
-        if isinstance(parsed, dict) and parsed.get('exists') is False:
-            return
-
-        await event_emitter(
-            {
-                'type': f'terminal:{tool_function_name}',
-                'data': {'path': path},
-            }
-        )
-    elif tool_function_name in ('write_file', 'replace_file_content'):
-        path = tool_function_params.get('path', '')
-        if not path:
-            return
-        await event_emitter(
-            {
-                'type': f'terminal:{tool_function_name}',
-                'data': {'path': path},
-            }
-        )
-    elif tool_function_name == 'run_command':
-        await event_emitter(
-            {
-                'type': 'terminal:run_command',
-                'data': {},
-            }
-        )
-
-
 async def chat_completion_tools_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel, models, tools
 ) -> tuple[dict, dict]:
@@ -1219,13 +1164,6 @@ async def chat_completion_tools_handler(
                 )
 
                 if event_emitter:
-                    await terminal_event_handler(
-                        tool_function_name,
-                        tool_function_params,
-                        tool_result,
-                        event_emitter,
-                    )
-
                     if tool_result_files:
                         await event_emitter(
                             {
@@ -2435,8 +2373,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
         managed = await desktop_models()
         if managed and managed.get('proContext'):
-            model = {**model, 'context_length': managed['proContext'],
-                     'meta': {**(model.get('meta') or {}), 'context_length': managed['proContext']}}
+            model = {
+                **model,
+                'context_length': managed['proContext'],
+                'meta': {**(model.get('meta') or {}), 'context_length': managed['proContext']},
+            }
             request.app.state.MODELS[model['id']] = model
     # Ensure chat_id is always a string — external API clients may omit it.
     if not isinstance(metadata.get('chat_id'), str):
@@ -2842,7 +2783,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     )
 
     tool_ids = form_data.pop('tool_ids', None)
-    terminal_id = form_data.pop('terminal_id', None)
     files = form_data.pop('files', None)
     if files:
         files = [file for file in files if is_context_file_item(file)]
@@ -2942,7 +2882,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         **metadata,
         'model_id': form_data.get('model'),
         'tool_ids': tool_ids,
-        'terminal_id': terminal_id,
         'files': files,
         'features': features,
     }
@@ -3032,33 +2971,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
             if mcp_tools_dict:
                 tools_dict = {**tools_dict, **mcp_tools_dict}
-
-        # Resolve terminal tools if terminal_id is set (outside tool_ids check
-        # so system terminals work even when no other tools are selected)
-        terminal_capability = model_capabilities.get('terminal', True)
-        if terminal_id and terminal_capability:
-            try:
-                terminal_result = await get_terminal_tools(
-                    request,
-                    terminal_id,
-                    user,
-                    extra_params,
-                )
-                if isinstance(terminal_result, tuple):
-                    terminal_tools, system_prompt = terminal_result
-                else:
-                    terminal_tools = terminal_result
-                    system_prompt = None
-                if terminal_tools:
-                    tools_dict = {**tools_dict, **terminal_tools}
-                if system_prompt:
-                    form_data['messages'] = add_or_update_system_message(
-                        system_prompt,
-                        form_data['messages'],
-                        append=True,
-                    )
-            except Exception as e:
-                log.exception(e)
 
         if direct_tool_servers:
             for tool_server in direct_tool_servers:
@@ -5139,13 +5051,6 @@ async def streaming_chat_response_handler(response, ctx):
                             direct_tool,
                             metadata,
                             user,
-                        )
-
-                        await terminal_event_handler(
-                            tool_function_name,
-                            tool_function_params,
-                            tool_result,
-                            event_emitter,
                         )
 
                         # Extract citation sources from tool results

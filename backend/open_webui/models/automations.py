@@ -55,16 +55,10 @@ class AutomationRun(Base):
 ####################
 
 
-class AutomationTerminalConfig(BaseModel):
-    server_id: str
-    cwd: Optional[str] = None
-
-
 class AutomationData(BaseModel):
     prompt: str
     model_id: str
     rrule: str
-    terminal: Optional[AutomationTerminalConfig] = None
 
 
 class AutomationModel(BaseModel):

@@ -1,4 +1,5 @@
 """Private, per-turn transport from PI to WebUI's existing model dispatcher."""
+
 from __future__ import annotations
 
 import json
@@ -18,13 +19,36 @@ class WebUIModelTransport:
         models = getattr(request.app.state, 'MODELS', {})
         model = models.get(self.model, {})
         model_params = (model.get('info') or {}).get('params') or {}
-        self.context_window = max(4096, int(self.params.get('num_ctx') or model_params.get('num_ctx') or 32768))
-        self.max_tokens = min(self.context_window, int(self.params.get('max_tokens') or model_params.get('max_tokens') or 8192))
+        meta = model.get('meta') or {}
+        provider_meta = (model.get('openai') or {}).get('meta') or {}
+        info_meta = (model.get('info') or {}).get('meta') or {}
+
+        def positive(value):
+            try:
+                value = int(value)
+                return value if value > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        fields = ('num_ctx', 'n_ctx', 'ctx_size', 'context_length', 'context_size')
+        candidates = [meta.get('context_length')] if model.get('aurapro_runtime') == 'pro' else []
+        candidates += [
+            source.get(key)
+            for source in (self.params, model_params, meta, info_meta, provider_meta, model)
+            for key in fields
+        ]
+        self.context_window = next((parsed for value in candidates if (parsed := positive(value))), 32768)
+        self.max_tokens = min(
+            max(256, self.context_window // 4),
+            positive(self.params.get('max_tokens')) or positive(model_params.get('max_tokens')) or 8192,
+        )
+        self.params['max_tokens'] = self.max_tokens
 
     async def completion(self, incoming):
         if incoming.headers.get('Authorization') != f'Bearer {self.token}':
             raise web.HTTPUnauthorized()
         from open_webui.utils.chat import generate_chat_completion
+
         try:
             payload = await incoming.json()
             payload['model'] = self.model
@@ -51,7 +75,18 @@ class WebUIModelTransport:
                 return web.Response(body=result.body, status=result.status_code, content_type='application/json')
             return web.json_response(result)
         except Exception as error:
-            return web.json_response({'error': {'message': str(getattr(error, 'detail', error)) or 'WebUI model request failed.'}}, status=502)
+            status = getattr(error, 'status_code', 502)
+            status = status if isinstance(status, int) and 400 <= status < 600 else 502
+            detail = getattr(error, 'detail', error)
+            if isinstance(detail, dict):
+                detail = (
+                    (detail.get('error') or {}).get('message')
+                    if isinstance(detail.get('error'), dict)
+                    else detail.get('message') or json.dumps(detail, ensure_ascii=False)
+                )
+            return web.json_response(
+                {'error': {'message': str(detail) or 'WebUI model request failed.'}}, status=status
+            )
 
     async def start(self):
         app = web.Application(client_max_size=32 * 1024 * 1024)
@@ -61,11 +96,17 @@ class WebUIModelTransport:
         site = web.TCPSite(self.runner, '127.0.0.1', 0)
         await site.start()
         port = site._server.sockets[0].getsockname()[1]
-        return {'AURAPRO_WEBUI_MODEL': json.dumps({
-            'baseUrl': f'http://127.0.0.1:{port}/v1', 'apiKey': self.token,
-            'id': self.model,
-            'contextWindow': self.context_window, 'maxTokens': self.max_tokens,
-        })}
+        return {
+            'AURAPRO_WEBUI_MODEL': json.dumps(
+                {
+                    'baseUrl': f'http://127.0.0.1:{port}/v1',
+                    'apiKey': self.token,
+                    'id': self.model,
+                    'contextWindow': self.context_window,
+                    'maxTokens': self.max_tokens,
+                }
+            )
+        }
 
     async def close(self):
         if self.runner:

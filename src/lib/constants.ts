@@ -105,7 +105,6 @@ export const DEFAULT_CAPABILITIES = {
 	file_upload: true,
 	image_generation: true,
 	code_interpreter: true,
-	terminal: true,
 	citations: true,
 	status_updates: true,
 	usage: undefined,

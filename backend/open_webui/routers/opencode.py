@@ -12,6 +12,8 @@ from open_webui.services.opencode_agent import (
     revert_chat_message,
     unrevert_chat,
     validate_directory,
+    get_agent_activity,
+    control_agent_session,
 )
 from open_webui.utils.auth import get_verified_user
 from pydantic import BaseModel, Field
@@ -20,6 +22,8 @@ from urllib.parse import urlsplit
 import json
 import os
 from pathlib import Path
+from typing import Literal
+from fastapi import Request
 
 router = APIRouter()
 
@@ -30,6 +34,36 @@ class DirectoryForm(BaseModel):
 
 class MessageActionForm(BaseModel):
     message_id: str = Field(min_length=1, max_length=256)
+
+
+class AgentControlForm(BaseModel):
+    action: Literal['reply', 'steer', 'follow_up', 'clear_queue', 'auto_compaction', 'compact']
+    id: str | None = Field(default=None, max_length=256)
+    message: str = Field(default='', max_length=20000)
+    value: str | None = Field(default=None, max_length=20000)
+    confirmed: bool | None = None
+    cancelled: bool = False
+    enabled: bool | None = None
+
+
+@router.get('/chats/{chat_id}/activity')
+async def agent_activity(chat_id: str, after: int = Query(default=0, ge=0), user=Depends(get_verified_user)):
+    _require_admin(user)
+    try:
+        return await get_agent_activity(chat_id, user.id, after)
+    except OpenCodeError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.post('/chats/{chat_id}/control')
+async def agent_control(request: Request, chat_id: str, form_data: AgentControlForm, user=Depends(get_verified_user)):
+    _require_admin(user)
+    try:
+        return await control_agent_session(
+            request, chat_id, user, form_data.action, form_data.model_dump(exclude_none=True)
+        )
+    except OpenCodeError as error:
+        raise HTTPException(400, str(error)) from error
 
 
 @router.post('/pi/extensions/check')

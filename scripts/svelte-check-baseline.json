@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "totalErrors": 4911,
+  "totalErrors": 4845,
   "groups": [
     {
       "file": "src/lib/apis/chats/index.ts",
@@ -4733,14 +4733,6 @@
     },
     {
       "file": "src/lib/components/chat/Chat.svelte",
-      "message": "Object literal may only specify known properties, and 'terminalServers' does not exist in type 'Settings'.",
-      "count": 1,
-      "lines": [
-        1196
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Chat.svelte",
       "message": "Parameter '_chatId' implicitly has an 'any' type.",
       "count": 5,
       "lines": [
@@ -5030,11 +5022,9 @@
     {
       "file": "src/lib/components/chat/Chat.svelte",
       "message": "Parameter 's' implicitly has an 'any' type.",
-      "count": 3,
+      "count": 1,
       "lines": [
-        578,
-        1196,
-        2823
+        2817
       ]
     },
     {
@@ -5389,25 +5379,6 @@
       "count": 1,
       "lines": [
         1614
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Chat.svelte",
-      "message": "Property 'terminalId' does not exist on type 'ModelMeta'.",
-      "count": 2,
-      "lines": [
-        689,
-        690
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Chat.svelte",
-      "message": "Property 'terminalServers' does not exist on type 'Settings'.",
-      "count": 3,
-      "lines": [
-        578,
-        1193,
-        1196
       ]
     },
     {
@@ -5917,11 +5888,10 @@
     {
       "file": "src/lib/components/chat/ChatControls.svelte",
       "message": "Variable 'files' implicitly has an 'any' type.",
-      "count": 3,
+      "count": 2,
       "lines": [
-        139,
-        294,
-        442
+        217,
+        363
       ]
     },
     {
@@ -6279,46 +6249,6 @@
       ]
     },
     {
-      "file": "src/lib/components/chat/FileNav.svelte",
-      "message": "Argument of type '() => Promise<(() => void) | undefined>' is not assignable to parameter of type '() => (() => any) | Promise<undefined> | undefined'.\n  Type 'Promise<(() => void) | undefined>' is not assignable to type '(() => any) | Promise<undefined> | undefined'.\n    Type 'Promise<(() => void) | undefined>' is not assignable to type 'Promise<undefined>'.\n      Type '(() => void) | undefined' is not assignable to type 'undefined'.\n        Type '() => void' is not assignable to type 'undefined'.",
-      "count": 1,
-      "lines": [
-        827
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/FileNav.svelte",
-      "message": "Argument of type 'string | null' is not assignable to parameter of type 'string'.\n  Type 'null' is not assignable to type 'string'.",
-      "count": 1,
-      "lines": [
-        1263
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/FileNav.svelte",
-      "message": "Parameter 's' implicitly has an 'any' type.",
-      "count": 1,
-      "lines": [
-        242
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/FileNav.svelte",
-      "message": "Property 'terminalServers' does not exist on type 'Settings'.",
-      "count": 1,
-      "lines": [
-        241
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/FileNav/CellEditor.svelte",
-      "message": "Argument of type '() => Promise<() => void>' is not assignable to parameter of type '() => (() => any) | Promise<never>'.\n  Type 'Promise<() => void>' is not assignable to type '(() => any) | Promise<never>'.\n    Type 'Promise<() => void>' is not assignable to type 'Promise<never>'.\n      Type '() => void' is not assignable to type 'never'.",
-      "count": 1,
-      "lines": [
-        27
-      ]
-    },
-    {
       "file": "src/lib/components/chat/MessageInput.svelte",
       "message": "'$_user' is possibly 'undefined'.",
       "count": 3,
@@ -6460,14 +6390,6 @@
     },
     {
       "file": "src/lib/components/chat/MessageInput.svelte",
-      "message": "Parameter 'f' implicitly has an 'any' type.",
-      "count": 1,
-      "lines": [
-        2088
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/MessageInput.svelte",
       "message": "Parameter 'f1' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
@@ -6505,14 +6427,6 @@
       "count": 1,
       "lines": [
         772
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/MessageInput.svelte",
-      "message": "Parameter 's' implicitly has an 'any' type.",
-      "count": 1,
-      "lines": [
-        2281
       ]
     },
     {
@@ -6743,14 +6657,6 @@
     },
     {
       "file": "src/lib/components/chat/MessageInput.svelte",
-      "message": "Property 'terminalServers' does not exist on type 'Settings'.",
-      "count": 1,
-      "lines": [
-        2281
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/MessageInput.svelte",
       "message": "Type '\"LTR\" | \"RTL\" | \"auto\"' is not assignable to type '\"auto\" | \"ltr\" | \"rtl\" | null | undefined'.\n  Type '\"LTR\"' is not assignable to type '\"auto\" | \"ltr\" | \"rtl\" | null | undefined'. Did you mean '\"ltr\"'?",
       "count": 2,
       "lines": [
@@ -6948,27 +6854,6 @@
       "count": 1,
       "lines": [
         172
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/MessageInput.svelte",
-      "message": "Variable 'selectedFilterIds' implicitly has an 'any[]' type.",
-      "count": 6,
-      "lines": [
-        212,
-        1845,
-        2087,
-        2102,
-        2108,
-        2135
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/MessageInput.svelte",
-      "message": "Variable 'selectedFilterIds' implicitly has type 'any[]' in some locations where its type cannot be determined.",
-      "count": 1,
-      "lines": [
-        162
       ]
     },
     {
@@ -8141,47 +8026,6 @@
       "count": 1,
       "lines": [
         160
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/MessageInput/TerminalMenu.svelte",
-      "message": "Object literal may only specify known properties, and 'terminalServers' does not exist in type 'Settings'.",
-      "count": 2,
-      "lines": [
-        53,
-        73
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/MessageInput/TerminalMenu.svelte",
-      "message": "Parameter 's' implicitly has an 'any' type.",
-      "count": 5,
-      "lines": [
-        17,
-        23,
-        46,
-        66,
-        67
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/MessageInput/TerminalMenu.svelte",
-      "message": "Parameter 't' implicitly has an 'any' type.",
-      "count": 2,
-      "lines": [
-        26,
-        82
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/MessageInput/TerminalMenu.svelte",
-      "message": "Property 'terminalServers' does not exist on type 'Settings'.",
-      "count": 4,
-      "lines": [
-        17,
-        46,
-        66,
-        67
       ]
     },
     {
@@ -11920,30 +11764,6 @@
     },
     {
       "file": "src/lib/components/chat/Settings/Integrations.svelte",
-      "message": "Property 'auth_type' does not exist on type '{ url: string; key: string; name?: string | undefined; enabled: boolean; }'.",
-      "count": 1,
-      "lines": [
-        65
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Settings/Integrations.svelte",
-      "message": "Property 'path' does not exist on type '{ url: string; key: string; name?: string | undefined; enabled: boolean; }'.",
-      "count": 1,
-      "lines": [
-        67
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Settings/Integrations.svelte",
-      "message": "Property 'terminalServers' does not exist on type 'Settings'.",
-      "count": 1,
-      "lines": [
-        80
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Settings/Integrations.svelte",
       "message": "Variable 'servers' implicitly has an 'any' type.",
       "count": 5,
       "lines": [
@@ -11960,53 +11780,6 @@
       "count": 1,
       "lines": [
         28
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Settings/Integrations/Terminals.svelte",
-      "message": "'servers' is referenced directly or indirectly in its own type annotation.",
-      "count": 1,
-      "lines": [
-        11
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Settings/Integrations/Terminals.svelte",
-      "message": "Parameter 'server' implicitly has an 'any' type.",
-      "count": 1,
-      "lines": [
-        41
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Settings/Integrations/Terminals.svelte",
-      "message": "Variable 'servers' implicitly has an 'any[]' type.",
-      "count": 8,
-      "lines": [
-        15,
-        16,
-        21,
-        26,
-        30,
-        31,
-        36,
-        61
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Settings/Integrations/Terminals.svelte",
-      "message": "Variable 'servers' implicitly has type 'any[]' in some locations where its type cannot be determined.",
-      "count": 1,
-      "lines": [
-        10
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/Settings/Integrations/Terminals/Connection.svelte",
-      "message": "Parameter 'c' implicitly has an 'any' type.",
-      "count": 1,
-      "lines": [
-        29
       ]
     },
     {
@@ -12715,15 +12488,6 @@
       "count": 1,
       "lines": [
         10
-      ]
-    },
-    {
-      "file": "src/lib/components/chat/XTerminal.svelte",
-      "message": "Property 'terminalServers' does not exist on type 'Settings'.",
-      "count": 2,
-      "lines": [
-        37,
-        65
       ]
     },
     {
@@ -18136,24 +17900,6 @@
       ]
     },
     {
-      "file": "src/lib/components/workspace/Models/Capabilities.svelte",
-      "message": "Element implicitly has an 'any' type because expression of type 'string' can't be used to index type '{ file_context?: boolean | undefined; vision?: boolean | undefined; file_upload?: boolean | undefined; image_generation?: boolean | undefined; code_interpreter?: boolean | undefined; ... 4 more ...; builtin_tools?: boolean | undefined; }'.\n  No index signature with a parameter of type 'string' was found on type '{ file_context?: boolean | undefined; vision?: boolean | undefined; file_upload?: boolean | undefined; image_generation?: boolean | undefined; code_interpreter?: boolean | undefined; ... 4 more ...; builtin_tools?: boolean | undefined; }'.",
-      "count": 2,
-      "lines": [
-        88,
-        90
-      ]
-    },
-    {
-      "file": "src/lib/components/workspace/Models/Capabilities.svelte",
-      "message": "Element implicitly has an 'any' type because expression of type 'string' can't be used to index type '{ vision: { label: string; description: string; }; file_upload: { label: string; description: string; }; file_context: { label: string; description: string; }; image_generation: { label: string; description: string; }; ... 5 more ...; builtin_tools: { ...; }; }'.\n  No index signature with a parameter of type 'string' was found on type '{ vision: { label: string; description: string; }; file_upload: { label: string; description: string; }; file_context: { label: string; description: string; }; image_generation: { label: string; description: string; }; ... 5 more ...; builtin_tools: { ...; }; }'.",
-      "count": 2,
-      "lines": [
-        95,
-        96
-      ]
-    },
-    {
       "file": "src/lib/components/workspace/Models/DefaultFeatures.svelte",
       "message": "Element implicitly has an 'any' type because expression of type 'string' can't be used to index type '{ image_generation: { label: string; description: string; }; code_interpreter: { label: string; description: string; }; }'.\n  No index signature with a parameter of type 'string' was found on type '{ image_generation: { label: string; description: string; }; code_interpreter: { label: string; description: string; }; }'.",
       "count": 2,
@@ -18354,14 +18100,6 @@
     },
     {
       "file": "src/lib/components/workspace/Models/ModelEditor.svelte",
-      "message": "Element implicitly has an 'any' type because expression of type 'string' can't be used to index type '{ file_context: boolean; vision: boolean; file_upload: boolean; image_generation: boolean; code_interpreter: boolean; terminal: boolean; citations: boolean; status_updates: boolean; usage: undefined; builtin_tools: boolean; }'.\n  No index signature with a parameter of type 'string' was found on type '{ file_context: boolean; vision: boolean; file_upload: boolean; image_generation: boolean; code_interpreter: boolean; terminal: boolean; citations: boolean; status_updates: boolean; usage: undefined; builtin_tools: boolean; }'.",
-      "count": 1,
-      "lines": [
-        867
-      ]
-    },
-    {
-      "file": "src/lib/components/workspace/Models/ModelEditor.svelte",
       "message": "Element implicitly has an 'any' type because expression of type 'string' can't be used to index type '{ system: string; }'.\n  No index signature with a parameter of type 'string' was found on type '{ system: string; }'.",
       "count": 3,
       "lines": [
@@ -18501,20 +18239,19 @@
     {
       "file": "src/lib/components/workspace/Models/ModelEditor.svelte",
       "message": "Property 'meta' does not exist on type 'never'.",
-      "count": 12,
+      "count": 11,
       "lines": [
-        335,
-        362,
-        381,
-        382,
-        383,
-        384,
-        385,
-        388,
-        389,
-        390,
-        391,
-        392
+        325,
+        352,
+        371,
+        372,
+        373,
+        374,
+        375,
+        378,
+        379,
+        380,
+        381
       ]
     },
     {
@@ -18563,16 +18300,6 @@
         282,
         356,
         357
-      ]
-    },
-    {
-      "file": "src/lib/components/workspace/Models/ModelEditor.svelte",
-      "message": "Property 'terminalId' does not exist on type '{ profile_image_url: string; description: string; suggestion_prompts: null; tags: never[]; }'.",
-      "count": 3,
-      "lines": [
-        261,
-        263,
-        264
       ]
     },
     {
@@ -20359,26 +20086,10 @@
     },
     {
       "file": "src/routes/(app)/+layout.svelte",
-      "message": "Parameter 's' implicitly has an 'any' type.",
-      "count": 1,
-      "lines": [
-        165
-      ]
-    },
-    {
-      "file": "src/routes/(app)/+layout.svelte",
       "message": "Parameter 'shortcut' implicitly has an 'any' type.",
       "count": 1,
       "lines": [
         250
-      ]
-    },
-    {
-      "file": "src/routes/(app)/+layout.svelte",
-      "message": "Parameter 't' implicitly has an 'any' type.",
-      "count": 1,
-      "lines": [
-        168
       ]
     },
     {
@@ -20389,14 +20100,6 @@
         293,
         297,
         345
-      ]
-    },
-    {
-      "file": "src/routes/(app)/+layout.svelte",
-      "message": "Property 'terminalServers' does not exist on type 'Settings'.",
-      "count": 1,
-      "lines": [
-        165
       ]
     },
     {

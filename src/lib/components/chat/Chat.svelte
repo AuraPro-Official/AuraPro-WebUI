@@ -40,14 +40,10 @@
 		tools,
 		skills,
 		toolServers,
-		terminalServers,
 		functions,
 		selectedFolder,
 		pinnedChats,
 		showEmbeds,
-		selectedTerminalId,
-		showFileNavPath,
-		showFileNavDir,
 		chatRequestQueues,
 		desktopEvent,
 		codeInterpreterEnabled,
@@ -72,8 +68,7 @@
 		processDetails,
 		removeAllDetails,
 		getCodeBlockContents,
-		isYoutubeUrl,
-		displayFileHandler
+		isYoutubeUrl
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
 	import {
@@ -331,7 +326,11 @@
 			directory: typeof data.directory === 'string' ? data.directory : '',
 			agent: typeof data.agent === 'string' && data.agent ? data.agent : 'build',
 			model: typeof data.model === 'string' ? data.model : '',
-			approval_mode: ['step', 'full'].includes(data.approval_mode) ? data.approval_mode : 'task'
+			approval_mode:
+				data.approval_mode === 'step' || data.approval_mode === 'full'
+					? data.approval_mode
+					: 'task',
+			auto_compaction: data.auto_compaction !== false
 		};
 	};
 
@@ -347,7 +346,8 @@
 			directory: value.directory,
 			agent: value.agent,
 			model: value.model,
-			approval_mode: value.approval_mode ?? 'task'
+			approval_mode: value.approval_mode ?? 'task',
+			auto_compaction: value.auto_compaction !== false
 		};
 	};
 
@@ -595,14 +595,6 @@
 		}
 	};
 
-	/** Check whether a terminal ID references an available system or direct terminal. */
-	const isTerminalAvailable = (tid: string): boolean => {
-		return (
-			($terminalServers ?? []).some((t) => t.id && t.id === tid) ||
-			($settings?.terminalServers ?? []).some((s) => s.url === tid)
-		);
-	};
-
 	let settingDefaults = false;
 	const setDefaults = async () => {
 		if (settingDefaults) return;
@@ -708,14 +700,6 @@
 						);
 					}
 				}
-
-				// Set Default Terminal — only if the referenced terminal actually exists
-				if (model?.info?.meta?.terminalId) {
-					const tid = model.info.meta.terminalId;
-					if (isTerminalAvailable(tid)) {
-						selectedTerminalId.set(tid);
-					}
-				}
 			}
 		} finally {
 			settingDefaults = false;
@@ -765,18 +749,6 @@
 			chat_id: id,
 			data: { type: 'last_read_at' }
 		});
-	};
-
-	const terminalEventHandler = (type: string, data: any) => {
-		if (type === 'terminal:display_file') {
-			if (!data?.path) return;
-			displayFileHandler(data.path, { showControls, showFileNavPath });
-		} else if (type === 'terminal:write_file' || type === 'terminal:replace_file_content') {
-			if (!data?.path) return;
-			showFileNavDir.set(data.path);
-		} else if (type === 'terminal:run_command') {
-			showFileNavDir.set('/');
-		}
 	};
 
 	const dismissContextCompactionToast = () => {
@@ -976,6 +948,10 @@
 					} else {
 						toast.info(toastContent);
 					}
+				} else if (type === 'agent:interaction') {
+					window.dispatchEvent(
+						new CustomEvent('agent:interaction', { detail: { chatId: event.chat_id } })
+					);
 				} else if (type === 'confirmation') {
 					eventCallback = cb;
 
@@ -1001,8 +977,6 @@
 					eventConfirmationInputValue = data?.value ?? '';
 					eventConfirmationInputType = data?.input?.type ?? data?.type ?? '';
 					eventConfirmationInputOptions = data?.input?.options ?? data?.options ?? [];
-				} else if (type.startsWith('terminal:')) {
-					terminalEventHandler(type, data);
 				} else {
 					console.log('Unknown message type', data);
 				}
@@ -1218,22 +1192,6 @@
 		const audioQueueInstance = new AudioQueue(document.getElementById('audioElement'));
 		audioQueueInstance.setOutputDevice($settings?.audio?.outputDeviceId);
 		audioQueue.set(audioQueueInstance);
-
-		// Restore direct terminal enabled states based on persisted selectedTerminalId
-		if ($settings?.terminalServers?.length) {
-			settings.set({
-				...$settings,
-				terminalServers: ($settings.terminalServers ?? []).map((s) => ({
-					...s,
-					enabled: $selectedTerminalId !== null && s.url === $selectedTerminalId
-				}))
-			});
-		}
-
-		// Clear stale selectedTerminalId if the referenced terminal no longer exists
-		if ($selectedTerminalId && !isTerminalAvailable($selectedTerminalId)) {
-			selectedTerminalId.set(null);
-		}
 
 		const pageSubscribe = page.subscribe(async (p) => {
 			if (p.url.pathname === '/') {
@@ -2817,6 +2775,7 @@
 				agent: openCodeConfig.agent,
 				model: openCodeConfig.model,
 				approval_mode: openCodeConfig.approval_mode ?? 'task',
+				auto_compaction: openCodeConfig.auto_compaction !== false,
 				language: $i18n.resolvedLanguage || $i18n.language || 'zh-CN'
 			};
 		}
@@ -3021,12 +2980,6 @@
 		// in the message so the backend can inject their full content.
 		const skillIds = [...selectedSkillIds];
 
-		// Use the user-selected terminal from the dropdown
-		const activeTerminalId = $selectedTerminalId ?? null;
-
-		// Only send terminal_id if the model has terminal capability enabled
-		const terminalEnabled = model.info?.meta?.capabilities?.terminal ?? true;
-
 		const socketSessionId = await waitForSocketSession($socket);
 		if (!socketSessionId) {
 			console.warn('Socket session is unavailable; chat completion may use non-streaming fallback');
@@ -3052,13 +3005,10 @@
 					filter_ids: selectedFilterIds.length > 0 ? selectedFilterIds : undefined,
 					tool_ids: toolIds.length > 0 ? toolIds : undefined,
 					skill_ids: skillIds.length > 0 ? skillIds : undefined,
-					terminal_id: terminalEnabled ? (activeTerminalId ?? undefined) : undefined,
 					tool_servers: [
 						...($toolServers ?? []).filter(
 							(server, idx) => toolServerIds.includes(idx) || toolServerIds.includes(server?.id)
-						),
-						// Direct terminal servers — always included when enabled (not routed through selectedToolIds)
-						...($terminalServers ?? []).filter((t) => !t.id)
+						)
 					],
 					features: getFeatures(),
 					variables: {

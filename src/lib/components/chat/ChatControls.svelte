@@ -6,20 +6,16 @@
 	import { SvelteFlowProvider } from '@xyflow/svelte';
 	import { slide } from 'svelte/transition';
 	import { Pane, PaneResizer } from 'paneforge';
-	import { v4 as uuidv4 } from 'uuid';
 
 	import { onDestroy, onMount, tick, getContext } from 'svelte';
 	import {
 		config,
-		terminalServers,
 		mobile,
 		showControls,
 		showCallOverlay,
 		showArtifacts,
 		showEmbeds,
 		settings,
-		showFileNavPath,
-		selectedTerminalId,
 		user,
 		codeInterpreterEnabled
 	} from '$lib/stores';
@@ -28,15 +24,11 @@
 		GlossarySettings
 	} from '$lib/utils/conversation-glossary';
 
-	import { uploadFile } from '$lib/apis/files';
-	import { toast } from 'svelte-sonner';
-
 	import Controls from './Controls/Controls.svelte';
 	import CallOverlay from './MessageInput/CallOverlay.svelte';
 	import Drawer from '../common/Drawer.svelte';
 	import Artifacts from './Artifacts.svelte';
 	import Embeds from './ChatControls/Embeds.svelte';
-	import FileNav from './FileNav.svelte';
 	import PyodideFileNav from './PyodideFileNav.svelte';
 	import Overview from './Overview.svelte';
 
@@ -76,12 +68,7 @@
 	$: hasMessages = history?.messages && Object.keys(history.messages).length > 0;
 
 	$: showControlsTab = $user?.role === 'admin' || ($user?.permissions?.chat?.controls ?? true);
-	$: showFilesTab =
-		($selectedTerminalId &&
-			(($terminalServers ?? []).some((t) => t.id && t.id === $selectedTerminalId) ||
-				$user?.role === 'admin' ||
-				($user?.permissions?.features?.direct_tool_servers ?? true))) ||
-		($codeInterpreterEnabled && $config?.code?.interpreter_engine !== 'jupyter');
+	$: showFilesTab = $codeInterpreterEnabled && $config?.code?.interpreter_engine !== 'jupyter';
 	$: showOverviewTab = hasMessages;
 
 	// Tab fallback: if active tab becomes hidden, switch to next available
@@ -96,71 +83,6 @@
 	$: if (!showControlsTab && !showFilesTab && !showOverviewTab) {
 		showControls.set(false);
 	}
-
-	// Auto-switch to Files tab when display_file is triggered
-	$: if ($showFileNavPath) {
-		activeTab = 'files';
-		showControls.set(true);
-	}
-
-	// Auto-open Files tab when a terminal is selected (suppress panel open when full-screen)
-	$: if ($selectedTerminalId && showFilesTab) {
-		activeTab = 'files';
-		if (largeScreen) {
-			showControls.set($settings?.showFilesOnTerminalSelect ?? true);
-		}
-	}
-
-	// Clear selected direct terminal if user lost permission
-	$: if (
-		$selectedTerminalId &&
-		!($terminalServers ?? []).some((t) => t.id && t.id === $selectedTerminalId) &&
-		!($user?.role === 'admin' || ($user?.permissions?.features?.direct_tool_servers ?? true))
-	) {
-		selectedTerminalId.set(null);
-	}
-
-	// Attach a terminal file to the chat input
-	const handleTerminalAttach = async (blob: Blob, name: string, contentType: string) => {
-		const tempItemId = uuidv4();
-		const fileItem = {
-			type: 'file',
-			file: '',
-			id: null,
-			url: '',
-			name,
-			collection_name: '',
-			status: 'uploading',
-			error: '',
-			itemId: tempItemId,
-			size: blob.size
-		};
-
-		files = [...files, fileItem];
-
-		try {
-			const file = new File([blob], name, { type: contentType || 'application/octet-stream' });
-			const uploaded = await uploadFile(localStorage.token, file);
-			if (!uploaded) throw new Error('Upload failed');
-
-			const idx = files.findIndex((f) => f.itemId === tempItemId);
-			if (idx !== -1) {
-				files[idx] = {
-					...fileItem,
-					status: 'uploaded',
-					file: uploaded,
-					id: uploaded.id,
-					url: `${uploaded.id}`,
-					collection_name: uploaded?.meta?.collection_name
-				};
-				files = files;
-			}
-			toast.success($i18n.t('File attached to chat'));
-		} catch (e) {
-			files = files.filter((f) => f.itemId !== tempItemId);
-			toast.error($i18n.t('Failed to attach file'));
-		}
-	};
 
 	export const openPane = () => {
 		if (parseInt(localStorage?.chatControlsSize)) {
@@ -380,8 +302,6 @@
 									}}
 									onClose={() => showControls.set(false)}
 								/>
-							{:else if activeTab === 'files' && $selectedTerminalId}
-								<FileNav onAttach={handleTerminalAttach} {chatId} />
 							{:else if activeTab === 'files' && $codeInterpreterEnabled}
 								<PyodideFileNav />
 							{:else}
@@ -533,8 +453,6 @@
 										}}
 										onClose={() => showControls.set(false)}
 									/>
-								{:else if activeTab === 'files' && $selectedTerminalId}
-									<FileNav onAttach={handleTerminalAttach} overlay={dragged} {chatId} />
 								{:else if activeTab === 'files' && $codeInterpreterEnabled}
 									<PyodideFileNav overlay={dragged} />
 								{:else}

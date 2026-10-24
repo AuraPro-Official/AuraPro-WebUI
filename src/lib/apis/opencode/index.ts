@@ -8,6 +8,7 @@ export type OpenCodeChatConfig = {
 	agent: OpenCodeAgent;
 	model: string;
 	approval_mode?: 'task' | 'step' | 'full';
+	auto_compaction?: boolean;
 };
 
 export type OpenCodeAgentOption = {
@@ -172,4 +173,60 @@ export const checkPiExtensions = (token: string, directory: string) =>
 	}>(token, '/pi/extensions/check', {
 		method: 'POST',
 		body: JSON.stringify({ directory })
+	});
+
+export type AgentInteraction = {
+	id: string;
+	method: 'confirm' | 'select' | 'input' | 'editor';
+	title?: string;
+	message?: string;
+	options?: string[];
+	placeholder?: string;
+	prefill?: string;
+};
+
+export type AgentActivity = {
+	session_id: string | null;
+	busy: boolean;
+	compacting?: boolean;
+	auto_compaction?: boolean;
+	cursor: number;
+	truncated?: boolean;
+	items: {
+		id: number;
+		time: number;
+		kind: string;
+		text?: string;
+		name?: string;
+		status?: string;
+		output?: string;
+		input?: unknown;
+		tokens_before?: number;
+		tokens_after?: number;
+		request?: AgentInteraction;
+	}[];
+	requests: AgentInteraction[];
+	tools: { id: string; name: string; input: unknown; status: string; output: string }[];
+	text?: string;
+	todos?: { id: string; content: string; status: string }[];
+	queue?: { steering: string[]; followUp: string[] };
+	stats?: {
+		contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
+		tokens?: Record<string, number>;
+	};
+	error?: string;
+};
+
+export const getAgentActivity = (token: string, chatId: string, after = 0) =>
+	request<AgentActivity>(token, `/chats/${encodeURIComponent(chatId)}/activity?after=${after}`);
+
+export const controlAgent = (
+	token: string,
+	chatId: string,
+	action: 'reply' | 'steer' | 'follow_up' | 'clear_queue' | 'compact' | 'auto_compaction',
+	values: Record<string, unknown> = {}
+) =>
+	request<{ ok: boolean }>(token, `/chats/${encodeURIComponent(chatId)}/control`, {
+		method: 'POST',
+		body: JSON.stringify({ action, ...values })
 	});

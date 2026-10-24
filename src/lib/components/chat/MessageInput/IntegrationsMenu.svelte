@@ -13,7 +13,6 @@
 		mobile,
 		settings,
 		toolServers,
-		terminalServers,
 		translationModeEnabled,
 		interpretationModeEnabled,
 		learningModeEnabled,
@@ -568,7 +567,7 @@
 					{/if}
 
 					{#if $user?.role === 'admin'}
-						<Tooltip content="使用 PI Agent" placement="top-start">
+						<Tooltip content="使用 Agent" placement="top-start">
 							<button
 								class="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800/50"
 								aria-pressed={$openCodeModeEnabled}
@@ -577,7 +576,7 @@
 							>
 								<div class="flex min-w-0 flex-1 items-center gap-2">
 									<Terminal className="size-3.5 shrink-0" strokeWidth="1.75" />
-									<span class="truncate">PI Agent</span>
+									<span class="truncate">Agent</span>
 									<span
 										class="truncate text-[10px] {openCodeStatus?.available
 											? 'text-green-600 dark:text-green-400'
@@ -675,7 +674,9 @@
 										>{$i18n.t(
 											openCodeConfig.approval_mode === 'full'
 												? 'All operation confirmations are automatically approved.'
-												: 'Approve the first requested operation to approve the rest of this task.'
+												: openCodeConfig.approval_mode === 'step'
+													? 'Confirm each action'
+													: 'Approve the first requested operation to approve the rest of this task.'
 										)}</span
 									>
 								</label>

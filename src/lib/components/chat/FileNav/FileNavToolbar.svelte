@@ -113,7 +113,7 @@
 					: ''}"
 				on:click={() => onNavigate(crumb.path)}
 				on:dragover={(e) => {
-					if (!e.dataTransfer?.types.includes('application/x-terminal-file-move')) return;
+					if (!e.dataTransfer?.types.includes('application/x-pyodide-file-move')) return;
 					e.preventDefault();
 					e.stopPropagation();
 					dragOverCrumb = i;
@@ -122,7 +122,7 @@
 					if (dragOverCrumb === i) dragOverCrumb = null;
 				}}
 				on:drop={(e) => {
-					const raw = e.dataTransfer?.getData('application/x-terminal-file-move');
+					const raw = e.dataTransfer?.getData('application/x-pyodide-file-move');
 					if (!raw) return;
 					e.preventDefault();
 					e.stopPropagation();

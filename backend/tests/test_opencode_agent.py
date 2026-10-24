@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 import unittest
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
 
@@ -54,14 +56,114 @@ _tool_description = opencode_agent._tool_description
 
 
 class OpenCodeAgentHelpersTest(unittest.TestCase):
+    def test_agent_translations_keep_legacy_keys_with_unified_display_name(self):
+        locales = Path(__file__).parents[2] / 'src/lib/i18n/locales'
+        for locale in ('en-US', 'es-ES', 'zh-CN', 'zh-TW'):
+            with self.subTest(locale=locale):
+                translations = json.loads((locales / locale / 'translation.json').read_text(encoding='utf-8'))
+                for key, value in translations.items():
+                    if 'OpenCode' in key or 'PI task' in key:
+                        self.assertIn('Agent', value, key)
+                        self.assertNotRegex(value, r'\b(?:OpenCode|PI|Pi agent)\b')
+
+
+class AgentSessionControlsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_first_session_preserves_conversation_permissions_and_compaction_preferences(self):
+        chat = types.SimpleNamespace(
+            title='Task',
+            chat={'opencode': {'directory': 'workspace', 'approval_mode': 'step', 'auto_compaction': False}},
+        )
+        chats = types.SimpleNamespace(
+            get_chat_by_id_and_user_id=AsyncMock(return_value=chat), update_chat_by_id=AsyncMock()
+        )
+        with (
+            patch.object(opencode_agent, 'Chats', chats),
+            patch.object(opencode_agent, '_request_json', AsyncMock(return_value={'id': 'new-session'})),
+        ):
+            await opencode_agent._ensure_session(None, None, 'chat', 'user', 'workspace', 'plan', 'model')
+        binding = chats.update_chat_by_id.call_args.args[1]['opencode']
+        self.assertEqual(binding['approval_mode'], 'step')
+        self.assertFalse(binding['auto_compaction'])
+        self.assertEqual(binding['session_id'], 'new-session')
+
+    async def test_workspace_reservation_covers_preparation_and_releases_on_failure(self):
+        with self.assertRaisesRegex(ValueError, 'failure'):
+            async with opencode_agent._workspace_run_guard('workspace-a'):
+                with self.assertRaisesRegex(OpenCodeError, 'already running'):
+                    async with opencode_agent._workspace_run_guard('workspace-a'):
+                        self.fail('A second task must not reserve the same workspace')
+                async with opencode_agent._workspace_run_guard('workspace-b'):
+                    pass
+                raise ValueError('failure')
+        async with opencode_agent._workspace_run_guard('workspace-a'):
+            pass
+
+    async def test_abort_cannot_access_another_users_active_session(self):
+        chats = types.SimpleNamespace(get_chat_by_id_and_user_id=AsyncMock(return_value=None))
+        with (
+            patch.object(opencode_agent, 'Chats', chats),
+            patch.dict(opencode_agent._active_sessions, {'private-chat': ('session-id', 'workspace')}),
+            patch.object(opencode_agent, '_load_runtime') as load_runtime,
+        ):
+            self.assertFalse(await opencode_agent.abort_chat('private-chat', 'other-user'))
+            load_runtime.assert_not_called()
+
+    async def test_control_requires_chat_ownership_before_loading_session(self):
+        services = types.ModuleType('open_webui.services')
+        services.pi_rpc = types.SimpleNamespace(get_session=AsyncMock())
+        chats = types.SimpleNamespace(get_chat_by_id_and_user_id=AsyncMock(return_value=None))
+        with patch.object(opencode_agent, 'Chats', chats), patch.dict(sys.modules, {'open_webui.services': services}):
+            with self.assertRaisesRegex(OpenCodeError, 'does not have an Agent session'):
+                await opencode_agent.control_agent_session(
+                    None, 'private-chat', types.SimpleNamespace(id='other-user'), 'reply', {}
+                )
+            services.pi_rpc.get_session.assert_not_awaited()
+
+    async def test_control_dispatches_only_running_instructions_and_persists_compaction_preference(self):
+        session = types.SimpleNamespace(
+            busy=False,
+            process=None,
+            saved={},
+            command=AsyncMock(),
+            record=lambda *_args, **_kwargs: None,
+            save=lambda: None,
+        )
+        services = types.ModuleType('open_webui.services')
+        services.pi_rpc = types.SimpleNamespace(get_session=AsyncMock(return_value=session))
+        binding = AsyncMock(return_value=(None, {}, 'session', 'workspace'))
+        with (
+            patch.object(opencode_agent, '_get_chat_binding', binding),
+            patch.dict(sys.modules, {'open_webui.services': services}),
+        ):
+            user = types.SimpleNamespace(id='user')
+            with self.assertRaisesRegex(OpenCodeError, 'idle'):
+                await opencode_agent.control_agent_session(None, 'chat', user, 'steer', {'message': 'Continue'})
+            session.busy = True
+            await opencode_agent.control_agent_session(None, 'chat', user, 'follow_up', {'message': ' Verify '})
+            session.command.assert_awaited_once_with('follow_up', message='Verify')
+            await opencode_agent.control_agent_session(None, 'chat', user, 'auto_compaction', {'enabled': False})
+            self.assertFalse(session.saved['auto_compaction'])
+
+
+class OpenCodeAgentBehaviorTest(unittest.TestCase):
     def test_turn_usage_sums_calls_including_cache_without_history_or_duplicates(self):
         def message(mid, **usage):
             return {'info': {'id': mid, 'role': 'assistant', 'usage': usage}}
+
         first = message('first', input=100, output=20, cacheRead=30, cacheWrite=10)
-        result = opencode_agent._turn_usage([message('old', input=999), first, first,
-            message('second', input=50, output=5), message('live')], {'old'})
-        self.assertEqual(result, {'prompt_tokens': 190, 'completion_tokens': 25,
-            'total_tokens': 215, 'cache_read_tokens': 30, 'cache_write_tokens': 10})
+        result = opencode_agent._turn_usage(
+            [message('old', input=999), first, first, message('second', input=50, output=5), message('live')], {'old'}
+        )
+        self.assertEqual(
+            result,
+            {
+                'prompt_tokens': 190,
+                'completion_tokens': 25,
+                'total_tokens': 215,
+                'cache_read_tokens': 30,
+                'cache_write_tokens': 10,
+            },
+        )
         self.assertIsNone(opencode_agent._turn_usage([message('empty', input=0, output=0)], set()))
         context = opencode_agent._turn_context_usage([first, message('second', input=50, output=5)], set(), 32768)
         self.assertEqual(context['used_tokens'], 55)
@@ -286,7 +388,7 @@ class OpenCodeAgentHelpersTest(unittest.TestCase):
                 'state': {'status': 'running', 'input': {'command': 'npm test'}},
             }
         )
-        self.assertEqual(description, 'PI · bash: npm test')
+        self.assertEqual(description, 'Agent · bash: npm test')
         self.assertFalse(done)
 
         description, done = _tool_description(
@@ -295,7 +397,7 @@ class OpenCodeAgentHelpersTest(unittest.TestCase):
                 'state': {'status': 'error', 'error': 'permission denied'},
             }
         )
-        self.assertEqual(description, 'PI · edit (permission denied)')
+        self.assertEqual(description, 'Agent · edit (permission denied)')
         self.assertTrue(done)
 
     def test_model_reference_requires_safe_provider_and_model_ids(self):

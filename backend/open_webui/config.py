@@ -351,19 +351,6 @@ TOOL_SERVER_CONNECTIONS = tool_server_connections
 OAUTH_CLIENT_TIMEOUT = os.getenv('OAUTH_CLIENT_TIMEOUT', '')
 
 ####################################
-# TERMINAL_SERVER
-####################################
-
-terminal_server_connections = json.loads(os.getenv('TERMINAL_SERVER_CONNECTIONS', '[]'))
-
-TERMINAL_SERVER_CONNECTIONS = terminal_server_connections
-
-try:
-    TERMINAL_PROXY_HEADERS = json.loads(os.getenv('TERMINAL_PROXY_HEADERS', '{}'))
-except Exception:
-    TERMINAL_PROXY_HEADERS = {}
-
-####################################
 # Code Interpreter
 ####################################
 
@@ -2744,7 +2731,6 @@ DEFAULT_CONFIG = {
     'models.base_models_cache': ENABLE_BASE_MODELS_CACHE,
     'tool_server.connections': TOOL_SERVER_CONNECTIONS,
     'oauth.client.timeout': OAUTH_CLIENT_TIMEOUT,
-    'terminal_server.connections': TERMINAL_SERVER_CONNECTIONS,
     'code_execution.enable': ENABLE_CODE_EXECUTION,
     'code_execution.engine': CODE_EXECUTION_ENGINE,
     'code_execution.jupyter.url': CODE_EXECUTION_JUPYTER_URL,

@@ -38,7 +38,7 @@
 
 	const getOpenCodeDetail = (value) =>
 		String(value ?? '')
-			.replace(/^(?:OpenCode|PI)\s*·\s*/, '')
+			.replace(/^(?:OpenCode|PI|Agent)\s*·\s*/, '')
 			.replace(/^([\w]+)(?=:|$)/, (name) => piToolLabel(name, $i18n));
 </script>
 
@@ -51,7 +51,7 @@
 						? 'shimmer'
 						: ''} text-base text-gray-500 dark:text-gray-500"
 				>
-					{$i18n.t(getOpenCodePhaseLabel(status?.phase)).replaceAll('OpenCode', 'PI')}
+					{$i18n.t(getOpenCodePhaseLabel(status?.phase))}
 					<span class="ml-1 whitespace-nowrap font-normal tabular-nums">
 						· {$i18n.t('Elapsed {{time}}', {
 							time: formatDuration(status?.elapsed_seconds)
@@ -65,7 +65,7 @@
 				{/if}
 				{#if status?.delayed}
 					<div class="text-xs text-amber-700 dark:text-amber-400">
-						{$i18n.t('This OpenCode step is taking longer than usual').replaceAll('OpenCode', 'PI')}
+						{$i18n.t('This OpenCode step is taking longer than usual')}
 						<span class="whitespace-nowrap">
 							· {$i18n.t('No new activity for {{time}}', {
 								time: formatDuration(status?.idle_seconds)

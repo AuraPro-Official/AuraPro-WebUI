@@ -169,7 +169,6 @@ from open_webui.routers import (
     scim,
     skills,
     tasks,
-    terminals,
     tools,
     users,
     utils,
@@ -256,7 +255,7 @@ from open_webui.utils.oauth import (
 from open_webui.utils.redis import get_redis_client
 from open_webui.utils.security_headers import SecurityHeadersMiddleware
 from open_webui.utils.session_pool import get_session
-from open_webui.utils.tools import set_terminal_servers, set_tool_servers
+from open_webui.utils.tools import set_tool_servers
 
 
 def normalize_sherpa_audio_base_url(value: str | None) -> str:
@@ -493,12 +492,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning(f'Failed to initialize tool servers at startup: {e}')
 
-        try:
-            await set_terminal_servers(mock_request)
-            log.info(f'Initialized {len(app.state.TERMINAL_SERVERS)} terminal server(s)')
-        except Exception as e:
-            log.warning(f'Failed to initialize terminal servers at startup: {e}')
-
     # Mark application as ready to accept traffic from a startup perspective.
     app.state.startup_complete = True
     await publish_event(app, EVENTS.SYSTEM_STARTUP_COMPLETED, source='system')
@@ -587,14 +580,6 @@ app.state.OPENAI_MODELS = {}
 ########################################
 
 app.state.TOOL_SERVERS = []
-
-########################################
-#
-# TERMINAL SERVER
-#
-########################################
-
-app.state.TERMINAL_SERVERS = []
 
 ########################################
 #
@@ -870,7 +855,6 @@ app.include_router(epub.router)
 if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix='/api/v1/analytics', tags=['analytics'])
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
-app.include_router(terminals.router, prefix='/api/v1/terminals', tags=['terminals'])
 app.include_router(automations.router, prefix='/api/v1/automations', tags=['automations'])
 app.include_router(calendar.router, prefix='/api/v1/calendars', tags=['calendars'])
 

@@ -63,8 +63,8 @@
 		on:change={(event) =>
 			onChange({ ...config, agent: event.currentTarget.value as OpenCodeChatConfig['agent'] })}
 	>
-		<option value="build">Build</option>
-		<option value="plan">Plan</option>
+		<option value="build">{$i18n.t('Build')}</option>
+		<option value="plan">{$i18n.t('Plan')}</option>
 	</select>
 	<select
 		aria-label={$i18n.t('Approval rules')}

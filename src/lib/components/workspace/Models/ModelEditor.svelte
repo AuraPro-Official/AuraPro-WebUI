@@ -29,7 +29,6 @@
 	import DefaultFeatures from './DefaultFeatures.svelte';
 	import BuiltinTools from './BuiltinTools.svelte';
 	import PromptSuggestions from './PromptSuggestions.svelte';
-	import TerminalSelector from './TerminalSelector.svelte';
 	import TTSVoiceInput from './TTSVoiceInput.svelte';
 	import AccessControlModal from '../common/AccessControlModal.svelte';
 	import LockClosed from '$lib/components/icons/LockClosed.svelte';
@@ -108,7 +107,6 @@
 
 	let actionIds = [];
 	let accessGrants = [];
-	let terminalId = '';
 	let tts = { voice: '' };
 	export let suggestionTags: { name: string }[] = [];
 	let voices: { id: string; name?: string }[] = [];
@@ -257,14 +255,6 @@
 			}
 		}
 
-		if (terminalId) {
-			info.meta.terminalId = terminalId;
-		} else {
-			if (info.meta.terminalId) {
-				delete info.meta.terminalId;
-			}
-		}
-
 		if (tts.voice !== '') {
 			if (!info.meta.tts) info.meta.tts = {};
 			info.meta.tts.voice = tts.voice;
@@ -388,7 +378,6 @@
 			capabilities = { ...capabilities, ...(model?.meta?.capabilities ?? {}) };
 			defaultFeatureIds = model?.meta?.defaultFeatureIds ?? defaultFeatureIds;
 			builtinTools = model?.meta?.builtinTools ?? builtinTools;
-			terminalId = model?.meta?.terminalId ?? '';
 			tts = { voice: model?.meta?.tts?.voice ?? '' };
 
 			accessGrants = model?.access_grants ?? [];
@@ -864,7 +853,7 @@
 						<Capabilities bind:capabilities />
 					</div>
 
-					{#if Object.keys(capabilities).filter((key) => capabilities[key]).length > 0}
+					{#if Object.values(capabilities).filter(Boolean).length > 0}
 						{@const availableFeatures = Object.entries(capabilities)
 							.filter(
 								([key, value]) => value && ['code_interpreter', 'image_generation'].includes(key)
@@ -881,12 +870,6 @@
 					{#if capabilities.builtin_tools}
 						<div class="my-4">
 							<BuiltinTools bind:builtinTools />
-						</div>
-					{/if}
-
-					{#if capabilities.terminal}
-						<div class="my-4">
-							<TerminalSelector bind:terminalId />
 						</div>
 					{/if}
 

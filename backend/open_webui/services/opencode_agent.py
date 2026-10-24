@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ _MAX_PERSISTED_DIFF_CHARS = max(50_000, int(os.getenv('AURAPRO_OPENCODE_PERSISTE
 _MAX_PERSISTED_DIFF_FILES = 100
 _chat_locks: dict[str, asyncio.Lock] = {}
 _active_sessions: dict[str, tuple[str, str]] = {}
+_run_locks: dict[str, asyncio.Lock] = {}
 
 
 class OpenCodeError(RuntimeError):
@@ -55,7 +57,7 @@ def _normalize_runtime_url(value: str) -> str:
         or parsed.fragment
         or parsed.path not in {'', '/'}
     ):
-        raise OpenCodeError('OpenCode must use a local loopback service address.')
+        raise OpenCodeError('Agent must use a local loopback service address.')
     return value.strip().rstrip('/')
 
 
@@ -75,9 +77,9 @@ def _load_legacy_runtime() -> OpenCodeRuntime:
         try:
             values = json.loads(Path(runtime_file).read_text(encoding='utf-8'))
         except FileNotFoundError as error:
-            raise OpenCodeError('OpenCode is not running. Start it from Desktop settings.') from error
+            raise OpenCodeError('Agent is not running. Start it from Desktop settings.') from error
         except (OSError, json.JSONDecodeError) as error:
-            raise OpenCodeError('The OpenCode runtime descriptor is unavailable or invalid.') from error
+            raise OpenCodeError('The Agent runtime descriptor is unavailable or invalid.') from error
         return OpenCodeRuntime(
             url=_normalize_runtime_url(str(values.get('url') or '')),
             username=str(values.get('username') or ''),
@@ -87,7 +89,7 @@ def _load_legacy_runtime() -> OpenCodeRuntime:
 
     url = os.getenv('AURAPRO_OPENCODE_URL', '').strip()
     if not url:
-        raise OpenCodeError('OpenCode is not configured for this WebUI server.')
+        raise OpenCodeError('Agent is not configured for this WebUI server.')
     return OpenCodeRuntime(
         url=_normalize_runtime_url(url),
         username=os.getenv('AURAPRO_OPENCODE_USERNAME', 'aurapro'),
@@ -125,7 +127,7 @@ def _error_detail(text: str, status: int) -> str:
                 return str(detail)
     except json.JSONDecodeError:
         pass
-    return text.strip()[:500] or f'OpenCode returned HTTP {status}.'
+    return text.strip()[:500] or f'Agent returned HTTP {status}.'
 
 
 async def _request_json(
@@ -147,7 +149,10 @@ async def _request_json(
                 pi_rpc.request(method, path, directory, payload, query), timeout=max(timeout, 35)
             )
         except (OSError, ValueError, KeyError, RuntimeError, TimeoutError) as error:
-            raise OpenCodeError(str(error) or f'PI request timed out while handling {path}. Check the model connection and extension setup.') from error
+            raise OpenCodeError(
+                str(error)
+                or f'Agent request timed out while handling {path}. Check the model connection and extension setup.'
+            ) from error
     params = dict(query or {})
     if directory:
         params['directory'] = directory
@@ -167,7 +172,7 @@ async def _request_json(
         try:
             return json.loads(text)
         except json.JSONDecodeError as error:
-            raise OpenCodeError('OpenCode returned an invalid response.') from error
+            raise OpenCodeError('Agent returned an invalid response.') from error
 
 
 async def _request_json_optional(
@@ -194,7 +199,7 @@ async def _request_json_optional(
             timeout=timeout,
         )
     except Exception as error:
-        log.debug('Optional OpenCode endpoint failed (%s): %s', path, error)
+        log.debug('Optional Agent endpoint failed (%s): %s', path, error)
         return fallback
 
 
@@ -286,7 +291,7 @@ async def _read_sse(response: aiohttp.ClientResponse, queue: asyncio.Queue) -> N
             try:
                 await queue.put(json.loads(line[5:].strip()))
             except json.JSONDecodeError:
-                log.debug('Ignoring invalid OpenCode SSE data')
+                log.debug('Ignoring invalid Agent SSE data')
     except asyncio.CancelledError:
         raise
     except Exception as error:
@@ -332,37 +337,55 @@ def _assistant_snapshot(messages: Any, baseline_ids: set[str]) -> tuple[str, lis
 
 
 def _turn_failure(messages: list, baseline_ids: set[str], tools: list) -> str:
-    assistants = [item for item in messages if (item.get('info') or {}).get('role') == 'assistant'
-                  and (item.get('info') or {}).get('id') not in baseline_ids]
+    assistants = [
+        item
+        for item in messages
+        if (item.get('info') or {}).get('role') == 'assistant'
+        and (item.get('info') or {}).get('id') not in baseline_ids
+    ]
     if assistants and (assistants[-1].get('info') or {}).get('stopReason') == 'length':
-        return 'PI 未完成任务：模型输出达到长度限制且未成功恢复。请分段生成文件，或在 WebUI 增加输出长度。'
+        return 'Agent 未完成任务：模型输出达到长度限制且未成功恢复。请分段生成文件，或在 WebUI 增加输出长度。'
     pending = {}
     for part in tools:
         state = part.get('state') or {}
         values = state.get('input') or {}
         key = (part.get('tool'), str(values.get('path') or values.get('filePath') or values.get('command') or ''))
-        if state.get('status') == 'error': pending[key] = True
-        elif state.get('status') == 'completed': pending.pop(key, None)
+        if state.get('status') == 'error':
+            pending[key] = True
+        elif state.get('status') == 'completed':
+            pending.pop(key, None)
     if pending:
-        return 'PI 未完成任务：有工具操作失败且未成功重试，请查看下方工具结果。'
+        return 'Agent 未完成任务：有工具操作失败且未成功重试，请查看下方工具结果。'
     return ''
 
 
 def _turn_usage(messages: Any, baseline_ids: set[str]) -> dict | None:
-    totals = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0,
-              'cache_read_tokens': 0, 'cache_write_tokens': 0}
+    totals = {
+        'prompt_tokens': 0,
+        'completion_tokens': 0,
+        'total_tokens': 0,
+        'cache_read_tokens': 0,
+        'cache_write_tokens': 0,
+    }
     seen = set()
     available = False
     for message in messages if isinstance(messages, list) else []:
         info = message.get('info') or {}
         message_id = info.get('id')
         usage = info.get('usage')
-        if info.get('role') != 'assistant' or message_id in baseline_ids or message_id in seen or not isinstance(usage, dict):
+        if (
+            info.get('role') != 'assistant'
+            or message_id in baseline_ids
+            or message_id in seen
+            or not isinstance(usage, dict)
+        ):
             continue
         seen.add(message_id)
+
         def count(key):
             value = usage.get(key)
             return max(0, int(value)) if isinstance(value, (int, float)) else 0
+
         if not any(count(key) for key in ('input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens')):
             continue
         available = True
@@ -382,9 +405,13 @@ def _turn_context_usage(messages: Any, baseline_ids: set[str], limit: int) -> di
         info = message.get('info') or {}
         usage = _turn_usage([message], baseline_ids)
         if info.get('role') == 'assistant' and usage:
-            return {'limit_tokens': limit, 'limit_source': 'pi_runtime',
-                    'used_tokens': usage['total_tokens'], 'input_tokens': usage['prompt_tokens'],
-                    'output_tokens': usage['completion_tokens']}
+            return {
+                'limit_tokens': limit,
+                'limit_source': 'pi_runtime',
+                'used_tokens': usage['total_tokens'],
+                'input_tokens': usage['prompt_tokens'],
+                'output_tokens': usage['completion_tokens'],
+            }
     return None
 
 
@@ -402,7 +429,7 @@ def _tool_description(part: dict) -> tuple[str, bool]:
         or ''
     )
     detail = ' '.join(str(detail).split())[:180]
-    description = f'PI · {tool}' + (f': {detail}' if detail else '')
+    description = f'Agent · {tool}' + (f': {detail}' if detail else '')
     if status == 'error':
         description += f' ({str(state.get("error") or "failed")[:160]})'
     return description, status in {'completed', 'error'}
@@ -429,7 +456,7 @@ def _progress_status(
     idle_for = max(0, int(idle_seconds))
     return {
         'action': 'opencode_progress',
-        'description': f'PI · {phases[phase]} · {elapsed // 60:02d}:{elapsed % 60:02d}',
+        'description': f'Agent · {phases[phase]} · {elapsed // 60:02d}:{elapsed % 60:02d}',
         'phase': phase,
         'elapsed_seconds': elapsed,
         'idle_seconds': idle_for,
@@ -877,10 +904,11 @@ async def _ensure_session(
         )
         session_id = str((created or {}).get('id') or '')
         if not session_id:
-            raise OpenCodeError('OpenCode did not return a session ID.')
+            raise OpenCodeError('Agent did not return a session ID.')
         updated = {
             **(chat.chat or {}),
             'opencode': {
+                **(binding if isinstance(binding, dict) and binding.get('directory') == directory else {}),
                 'engine': 'pi',
                 'enabled': True,
                 'session_id': session_id,
@@ -902,7 +930,30 @@ async def _persist_message(chat_id: str, message_id: str, content: str, **extra:
     )
 
 
-async def run_agent_chat(  # noqa: C901
+@asynccontextmanager
+async def _workspace_run_guard(directory: str):
+    lock = _run_locks.setdefault(directory, asyncio.Lock())
+    if lock.locked():
+        raise OpenCodeError('An Agent task is already running in this workspace. Wait or stop it first.')
+    async with lock:
+        yield
+
+
+async def run_agent_chat(request, form_data: dict, user: Any, metadata: dict) -> dict:
+    feature = (metadata.get('features') or {}).get('opencode')
+    if not isinstance(feature, dict) or not feature.get('enabled'):
+        raise OpenCodeError('Code Agent configuration is missing.')
+    directory = _normalize_directory(str(feature.get('directory') or ''))
+    # Reserve the workspace before restoring/reconfiguring its process, not just
+    # when submitting the prompt. Otherwise a second request can close a live task.
+    async with _workspace_run_guard(directory):
+        try:
+            return await _run_agent_chat(request, form_data, user, metadata)
+        finally:
+            _active_sessions.pop(str(metadata.get('chat_id') or ''), None)
+
+
+async def _run_agent_chat(  # noqa: C901
     request, form_data: dict, user: Any, metadata: dict
 ) -> dict:
     if user.role != 'admin':
@@ -936,7 +987,7 @@ async def run_agent_chat(  # noqa: C901
     await event_emitter(
         {
             'type': 'status',
-            'data': {'action': 'opencode_connect', 'description': 'Connecting to PI', 'done': False},
+            'data': {'action': 'opencode_connect', 'description': 'Connecting to Agent', 'done': False},
         }
     )
 
@@ -944,17 +995,17 @@ async def run_agent_chat(  # noqa: C901
     async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
         health = await _request_json(session, runtime, 'GET', '/global/health', timeout=5)
         if not health or not health.get('healthy'):
-            raise OpenCodeError('PI is not ready.')
+            raise OpenCodeError('Agent is not ready.')
 
         session_id = await _ensure_session(session, runtime, chat_id, user.id, directory, agent, model_value)
         _active_sessions[chat_id] = (session_id, directory)
         await event_emitter(
             {
                 'type': 'status',
-                'data': {'action': 'opencode_connect', 'description': 'Connected to PI', 'done': True},
+                'data': {'action': 'opencode_connect', 'description': 'Connected to Agent', 'done': True},
             }
         )
-        log.info('OpenCode task started session=%s agent=%s directory=%s', session_id, agent, directory)
+        log.info('Agent task started session=%s agent=%s directory=%s', session_id, agent, directory)
         baseline = await _request_json(session, runtime, 'GET', f'/session/{session_id}/message', directory=directory)
         baseline_ids = {
             str((item.get('info') or {}).get('id'))
@@ -976,7 +1027,6 @@ async def run_agent_chat(  # noqa: C901
         latest_user_message_id: str | None = None
         latest_messages = baseline if isinstance(baseline, list) else []
         latest_usage = None
-        task_approved = False
         compacting = False
         was_compacted = False
         seen_activity = False
@@ -996,18 +1046,25 @@ async def run_agent_chat(  # noqa: C901
         try:
             from open_webui.services import pi_rpc
             from open_webui.services.pi_webui_model import WebUIModelTransport
+
             pi_session = await pi_rpc.get_session(session_id, directory)
-            if pi_session.busy:
-                raise OpenCodeError('A PI task is already running in this conversation.')
+            if pi_session.busy or pi_session.compacting:
+                raise OpenCodeError('An Agent task is already running in this conversation.')
             transport = WebUIModelTransport(request, user, form_data)
             environment = await transport.start()
             approval_mode = feature.get('approval_mode', 'task')
-            environment['AURAPRO_PI_APPROVAL_MODE'] = approval_mode if approval_mode in {'task', 'step', 'full'} else 'task'
+            environment['AURAPRO_PI_APPROVAL_MODE'] = (
+                approval_mode if approval_mode in {'task', 'step', 'full'} else 'task'
+            )
             language = str(feature.get('language') or 'zh-CN')
-            environment['AURAPRO_PI_LANGUAGE'] = language if re.fullmatch(r'[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}', language) else 'zh-CN'
+            environment['AURAPRO_PI_LANGUAGE'] = (
+                language if re.fullmatch(r'[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}', language) else 'zh-CN'
+            )
             await pi_session.close()
+            pi_session.saved['auto_compaction'] = feature.get('auto_compaction') is not False
+            pi_session.saved['model_config'] = {'model': model_value, 'params': dict(form_data.get('params') or {})}
             pi_session.model_environment = environment
-            await pi_session.start()
+            await pi_session.start(agent)
             await asyncio.sleep(0)
             await _request_json(
                 session,
@@ -1033,7 +1090,7 @@ async def run_agent_chat(  # noqa: C901
 
             while True:
                 if time.monotonic() - started_at > _MAX_TURN_SECONDS:
-                    raise OpenCodeError('OpenCode exceeded the maximum task time.')
+                    raise OpenCodeError('Agent exceeded the maximum task time.')
 
                 try:
                     raw_event = await asyncio.wait_for(queue.get(), timeout=_POLL_INTERVAL_SECONDS)
@@ -1043,66 +1100,46 @@ async def run_agent_chat(  # noqa: C901
                     event_session_id = _session_id_from_event(event)
 
                     if event_type == 'aurapro.sse.error':
-                        log.warning('OpenCode SSE stream ended: %s', properties.get('message'))
+                        log.warning('Agent SSE stream ended: %s', properties.get('message'))
                     elif event_session_id == session_id:
                         if event_type == 'pi.compaction':
                             compacting = properties.get('type') == 'compaction_start'
                             was_compacted = was_compacted or bool(properties.get('result'))
-                            description = ('正在精简上下文，完成后继续任务' if compacting else
-                                           '上下文精简已完成，继续执行' if properties.get('result') else
-                                           '上下文精简未完成：' + str(properties.get('errorMessage') or '已取消'))
-                            await event_emitter({'type': 'status', 'data': {'action': 'context_compaction', 'description': description, 'done': not compacting}})
-                            await event_emitter({'type': 'context_compaction', 'data': {'action': 'context_compaction', 'done': not compacting, 'error': not compacting and not properties.get('result')}})
+                            description = (
+                                '正在精简上下文，完成后继续任务'
+                                if compacting
+                                else '上下文精简已完成，继续执行'
+                                if properties.get('result')
+                                else '上下文精简未完成：' + str(properties.get('errorMessage') or '已取消')
+                            )
+                            await event_emitter(
+                                {
+                                    'type': 'status',
+                                    'data': {
+                                        'action': 'context_compaction',
+                                        'description': description,
+                                        'done': not compacting,
+                                    },
+                                }
+                            )
+                            await event_emitter(
+                                {
+                                    'type': 'context_compaction',
+                                    'data': {
+                                        'action': 'context_compaction',
+                                        'done': not compacting,
+                                        'error': not compacting and not properties.get('result'),
+                                    },
+                                }
+                            )
                             continue
                         if event_type == 'pi.ui':
                             ui = properties.get('request') or {}
                             method = ui.get('method')
                             if method in {'confirm', 'select', 'input', 'editor'}:
-                                if method == 'confirm' and agent != 'plan' and (approval_mode == 'full' or (approval_mode == 'task' and task_approved)):
-                                    response = True
-                                elif event_caller:
-                                    response = await event_caller(
-                                        {
-                                            'type': 'confirmation' if method == 'confirm' else 'input',
-                                            'data': {
-                                                'title': ui.get('title') or 'PI',
-                                                'message': (ui.get('message') or '') + (
-                                                    '\n\n同意后，本次任务的后续操作将自动批准。任务结束后失效。'
-                                                    if method == 'confirm' and approval_mode == 'task' and not task_approved and agent != 'plan'
-                                                    else ''
-                                                ),
-                                                'placeholder': ui.get('placeholder') or '',
-                                                'value': ui.get('prefill') or '',
-                                                'input': {
-                                                    'type': 'select'
-                                                    if method == 'select'
-                                                    else 'textarea'
-                                                    if method == 'editor'
-                                                    else 'text',
-                                                    'options': ui.get('options') or [],
-                                                },
-                                            },
-                                        }
-                                    )
-                                else:
-                                    response = False
-                                answer = {'id': ui['id']}
-                                if method == 'confirm':
-                                    answer['confirmed'] = response is True
-                                    if response is True and approval_mode == 'task' and agent != 'plan':
-                                        task_approved = True
-                                elif response is False or response is None or isinstance(response, dict):
-                                    answer['cancelled'] = True
-                                else:
-                                    answer['value'] = str(response)
-                                await _request_json(
-                                    session,
-                                    runtime,
-                                    'POST',
-                                    f'/session/{session_id}/ui',
-                                    directory=directory,
-                                    payload=answer,
-                                )
+                                # Replies use an authenticated session endpoint. Never block
+                                # the event consumer while waiting for a user or reconnect.
+                                await event_emitter({'type': 'agent:interaction', 'data': {'session_id': session_id}})
                             elif method == 'notify':
                                 await event_emitter(
                                     {
@@ -1153,7 +1190,7 @@ async def run_agent_chat(  # noqa: C901
                         elif event_type == 'session.idle' and seen_activity:
                             idle = True
                         elif event_type == 'session.error':
-                            error_value = properties.get('error') or properties.get('message') or 'OpenCode failed.'
+                            error_value = properties.get('error') or properties.get('message') or 'Agent failed.'
                             if isinstance(error_value, dict):
                                 error_value = error_value.get('message') or error_value.get('name') or str(error_value)
                             raise OpenCodeError(str(error_value))
@@ -1162,7 +1199,7 @@ async def run_agent_chat(  # noqa: C901
                             permission = str(properties.get('permission') or 'tool action')
                             patterns = properties.get('patterns') or []
                             detail = ', '.join(str(value) for value in patterns[:4])
-                            message = f'OpenCode requests permission for {permission}.'
+                            message = f'Agent requests permission for {permission}.'
                             if detail:
                                 message += f'\n\n{detail}'
                             approved = False
@@ -1170,7 +1207,7 @@ async def run_agent_chat(  # noqa: C901
                                 result = await event_caller(
                                     {
                                         'type': 'confirmation',
-                                        'data': {'title': 'OpenCode permission required', 'message': message},
+                                        'data': {'title': 'Agent permission required', 'message': message},
                                     }
                                 )
                                 approved = result is True
@@ -1188,7 +1225,7 @@ async def run_agent_chat(  # noqa: C901
                                     'type': 'status',
                                     'data': {
                                         'action': 'opencode_permission',
-                                        'description': f'OpenCode · {permission}',
+                                        'description': f'Agent · {permission}',
                                         'done': True,
                                     },
                                 }
@@ -1212,9 +1249,18 @@ async def run_agent_chat(  # noqa: C901
                         latest_usage = usage
                         context_usage = _turn_context_usage(latest_messages, baseline_ids, transport.context_window)
                         if context_usage:
-                            context_usage.update(compaction_enabled=True, compacted=was_compacted)
-                        await event_emitter({'type': 'chat:completion', 'data': {'usage': usage, 'contextUsage': context_usage, 'done': False}})
-                        await _persist_message(chat_id, message_id, latest_text, done=False, usage=usage, contextUsage=context_usage)
+                            context_usage.update(
+                                compaction_enabled=pi_session.saved['auto_compaction'], compacted=was_compacted
+                            )
+                        await event_emitter(
+                            {
+                                'type': 'chat:completion',
+                                'data': {'usage': usage, 'contextUsage': context_usage, 'done': False},
+                            }
+                        )
+                        await _persist_message(
+                            chat_id, message_id, latest_text, done=False, usage=usage, contextUsage=context_usage
+                        )
                     text, tools, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
                     if assistant_message_id:
                         seen_activity = True
@@ -1244,7 +1290,7 @@ async def run_agent_chat(  # noqa: C901
                             last_activity_at = now
                             current_phase = 'working' if state[1] else 'tool'
                             current_detail = '' if state[1] else state[0]
-                            log.info('OpenCode tool update session=%s status=%s', session_id, state[0])
+                            log.info('Agent tool update session=%s status=%s', session_id, state[0])
                             await event_emitter(
                                 {
                                     'type': 'status',
@@ -1256,7 +1302,13 @@ async def run_agent_chat(  # noqa: C901
                                 }
                             )
                     if latest_text and now - last_persist >= 1.0:
-                        await _persist_message(chat_id, message_id, latest_text, done=False, **({'usage': latest_usage} if latest_usage else {}))
+                        await _persist_message(
+                            chat_id,
+                            message_id,
+                            latest_text,
+                            done=False,
+                            **({'usage': latest_usage} if latest_usage else {}),
+                        )
                         last_persist = now
 
                     status_map = await _request_json(
@@ -1291,7 +1343,7 @@ async def run_agent_chat(  # noqa: C901
                         and now - last_progress_log >= _PROGRESS_LOG_INTERVAL_SECONDS
                     ):
                         log.info(
-                            'OpenCode task still running session=%s elapsed=%ss idle=%ss detail=%s',
+                            'Agent task still running session=%s elapsed=%ss idle=%ss detail=%s',
                             session_id,
                             int(now - started_at),
                             int(idle_seconds),
@@ -1363,13 +1415,15 @@ async def run_agent_chat(  # noqa: C901
             if failure:
                 latest_text = failure + ('\n\n' + latest_text if latest_text.strip() else '')
             elif not latest_text.strip():
-                latest_text = 'PI 本轮已结束。请检查工具结果和文件变更。'
+                latest_text = 'Agent 本轮已结束。请检查工具结果和文件变更。'
             diff_count = len(changed_files)
             completed_at = time.monotonic()
             await event_emitter(
                 {
                     'type': 'status',
-                    'data': _progress_status('failed' if failure else 'completed', completed_at - started_at, done=True),
+                    'data': _progress_status(
+                        'failed' if failure else 'completed', completed_at - started_at, done=True
+                    ),
                 }
             )
             if diff_count:
@@ -1378,7 +1432,7 @@ async def run_agent_chat(  # noqa: C901
                         'type': 'status',
                         'data': {
                             'action': 'opencode_diff',
-                            'description': f'PI · {diff_count} file(s) changed',
+                            'description': f'Agent · {diff_count} file(s) changed',
                             'done': True,
                         },
                     }
@@ -1425,7 +1479,9 @@ async def run_agent_chat(  # noqa: C901
             latest_usage = _turn_usage(latest_messages, baseline_ids) or latest_usage
             latest_context_usage = _turn_context_usage(latest_messages, baseline_ids, transport.context_window)
             if latest_context_usage:
-                latest_context_usage.update(compaction_enabled=True, compacted=was_compacted)
+                latest_context_usage.update(
+                    compaction_enabled=pi_session.saved['auto_compaction'], compacted=was_compacted
+                )
             await _persist_message(
                 chat_id,
                 message_id,
@@ -1448,14 +1504,14 @@ async def run_agent_chat(  # noqa: C901
                 }
             )
             log.info(
-                'OpenCode task completed session=%s elapsed=%ss changed_files=%s',
+                'Agent task completed session=%s elapsed=%ss changed_files=%s',
                 session_id,
                 int(completed_at - started_at),
                 diff_count,
             )
             return {'status': not bool(failure), 'session_id': session_id, 'content': latest_text}
         except asyncio.CancelledError:
-            log.info('OpenCode task cancelled session=%s', session_id)
+            log.info('Agent task cancelled session=%s', session_id)
             try:
                 await _request_json(
                     session,
@@ -1469,12 +1525,23 @@ async def run_agent_chat(  # noqa: C901
                 pass
             raise
         except Exception:
-            log.exception('OpenCode task failed session=%s', session_id)
-            await event_emitter({'type': 'status', 'data': _progress_status(
-                'failed', time.monotonic() - started_at, done=True,
-            )})
+            log.exception('Agent task failed session=%s', session_id)
+            await event_emitter(
+                {
+                    'type': 'status',
+                    'data': _progress_status(
+                        'failed',
+                        time.monotonic() - started_at,
+                        done=True,
+                    ),
+                }
+            )
             raise
         finally:
+            # A failed event consumer must not leave file-writing tools running
+            # after their model transport has been closed.
+            if transport and 'pi_session' in locals() and pi_session.busy:
+                await pi_session.close()
             event_task.cancel()
             event_response.close()
             if transport:
@@ -1488,6 +1555,8 @@ async def run_agent_chat(  # noqa: C901
 
 async def abort_chat(chat_id: str, user_id: str) -> bool:
     chat = await Chats.get_chat_by_id_and_user_id(chat_id, user_id)
+    if not chat:
+        return False
     binding = (chat.chat or {}).get('opencode') if chat else None
     active = _active_sessions.get(chat_id)
     session_id = active[0] if active else str((binding or {}).get('session_id') or '')
@@ -1511,10 +1580,10 @@ async def _get_chat_binding(chat_id: str, user_id: str) -> tuple[Any, dict, str,
     chat = await Chats.get_chat_by_id_and_user_id(chat_id, user_id)
     binding = (chat.chat or {}).get('opencode') if chat else None
     if not isinstance(binding, dict):
-        raise OpenCodeError('This conversation does not have an OpenCode session.')
+        raise OpenCodeError('This conversation does not have an Agent session.')
     session_id = str(binding.get('session_id') or '')
     if not session_id:
-        raise OpenCodeError('This conversation does not have an active OpenCode session.')
+        raise OpenCodeError('This conversation does not have an active Agent session.')
     directory = _normalize_directory(str(binding.get('directory') or ''))
     return chat, binding, session_id, directory
 
@@ -1624,6 +1693,87 @@ async def get_workspace(chat_id: str, user_id: str, message_id: str | None = Non
     }
 
 
+async def get_agent_activity(chat_id: str, user_id: str, after: int = 0) -> dict:
+    from open_webui.services import pi_rpc
+
+    chat = await Chats.get_chat_by_id_and_user_id(chat_id, user_id)
+    if not chat:
+        raise OpenCodeError('This conversation is unavailable.')
+    binding = (chat.chat or {}).get('opencode') or {}
+    if not binding.get('session_id'):
+        return {'session_id': None, 'items': [], 'requests': [], 'tools': [], 'cursor': 0, 'busy': False}
+    directory = _normalize_directory(str(binding.get('directory') or ''))
+    try:
+        session = await pi_rpc.get_session(str(binding['session_id']), directory, start=False)
+        return await session.activity(after)
+    except (RuntimeError, OSError, ValueError, KeyError) as error:
+        raise OpenCodeError(str(error)) from error
+
+
+async def control_agent_session(request, chat_id: str, user, action: str, values: dict) -> dict:
+    from open_webui.services import pi_rpc
+
+    _, _, session_id, directory = await _get_chat_binding(chat_id, user.id)
+    try:
+        session = await pi_rpc.get_session(session_id, directory, start=False)
+        if action == 'reply':
+            await session.answer(values)
+        elif action in {'steer', 'follow_up'}:
+            message = values.get('message', '').strip()
+            if not message or len(message) > 20000:
+                raise RuntimeError('Enter an instruction between 1 and 20000 characters.')
+            if not session.busy:
+                raise RuntimeError('Agent is idle. Send a new message in the conversation instead.')
+            await session.command(action, message=message)
+            session.record(action, text=message)
+        elif action == 'clear_queue':
+            if session.process and session.process.returncode is None:
+                await session.command('clear_queue')
+            session.queue = {'steering': [], 'followUp': []}
+            session.record('queue_cleared')
+        elif action == 'auto_compaction':
+            enabled = values.get('enabled')
+            if not isinstance(enabled, bool):
+                raise RuntimeError('Specify whether automatic compaction is enabled.')
+            session.saved['auto_compaction'] = enabled
+            if session.process and session.process.returncode is None:
+                await session.command('set_auto_compaction', enabled=enabled)
+            session.save()
+        elif action == 'compact':
+            from open_webui.services.pi_webui_model import WebUIModelTransport
+
+            async with _workspace_run_guard(directory), session.prompt_lock:
+                if any(
+                    (item.busy or item.compacting) and item.directory == directory for item in pi_rpc._sessions.values()
+                ):
+                    raise RuntimeError('Wait for the current Agent task to finish before compacting manually.')
+                config = session.saved.get('model_config')
+                if not config:
+                    raise RuntimeError('Send a task before compacting this conversation.')
+                transport = WebUIModelTransport(request, user, config)
+                session.maintenance_task = asyncio.current_task()
+                try:
+                    await session.close()
+                    session.compacting = True
+                    session.model_environment = await transport.start()
+                    await session.start(session.mode)
+                    session.compacting = True
+                    await session.command('set_model', provider='aurapro-webui', modelId=config['model'])
+                    await session.command('compact', timeout=1800)
+                except asyncio.CancelledError:
+                    return {'ok': True, 'cancelled': True}
+                finally:
+                    session.compacting = False
+                    await session.close()
+                    await transport.close()
+                    session.maintenance_task = None
+        else:
+            raise RuntimeError('Unsupported Agent session action.')
+        return {'ok': True}
+    except (RuntimeError, OSError, ValueError, KeyError) as error:
+        raise OpenCodeError(str(error)) from error
+
+
 async def reset_chat_session(chat_id: str, user_id: str) -> bool:
     chat = await Chats.get_chat_by_id_and_user_id(chat_id, user_id)
     binding = (chat.chat or {}).get('opencode') if chat else None
@@ -1644,7 +1794,7 @@ async def reset_chat_session(chat_id: str, user_id: str) -> bool:
                     timeout=10,
                 )
             except OpenCodeError as error:
-                log.info('OpenCode session was already unavailable during reset: %s', error)
+                log.info('Agent session was already unavailable during reset: %s', error)
 
     next_binding = {key: value for key, value in binding.items() if key not in {'session_id', 'updated_at'}}
     next_chat = {**(chat.chat or {}), 'opencode': next_binding}
@@ -1657,7 +1807,7 @@ async def revert_chat_message(chat_id: str, user_id: str, message_id: str) -> bo
     _, _, session_id, directory = await _get_chat_binding(chat_id, user_id)
     requested_message_id = _safe_identifier(message_id)
     if not requested_message_id:
-        raise OpenCodeError('A valid OpenCode message ID is required.')
+        raise OpenCodeError('A valid Agent message ID is required.')
     runtime = _load_runtime()
     async with aiohttp.ClientSession(trust_env=False) as session:
         messages = await _request_json_optional(
@@ -1671,7 +1821,7 @@ async def revert_chat_message(chat_id: str, user_id: str, message_id: str) -> bo
         )
         user_message_id = _resolve_user_message_id(messages, requested_message_id)
         if not user_message_id:
-            raise OpenCodeError('The OpenCode user message could not be resolved.')
+            raise OpenCodeError('The Agent user message could not be resolved.')
         result = await _request_json(
             session,
             runtime,

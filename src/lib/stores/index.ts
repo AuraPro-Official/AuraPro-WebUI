@@ -72,7 +72,6 @@ export const skills: Writable<any[] | null> = writable(null);
 export const functions: Writable<any[] | null> = writable(null);
 
 export const toolServers: Writable<any[]> = writable([]);
-export const terminalServers: Writable<any[]> = writable([]);
 
 // Persistent Pyodide worker for code interpreter FS
 export const pyodideWorker: Writable<Worker | null> = writable(null);
@@ -101,10 +100,6 @@ export const showEmbeds = writable(false);
 export const showOverview = writable(false);
 export const showArtifacts = writable(false);
 export const showCallOverlay = writable(false);
-export const showFileNav = writable(false);
-export const showFileNavPath: Writable<string | null> = writable(null);
-export const showFileNavDir: Writable<string | null> = writable(null);
-export const selectedTerminalId: Writable<string | null> = writable(null);
 
 export const artifactCode = writable(null);
 export const artifactContents = writable(null);
@@ -225,7 +220,6 @@ type Settings = {
 	iframeSandboxAllowForms?: boolean;
 	iframeSandboxAllowSameOrigin?: boolean;
 	scrollOnBranchChange?: boolean;
-	showFilesOnTerminalSelect?: boolean;
 	directConnections?: null;
 	chatBubble?: boolean;
 	copyFormatted?: boolean;
