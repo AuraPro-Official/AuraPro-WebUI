@@ -342,7 +342,9 @@ def _exceeds_token_threshold(messages: list[dict], threshold: int) -> bool:
         if isinstance(usage, dict):
             llama_usage = _llamacpp_context_usage(usage)
             if llama_usage is not None:
-                return llama_usage[2] + sum(_estimate_message_tokens(item) for item in messages[index + 1:]) >= threshold
+                return (
+                    llama_usage[2] + sum(_estimate_message_tokens(item) for item in messages[index + 1 :]) >= threshold
+                )
 
             input_tokens = _parse_nonnegative_int(
                 usage.get('input_tokens')
@@ -356,9 +358,11 @@ def _exceeds_token_threshold(messages: list[dict], threshold: int) -> bool:
             )
             total_tokens = _parse_nonnegative_int(usage.get('total_tokens'))
             if total_tokens is not None:
-                return total_tokens + sum(_estimate_message_tokens(item) for item in messages[index + 1:]) >= threshold
+                return total_tokens + sum(_estimate_message_tokens(item) for item in messages[index + 1 :]) >= threshold
             if input_tokens is not None or output_tokens is not None:
-                return (input_tokens or 0) + (output_tokens or 0) + sum(_estimate_message_tokens(item) for item in messages[index + 1:]) >= threshold
+                return (input_tokens or 0) + (output_tokens or 0) + sum(
+                    _estimate_message_tokens(item) for item in messages[index + 1 :]
+                ) >= threshold
 
     return False
 
@@ -414,13 +418,17 @@ async def _generate_summary(
         raise ValueError('No available model for context compaction')
 
     window = _resolve_context_size({}, task_model_id, models)
-    if window and not _single_batch and sum(_estimate_message_tokens(item) for item in compacted_messages) > window // 3:
+    if (
+        window
+        and not _single_batch
+        and sum(_estimate_message_tokens(item) for item in compacted_messages) > window // 3
+    ):
         # Summarize bounded batches in sequence so the summary request itself fits.
         budget = max(256, window // 4)
         batches, batch, size = [], [], 0
         for message in compacted_messages:
             content = str(get_content_from_message(message) or '')
-            pieces = [content[index:index + budget] for index in range(0, len(content), budget)] or ['']
+            pieces = [content[index : index + budget] for index in range(0, len(content), budget)] or ['']
             for piece in pieces:
                 item = {'role': message.get('role', 'user'), 'content': piece}
                 tokens = _estimate_message_tokens(item)
@@ -433,7 +441,9 @@ async def _generate_summary(
             batches.append(batch)
         summary = previous_summary
         for batch in batches:
-            summary = await _generate_summary(request, user, model_id, models, batch, [], summary, summary_prompt_template, _single_batch=True)
+            summary = await _generate_summary(
+                request, user, model_id, models, batch, [], summary, summary_prompt_template, _single_batch=True
+            )
         return summary
 
     summary_prompt_template = summary_prompt_template.strip() or DEFAULT_CONTEXT_COMPACTION_PROMPT

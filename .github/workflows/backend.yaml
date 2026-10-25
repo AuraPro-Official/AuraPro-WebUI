@@ -239,7 +239,7 @@ jobs:
         run: |
           extras=()
           for dist in langcodes language_data sqlalchemy aiosqlite alembic \
-                      redis authlib aiohttp python-mimeparse aiocache; do
+                      redis authlib aiohttp python-mimeparse aiocache packaging; do
             pin="$(sed -n "s/^[[:space:]]*\"\(${dist}\(\[[^]]*\]\)\{0,1\}==[^\"]*\)\".*/\1/p" pyproject.toml | head -n 1)"
             if [ -z "$pin" ]; then
               echo "::error::no pin for ${dist} in pyproject.toml"

@@ -21,7 +21,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     def test_managed_thinking_defaults_off_and_preserves_template_options(self):
         for engine in ('standard', 'pro'):
             for effort in (None, '', 'none', 'off'):
-                payload = {'reasoning_effort': effort, 'chat_template_kwargs': {'other': 'kept', 'reasoning_effort': 'high'}}
+                payload = {
+                    'reasoning_effort': effort,
+                    'chat_template_kwargs': {'other': 'kept', 'reasoning_effort': 'high'},
+                }
                 result = runtime.apply_runtime_thinking(payload, engine)
                 self.assertFalse(result['chat_template_kwargs']['enable_thinking'])
                 self.assertEqual(result['reasoning_effort'], 'none')
@@ -69,13 +72,15 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     def test_filter_toggle_preserves_requested_reasoning_level(self):
         for engine in ('standard', 'pro'):
-            result = runtime.apply_runtime_thinking({
-                'reasoning_effort': 'high',
-                'chat_template_kwargs': {'enable_thinking': True},
-            }, engine)
+            result = runtime.apply_runtime_thinking(
+                {
+                    'reasoning_effort': 'high',
+                    'chat_template_kwargs': {'enable_thinking': True},
+                },
+                engine,
+            )
             self.assertEqual(result['reasoning_effort'], 'high')
-            self.assertEqual(result['chat_template_kwargs']['reasoning_effort'],
-                             'xhigh' if engine == 'pro' else 'high')
+            self.assertEqual(result['chat_template_kwargs']['reasoning_effort'], 'xhigh' if engine == 'pro' else 'high')
 
     def test_control_is_opt_in_and_loopback_only(self):
         with patch.dict(os.environ, {}, clear=True):

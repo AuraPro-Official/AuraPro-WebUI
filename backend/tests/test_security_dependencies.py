@@ -23,6 +23,16 @@ def normalized(req):
 
 
 class SecurityDependenciesTest(unittest.TestCase):
+    def test_docker_includes_the_requirements_constraint_file(self):
+        dockerfile = (ROOT / 'Dockerfile').read_text(encoding='utf-8')
+        copies = [line for line in dockerfile.splitlines() if line.startswith('COPY ') and 'requirements.txt' in line]
+        self.assertTrue(any('./backend/requirements-security.txt' in line for line in copies))
+        self.assertNotIn("'torch<=2.9.1'", dockerfile)
+        self.assertEqual(
+            dockerfile.count("'torch==2.13.0' torchvision torchaudio -r requirements.txt --torch-backend"), 2
+        )
+        self.assertIn('ARG USE_CUDA_VER=cu130', dockerfile)
+
     def test_pip_and_uv_constraints_agree(self):
         uv = {normalized(Requirement(r)) for r in PROJECT['tool']['uv']['constraint-dependencies']}
         pip = {normalized(r) for r in requirements('backend/requirements-security.txt')}

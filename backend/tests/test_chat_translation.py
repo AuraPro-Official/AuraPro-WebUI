@@ -229,6 +229,7 @@ class ChatTranslationMiddlewareTest(unittest.IsolatedAsyncioTestCase):
             'chat_id': '',
             'user': None,
             'features': {},
+            'model': {},
             'log': logging.getLogger(__name__),
             # form_data is assigned in the production block, so supply it as a function argument.
         }
@@ -251,6 +252,12 @@ class ChatTranslationMiddlewareTest(unittest.IsolatedAsyncioTestCase):
         self.settings.assert_awaited_once_with(self.namespace['features']['glossary'])
         self.assertEqual(self.apply.call_args.args[1].target, 'Spanish')
         self.assertEqual(self.apply.call_args.args[1].text, '你好')
+        self.assertEqual(self.apply.call_args.args[2], {'glossary_mode': 'smart'})
+
+    async def test_pro_model_preserves_dictionary_settings_and_context_limit(self):
+        self.namespace['model'] = {'aurapro_runtime': 'pro', 'context_length': 32768}
+        await self.namespace['run']({'messages': [{'role': 'user', 'content': '翻译成法语：hello'}]})
+        self.assertEqual(self.apply.call_args.args[2], {'glossary_mode': 'smart', 'token_limit': 32768})
 
     async def test_modes_and_files_do_not_enter_automatic_path(self):
         form = {'messages': [{'role': 'user', 'content': '翻译成法语：hello'}]}
