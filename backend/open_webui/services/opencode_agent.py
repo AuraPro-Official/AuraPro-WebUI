@@ -303,9 +303,9 @@ def _session_id_from_event(event: dict) -> str | None:
     return properties.get('sessionID') or properties.get('session_id')
 
 
-def _assistant_snapshot(messages: Any, baseline_ids: set[str]) -> tuple[str, list[dict], str | None]:
+def _assistant_messages(messages: Any, baseline_ids: set[str]) -> list[dict]:
     if not isinstance(messages, list):
-        return '', [], None
+        return []
     candidates = []
     for item in messages:
         if not isinstance(item, dict):
@@ -315,17 +315,30 @@ def _assistant_snapshot(messages: Any, baseline_ids: set[str]) -> tuple[str, lis
         if info.get('role') == 'assistant' and message_id not in baseline_ids:
             candidates.append(item)
     if not candidates:
-        return '', [], None
+        return []
     current = candidates[-1]
     current_parent_id = str((current.get('info') or {}).get('parentID') or '')
-    turn_candidates = (
+    return (
         [item for item in candidates if str((item.get('info') or {}).get('parentID') or '') == current_parent_id]
         if current_parent_id
         else candidates
     )
-    parts = current.get('parts') if isinstance(current.get('parts'), list) else []
-    text = ''.join(
-        str(part.get('text') or '') for part in parts if isinstance(part, dict) and part.get('type') == 'text'
+
+
+def _assistant_snapshot(messages: Any, baseline_ids: set[str]) -> tuple[str, list[dict], str | None]:
+    turn_candidates = _assistant_messages(messages, baseline_ids)
+    if not turn_candidates:
+        return '', [], None
+    text = '\n'.join(
+        text
+        for item in turn_candidates
+        if (
+            text := ''.join(
+                str(part.get('text') or '')
+                for part in (item.get('parts') or [])
+                if isinstance(part, dict) and part.get('type') == 'text'
+            )
+        )
     )
     tools = [
         part
@@ -333,7 +346,104 @@ def _assistant_snapshot(messages: Any, baseline_ids: set[str]) -> tuple[str, lis
         for part in (item.get('parts') if isinstance(item.get('parts'), list) else [])
         if isinstance(part, dict) and part.get('type') == 'tool'
     ]
-    return text, tools, str((current.get('info') or {}).get('id') or '') or None
+    return text, tools, str((turn_candidates[-1].get('info') or {}).get('id') or '') or None
+
+
+def _tool_content(part: dict) -> list[dict]:
+    value = (part.get('state') or {}).get('output') or []
+    if isinstance(value, str):
+        value = [{'type': 'text', 'text': value}]
+    result = []
+    for block in value if isinstance(value, list) else []:
+        if not isinstance(block, dict):
+            continue
+        if block.get('type') == 'text':
+            result.append({'type': 'text', 'text': str(block.get('text') or '')[:20000]})
+        elif (
+            block.get('type') == 'image'
+            and block.get('mimeType') in {'image/png', 'image/jpeg', 'image/webp'}
+            and isinstance(block.get('data'), str)
+            and len(block['data']) <= 2000000
+        ):
+            result.append({'type': 'image', 'data': block['data'], 'mimeType': block['mimeType']})
+        if len(result) == 4:
+            break
+    return result
+
+
+def _assistant_output(messages: Any, baseline_ids: set[str]) -> list[dict]:
+    output = []
+    for message_index, item in enumerate(_assistant_messages(messages, baseline_ids)):
+        message_id = str((item.get('info') or {}).get('id') or message_index)
+        text_index = 0
+        for index, part in enumerate(item.get('parts') or []):
+            if not isinstance(part, dict):
+                continue
+            item_id = f'agent:{message_id}:{index}'
+            if part.get('type') == 'text' and part.get('text'):
+                output.append(
+                    {
+                        'id': f'agent:{message_id}:text:{text_index}',
+                        'type': 'message',
+                        'role': 'assistant',
+                        'content': [{'type': 'output_text', 'text': str(part['text'])}],
+                    }
+                )
+                text_index += 1
+            elif part.get('type') == 'tool':
+                state = part.get('state') or {}
+                status = state.get('status') or 'running'
+                call_id = str(part.get('id') or part.get('callID') or item_id)
+                output.append(
+                    {
+                        'id': f'agent:call:{call_id}',
+                        'type': 'function_call',
+                        'call_id': call_id,
+                        'name': part.get('tool') or 'tool',
+                        'arguments': state.get('input') or {},
+                        'status': (
+                            'completed' if status == 'completed' else 'failed' if status == 'error' else 'in_progress'
+                        ),
+                    }
+                )
+                content = _tool_content(part)
+                if content or status in {'completed', 'error'}:
+                    output.append(
+                        {
+                            'id': f'agent:result:{call_id}',
+                            'type': 'function_call_output',
+                            'call_id': call_id,
+                            'status': output[-1]['status'],
+                            'output': [
+                                {'type': 'output_text', 'text': block['text']}
+                                for block in content
+                                if block['type'] == 'text'
+                            ],
+                            'files': [
+                                f'data:{block["mimeType"]};base64,{block["data"]}'
+                                for block in content
+                                if block['type'] == 'image'
+                            ],
+                        }
+                    )
+    return output
+
+
+def _merge_agent_output(previous: list[dict], incoming: list[dict]) -> list[dict]:
+    # Compaction can remove earlier messages from Pi's model context, not the visible transcript.
+    merged = {item['id']: item for item in previous}
+    merged.update((item['id'], item) for item in incoming)
+    return list(merged.values())
+
+
+def _agent_output_text(output: list[dict]) -> str:
+    return '\n'.join(
+        str(part.get('text') or '')
+        for item in output
+        if item.get('type') == 'message'
+        for part in item.get('content', [])
+        if part.get('text')
+    )
 
 
 def _turn_failure(messages: list, baseline_ids: set[str], tools: list) -> str:
@@ -652,9 +762,11 @@ def _normalize_session_diffs(value: Any, directory: str) -> list[dict]:
             status = (
                 'added'
                 if isinstance(before, str) and isinstance(after, str) and not before and bool(after)
-                else 'deleted'
-                if isinstance(before, str) and isinstance(after, str) and bool(before) and not after
-                else 'modified'
+                else (
+                    'deleted'
+                    if isinstance(before, str) and isinstance(after, str) and bool(before) and not after
+                    else 'modified'
+                )
             )
 
         normalized = {
@@ -953,9 +1065,7 @@ async def run_agent_chat(request, form_data: dict, user: Any, metadata: dict) ->
             _active_sessions.pop(str(metadata.get('chat_id') or ''), None)
 
 
-async def _run_agent_chat(  # noqa: C901
-    request, form_data: dict, user: Any, metadata: dict
-) -> dict:
+async def _run_agent_chat(request, form_data: dict, user: Any, metadata: dict) -> dict:  # noqa: C901
     if user.role != 'admin':
         raise OpenCodeError('Code Agent is currently limited to administrators.')
 
@@ -1023,6 +1133,8 @@ async def _run_agent_chat(  # noqa: C901
         queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         event_task = asyncio.create_task(_read_sse(event_response, queue))
         latest_text = ''
+        latest_output: list[dict] = []
+        transcript_saved = False
         latest_assistant_message_id: str | None = None
         latest_user_message_id: str | None = None
         latest_messages = baseline if isinstance(baseline, list) else []
@@ -1108,9 +1220,11 @@ async def _run_agent_chat(  # noqa: C901
                             description = (
                                 '正在精简上下文，完成后继续任务'
                                 if compacting
-                                else '上下文精简已完成，继续执行'
-                                if properties.get('result')
-                                else '上下文精简未完成：' + str(properties.get('errorMessage') or '已取消')
+                                else (
+                                    '上下文精简已完成，继续执行'
+                                    if properties.get('result')
+                                    else '上下文精简未完成：' + str(properties.get('errorMessage') or '已取消')
+                                )
                             )
                             await event_emitter(
                                 {
@@ -1259,9 +1373,15 @@ async def _run_agent_chat(  # noqa: C901
                             }
                         )
                         await _persist_message(
-                            chat_id, message_id, latest_text, done=False, usage=usage, contextUsage=context_usage
+                            chat_id,
+                            message_id,
+                            latest_text,
+                            output=latest_output,
+                            done=False,
+                            usage=usage,
+                            contextUsage=context_usage,
                         )
-                    text, tools, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
+                    _, tools, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
                     if assistant_message_id:
                         seen_activity = True
                         latest_assistant_message_id = assistant_message_id
@@ -1270,12 +1390,19 @@ async def _run_agent_chat(  # noqa: C901
                             assistant_message_id,
                             baseline_ids,
                         )
-                    if text != latest_text:
+                    output = _merge_agent_output(latest_output, _assistant_output(latest_messages, baseline_ids))
+                    if output != latest_output:
                         last_activity_at = now
                         current_phase = 'working'
                         current_detail = ''
-                        latest_text = text
-                        await event_emitter({'type': 'replace', 'data': {'content': latest_text}})
+                        latest_output = output
+                        latest_text = _agent_output_text(latest_output)
+                        await event_emitter(
+                            {
+                                'type': 'chat:completion',
+                                'data': {'content': latest_text, 'output': latest_output, 'done': False},
+                            }
+                        )
                     for part_index, part in enumerate(tools):
                         state_value = part.get('state') if isinstance(part.get('state'), dict) else {}
                         part_id = str(
@@ -1301,11 +1428,12 @@ async def _run_agent_chat(  # noqa: C901
                                     },
                                 }
                             )
-                    if latest_text and now - last_persist >= 1.0:
+                    if latest_output and now - last_persist >= 1.0:
                         await _persist_message(
                             chat_id,
                             message_id,
                             latest_text,
+                            output=latest_output,
                             done=False,
                             **({'usage': latest_usage} if latest_usage else {}),
                         )
@@ -1372,7 +1500,7 @@ async def _run_agent_chat(  # noqa: C901
             )
             if isinstance(final_messages, list):
                 latest_messages = final_messages
-            final_text, final_tools, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
+            _, final_tools, assistant_message_id = _assistant_snapshot(latest_messages, baseline_ids)
             if assistant_message_id:
                 latest_assistant_message_id = assistant_message_id
                 latest_user_message_id = _resolve_user_message_id(
@@ -1380,9 +1508,8 @@ async def _run_agent_chat(  # noqa: C901
                     assistant_message_id,
                     baseline_ids,
                 )
-            if final_text and final_text != latest_text:
-                latest_text = final_text
-                await event_emitter({'type': 'replace', 'data': {'content': latest_text}})
+            latest_output = _merge_agent_output(latest_output, _assistant_output(latest_messages, baseline_ids))
+            latest_text = _agent_output_text(latest_output)
 
             diff_query = {'messageID': latest_user_message_id} if latest_user_message_id else None
             session_diffs, todos, vcs, workspace_files = await asyncio.gather(
@@ -1412,10 +1539,18 @@ async def _run_agent_chat(  # noqa: C901
                 baseline_ids,
             )
             failure = _turn_failure(latest_messages, baseline_ids, final_tools)
-            if failure:
-                latest_text = failure + ('\n\n' + latest_text if latest_text.strip() else '')
-            elif not latest_text.strip():
-                latest_text = 'Agent 本轮已结束。请检查工具结果和文件变更。'
+            if failure or not latest_text.strip():
+                latest_output.append(
+                    {
+                        'id': 'agent:outcome',
+                        'type': 'message',
+                        'role': 'assistant',
+                        'content': [
+                            {'type': 'output_text', 'text': failure or 'Agent 本轮已结束。请检查工具结果和文件变更。'}
+                        ],
+                    }
+                )
+                latest_text = _agent_output_text(latest_output)
             diff_count = len(changed_files)
             completed_at = time.monotonic()
             await event_emitter(
@@ -1456,22 +1591,7 @@ async def _run_agent_chat(  # noqa: C901
                     {
                         'name': part.get('tool'),
                         'status': (part.get('state') or {}).get('status'),
-                        'content': [
-                            {'type': 'text', 'text': str(block.get('text', ''))[:20000]}
-                            if block.get('type') == 'text'
-                            else {'type': 'image', 'data': block['data'], 'mimeType': block.get('mimeType')}
-                            for block in ((part.get('state') or {}).get('output') or [])
-                            if isinstance(block, dict)
-                            and (
-                                block.get('type') == 'text'
-                                or (
-                                    block.get('type') == 'image'
-                                    and block.get('mimeType') in {'image/png', 'image/jpeg', 'image/webp'}
-                                    and isinstance(block.get('data'), str)
-                                    and len(block['data']) <= 2000000
-                                )
-                            )
-                        ][:4],
+                        'content': _tool_content(part),
                     }
                     for part in final_tools[-12:]
                 ],
@@ -1486,16 +1606,19 @@ async def _run_agent_chat(  # noqa: C901
                 chat_id,
                 message_id,
                 latest_text,
+                output=latest_output,
                 done=True,
                 opencode=open_code_result,
                 **({'usage': latest_usage} if latest_usage else {}),
                 **({'contextUsage': latest_context_usage} if latest_context_usage else {}),
             )
+            transcript_saved = True
             await event_emitter(
                 {
                     'type': 'chat:completion',
                     'data': {
                         'content': latest_text,
+                        'output': latest_output,
                         'done': True,
                         'opencode': open_code_result,
                         **({'usage': latest_usage} if latest_usage else {}),
@@ -1538,6 +1661,25 @@ async def _run_agent_chat(  # noqa: C901
             )
             raise
         finally:
+            if latest_output and not transcript_saved:
+                latest_output = [
+                    {**item, 'status': 'incomplete'} if item.get('status') == 'in_progress' else item
+                    for item in latest_output
+                ]
+                try:
+                    await asyncio.shield(
+                        _persist_message(chat_id, message_id, latest_text, output=latest_output, done=True)
+                    )
+                    await asyncio.shield(
+                        event_emitter(
+                            {
+                                'type': 'chat:completion',
+                                'data': {'content': latest_text, 'output': latest_output, 'done': False},
+                            }
+                        )
+                    )
+                except Exception:
+                    log.exception('Unable to save partial Agent transcript session=%s', session_id)
             # A failed event consumer must not leave file-writing tools running
             # after their model transport has been closed.
             if transport and 'pi_session' in locals() and pi_session.busy:

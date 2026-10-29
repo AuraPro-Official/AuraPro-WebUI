@@ -41,6 +41,7 @@ class AgentControlForm(BaseModel):
     id: str | None = Field(default=None, max_length=256)
     message: str = Field(default='', max_length=20000)
     value: str | None = Field(default=None, max_length=20000)
+    custom: bool = False
     confirmed: bool | None = None
     cancelled: bool = False
     enabled: bool | None = None

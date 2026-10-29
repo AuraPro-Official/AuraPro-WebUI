@@ -35,6 +35,14 @@
 	let loading = false;
 	let action = '';
 	let answers: Record<string, string> = {};
+	let customAnswers: Record<string, string> = {};
+	const customOption = '\u0000custom';
+	const isOtherOption = (option: string) =>
+		option.trim().toLocaleLowerCase() === $i18n.t('Other').toLocaleLowerCase() ||
+		/^(?:others?|其他|其它|otr[oa]s?)(?:\s|[(:：,，.（/／-]|$)/iu.test(option.trim());
+	const isCustomAnswer = (request: AgentInteraction) =>
+		request.method === 'select' &&
+		(answers[request.id] === customOption || isOtherOption(answers[request.id] ?? ''));
 	let instruction = '';
 	let delivery: 'steer' | 'follow_up' = 'steer';
 	let boundChat = '';
@@ -54,6 +62,7 @@
 		state = { session_id: null, busy: false, cursor: 0, items: [], requests: [], tools: [] };
 		items = [];
 		answers = {};
+		customAnswers = {};
 		error = '';
 		loading = false;
 		void refresh(generation);
@@ -105,6 +114,14 @@
 	};
 	const reply = (request: AgentInteraction, values: Record<string, unknown>) =>
 		run('reply', { id: request.id, ...values });
+	const submitAnswer = (request: AgentInteraction) => {
+		const custom = isCustomAnswer(request);
+		const value = custom
+			? (customAnswers[request.id] ?? '').trim()
+			: (answers[request.id] ?? request.prefill ?? '');
+		if (request.method === 'select' && !value) return;
+		return reply(request, { value, ...(custom ? { custom: true } : {}) });
+	};
 	const labels: Record<string, string> = {
 		prompt: 'Task',
 		started: 'Agent is working',
@@ -198,8 +215,7 @@
 	{#if pending}
 		<form
 			class="mb-2 border-l-2 border-amber-500 py-2 pl-3"
-			on:submit|preventDefault={() =>
-				reply(pending, { value: answers[pending.id] ?? pending.prefill ?? '' })}
+			on:submit|preventDefault={() => submitAnswer(pending)}
 		>
 			<div class="font-medium break-words">{pending.title || 'Agent'}</div>
 			{#if pending.message}<pre
@@ -214,11 +230,37 @@
 								name={pending.id}
 								value={option}
 								bind:group={answers[pending.id]}
+								disabled={!!action}
 								class="mt-0.5"
 							/><span class="break-words">{option}</span></label
 						>
 					{/each}
+					{#if !(pending.options ?? []).some(isOtherOption)}
+						<label class="flex items-start gap-2 py-1">
+							<input
+								type="radio"
+								name={pending.id}
+								value={customOption}
+								bind:group={answers[pending.id]}
+								disabled={!!action}
+								class="mt-0.5"
+							/>
+							<span>{$i18n.t('Other')}</span>
+						</label>
+					{/if}
 				</fieldset>
+				{#if isCustomAnswer(pending)}
+					<textarea
+						aria-label={$i18n.t('Your answer')}
+						placeholder={$i18n.t('Your answer')}
+						class="my-2 w-full resize-y rounded-md border border-gray-200 bg-transparent p-2 dark:border-gray-700"
+						rows="2"
+						maxlength="20000"
+						required
+						disabled={!!action}
+						bind:value={customAnswers[pending.id]}
+					></textarea>
+				{/if}
 			{:else if pending.method !== 'confirm'}
 				<textarea
 					aria-label={pending.title || $i18n.t('Your answer')}
@@ -247,7 +289,11 @@
 				{:else}
 					<button
 						type="submit"
-						disabled={!!action || (pending.method === 'select' && !answers[pending.id])}
+						disabled={!!action ||
+							(pending.method === 'select' &&
+								(isCustomAnswer(pending)
+									? !customAnswers[pending.id]?.trim()
+									: !answers[pending.id]))}
 						class="rounded-md bg-gray-900 px-3 py-1.5 text-white disabled:opacity-40 dark:bg-gray-100 dark:text-gray-900"
 						>{$i18n.t('Submit')}</button
 					>

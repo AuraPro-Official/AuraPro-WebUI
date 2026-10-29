@@ -219,7 +219,7 @@
 					{/if}
 
 					<!-- Output -->
-					{#if isDone && result}
+					{#if result}
 						<div>
 							<div
 								class="text-[10px] uppercase tracking-wider font-medium text-gray-400 dark:text-gray-500 mb-1.5 px-1"

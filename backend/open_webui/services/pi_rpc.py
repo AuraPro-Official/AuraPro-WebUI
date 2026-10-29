@@ -191,6 +191,7 @@ class PiSession:
         self.probe: dict = {}
         self.live_text = ''
         self.live_id = ''
+        self.live_message: dict = {}
         self.busy = False
         self.pending_model_error = ''
         self.interactive = interactive
@@ -429,12 +430,18 @@ class PiSession:
                     await emit(self.directory, 'session.status', self.id, status={'type': 'busy'})
                 elif kind == 'message_start' and event.get('message', {}).get('role') == 'assistant':
                     self.live_text = ''
-                    self.live_id = f'pi_live_{event["message"].get("timestamp", time.time_ns())}'
+                    self.live_message = {
+                        **event['message'],
+                        'timestamp': event['message'].get('timestamp', time.time_ns()),
+                    }
+                    self.live_id = f'pi_{self.live_message["timestamp"]}_assistant'
                     await emit(self.directory, 'message.part.updated', self.id)
                 elif kind == 'message_update':
                     update = event.get('assistantMessageEvent', {})
                     if update.get('type') == 'text_delta':
                         self.live_text += update.get('delta', '')
+                    if isinstance(event.get('message'), dict):
+                        self.live_message = event['message']
                     await emit(self.directory, 'message.part.updated', self.id)
                 elif kind == 'message_end':
                     message = event.get('message') or {}
@@ -447,8 +454,9 @@ class PiSession:
                         )
                         if text:
                             self.record('message', text=text[:20000])
-                    self.live_text = ''
-                    self.live_id = ''
+                        self.live_text = ''
+                        self.live_id = ''
+                        self.live_message = {}
                     if event.get('message', {}).get('stopReason') == 'error':
                         # Agent may compact/retry this error before the run settles.
                         self.pending_model_error = event['message'].get('errorMessage') or 'Agent model request failed.'
@@ -633,13 +641,30 @@ class PiSession:
                 )
         for tool in tools.values():
             live = self.live_tools.get(tool['id'])
-            if live and live.get('output') and tool['state']['status'] == 'running':
-                tool['state']['output'] = [{'type': 'text', 'text': live['output']}]
-        if self.live_text:
+            if live and tool['state']['status'] == 'running':
+                tool['state']['status'] = live.get('status', 'running')
+                if live.get('output'):
+                    tool['state']['output'] = [{'type': 'text', 'text': live['output']}]
+        if self.live_id and not any(item['info']['id'] == self.live_id for item in result):
+            live_parts = []
+            for part in self.live_message.get('content', []):
+                if part.get('type') == 'text':
+                    live_parts.append({'type': 'text', 'text': part.get('text', '')})
+                elif part.get('type') == 'toolCall' and part.get('id') and part.get('name'):
+                    live_parts.append(
+                        {
+                            'id': part['id'],
+                            'type': 'tool',
+                            'tool': part['name'],
+                            'state': {'status': 'running', 'input': part.get('arguments', {})},
+                        }
+                    )
+            if not live_parts and self.live_text:
+                live_parts = [{'type': 'text', 'text': self.live_text}]
             result.append(
                 {
                     'info': {'id': self.live_id, 'role': 'assistant', 'parentID': parent},
-                    'parts': [{'type': 'text', 'text': self.live_text}],
+                    'parts': live_parts,
                 }
             )
         return result
@@ -674,8 +699,13 @@ class PiSession:
             value = payload.get('value')
             if not isinstance(value, str) or len(value) > 20000:
                 raise RuntimeError('Enter a valid Agent response.')
-            if event['method'] == 'select' and value not in event.get('options', []):
-                raise RuntimeError('Choose one of the available options.')
+            if event['method'] == 'select':
+                if payload.get('custom') is True:
+                    value = value.strip()
+                    if not value:
+                        raise RuntimeError('Enter a valid Agent response.')
+                elif value not in event.get('options', []):
+                    raise RuntimeError('Choose one of the available options.')
             answer['value'] = value
         await self.send(answer)
         self.ui.pop(event['id'], None)

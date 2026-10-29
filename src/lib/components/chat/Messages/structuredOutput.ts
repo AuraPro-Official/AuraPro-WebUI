@@ -126,7 +126,7 @@ function getToolResultText(item?: OutputItem): string {
 function buildToolCallToken(item: OutputItem, toolOutputByCallId: Record<string, OutputItem>) {
 	const callId = item.call_id ?? '';
 	const resultItem = toolOutputByCallId[callId];
-	const isDone = isDoneStatus(item.status) || !!resultItem;
+	const isDone = isDoneStatus(item.status) || (!!resultItem && resultItem.status !== 'in_progress');
 
 	return {
 		summary: isDone ? 'Tool Executed' : 'Executing...',

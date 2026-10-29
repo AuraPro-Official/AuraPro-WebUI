@@ -840,7 +840,9 @@
 							{/if}
 
 							{#if message?.opencode}
-								<PiToolResults tools={message.opencode.tools ?? []} />
+								{#if !message.output?.some((item) => item.type === 'function_call')}
+									<PiToolResults tools={message.opencode.tools ?? []} />
+								{/if}
 								<OpenCodeChanges
 									{chatId}
 									messageId={message.opencode.message_id ?? ''}

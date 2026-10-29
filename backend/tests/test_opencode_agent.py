@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import asyncio
 import json
 import sys
 import types
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from pathlib import Path
 
 
@@ -144,8 +145,256 @@ class AgentSessionControlsTest(unittest.IsolatedAsyncioTestCase):
             await opencode_agent.control_agent_session(None, 'chat', user, 'auto_compaction', {'enabled': False})
             self.assertFalse(session.saved['auto_compaction'])
 
+    async def test_control_forwards_custom_choice_without_discarding_the_flag(self):
+        session = types.SimpleNamespace(answer=AsyncMock())
+        services = types.ModuleType('open_webui.services')
+        services.pi_rpc = types.SimpleNamespace(get_session=AsyncMock(return_value=session))
+        with (
+            patch.object(
+                opencode_agent, '_get_chat_binding', AsyncMock(return_value=(None, {}, 'session', 'workspace'))
+            ),
+            patch.dict(sys.modules, {'open_webui.services': services}),
+        ):
+            values = {'id': 'choice', 'value': 'Rust', 'custom': True}
+            result = await opencode_agent.control_agent_session(
+                None, 'chat', types.SimpleNamespace(id='user'), 'reply', values
+            )
+            self.assertEqual(result, {'ok': True})
+            session.answer.assert_awaited_once_with(values)
+
+
+class AgentTranscriptDeliveryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_live_transcript_is_emitted_incrementally_and_saved_with_final_message(self):
+        await self.check_delivery()
+
+    async def test_cancelled_turn_saves_partial_transcript_and_stops_pending_tools(self):
+        await self.check_delivery(asyncio.CancelledError)
+
+    async def test_failed_turn_saves_partial_transcript_and_stops_pending_tools(self):
+        await self.check_delivery(RuntimeError)
+
+    async def check_delivery(self, interrupt=None):
+        def message(name, text, tool_status=None):
+            parts = [{'type': 'text', 'text': text}]
+            if tool_status:
+                parts.append(
+                    {
+                        'id': name + '-tool',
+                        'type': 'tool',
+                        'tool': 'bash',
+                        'state': {
+                            'input': {'command': 'npm test'},
+                            'status': tool_status,
+                            'output': 'Test output',
+                        },
+                    }
+                )
+            return {'info': {'id': name, 'role': 'assistant', 'parentID': 'user'}, 'parts': parts}
+
+        stages = [
+            [],
+            [message('first', 'Checking files.', 'running')],
+            [message('first', 'Checking files.', 'completed'), message('next', 'Running tests.', 'running')],
+            [
+                message('first', 'Checking files.', 'completed'),
+                message('next', 'Running tests.', 'completed'),
+                message('final', 'Done.'),
+            ],
+        ]
+        polls = 0
+
+        async def request(_session, _runtime, _method, path, **_kwargs):
+            nonlocal polls
+            if path == '/global/health':
+                return {'healthy': True}
+            if path.endswith('/message'):
+                if interrupt and polls == 2:
+                    raise interrupt('Stopped for test')
+                result = stages[min(polls, len(stages) - 1)]
+                polls += 1
+                return result
+            if path == '/session/status':
+                return {'session': {'type': 'idle' if polls >= 4 else 'busy'}}
+            return {}
+
+        async def optional(_session, _runtime, _method, path, fallback, **_kwargs):
+            return stages[-1] if path.endswith('/message') else fallback
+
+        async def read_events(*_args):
+            await asyncio.sleep(60)
+
+        client = types.SimpleNamespace(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
+
+        # Special methods must be defined on the class for async context management.
+        class Client:
+            __aenter__ = client.__aenter__
+            __aexit__ = client.__aexit__
+
+        pi_session = types.SimpleNamespace(busy=False, compacting=False, saved={}, close=AsyncMock(), start=AsyncMock())
+        stream = types.SimpleNamespace(status=200, close=Mock())
+        pi_rpc = types.ModuleType('open_webui.services.pi_rpc')
+        pi_rpc.EventStream = Mock(return_value=stream)
+        pi_rpc.get_session = AsyncMock(return_value=pi_session)
+        services = types.ModuleType('open_webui.services')
+        services.pi_rpc = pi_rpc
+        transport_module = types.ModuleType('open_webui.services.pi_webui_model')
+        transport = types.SimpleNamespace(context_window=32768, start=AsyncMock(return_value={}), close=AsyncMock())
+        transport_module.WebUIModelTransport = Mock(return_value=transport)
+        emitter = AsyncMock()
+        persist = AsyncMock()
+        with (
+            patch.dict(
+                sys.modules,
+                {'open_webui.services': services, pi_rpc.__name__: pi_rpc, transport_module.__name__: transport_module},
+            ),
+            patch.object(opencode_agent.aiohttp, 'ClientSession', Mock(return_value=Client()), create=True),
+            patch.object(opencode_agent.aiohttp, 'ClientTimeout', Mock(), create=True),
+            patch.object(opencode_agent, '_load_runtime', Mock(return_value={})),
+            patch.object(opencode_agent, '_ensure_session', AsyncMock(return_value='session')),
+            patch.object(opencode_agent, '_request_json', request),
+            patch.object(opencode_agent, '_request_json_optional', optional),
+            patch.object(opencode_agent, '_read_sse', read_events),
+            patch.object(opencode_agent, '_persist_message', persist),
+            patch.object(opencode_agent, 'get_event_emitter', AsyncMock(return_value=emitter)),
+            patch.object(opencode_agent, 'get_event_call', AsyncMock()),
+            patch.object(opencode_agent, '_POLL_INTERVAL_SECONDS', 0.02),
+        ):
+            task = opencode_agent._run_agent_chat(
+                None,
+                {'model': 'test'},
+                types.SimpleNamespace(id='user', role='admin'),
+                {
+                    'chat_id': 'chat',
+                    'message_id': 'reply',
+                    'user_message': {'content': 'Check files'},
+                    'features': {'opencode': {'enabled': True, 'directory': str(Path.cwd()), 'approval_mode': 'full'}},
+                },
+            )
+            if interrupt:
+                with self.assertRaises(interrupt):
+                    await task
+            else:
+                result = await task
+        completions = [
+            call.args[0]['data']
+            for call in emitter.await_args_list
+            if call.args[0]['type'] == 'chat:completion' and 'output' in call.args[0]['data']
+        ]
+        self.assertFalse(completions[0]['done'])
+        self.assertEqual(completions[0]['output'][1]['status'], 'in_progress')
+        if interrupt:
+            self.assertEqual(completions[-1]['content'], 'Checking files.')
+            self.assertEqual(completions[-1]['output'][1]['status'], 'incomplete')
+        else:
+            self.assertGreaterEqual(len(completions), 4)
+            self.assertIn('Running tests.', completions[1]['content'])
+            self.assertEqual(completions[-1]['content'], 'Checking files.\nRunning tests.\nDone.')
+            self.assertTrue(completions[-1]['done'])
+            self.assertTrue(result['status'])
+        self.assertEqual(persist.await_args.kwargs['output'], completions[-1]['output'])
+        self.assertTrue(persist.await_args.kwargs['done'])
+        transport.close.assert_awaited_once()
+        stream.close.assert_called_once()
+
 
 class OpenCodeAgentBehaviorTest(unittest.TestCase):
+    def test_transcript_interleaves_updates_tools_and_final_answer(self):
+        messages = [
+            {
+                'info': {'id': 'old', 'role': 'assistant', 'parentID': 'previous'},
+                'parts': [{'type': 'text', 'text': 'Old turn'}],
+            },
+            {
+                'info': {'id': 'first', 'role': 'assistant', 'parentID': 'user'},
+                'parts': [
+                    {'type': 'reasoning', 'text': 'Private reasoning must not be rendered'},
+                    {'type': 'text', 'text': 'Checking the files.'},
+                    {
+                        'id': 'read-1',
+                        'type': 'tool',
+                        'tool': 'read',
+                        'state': {
+                            'status': 'completed',
+                            'input': {'path': 'example.txt'},
+                            'output': [{'type': 'text', 'text': 'File contents'}],
+                        },
+                    },
+                ],
+            },
+            {
+                'info': {'id': 'second', 'role': 'assistant', 'parentID': 'user'},
+                'parts': [
+                    {'type': 'text', 'text': 'Found the issue. Running the checks.'},
+                    {
+                        'id': 'bash-1',
+                        'type': 'tool',
+                        'tool': 'bash',
+                        'state': {
+                            'status': 'running',
+                            'input': {'command': 'npm test'},
+                            'output': 'One test passed',
+                        },
+                    },
+                ],
+            },
+        ]
+        output = opencode_agent._assistant_output(messages, {'old'})
+        self.assertEqual(
+            [item['type'] for item in output],
+            [
+                'message',
+                'function_call',
+                'function_call_output',
+                'message',
+                'function_call',
+                'function_call_output',
+            ],
+        )
+        self.assertEqual(output[1]['arguments'], {'path': 'example.txt'})
+        self.assertEqual(output[2]['output'][0]['text'], 'File contents')
+        self.assertEqual(output[-1]['status'], 'in_progress')
+        self.assertEqual(
+            opencode_agent._agent_output_text(output), 'Checking the files.\nFound the issue. Running the checks.'
+        )
+        self.assertNotIn('Private reasoning', json.dumps(output))
+        self.assertNotIn('Old turn', json.dumps(output))
+        self.assertEqual(_assistant_snapshot(messages, {'old'})[0], opencode_agent._agent_output_text(output))
+
+    def test_transcript_updates_in_place_and_survives_compaction(self):
+        def message(message_id, text):
+            return {
+                'info': {'id': message_id, 'role': 'assistant', 'parentID': 'user'},
+                'parts': [{'type': 'text', 'text': text}],
+            }
+
+        first = opencode_agent._assistant_output([message('first', 'Checking')], set())
+        updated = opencode_agent._assistant_output(
+            [message('first', 'Checking files'), message('next', 'Running tests')], set()
+        )
+        output = opencode_agent._merge_agent_output(first, updated)
+        self.assertEqual(len(output), 2)
+        self.assertEqual(opencode_agent._agent_output_text(output), 'Checking files\nRunning tests')
+        compacted = opencode_agent._assistant_output([message('final', 'Done')], set())
+        restored = json.loads(json.dumps(opencode_agent._merge_agent_output(output, compacted)))
+        self.assertEqual(opencode_agent._agent_output_text(restored), 'Checking files\nRunning tests\nDone')
+        self.assertEqual(opencode_agent._merge_agent_output(restored, []), restored)
+
+    def test_transcript_tool_output_is_bounded_and_filters_unsafe_images(self):
+        part = {
+            'state': {
+                'output': [
+                    {'type': 'text', 'text': 'x' * 25000},
+                    {'type': 'image', 'mimeType': 'image/png', 'data': 'YWJj'},
+                    {'type': 'image', 'mimeType': 'image/svg+xml', 'data': 'unsafe'},
+                    {'type': 'image', 'mimeType': 'image/png', 'data': 'x' * 2000001},
+                ]
+            }
+        }
+        content = opencode_agent._tool_content(part)
+        self.assertEqual(len(content), 2)
+        self.assertEqual(len(content[0]['text']), 20000)
+        self.assertEqual(content[1]['data'], 'YWJj')
+
     def test_turn_usage_sums_calls_including_cache_without_history_or_duplicates(self):
         def message(mid, **usage):
             return {'info': {'id': mid, 'role': 'assistant', 'usage': usage}}

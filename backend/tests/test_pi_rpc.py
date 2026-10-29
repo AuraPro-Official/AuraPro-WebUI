@@ -66,6 +66,60 @@ class SnapshotTest(unittest.TestCase):
 
 
 class SessionActivityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_streaming_message_keeps_stable_id_and_is_not_duplicated(self):
+        self.session.live_id = 'pi_123_assistant'
+        self.session.live_text = 'Checking files'
+        self.session.command = AsyncMock(
+            return_value={
+                'messages': [
+                    {'role': 'user', 'timestamp': 122, 'content': 'Check'},
+                ]
+            }
+        )
+        streaming = await self.session.messages()
+        self.assertEqual(streaming[-1]['info']['id'], 'pi_123_assistant')
+        self.session.command.return_value['messages'].append(
+            {
+                'role': 'assistant',
+                'timestamp': 123,
+                'content': [{'type': 'text', 'text': 'Checking files'}],
+            }
+        )
+        completed = await self.session.messages()
+        self.assertEqual(len(completed), 2)
+        self.assertEqual(streaming[-1]['info']['id'], completed[-1]['info']['id'])
+
+    async def test_streaming_parts_keep_text_and_tool_order_without_private_reasoning(self):
+        self.session.live_id = 'pi_123_assistant'
+        self.session.live_text = 'Checking the file'
+        self.session.live_message = {
+            'content': [
+                {'type': 'thinking', 'thinking': 'Private reasoning'},
+                {'type': 'text', 'text': 'Checking the file'},
+                {'type': 'toolCall', 'id': 'read-1', 'name': 'read', 'arguments': {'path': 'example.txt'}},
+            ]
+        }
+        self.session.command = AsyncMock(return_value={'messages': []})
+        parts = (await self.session.messages())[-1]['parts']
+        self.assertEqual([part['type'] for part in parts], ['text', 'tool'])
+        self.assertEqual(parts[0]['text'], 'Checking the file')
+        self.assertEqual(parts[1]['state']['input'], {'path': 'example.txt'})
+
+    async def test_message_events_only_clear_live_text_for_assistant_end(self):
+        events = [
+            {'type': 'message_start', 'message': {'role': 'assistant', 'timestamp': 123}},
+            {'type': 'message_update', 'assistantMessageEvent': {'type': 'text_delta', 'delta': 'Checking'}},
+            {'type': 'message_end', 'message': {'role': 'toolResult'}},
+        ]
+        reader = asyncio.StreamReader()
+        for event in events:
+            reader.feed_data(json.dumps(event).encode() + b'\n')
+        reader.feed_eof()
+        self.session.process = types.SimpleNamespace(stdout=reader, returncode=0)
+        await self.session.read()
+        self.assertEqual(self.session.live_id, 'pi_123_assistant')
+        self.assertEqual(self.session.live_text, 'Checking')
+
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.session = rpc.PiSession({'agentDir': self.temporary.name}, 'test-session', self.temporary.name)
@@ -107,6 +161,43 @@ class SessionActivityTest(unittest.IsolatedAsyncioTestCase):
             {'type': 'extension_ui_response', 'id': 'approve', 'cancelled': True}
         )
         self.assertEqual(self.session.ui, {})
+
+    async def test_custom_selection_forwards_text_and_is_consumed_once(self):
+        self.session.ui['choice'] = {'id': 'choice', 'method': 'select', 'options': ['Python', 'Other']}
+        await self.session.answer({'id': 'choice', 'value': '  Rust\nwith tests  ', 'custom': True})
+        self.session.send.assert_awaited_once_with(
+            {'type': 'extension_ui_response', 'id': 'choice', 'value': 'Rust\nwith tests'}
+        )
+        self.assertNotIn('choice', self.session.ui)
+        self.assertEqual(self.session.saved['activity'][-1]['text'], 'Rust\nwith tests')
+        with self.assertRaisesRegex(RuntimeError, 'expired'):
+            await self.session.answer({'id': 'choice', 'value': 'Rust', 'custom': True})
+
+    async def test_custom_selection_requires_explicit_flag_and_nonblank_bounded_text(self):
+        self.session.ui['choice'] = {'id': 'choice', 'method': 'select', 'options': ['Python']}
+        for payload in [
+            {'value': 'Rust'},
+            {'value': 'Rust', 'custom': 'true'},
+            {'value': ' \n\t ', 'custom': True},
+            {'value': 'x' * 20001, 'custom': True},
+            {'value': None, 'custom': True},
+        ]:
+            with self.subTest(payload=payload), self.assertRaises(RuntimeError):
+                await self.session.answer({'id': 'choice', **payload})
+            self.assertIn('choice', self.session.ui)
+        self.session.send.assert_not_awaited()
+        await self.session.answer({'id': 'choice', 'value': 'Go', 'custom': True})
+        self.session.send.assert_awaited_once_with({'type': 'extension_ui_response', 'id': 'choice', 'value': 'Go'})
+
+    async def test_custom_selection_is_retained_on_send_failure_and_can_be_cancelled(self):
+        self.session.ui['choice'] = {'id': 'choice', 'method': 'select', 'options': ['Other']}
+        self.session.send.side_effect = OSError('disconnected')
+        with self.assertRaises(OSError):
+            await self.session.answer({'id': 'choice', 'value': 'Rust', 'custom': True})
+        self.assertIn('choice', self.session.ui)
+        self.session.send.side_effect = None
+        await self.session.answer({'id': 'choice', 'cancelled': True})
+        self.session.send.assert_awaited_with({'type': 'extension_ui_response', 'id': 'choice', 'cancelled': True})
 
     async def test_failed_task_keeps_file_changes_and_settles_once(self):
         file = Path(self.temporary.name) / 'result.txt'
@@ -250,6 +341,31 @@ class ModelServer(BaseHTTPRequestHandler):
                     ),
                     ({}, 'tool_calls'),
                 ]
+        if getattr(self.server, 'test_transcript', False):
+            results = [message for message in body['messages'] if message.get('role') == 'tool']
+            if not results:
+                events.insert(0, ({'role': 'assistant', 'content': 'Checking the file before the update.'}, None))
+            elif len(results) == 1:
+                events = [
+                    ({'role': 'assistant', 'content': 'File updated. Verifying the contents.'}, None),
+                    (
+                        {
+                            'tool_calls': [
+                                {
+                                    'index': 0,
+                                    'id': 'call_read',
+                                    'type': 'function',
+                                    'function': {
+                                        'name': 'read',
+                                        'arguments': json.dumps({'path': '中文.txt'}),
+                                    },
+                                }
+                            ]
+                        },
+                        None,
+                    ),
+                    ({}, 'tool_calls'),
+                ]
         for delta, finish in events:
             record = {
                 'id': 'chatcmpl-test',
@@ -274,6 +390,20 @@ class ModelServer(BaseHTTPRequestHandler):
 
 @unittest.skipUnless(os.getenv('PI_TEST_EXECUTABLE'), 'Set PI_TEST_EXECUTABLE for real PI integration tests')
 class RealPiTest(unittest.IsolatedAsyncioTestCase):
+    async def test_real_rpc_retains_interleaved_commentary_and_tools(self):
+        self.server.test_transcript = True
+        session_id = await self.run_turn()
+        messages = await rpc.request('GET', f'/session/{session_id}/message', str(self.workspace), None, None)
+        assistants = [message for message in messages if message['info']['role'] == 'assistant']
+        self.assertEqual(len(assistants), 3)
+        self.assertEqual([part['type'] for part in assistants[0]['parts']], ['text', 'tool'])
+        self.assertEqual([part['type'] for part in assistants[1]['parts']], ['text', 'tool'])
+        self.assertEqual(assistants[0]['parts'][0]['text'], 'Checking the file before the update.')
+        self.assertEqual(assistants[1]['parts'][0]['text'], 'File updated. Verifying the contents.')
+        self.assertEqual(assistants[1]['parts'][1]['state']['status'], 'completed')
+        self.assertIn('after', str(assistants[1]['parts'][1]['state']['output']))
+        self.assertEqual(assistants[2]['parts'][0]['text'], '完成\u2028验证')
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -473,11 +603,12 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
             'export default async function(pi) { await bridge(pi); '
             'pi.registerCommand("dialogs-test", {handler: async (_args, ctx) => {'
             'const selected = await ctx.ui.select("Choose", ["one", "two"]);'
+            'const custom = await ctx.ui.select("Custom", ["one", "Other"]);'
             'const input = await ctx.ui.input("Input", "placeholder");'
             'const edited = await ctx.ui.editor("Editor", "initial");'
             'const cancelled = await ctx.ui.input("Cancel");'
             'ctx.ui.setEditorText("draft text");'
-            'ctx.ui.notify(JSON.stringify({selected,input,edited,cancelled:cancelled===undefined}), "info");'
+            'ctx.ui.notify(JSON.stringify({selected,custom,input,edited,cancelled:cancelled===undefined}), "info");'
             '}}); }',
             encoding='utf-8',
         )
@@ -508,6 +639,8 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
                         answer = {'id': ui['id']}
                         if ui.get('title') == 'Cancel':
                             answer['cancelled'] = True
+                        elif ui.get('title') == 'Custom':
+                            answer.update(value='Rust with Unicode: 自定义', custom=True)
                         else:
                             answer['value'] = {'select': 'two', 'input': '中文输入', 'editor': 'line1\nline2'}[method]
                         await rpc.request('POST', f'/session/{created["id"]}/ui', directory, answer, None)
@@ -515,9 +648,16 @@ class RealPiTest(unittest.IsolatedAsyncioTestCase):
                         outcome = json.loads(ui['message'])
                 if event['type'] == 'session.idle':
                     break
-            self.assertEqual(methods, ['select', 'input', 'editor', 'input'])
+            self.assertEqual(methods, ['select', 'select', 'input', 'editor', 'input'])
             self.assertEqual(
-                outcome, {'selected': 'two', 'input': '中文输入', 'edited': 'line1\nline2', 'cancelled': True}
+                outcome,
+                {
+                    'selected': 'two',
+                    'custom': 'Rust with Unicode: 自定义',
+                    'input': '中文输入',
+                    'edited': 'line1\nline2',
+                    'cancelled': True,
+                },
             )
         finally:
             stream.close()

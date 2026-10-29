@@ -2123,6 +2123,8 @@ class BilingualKnowledgeReader:
                 ]
 
             collection_names = [k.id for k in filter_knowledges]
+            if not collection_names:
+                return [], [], False
             knowledge_name_by_id = {k.id: (getattr(k, 'name', None) or k.id) for k in filter_knowledges}
             embedding_function = lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
                 query, prefix=prefix, user=user
@@ -2181,7 +2183,7 @@ class BilingualKnowledgeReader:
 
         except Exception as e:
             log.warning('BilingualKnowledgeReader: 查询知识库失败: %s', e)
-            return []
+            return [], [], False
 
     def _find_collection_for_bilingual_id(self, bilingual_id: str, collection_names: list[str]) -> str | None:
         for collection_name in collection_names:
@@ -2443,7 +2445,9 @@ def _build_glossary_block(
     )
 
 
-async def _build_bilingual_block(request, text, settings: dict[str, Any], source_lang: str, target_lang: str, user):
+async def _build_bilingual_block(
+    request, text, settings: dict[str, Any], source_lang: str, target_lang: str, user
+) -> tuple[str, list, bool]:
     max_terms = int(settings.get('max_terms_injected') or 10)
     configured_source, configured_target = _glossary_language_pair(settings)
     reverse = _language_key(source_lang) == _language_key(configured_target) and _language_key(
@@ -2453,11 +2457,11 @@ async def _build_bilingual_block(request, text, settings: dict[str, Any], source
         target_lang
     ) == _language_key(configured_target)
     if not (forward or reverse):
-        return ''
+        return '', [], False
 
     hits, sources, is_matched = await bilingual_matcher.find_matches(request, text, source_lang, target_lang, user)
     if not hits:
-        return ''
+        return '', [], False
 
     if is_matched:
         term_lines = '\n'.join(f'  {term} -> {mapped}' for term, mapped in hits)
@@ -2993,6 +2997,7 @@ async def apply_rag_translation_mode(
     settings: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], Any]:
     settings = normalize_settings(settings or await read_settings())
+    sources = []
     messages = form_data.get('messages') or []
     message, part_index, text = _latest_user_text_ref(messages)
     if message and text.strip():

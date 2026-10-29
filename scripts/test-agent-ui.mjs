@@ -15,6 +15,7 @@ const server = await createServer({
 	resolve: {
 		alias: {
 			$lib: path.resolve('src/lib'),
+			'$app/navigation': path.resolve('test/mocks/app-navigation.ts'),
 			'$app/environment': path.resolve('test/mocks/app-environment.ts')
 		}
 	},
@@ -25,6 +26,14 @@ server.middlewares.use('/__agent_test', async (_req, res) => {
 	const html = await server.transformIndexHtml(
 		'/__agent_test',
 		'<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="app"></div><script type="module">import {mount} from "svelte";import Harness from "/test/fixtures/AgentWorkspaceHarness.svelte";mount(Harness,{target:document.getElementById("app")});</script></body></html>'
+	);
+	res.setHeader('Content-Type', 'text/html');
+	res.end(html);
+});
+server.middlewares.use('/__agent_transcript', async (_req, res) => {
+	const html = await server.transformIndexHtml(
+		'/__agent_transcript',
+		'<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="app"></div><script type="module">import {mount} from "svelte";import Harness from "/test/fixtures/AgentTranscriptHarness.svelte";mount(Harness,{target:document.getElementById("app")});</script></body></html>'
 	);
 	res.setHeader('Content-Type', 'text/html');
 	res.end(html);
@@ -106,6 +115,53 @@ try {
 		await page.getByRole('button', { name: 'Submit', exact: true }).click();
 		await page.waitForFunction(() => !document.querySelector('input[type=radio]'));
 		assert.equal(calls.find((call) => call.action === 'reply').value, 'CSV');
+		assert.equal(calls.find((call) => call.action === 'reply').custom, undefined);
+		state.requests = [
+			{
+				id: 'custom-language',
+				method: 'select',
+				title: 'Choose language',
+				options: ['Python', 'JavaScript', '其他']
+			}
+		];
+		await page.reload();
+		await page.getByRole('radio', { name: '其他', exact: true }).check();
+		const customAnswer = page.getByRole('textbox', { name: 'Your answer', exact: true });
+		const submit = page.getByRole('button', { name: 'Submit', exact: true });
+		assert.equal(await page.getByRole('radio').count(), 3);
+		assert.ok(await submit.isDisabled());
+		await customAnswer.fill('Rust with 中文注释');
+		await page.waitForTimeout(1200);
+		assert.equal(await customAnswer.inputValue(), 'Rust with 中文注释');
+		await page.getByRole('radio', { name: 'Python', exact: true }).check();
+		await customAnswer.waitFor({ state: 'hidden' });
+		await page.getByRole('radio', { name: '其他', exact: true }).check();
+		assert.equal(await customAnswer.inputValue(), 'Rust with 中文注释');
+		await customAnswer.fill('   \n ');
+		assert.ok(await submit.isDisabled());
+		await customAnswer.fill('  Rust with 中文注释  ');
+		rejectReply = true;
+		await submit.click();
+		await page.getByRole('alert').filter({ hasText: 'Permission could not be saved' }).waitFor();
+		assert.equal(await customAnswer.inputValue(), '  Rust with 中文注释  ');
+		rejectReply = false;
+		await submit.click();
+		await page.waitForFunction(() => !document.querySelector('input[type=radio]'));
+		assert.equal(
+			calls.filter((call) => call.id === 'custom-language').at(-1).value,
+			'Rust with 中文注释'
+		);
+		assert.equal(calls.filter((call) => call.id === 'custom-language').at(-1).custom, true);
+		state.requests = [
+			{ id: 'custom-cancel', method: 'select', title: 'Choose language', options: ['Python'] }
+		];
+		await page.reload();
+		await page.getByRole('radio', { name: 'Other', exact: true }).check();
+		await customAnswer.fill('Do not send this answer');
+		await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+		await page.waitForFunction(() => !document.querySelector('input[type=radio]'));
+		assert.equal(calls.filter((call) => call.id === 'custom-cancel').at(-1).cancelled, true);
+		assert.equal(calls.filter((call) => call.id === 'custom-cancel').at(-1).value, undefined);
 		await page.getByRole('button', { name: /^Agent/ }).click();
 		await page.getByRole('button', { name: 'Tool results', exact: true }).click();
 		await page.getByText('Live terminal output', { exact: true }).waitFor();
@@ -135,7 +191,23 @@ try {
 		await page.getByRole('button', { name: 'Decline', exact: true }).click();
 		assert.equal(calls.filter((call) => call.action === 'reply').at(-1).confirmed, false);
 		for (const language of ['zh-CN', 'zh-TW', 'es-ES']) {
+			const labels = {
+				'zh-CN': { other: '其他', answer: '你的答复', submit: '提交' },
+				'zh-TW': { other: '其他（请填写）', answer: '你的答覆', submit: '提交' },
+				'es-ES': { other: 'Otro', answer: 'Tu respuesta', submit: 'Enviar' }
+			}[language];
+			state.requests = [
+				{
+					id: `custom-${language}`,
+					method: 'select',
+					title: 'Choose language',
+					options: ['Python', labels.other]
+				}
+			];
 			await page.goto(`${base}?lang=${language}`);
+			await page.getByRole('radio', { name: labels.other, exact: true }).check();
+			assert.equal(await page.getByRole('radio').count(), 2);
+			await page.getByRole('textbox', { name: labels.answer, exact: true }).fill('Rust');
 			await page.getByRole('button', { name: /^Agent/ }).waitFor();
 			await page.getByRole('button', { name: /^Agent/ }).click();
 			await page.screenshot({ path: `.tmp/agent-ui/${width}-${language}.png` });
@@ -143,6 +215,14 @@ try {
 				await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
 				`${language}: horizontal overflow`
 			);
+			await page
+				.locator('form')
+				.filter({ has: page.getByRole('radio') })
+				.getByRole('button', { name: labels.submit, exact: true })
+				.click();
+			await page.waitForFunction(() => !document.querySelector('input[type=radio]'));
+			assert.equal(calls.filter((call) => call.id === `custom-${language}`).at(-1).value, 'Rust');
+			assert.equal(calls.filter((call) => call.id === `custom-${language}`).at(-1).custom, true);
 		}
 		state.busy = false;
 		await page.goto(`${base}?active=0`);
@@ -154,11 +234,78 @@ try {
 		await page.getByRole('button', { name: 'Stop Agent', exact: true }).click();
 		await page.waitForTimeout(100);
 		assert.ok(calls.some((call) => call.action === 'abort'));
+		await page.goto(base.replace('/__agent_test', '/__agent_transcript'));
+		await page.waitForFunction(() => typeof window.setAgentTranscript === 'function');
+		const transcript = [
+			{ id: 'start', type: 'message', content: [{ type: 'output_text', text: '先检查文件。' }] },
+			{
+				id: 'read',
+				type: 'function_call',
+				call_id: 'read',
+				name: 'read',
+				status: 'completed',
+				arguments: { path: 'example.txt' }
+			},
+			{
+				id: 'read-output',
+				type: 'function_call_output',
+				call_id: 'read',
+				status: 'completed',
+				output: [{ text: 'Found the configuration.' }]
+			},
+			{
+				id: 'next',
+				type: 'message',
+				content: [{ type: 'output_text', text: '找到原因了，接着运行测试。' }]
+			},
+			{
+				id: 'test',
+				type: 'function_call',
+				call_id: 'test',
+				name: 'bash',
+				status: 'in_progress',
+				arguments: { command: 'npm test' }
+			},
+			{
+				id: 'test-output',
+				type: 'function_call_output',
+				call_id: 'test',
+				status: 'in_progress',
+				output: [{ text: 'One test passed, still running.' }]
+			}
+		];
+		await page.evaluate((output) => window.setAgentTranscript(output), transcript);
+		await page.getByText('先检查文件。', { exact: true }).waitFor();
+		await page.getByText('找到原因了，接着运行测试。', { exact: true }).waitFor();
+		await page.getByText('npm test', { exact: true }).waitFor();
+		await page.getByText('One test passed, still running.', { exact: true }).waitFor();
+		assert.equal(await page.locator('#agent-transcript-detail-3-tool-call .shimmer').count(), 1);
+		await page.screenshot({ path: `.tmp/agent-ui/${width}-transcript-running.png` });
+		transcript[4].status = transcript[5].status = 'completed';
+		transcript[5].output[0].text = 'All tests passed.';
+		transcript.push({
+			id: 'done',
+			type: 'message',
+			content: [{ type: 'output_text', text: '修复完成，测试通过。' }]
+		});
+		await page.evaluate((output) => window.setAgentTranscript(output, true), transcript);
+		await page.getByText('All tests passed.', { exact: true }).waitFor();
+		await page.getByText('修复完成，测试通过。', { exact: true }).waitFor();
+		await page.reload();
+		await page.getByText('修复完成，测试通过。', { exact: true }).waitFor();
+		assert.equal(await page.getByText('先检查文件。', { exact: true }).count(), 1);
+		const ordered = await page.locator('main').innerText();
+		assert.ok(ordered.indexOf('先检查文件。') < ordered.indexOf('example.txt'));
+		assert.ok(ordered.indexOf('example.txt') < ordered.indexOf('找到原因了'));
+		assert.ok(ordered.indexOf('找到原因了') < ordered.indexOf('npm test'));
+		assert.ok(ordered.indexOf('npm test') < ordered.indexOf('修复完成'));
+		assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+		await page.screenshot({ path: `.tmp/agent-ui/${width}-transcript-completed.png` });
 		assert.deepEqual(errors, []);
 		await page.close();
 	}
 	console.log(
-		'Agent UI: choices, reconnect, refusal, live output, search, steering, auto-compaction, four languages and mobile/desktop passed.'
+		'Agent UI: choices, custom answers, validation, failed submission retry, cancellation, reconnect, refusal, interleaved transcript, live tool output, transcript reload, search, steering, auto-compaction, four languages and mobile/desktop passed.'
 	);
 } finally {
 	await browser?.close();
