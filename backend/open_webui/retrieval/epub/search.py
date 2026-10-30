@@ -172,6 +172,18 @@ _CROSS_ENCODER_COMPONENT = 'local-cross-encoder'
 # Appended to every reason reported under that component, so the consequence is
 # in the message a reader sees rather than only in the component name.
 _UNRERANKED_CONSEQUENCE = 'results are ordered by embedding cosine similarity and are not reranked'
+# Reported when the vector channel ran correctly and had nothing to contribute.
+# The commonest cause by far is a profile mismatch: the vec0 tables are named
+# per embedding profile, so changing the configured model leaves the previous
+# profile's vectors indexed under a table this query never looks at, the
+# backend answers with an empty list, and the request silently becomes
+# graph-only.  That is indistinguishable, from the outside, from a book that
+# genuinely has no semantic match -- hence a marker rather than an
+# empty-but-successful pool with nothing said about it.
+_EMPTY_POOL_REASON = (
+    'no vectors are indexed for the configured embedding profile; this answer is graph-only. '
+    'If the embedding model changed, re-index the affected versions under the new profile'
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1355,6 +1367,12 @@ class EpubSearchService:
         it by cosine similarity against the query vector, and the missing
         model is reported once in ``degraded`` so a caller can say the results
         are unreranked rather than discover it from their order.
+
+        An *empty* pool is likewise not a failure and is returned as a pool,
+        but it is never returned silently: an index holding nothing for the
+        configured profile is reported under ``local-vector-search`` too.  An
+        empty-but-successful result that says nothing is precisely the
+        reinterpretation the paragraph above refuses to allow.
         """
         if self._vector_backend is None or self._embeddings is None:
             degraded.append(ModelAvailability.degraded('local-vector-search', 'not fully configured'))
@@ -1393,6 +1411,14 @@ class EpubSearchService:
                 limit=candidate_limit,
             )
             if not candidates:
+                # Still a pool and not ``None``: the local models all ran and
+                # answered, so this is not the "unavailable" case ``None``
+                # means.  What it is instead is said out loud, under the same
+                # component the channel reports every other shortfall on, so a
+                # caller can tell "nothing matched" from "nothing was
+                # searched" -- the distinction this method's contract exists
+                # to preserve.
+                degraded.append(ModelAvailability.degraded('local-vector-search', _EMPTY_POOL_REASON))
                 return _VectorPool(candidates=(), query_vector=query_vector, reranked=reranked)
             for candidate in candidates:
                 if candidate.embedding_profile != self._embeddings.profile:
