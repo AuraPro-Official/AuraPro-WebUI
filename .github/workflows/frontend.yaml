@@ -18,6 +18,7 @@ concurrency:
 
 env:
   ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+  NPM_VERSION: '11.12.1'
 
 jobs:
   # ── Format, i18n, and production build ────────────────────────────────────
@@ -31,6 +32,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
+
+      - name: Setup npm
+        run: npm install --global npm@${{ env.NPM_VERSION }}
 
       - name: Install dependencies
         run: npm install --force
@@ -52,6 +56,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
+
+      - name: Setup npm
+        run: npm install --global npm@${{ env.NPM_VERSION }}
 
       - name: Install dependencies (frozen lockfile)
         run: npm ci --force

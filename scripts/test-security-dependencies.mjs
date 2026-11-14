@@ -57,3 +57,12 @@ test('manifest and lock root agree and dedicated terminal packages are absent', 
 	);
 	assert.equal(new Set(tiptap.map(([, version]) => version)).size, 1);
 });
+
+test('frontend CI uses the npm version validated against security overrides', () => {
+	const workflow = readFileSync(
+		new URL('../.github/workflows/frontend.yaml', import.meta.url),
+		'utf8'
+	);
+	assert.match(workflow, /NPM_VERSION: '11\.12\.1'/);
+	assert.equal(workflow.match(/npm install --global npm@\$\{\{ env\.NPM_VERSION \}\}/g)?.length, 2);
+});
