@@ -1,5 +1,51 @@
 # Dependency Security Review
 
+## November Dependency Update
+
+Updated 2026-11-14. The October review below is historical; its dependency
+versions, counts and filelock exception are superseded by this section.
+This dependency update does not fix the separately
+reported desktop bridge, certificate, permission or path-validation defects.
+
+- Desktop now locks Electron 43.8.10. Managed Agent Node and desktop CI select
+  Node 24.22.3. Electron's bundled Node remains vendor-managed; this is not a
+  claim that Electron contains every standalone Node November patch.
+- Authlib 1.9.5, pypdf 6.21.4, fpdf2 2.8.8, Stanza 1.15.1 and PyMongo 4.18.3
+  replace the previous direct pins. Python security constraints and uv.lock
+  also update DNS, JOSE, MessagePack, ASN.1, OAuth, OpenTelemetry, LangGraph,
+  Soup Sieve and filelock. unstructured 0.27.37 permits filelock 4.2.10; the
+  prior 3.20.3 exception is removed. Python's minimum patch is now 3.11.5 to
+  meet Soup Sieve's requirement; Desktop continues to use 3.12.
+  Newly raised transitive security floors also ship as wheel dependencies,
+  so PyPI upgrades cannot retain vulnerable installed versions just because
+  uv.lock or a source-tree constraint file was not consulted.
+- Kit 2.70.4 and adapter-static 3.0.11 stay on their existing major versions.
+  Selective overrides update affected minimatch/glob versions and Cypress's
+  systeminformation. Unaffected older major copies are not forced into a
+  potentially incompatible major upgrade.
+- The browser extension now locks DOMPurify 3.4.17, Vitest 4.1.12, Vite 8.2.4,
+  devalue 5.9.3 and source-map-js 1.2.2, with overrides in pnpm-workspace.yaml.
+- npm rescans: Desktop 3 low, WebUI 11 low; neither has moderate, high or
+  critical entries. Remaining low entries derive from deepmerge (no patched
+  release in the record) and Kit pre-3 enhanced-form/prerender conditions
+  described below. These counts are dependency entries, not independent bugs.
+- OSV rescan of 597 public package/version pairs leaves 9 matching pairs:
+  ChromaDB, legacy Intel Mac cryptography, legacy Linux ARM datasets/fsspec,
+  optional mariadb, Arrow's non-Python prebuffer API, two legacy macOS torch
+  versions, and extension-toolchain deepmerge. They are retained limitations,
+  not an all-clear. No fixed ChromaDB/mariadb package version was established;
+  unavailable legacy-platform wheels are not silently replaced.
+- Five effective Python platforms resolve with required native wheels:
+  Windows x64 (also Windows ARM64's existing emulation strategy), macOS
+  x64/ARM64, and Linux x64/ARM64. The full requirements file and the optional
+  unstructured combination also resolve. Resolution is not hardware execution.
+- Regression checks passed for Desktop, WebUI frontend/backend and extension;
+  upgraded Authlib/JWT and PDF read/write smoke checks passed in an isolated
+  package overlay. Actual Electron 43.8.10 and node-pty echo smoke passed on
+  Windows. No user Python installation or saved application data was changed.
+
+## October Review
+
 Reviewed 2026-10-24. This is not an all-clear statement. No application version
 was changed. npm locks and uv.lock were regenerated; existing platform wheel
 exceptions are deliberate, not suppressed audit results.

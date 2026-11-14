@@ -1,6 +1,6 @@
 {
 	"name": "aurapro-webui",
-	"version": "3.10.7",
+	"version": "3.10.8",
 	"private": true,
 	"description": "AuraPro WebUI distribution derived from Open WebUI",
 	"license": "SEE LICENSE IN LICENSE",
@@ -43,8 +43,8 @@
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "3.2.2",
-		"@sveltejs/adapter-static": "^3.0.2",
-		"@sveltejs/kit": "^2.70.3",
+		"@sveltejs/adapter-static": "^3.0.11",
+		"@sveltejs/kit": "^2.70.4",
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@tailwindcss/container-queries": "^0.1.1",
 		"@tailwindcss/postcss": "^4.0.0",
@@ -195,7 +195,10 @@
 		"sharp": "^0.35.5",
 		"katex": "$katex",
 		"postcss-selector-parser": "^7.1.7",
-		"tar": "^7.5.22"
+		"tar": "^7.5.22",
+		"minimatch@>=7 <11.0.1": "^11.0.1",
+		"glob@>=9 <14.0.2": "^14.0.2",
+		"systeminformation": "^5.33.16"
 	},
 	"engines": {
 		"node": ">=20.19.0 <=24.x.x",

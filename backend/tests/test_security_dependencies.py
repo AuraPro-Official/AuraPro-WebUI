@@ -23,6 +23,24 @@ def normalized(req):
 
 
 class SecurityDependenciesTest(unittest.TestCase):
+    def test_wheel_metadata_enforces_upgraded_transitive_floors(self):
+        project = {canonicalize_name(r.name): r for r in map(Requirement, PROJECT['project']['dependencies'])}
+        for name, minimum in {
+            'dnspython': '2.9.2',
+            'filelock': '4.2.1',
+            'joserfc': '1.7.6',
+            'langgraph': '1.2.14',
+            'langgraph-sdk': '0.4.6',
+            'msgpack': '1.2.3',
+            'oauthlib': '4.0.1',
+            'opentelemetry-api': '1.45.2',
+            'pyasn1': '0.6.5',
+            'soupsieve': '4.0.0',
+        }.items():
+            req = project[name]
+            self.assertTrue(req.specifier.contains(minimum), name)
+            self.assertFalse(req.specifier.contains('0.0.1'), name)
+
     def test_docker_includes_the_requirements_constraint_file(self):
         dockerfile = (ROOT / 'Dockerfile').read_text(encoding='utf-8')
         copies = [line for line in dockerfile.splitlines() if line.startswith('COPY ') and 'requirements.txt' in line]
@@ -59,9 +77,26 @@ class SecurityDependenciesTest(unittest.TestCase):
         for pkg in lock['package']:
             if 'version' in pkg:
                 versions.setdefault(pkg['name'], set()).add(pkg['version'])
-        self.assertTrue(all(Version(v) >= Version('6.21.2') for v in versions['pypdf']))
+        floors = {
+            'authlib': '1.9.1',
+            'pypdf': '6.21.4',
+            'fpdf2': '2.8.8',
+            'stanza': '1.15.0',
+            'dnspython': '2.9.2',
+            'filelock': '4.2.1',
+            'joserfc': '1.7.6',
+            'langgraph': '1.2.14',
+            'langgraph-sdk': '0.4.6',
+            'msgpack': '1.2.3',
+            'oauthlib': '4.0.1',
+            'opentelemetry-api': '1.45.2',
+            'pyasn1': '0.6.5',
+            'pymongo': '4.18.3',
+            'soupsieve': '4.0.0',
+        }
+        for name, minimum in floors.items():
+            self.assertTrue(all(Version(v) >= Version(minimum) for v in versions[name]), name)
         self.assertEqual(versions['cryptography'], {'48.0.1', '50.0.2'})
-        self.assertEqual(versions['filelock'], {'3.20.3'})
         self.assertTrue(all(Version(v) >= Version('1.2.1.0') for v in versions['brotlicffi']))
 
     def test_torch_floor_does_not_break_legacy_macos(self):
