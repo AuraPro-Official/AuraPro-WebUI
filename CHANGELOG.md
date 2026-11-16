@@ -2,10 +2,94 @@
 
 **English** | [Simplified Chinese](CHANGELOG.zh-CN.md)
 
-All notable changes to AuraPro Desktop are documented in this file.
+All notable changes to AuraPro WebUI are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [3.10.9] - 2026-11-16
+
+### Added
+
+- Rebuilt the knowledge base to store text content and support indexed reference retrieval for finalized document translations, glossary-assisted translation, and chat responses.
+- Added llama.cpp diagnostics with heartbeat monitoring, automatic fault detection, and repairs performed with user permission.
+- Added installation-wizard diagnostics with automatic recovery where possible and actionable guidance when manual intervention is needed.
+- Added default extension-mode settings so translation mode can be enabled automatically.
+- Added a first-run and upgrade setup wizard for usage preferences, translation languages, and speech recognition.
+- Added Windows on ARM builds.
+- Added video tutorial links to specialized settings and a tutorial collection in Settings - About.
+- Added optional automatic context compaction for long conversations, available in the setup wizard.
+- Rebuilt memory with automatic capture of persistent names, preferences, goals, habits, and requirements, plus user-directed memory updates. This optional feature is available in the setup wizard.
+- Added loaded-model status and unload controls for Ollama and llama.cpp, with migration of older settings.
+- Added 23 official Chinese-paired glossaries: Arabic, Bulgarian, German, Greek, Hungarian, Armenian, Indonesian, Italian, Khmer, Korean, Lao, Mongolian, Burmese, Polish, Portuguese, Romanian, Russian, Slovak, Swahili, Thai, Ukrainian, Vietnamese, and Hmong.
+- Added multilingual smart glossaries that select references by translation language and bridge language pairs through shared Chinese glossaries. Priority is user corrections, user glossaries, official glossaries, generated glossaries, then model translation.
+- Added MTP support for Low and Lowest models.
+- Added independent multi-window translation language pairs.
+- Added quick switching between recently used translation languages.
+- Added AuraPro batch translation scripts for Google Docs and Google Sheets.
+- Added an AuraPro browser extension for selection, image, screen-recording, audio-recording, Google Docs, and Google Sheets translation and questions.
+- Added Code Agent mode for AI-assisted programming.
+- Added dedicated high-code coding presets during this release cycle.
+- Added a Thinking shortcut beside the chat input.
+- Added the Pro_V1 model family for more demanding translation and other tasks.
+
+### Changed
+
+- Simplified NVIDIA setup by using automatically downloaded prebuilt CUDA runtime components instead of requiring a separate CUDA Toolkit installation.
+- Added a CUDA 12.4 llama.cpp variant for older compatible graphics drivers, including MTP support, to address GPU compatibility and startup problems.
+- Improved the Windows uninstaller with visible uninstall progress.
+- Improved installation disk-space estimates and available-space display.
+- Refined interface text, layout, and feature details.
+- Decoupled WebUI and desktop version requirements.
+- Reworked startup and self-check logic to reduce startup delays.
+- Published glossaries independently so they can be installed and updated through glossary settings.
+- Refactored core components to improve security and performance and reduce project size.
+- Retired the low_EQ4_MAC_8G, high IQ4, and high_Q5 presets and revised model hardware requirements. Re-downloading updated model files is recommended for the intended results.
+- Made MTP and multimodal support optional in the setup wizard and runtime settings, with MTP off and multimodal support on by default.
+- Added transition animations to make installation and update activity clearer.
+- Improved cache cleanup to reduce disk usage. The first cleanup of older caches can take several minutes.
+- Improved hardware detection for newer high-performance PCs and Macs.
+- Redesigned the installation wizard for a simpler setup experience.
+- Reorganized the help interface.
+- Rebuilt first-install hardware detection.
+- Reduced diagnostic false positives and expanded component health checks.
+- Updated the llama.cpp fallback installation build to b10809.
+- Improved translation prompts to reduce literal wording, mistranslation, and unwanted language mixing.
+- Improved long-context memory efficiency and reduced memory and VRAM usage with revised context-cache settings.
+- Enabled automatic glossary-assisted translation in ordinary chat when a translation request is detected, without requiring translation mode.
+- Improved context compaction for oversized messages so conversations can continue without simply truncating the response.
+- Rebuilt speech recognition with language-specific model routing and broader language support.
+- Reduced speech-model disk usage with on-demand downloads and optional language downloads in setup and settings.
+- Rebuilt the Agent with computer and browser tools, Build and Plan modes, per-step approval, automatic approval, full-control permissions, and file-change previews. Default access is limited to the workspace; grant broader permissions carefully to avoid unintended file changes or deletion.
+- Added an optional invitation-code reminder when the official glossary is not activated.
+- Removed Open Terminal and its associated features for security and maintenance reasons.
+- Hid Pro_V1 when the Pro framework is not installed.
+- Updated dependencies to address known vulnerabilities.
+- Added gentle repetition-control defaults to reduce repetitive output.
+- Updated the Pro_V1 model selection and runtime integration to improve quality and speed.
+
+### Fixed
+
+- Fixed cases where factory reset or interrupted installation removed the install button and prevented installation from resuming.
+- Fixed automatic updates on macOS.
+- Fixed unwanted Open Terminal installation and incorrect status display when it was not installed.
+- Fixed unexpected `<unused>` text in responses on high-performance systems.
+- Fixed intermittent false installation-failure reports.
+- Fixed service conflicts caused by default port settings.
+- Fixed text-to-speech failures affecting some users.
+- Fixed installation and compatibility problems on Intel Macs.
+- Fixed llama.cpp update selection failures that could leave local models unavailable.
+- Fixed repeated flashing and unresponsive controls after an expired login session.
+- Fixed WebUI startup failures after some manual updates.
+- Fixed llama.cpp update compatibility with NVIDIA 50-series GPUs.
+- Fixed update stalls caused by repeated update requests while CUDA runtime components were still downloading.
+- Fixed rare repeated llama.cpp download loops that prevented startup.
+- Fixed cancellation of MTP and multimodal companion downloads for additional models.
+- Fixed false incomplete-model diagnostics after a user intentionally cancelled an additional-model download.
+- Fixed multiple known security issues.
+- Fixed translation and RAG integration failures that could cause errors or stalled responses.
+- Fixed startup being blocked when an invitation code was not entered.
+- Fixed Thinking mode not taking effect for some models.
 
 ## [3.6.5] - 2026-06-19
 
