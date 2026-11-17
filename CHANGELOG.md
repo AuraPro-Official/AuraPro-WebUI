@@ -7,7 +7,7 @@ All notable changes to AuraPro WebUI are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.10.9] - 2026-11-16
+## [3.10.10] - 2026-11-16
 
 ### Added
 
@@ -66,7 +66,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Hid Pro_V1 when the Pro framework is not installed.
 - Updated dependencies to address known vulnerabilities.
 - Added gentle repetition-control defaults to reduce repetitive output.
-- Updated the Pro_V1 model selection and runtime integration to improve quality and speed.
+- Updated the Pro_V1 model lineup to improve quality and speed while lowering hardware requirements.
 
 ### Fixed
 
