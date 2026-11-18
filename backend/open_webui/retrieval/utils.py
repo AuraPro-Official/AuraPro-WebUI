@@ -28,6 +28,8 @@ from open_webui.env import (
     ENABLE_FORWARD_USER_INFO_HEADERS,
     ENABLE_RETRIEVAL_UNSCOPED_COLLECTIONS,
     OFFLINE_MODE,
+    SENTENCE_TRANSFORMERS_BACKEND,
+    SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND,
 )
 from open_webui.models.access_grants import AccessGrants
 from open_webui.models.chats import Chats
@@ -37,6 +39,7 @@ from open_webui.models.notes import Notes
 from open_webui.models.config import Config
 from open_webui.models.users import UserModel
 from open_webui.retrieval.loaders.youtube import YoutubeLoader
+from open_webui.retrieval.model_download import resolve_repo_files, select_ignore_patterns
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.external import retrieve_external_knowledge
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
@@ -1719,6 +1722,14 @@ def get_model_path(model: str, update_model: bool = False):
         model,
         local_files_only=local_files_only,
     )
+    # Left to itself `snapshot_download` fetches the whole repository, which for
+    # these models means several complete copies of one set of weights.  Skip
+    # the copies nothing here can load; see retrieval.model_download.
+    ignore_patterns = select_ignore_patterns(
+        resolve_repo_files(model, revision=revision, local_files_only=local_files_only),
+        backends=(SENTENCE_TRANSFORMERS_BACKEND, SENTENCE_TRANSFORMERS_CROSS_ENCODER_BACKEND),
+        local_files_only=local_files_only,
+    )
     # Attempt to query the huggingface_hub library to determine the local path and/or to update
     try:
         model_repo_path = snapshot_download(
@@ -1726,6 +1737,7 @@ def get_model_path(model: str, update_model: bool = False):
             revision=revision,
             cache_dir=cache_dir,
             local_files_only=local_files_only,
+            ignore_patterns=ignore_patterns or None,
         )
         return model_repo_path
     except Exception as e:
