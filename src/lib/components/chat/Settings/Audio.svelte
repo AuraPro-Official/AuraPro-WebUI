@@ -301,7 +301,7 @@
 						aria-label={$i18n.t('Speech-to-Text Engine')}
 					>
 						<option value="">{$i18n.t('Default')}</option>
-						<option value="web">{$i18n.t('Web API')}</option>
+						<option value="web">{$i18n.t('Web API (browser only)')}</option>
 						<option value="multimodal">{$i18n.t('Multimodal')}</option>
 					</select>
 				</div>

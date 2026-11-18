@@ -1271,6 +1271,123 @@ def _find_explicit_command(text: str, lang_name: str, window: int = 20) -> bool:
     return False
 
 
+_SCRIPT_RANGES = {
+    'han': ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF)),
+    'kana': ((0x3040, 0x30FF), (0x31F0, 0x31FF)),
+    'hangul': ((0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF)),
+    'latin': ((0x41, 0x5A), (0x61, 0x7A), (0xC0, 0x24F), (0x1E00, 0x1EFF)),
+    'cyrillic': ((0x400, 0x52F),),
+    'greek': ((0x370, 0x3FF),),
+    'armenian': ((0x531, 0x58F),),
+    'hebrew': ((0x5D0, 0x5FF),),
+    'arabic': ((0x600, 0x6FF), (0x750, 0x77F), (0x8A0, 0x8FF)),
+    'devanagari': ((0x900, 0x97F),),
+    'bengali': ((0x980, 0x9FF),),
+    'tamil': ((0xB80, 0xBFF),),
+    'thai': ((0xE00, 0xE7F),),
+    'lao': ((0xE80, 0xEFF),),
+    'tibetan': ((0xF00, 0xFFF),),
+    'myanmar': ((0x1000, 0x109F),),
+    'georgian': ((0x10A0, 0x10FF), (0x1C90, 0x1CBF)),
+    'khmer': ((0x1780, 0x17FF),),
+}
+_LANGUAGE_SCRIPTS = {
+    **{code: {'han'} for code in ('zh', 'cmn', 'yue', 'wuu', 'hak', 'nan', 'gan', 'hsn', 'cjy', 'lzh')},
+    'ja': {'han', 'kana'},
+    # Modern Korean is written in Hangul; Hanja-only text in a Chinese-Korean pair is Chinese.
+    'ko': {'hangul'},
+    'sr': {'cyrillic', 'latin'},
+    **{code: {'cyrillic'} for code in ('ru', 'uk', 'bg', 'mk', 'be', 'kk', 'ky', 'mn', 'tg')},
+    **{code: {'arabic'} for code in ('ar', 'fa', 'ur', 'ug', 'ps')},
+    **{code: {'devanagari'} for code in ('hi', 'ne', 'mr', 'sa')},
+    'el': {'greek'},
+    'hy': {'armenian'},
+    'he': {'hebrew'},
+    'bn': {'bengali'},
+    'ta': {'tamil'},
+    'th': {'thai'},
+    'lo': {'lao'},
+    'bo': {'tibetan'},
+    'my': {'myanmar'},
+    'ka': {'georgian'},
+    'km': {'khmer'},
+    **{
+        code: {'latin'}
+        for code in (
+            'en',
+            'es',
+            'fr',
+            'de',
+            'it',
+            'pt',
+            'nl',
+            'pl',
+            'ro',
+            'sk',
+            'cs',
+            'sl',
+            'hr',
+            'bs',
+            'hu',
+            'id',
+            'ms',
+            'tl',
+            'fil',
+            'sw',
+            'vi',
+            'hmn',
+            'tr',
+            'sv',
+            'da',
+            'no',
+            'nb',
+            'fi',
+            'et',
+            'lv',
+            'lt',
+            'ca',
+            'uz',
+            'az',
+        )
+    },
+}
+
+
+def _char_script(ch: str) -> Optional[str]:
+    point = ord(ch)
+    for script, ranges in _SCRIPT_RANGES.items():
+        if any(low <= point <= high for low, high in ranges):
+            return script
+    return None
+
+
+def _script_pair(text: str, source_lang: str, target_lang: str) -> Optional[tuple[str, str]]:
+    """Decide the direction from the writing system when only one side of the pair uses it.
+
+    fast_langdetect misreads many short inputs ("你好呀"/"你好~" -> yue, "嗨"/"嗯嗯"/"拜拜" -> en).
+    Its fallback then flipped the pair and asked the model to translate the text into its own
+    language, so the model simply echoed the input back. Pairs that share a script (English and
+    Tagalog, or Han-only text between Chinese and Japanese) are left to the detector.
+    """
+    source_scripts = _LANGUAGE_SCRIPTS.get(_language_key(source_lang).split('-', 1)[0])
+    target_scripts = _LANGUAGE_SCRIPTS.get(_language_key(target_lang).split('-', 1)[0])
+    if not source_scripts or not target_scripts:
+        return None
+    source_only, target_only = source_scripts - target_scripts, target_scripts - source_scripts
+    source_score = target_score = 0
+    for ch in text:
+        script = _char_script(ch)
+        # One Han character carries roughly a word, so it outweighs a single alphabetic letter.
+        weight = 3 if script == 'han' else 1
+        if script in source_only:
+            source_score += weight
+        elif script in target_only:
+            target_score += weight
+    if source_score == target_score:
+        return None
+    return (source_lang, target_lang) if source_score > target_score else (target_lang, source_lang)
+
+
 def _smart_language_detect(text: str, source_lang: str, target_lang: str) -> tuple[str, str]:
     source_lang = source_lang.strip() or DEFAULT_SETTINGS['source_lang']
     target_lang = target_lang.strip() or DEFAULT_SETTINGS['target_lang']
@@ -1279,6 +1396,9 @@ def _smart_language_detect(text: str, source_lang: str, target_lang: str) -> tup
         return target_lang, source_lang
     if _find_explicit_command(text, target_lang):
         return source_lang, target_lang
+
+    if script_pair := _script_pair(text, source_lang, target_lang):
+        return script_pair
 
     from fast_langdetect import detect_language
 
@@ -2564,8 +2684,25 @@ TRANSLATION_LANGUAGE_GUARDS = {
 TRANSLATION_MEANING_NOTE = '理解示例（仅语境明确时）：财物核对发漂 → 财务核对发票；合通盖章 → 合同盖章；运废另算 → 运费另算；把话说满 → 过度承诺。真正的姓名、专名不能按这些例子改写。'
 
 
+def _prompt_language_label(lang: str) -> str:
+    """Add the English name so models do not misread labels such as 苗语 as a Chinese dialect.
+
+    Measured across all 37 glossary pairs: Gemma models translated into Hmong correctly in 11/11
+    runs with "苗语（Hmong）" versus 7/11 with "苗语", with no regression for the other languages.
+    """
+    if not lang or lang.isascii():
+        return lang
+    try:
+        english = langcodes.Language.get(_language_key(lang)).display_name('en')
+    except Exception:
+        return lang
+    if not english or english.casefold() == lang.casefold() or english.lower().startswith('unknown'):
+        return lang
+    return f'{lang}（{english}）'
+
+
 def _build_translation_text_prompt(text: str, target_lang: str, glossary_block: str) -> str:
-    parts = [TRANSLATION_PROMPT.format(target=target_lang)]
+    parts = [TRANSLATION_PROMPT.format(target=_prompt_language_label(target_lang))]
     guard = TRANSLATION_LANGUAGE_GUARDS.get(_language_key(target_lang).split('-', 1)[0])
     if guard:
         parts.append(guard)
@@ -3008,11 +3145,47 @@ async def apply_rag_translation_mode(
     return form_data, sources
 
 
+# Translation output scales with the source: across the local models the worst
+# case measured was ~2.25 tokens per source character (an idiom list), and short
+# inputs never needed more than ~25 tokens. Without a limit a degenerate loop
+# ("si si si …") kept generating until the 128k context filled.
+TRANSLATION_OUTPUT_BASE_TOKENS = 512
+TRANSLATION_OUTPUT_TOKENS_PER_CHAR = 6
+# Only the bundled local runtimes: remote reasoning models spend hidden tokens
+# against max_tokens and would be cut off.
+_OUTPUT_CAP_PROVIDERS = {'llama.cpp', 'strata'}
+_THINKING_OFF_EFFORTS = {'', 'none', 'off', 'disabled', 'false', 'minimal'}
+
+
+def _thinking_requested(form_data: dict[str, Any]) -> bool:
+    template = form_data.get('chat_template_kwargs')
+    explicit = template.get('enable_thinking') if isinstance(template, dict) else None
+    if isinstance(explicit, bool):
+        return explicit
+    effort = form_data.get('reasoning_effort')
+    return (str(effort).strip().lower() if effort is not None else '') not in _THINKING_OFF_EFFORTS
+
+
+def _cap_translation_output(form_data: dict[str, Any], source_text: str, model: Optional[dict[str, Any]]) -> None:
+    """Bound a translation reply by its source length unless the caller already chose a limit."""
+    if not isinstance(model, dict) or model.get('provider') not in _OUTPUT_CAP_PROVIDERS:
+        return
+    if not source_text.strip() or _thinking_requested(form_data):
+        return
+    options = form_data.get('options') if isinstance(form_data.get('options'), dict) else {}
+    if any(form_data.get(key) is not None for key in ('max_tokens', 'max_completion_tokens')) or any(
+        options.get(key) is not None for key in ('max_tokens', 'num_predict')
+    ):
+        return
+    form_data['max_tokens'] = TRANSLATION_OUTPUT_BASE_TOKENS + TRANSLATION_OUTPUT_TOKENS_PER_CHAR * len(source_text)
+
+
 async def apply_translation_mode(
     form_data: dict[str, Any],
     settings: Optional[dict[str, Any]] = None,
     source_lang: Optional[str] = None,
     target_lang: Optional[str] = None,
+    model: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     settings = normalize_settings(settings or await read_settings())
 
@@ -3043,6 +3216,7 @@ async def apply_translation_mode(
         _set_message_text(message, build_translation_audio_prompt(text, entries, prompt_settings), part_index)
     elif message and text.strip():
         _set_message_text(message, build_translation_prompt(text, entries, prompt_settings), part_index)
+        _cap_translation_output(form_data, text, model)
 
     form_data['messages'] = _truncate_messages(messages, settings)
     return form_data
@@ -3114,7 +3288,7 @@ async def apply_manuscript_translation_mode(
 
 
 async def apply_interpretation_mode(
-    form_data: dict[str, Any], settings: Optional[dict[str, Any]] = None
+    form_data: dict[str, Any], settings: Optional[dict[str, Any]] = None, model: Optional[dict[str, Any]] = None
 ) -> dict[str, Any]:
     settings = normalize_settings(settings or await read_settings())
     entries, _updated_at = await read_entries(settings)
@@ -3124,6 +3298,7 @@ async def apply_interpretation_mode(
         _set_message_text(message, build_interpretation_audio_prompt(text, entries, settings), part_index)
     elif message and text.strip():
         _set_message_text(message, build_interpretation_prompt(text, entries, settings), part_index)
+        _cap_translation_output(form_data, text, model)
 
     form_data['messages'] = _truncate_messages(messages, settings)
     return form_data

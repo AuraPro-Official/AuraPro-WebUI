@@ -1877,6 +1877,7 @@ async def translate(
         form_data=form_data,
         source_lang=source_lang,
         target_lang=target_lang,
+        model=request.app.state.MODELS[form_data['model']],
     )
 
     return await chat_completion_handler(request, form_data, user=user)

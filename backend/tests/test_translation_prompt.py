@@ -25,6 +25,7 @@ def load_prompt_functions():
     tree = ast.parse(source.read_text(encoding='utf-8'))
     functions = {
         '_build_translation_text_prompt',
+        '_prompt_language_label',
         'build_translation_prompt',
         'build_rag_translation_prompt',
         'apply_chat_translation',
@@ -57,6 +58,7 @@ def load_prompt_functions():
         '_detect_chat_translation_source': Mock(return_value='zh'),
         'read_entries': AsyncMock(return_value=({'退款': 'remboursement'}, None)),
         '_language_key': ROUTING.language_key,
+        'langcodes': ROUTING.langcodes,
         '_glossary_language_pair': lambda settings: (settings['source'], settings['target']),
         '_smart_language_detect': Mock(return_value=('中文', '法语')),
         '_build_glossary_block': Mock(return_value=''),
@@ -112,8 +114,10 @@ class TranslationPromptTest(unittest.IsolatedAsyncioTestCase):
         self.prompts['_smart_language_detect'].return_value = ('法语', '中文')
         settings = {'source': '中文', 'target': '法语'}
         prompt = self.prompts['build_translation_prompt']('Bonjour', {}, settings)
-        self.assertTrue(prompt.startswith('将【原文】完整翻译成中文，只输出译文。'))
+        self.assertTrue(prompt.startswith('将【原文】完整翻译成中文（Chinese），只输出译文。'))
         self.assertNotIn('checklist →', prompt)
+        hmong = self.prompts['_build_translation_text_prompt']('你好', '苗语', '')
+        self.assertTrue(hmong.startswith('将【原文】完整翻译成苗语（Hmong），只输出译文。'))
         self.prompts['_build_glossary_block'].assert_called_once_with(
             'Bonjour',
             {},

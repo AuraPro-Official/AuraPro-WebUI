@@ -7,6 +7,14 @@ All notable changes to AuraPro WebUI are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.11] - 2026-11-20
+
+### Changed
+
+- Labeled Web API speech recognition as browser-only to help users avoid selecting it in the desktop app.
+- Improved translation mode to limit runaway replies that repeat the same word.
+- Improved translation mode reliability to address cases where translation did not take effect.
+
 ## [3.10.10] - 2026-11-16
 
 ### Added

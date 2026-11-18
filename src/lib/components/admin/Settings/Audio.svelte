@@ -267,7 +267,7 @@
 					on:change={applyEngineDefaults}
 				>
 					<option value="">{$i18n.t('Whisper (Local)')}</option>
-					<option value="web">{$i18n.t('Web API')}</option>
+					<option value="web">{$i18n.t('Web API (browser only)')}</option>
 					<option value="openai">{$i18n.t('OpenAI API')}</option>
 					<option value="sherpa">Sherpa</option>
 					<option value="multimodal">{$i18n.t('Multimodal')}</option>
