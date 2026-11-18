@@ -649,6 +649,10 @@ export type EpubVersionIndexResult = {
 	total_retrieval_units: number;
 	selected_retrieval_units: number;
 	skipped_ready: number;
+	// Units this version holds under a *different* embedding profile, which
+	// this run deliberately did not touch. Optional: a server predating the
+	// profile filter omits it.
+	skipped_other_profile?: number;
 	ready: number;
 	degraded: number;
 	failed: number;
