@@ -7,6 +7,16 @@ All notable changes to AuraPro WebUI are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.13] - 2026-11-21
+
+### Changed
+
+- Replaced `lowest_V2`, `medium_Q4_V2`, and `high_Q4_2` with optimized models. If you have an older model installed, delete that model and download it again.
+
+### Added
+
+- Added a Repair Speech Recognition button to desktop diagnostics. Use it when speech-to-text or text-to-speech stops working after an upgrade or at any other time.
+
 ## [3.10.11] - 2026-11-20
 
 ### Changed
