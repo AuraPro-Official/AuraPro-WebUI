@@ -7,6 +7,12 @@ All notable changes to AuraPro WebUI are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.14] - 2026-11-22
+
+### Added
+
+- Added new diagnostics for features that fail to start or work as expected. Diagnostics show the cause and recommended steps. Select **Repair now** to diagnose the issue, reinstall missing or damaged dependencies, and verify that the service recovers after restarting.
+
 ## [3.10.13] - 2026-11-21
 
 ### Changed
