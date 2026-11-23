@@ -2671,6 +2671,7 @@
 	"Installing certificate...": "Instalando certificado...",
 	"Local security certificate installed. Restart your browser if it still shows a certificate warning.": "El certificado de seguridad local se ha instalado. Reinicia el navegador si todavía muestra una advertencia de certificado.",
 	"Failed to install local security certificate.": "No se pudo instalar el certificado de seguridad local.",
+	"The new certificate is installed, but an earlier certificate could not be removed.": "El certificado nuevo se ha instalado, pero no se pudo quitar un certificado anterior.",
 	"Open this setting in AuraPro Desktop to install the local security certificate.": "Abre este ajuste en AuraPro Desktop para instalar el certificado de seguridad local.",
 	"Thinking": "Pensar",
 	"Enable thinking": "Activar razonamiento",

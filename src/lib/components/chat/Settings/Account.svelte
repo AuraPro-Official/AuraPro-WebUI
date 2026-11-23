@@ -47,6 +47,7 @@
 	type DesktopCertificateInstallResult = {
 		success?: boolean;
 		error?: string;
+		warning?: string;
 	};
 
 	type DesktopBridgeWindow = Window & {
@@ -142,6 +143,13 @@
 					'Local security certificate installed. Restart your browser if it still shows a certificate warning.'
 				)
 			);
+			if (result.warning) {
+				toast.warning(
+					$i18n.t(
+						'The new certificate is installed, but an earlier certificate could not be removed.'
+					)
+				);
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			toast.error($i18n.t('Failed to install local security certificate.') + ' ' + message);

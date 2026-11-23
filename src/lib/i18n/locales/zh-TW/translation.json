@@ -2733,6 +2733,7 @@
 	"Installing certificate...": "正在安裝證書...",
 	"Local security certificate installed. Restart your browser if it still shows a certificate warning.": "本地安全證書已安裝。如果瀏覽器仍提示證書問題，請重啟瀏覽器。",
 	"Failed to install local security certificate.": "安裝本地安全證書失敗。",
+	"The new certificate is installed, but an earlier certificate could not be removed.": "新憑證已安裝，但有舊憑證無法移除。",
 	"Open this setting in AuraPro Desktop to install the local security certificate.": "請在 AuraPro 桌面端中開啟此設定以安裝本地安全證書。",
 	"Failed to save Code Agent settings": "儲存程式設計 Agent 模式設定失敗",
 	"Code Agent requires a saved conversation": "程式設計 Agent 模式需要使用已儲存的對話",

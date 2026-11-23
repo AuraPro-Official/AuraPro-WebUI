@@ -2350,7 +2350,7 @@ Responses from models: {{responses}}"""
 # Auth
 ####################################
 
-ENABLE_API_KEYS = os.getenv('ENABLE_API_KEYS', 'False').lower() == 'true'
+ENABLE_API_KEYS = os.getenv('ENABLE_API_KEYS', 'True').lower() == 'true'
 
 ENABLE_API_KEYS_ENDPOINT_RESTRICTIONS = (
     os.getenv(

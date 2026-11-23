@@ -7,6 +7,13 @@ All notable changes to AuraPro WebUI are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.15] - 2026-11-23
+
+### Changed
+
+- Enabled API-key support and endpoint restrictions by default to make plugin integrations easier to configure. Existing endpoint restrictions are preserved.
+- Updated the local security certificate workflow to reuse the existing certificate when possible and replace obsolete AuraPro certificates when reinstalling trust.
+
 ## [3.10.14] - 2026-11-22
 
 ### Added

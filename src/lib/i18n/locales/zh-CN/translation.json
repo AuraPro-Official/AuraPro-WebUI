@@ -2739,6 +2739,7 @@
 	"Installing certificate...": "正在安装证书...",
 	"Local security certificate installed. Restart your browser if it still shows a certificate warning.": "本地安全证书已安装。如果浏览器仍提示证书问题，请重启浏览器。",
 	"Failed to install local security certificate.": "安装本地安全证书失败。",
+	"The new certificate is installed, but an earlier certificate could not be removed.": "新证书已安装，但有旧证书无法移除。",
 	"Open this setting in AuraPro Desktop to install the local security certificate.": "请在 AuraPro 桌面端中打开此设置以安装本地安全证书。",
 	"Failed to save Code Agent settings": "保存编程 Agent 模式设置失败",
 	"Code Agent requires a saved conversation": "编程 Agent 模式需要使用已保存的对话",

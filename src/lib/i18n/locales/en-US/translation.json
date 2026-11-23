@@ -2786,6 +2786,7 @@
 	"Installing certificate...": "Installing certificate...",
 	"Local security certificate installed. Restart your browser if it still shows a certificate warning.": "Local security certificate installed. Restart your browser if it still shows a certificate warning.",
 	"Failed to install local security certificate.": "Failed to install local security certificate.",
+	"The new certificate is installed, but an earlier certificate could not be removed.": "The new certificate is installed, but an earlier certificate could not be removed.",
 	"Open this setting in AuraPro Desktop to install the local security certificate.": "Open this setting in AuraPro Desktop to install the local security certificate.",
 	"Failed to save Code Agent settings": "Failed to save Code Agent settings",
 	"Code Agent requires a saved conversation": "Code Agent requires a saved conversation",

@@ -94,33 +94,43 @@ def serve(
 
         key_path = Path(ssl_keyfile)
         cert_path = Path(ssl_certfile)
-        should_generate = not key_path.is_file() or not cert_path.is_file()
         now = datetime.datetime.now(datetime.timezone.utc)
+        existing_cert = None
 
-        if not should_generate:
-            try:
-                existing_cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
-                existing_key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
-                cert_public_key = existing_cert.public_key().public_bytes(
-                    serialization.Encoding.DER,
-                    serialization.PublicFormat.SubjectPublicKeyInfo,
-                )
-                private_public_key = existing_key.public_key().public_bytes(
-                    serialization.Encoding.DER,
-                    serialization.PublicFormat.SubjectPublicKeyInfo,
-                )
-                expires_at = getattr(existing_cert, 'not_valid_after_utc', None)
-                if expires_at is None:
-                    expires_at = existing_cert.not_valid_after.replace(tzinfo=datetime.timezone.utc)
-                should_generate = cert_public_key != private_public_key or expires_at <= now + datetime.timedelta(
-                    days=30
-                )
-            except (OSError, TypeError, ValueError):
-                should_generate = True
+        try:
+            existing_cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+            existing_key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+            cert_public_key = existing_cert.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            private_public_key = existing_key.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            expires_at = getattr(existing_cert, 'not_valid_after_utc', None)
+            if expires_at is None:
+                expires_at = existing_cert.not_valid_after.replace(tzinfo=datetime.timezone.utc)
+            # Renewing early would invalidate the existing browser trust on an ordinary restart.
+            should_generate = cert_public_key != private_public_key or expires_at <= now
+        except (OSError, TypeError, ValueError):
+            should_generate = True
 
         if not should_generate:
             typer.echo(f'Reusing local HTTPS certificate: {ssl_certfile}')
         else:
+            if existing_cert is not None:
+                # Keep the old public certificate so Desktop can remove its exact trust entry.
+                try:
+                    trusted_dir = cert_dir / 'trusted'
+                    trusted_dir.mkdir(exist_ok=True)
+                    fingerprint = existing_cert.fingerprint(hashes.SHA256()).hex().upper()
+                    with (trusted_dir / f'{fingerprint}.pem').open('xb') as receipt:
+                        receipt.write(existing_cert.public_bytes(serialization.Encoding.PEM))
+                except FileExistsError:
+                    pass
+                except OSError as error:
+                    typer.echo(f'Could not record the previous local HTTPS certificate: {error}', err=True)
             key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
             names = {'localhost', '127.0.0.1', '::1', host}
             names.update(item.strip() for item in ssl_hosts.split(',') if item.strip())
