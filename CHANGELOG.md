@@ -9,16 +9,22 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [3.10.15] - 2026-11-23
 
-AuraPro-3.10.15-2026-11-23
+### Added
 
-- Improved: Repair now covers more cases where WebUI or Sherpa cannot install or start because dependencies are missing, damaged, or their entire dependency directory has been emptied.
-- Fixed: On Windows, speech repair no longer fails with an "Access denied" error when WebUI and Sherpa are using the same dependency.
-- Fixed: At WebUI startup, a broken `brotlicffi` dependency is no longer misreported as an HTTPS certificate problem. Diagnostics recommend repairing the dependency without reinstalling the certificate.
-- Added: The Pro inference runtime now offers `lite_Q4` and `lite_Q6` model options.
-- Improved: Simplified installation and startup for Pro models.
-- Improved: Removed the `high-code` series from the standard model download list. It has been replaced by the Pro series.
-- Improved: Adjusted several settings to prepare for integration with other plugins and software.
-- Improved: Uninstalling AuraPro now also removes its local security certificate.
+- Added `lite_Q4` and `lite_Q6` model options to the Pro inference runtime.
+
+### Changed
+
+- Expanded **Repair now** to cover more cases where WebUI or Sherpa cannot install or start because dependencies are missing or damaged, or the entire dependency directory has been emptied.
+- Simplified installation and startup for Pro models.
+- Removed the `high-code` series from the standard model download list. It has been replaced by the Pro series.
+- Improved several settings to prepare for integration with other plugins and software.
+- Uninstalling AuraPro now also removes its local security certificate.
+
+### Fixed
+
+- Fixed speech repair failing with an "Access denied" installation error on Windows when WebUI and Sherpa were using the same dependency.
+- A broken `brotlicffi` dependency at WebUI startup is no longer misreported as an HTTPS certificate problem. Diagnostics recommend repairing the dependency without reinstalling the certificate.
 
 ## [3.10.14] - 2026-11-22
 
