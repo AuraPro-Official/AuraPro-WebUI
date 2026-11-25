@@ -1,4 +1,8 @@
-import { proModelTutorial } from './pro-model-tutorial';
+import {
+	modelHardwareTutorial,
+	proModelTutorial,
+	standardModelTutorial
+} from './pro-model-tutorial';
 
 export interface TutorialText {
 	'zh-CN': string;
@@ -586,6 +590,8 @@ const tutorialItems = new Map(
 );
 
 tutorialItems.set(proModelTutorial.id, proModelTutorial);
+tutorialItems.set(standardModelTutorial.id, standardModelTutorial);
+tutorialItems.set(modelHardwareTutorial.id, modelHardwareTutorial);
 
 export const tutorialSections: TutorialSection[] = [
 	{
@@ -628,6 +634,8 @@ export const tutorialSections: TutorialSection[] = [
 		),
 		items: [
 			'extra-models',
+			'model-hardware',
+			'standard-model-requirements',
 			'pro-model-requirements',
 			'mtp',
 			'context-size',

@@ -7,6 +7,18 @@ All notable changes to AuraPro WebUI are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.16] - 2026-11-25
+
+### Added
+
+- The setup wizard now recommends Pro models when the hardware meets their requirements.
+
+### Changed
+
+- Re-evaluated model capabilities and hardware requirements and revised the recommendations based on testing, offering more capable options with lower hardware requirements.
+- Replaced `medium_Q4` with `medium_Q4_V2` and added `medium_Q3_V2` as a more capable alternative to `low_E4`.
+- Retired the `Pro_V1_Lite` series. Existing installations remain usable.
+
 ## [3.10.15] - 2026-11-23
 
 ### Added
