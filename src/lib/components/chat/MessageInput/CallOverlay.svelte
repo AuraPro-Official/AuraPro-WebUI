@@ -240,7 +240,7 @@
 			$learningModeEnabled ||
 			$manuscriptTranslationModeEnabled;
 		if (!modeEnabled) {
-			return ['zh'];
+			return [];
 		}
 
 		if (!glossarySettings && !fallbackGlossarySettingsPromise) {
@@ -257,12 +257,7 @@
 
 		const resolvedSettings =
 			glossarySettings ?? fallbackGlossarySettings ?? (await fallbackGlossarySettingsPromise);
-		const languageCandidates = getConversationGlossaryLanguages(
-			conversationGlossary,
-			resolvedSettings
-		);
-
-		return languageCandidates.length > 0 ? languageCandidates : ['zh'];
+		return getConversationGlossaryLanguages(conversationGlossary, resolvedSettings);
 	};
 
 	const transcribeHandler = async (audioBlob) => {

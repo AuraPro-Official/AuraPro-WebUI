@@ -1,4 +1,5 @@
 import { AUDIO_API_BASE_URL } from '$lib/constants';
+import { glossarySpeechLanguageCode } from '$lib/utils/glossaryLanguages';
 
 const getErrorMessage = (err: any) => {
 	const detail = err?.detail ?? err?.message ?? err?.error ?? err;
@@ -110,6 +111,36 @@ export const updateAudioConfig = async (token: string, payload: Record<string, a
 	return res;
 };
 
+const normalizeLanguageCandidates = (value: string[] | string | undefined): string[] => {
+	let candidates: unknown[];
+	if (Array.isArray(value)) {
+		candidates = value;
+	} else {
+		const raw = value?.trim() ?? '';
+		if (raw.startsWith('[')) {
+			try {
+				const parsed: unknown = JSON.parse(raw);
+				candidates = Array.isArray(parsed) ? parsed : [];
+			} catch {
+				return [];
+			}
+		} else {
+			candidates = /^[a-z]{2,3}(?:\s+[a-z]{2,3})+$/i.test(raw)
+				? raw.split(/\s+/)
+				: raw.split(/[,;，；]/);
+		}
+	}
+	return [
+		...new Set(
+			candidates.flatMap((candidate) => {
+				if (typeof candidate !== 'string') return [];
+				const code = glossarySpeechLanguageCode(candidate);
+				return code ? [code] : [];
+			})
+		)
+	];
+};
+
 export const transcribeAudio = async (
 	token: string,
 	file: File,
@@ -122,13 +153,9 @@ export const transcribeAudio = async (
 ) => {
 	const data = new FormData();
 	data.append('file', file);
-	if (options?.languageCandidates) {
-		data.append(
-			'language_candidates',
-			Array.isArray(options.languageCandidates)
-				? options.languageCandidates.filter(Boolean).join(',')
-				: options.languageCandidates
-		);
+	const codes = normalizeLanguageCandidates(options?.languageCandidates);
+	if (codes.length > 0) {
+		data.append('language_candidates', codes.join(','));
 	}
 	if (options?.streamId) {
 		data.append('stream_id', options.streamId);

@@ -677,11 +677,13 @@ async def _transcribe_whisper(request, file_path, languages, file_dir, id):
 
 async def _transcribe_sherpa(request, file_path, filename, metadata, file_dir, id, user=None):
     payload = {'model': await Config.get('audio.stt.model') or 'sherpa-asr'}
-    explicit_language = metadata.get('language') or WHISPER_LANGUAGE
+    candidates = metadata.get('language_candidates')
+    # The global Whisper default is not a requested language for this Sherpa pair.
+    explicit_language = metadata.get('language') or (None if candidates else WHISPER_LANGUAGE)
     if explicit_language:
         payload['language'] = explicit_language
-    elif metadata.get('language_candidates'):
-        payload['language_candidates'] = metadata['language_candidates']
+    if candidates:
+        payload['language_candidates'] = candidates
 
     if metadata.get('stream_id'):
         payload['stream_id'] = metadata['stream_id']
@@ -717,8 +719,8 @@ async def _transcribe_sherpa(request, file_path, filename, metadata, file_dir, i
         if response is not None:
             try:
                 error = await response.json()
-                message = error.get('error', {}).get('message', '')
-                if message:
+                message = error.get('detail') or error.get('error', {}).get('message', '')
+                if isinstance(message, str) and message:
                     detail = f'External: {message}'
             except Exception:
                 detail = f'External: {exc}'

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import translationLanguageCatalog from '../../../backend/open_webui/utils/chat_translation_languages.json' with { type: 'json' };
 
-import { buildGlossaryLanguageSelectItems, normalizeGlossaryLanguage } from './glossaryLanguages';
+import {
+	buildGlossaryLanguageSelectItems,
+	glossarySpeechLanguageCode,
+	normalizeGlossaryLanguage
+} from './glossaryLanguages';
 
 describe('glossary language normalization', () => {
 	it('uses one Chinese label for a language code and its Chinese name', () => {
@@ -23,5 +28,29 @@ describe('glossary language normalization', () => {
 
 	it('keeps custom language names unchanged', () => {
 		expect(normalizeGlossaryLanguage('自定义语言')).toBe('自定义语言');
+	});
+
+	it('resolves every label and alias in the translation catalog to its own speech code', () => {
+		const speechAliases: Record<string, string> = { gom: 'kok', iw: 'he', jw: 'jv' };
+		for (const [code, language] of Object.entries(translationLanguageCatalog.languages)) {
+			const base = code.split('-')[0];
+			const expected = speechAliases[base] ?? base;
+			for (const label of [code, language.name, ...language.aliases]) {
+				expect(glossarySpeechLanguageCode(label), label).toBe(expected);
+			}
+		}
+	});
+
+	it('canonicalizes legacy speech codes used by external glossaries', () => {
+		for (const [value, expected] of [
+			['fil-PH', 'tl'],
+			['lao', 'lo'],
+			['nep-NP', 'ne'],
+			['cmn', 'zh'],
+			['ben', 'bn']
+		]) {
+			expect(glossarySpeechLanguageCode(value)).toBe(expected);
+		}
+		expect(glossarySpeechLanguageCode('und')).toBeUndefined();
 	});
 });
