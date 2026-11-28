@@ -277,7 +277,7 @@
 		const file = blobToFile(audioBlob, 'recording.wav');
 
 		const languageCandidates = await getGlossaryModeLanguageCandidates();
-		const res = await transcribeAudio(localStorage.token, file, undefined, {
+		const res = await transcribeAudio(localStorage.token, file, {
 			languageCandidates: languageCandidates
 		}).catch((error) => {
 			toast.error(`${error}`);

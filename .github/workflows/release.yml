@@ -40,6 +40,8 @@ jobs:
             echo "Release v${{ steps.pkg.outputs.version }} already exists — skipping creation"
           else
             gh release create "v${{ steps.pkg.outputs.version }}" \
+              --target "$GITHUB_SHA" \
+              --latest \
               --title "v${{ steps.pkg.outputs.version }}" \
               --notes-file /tmp/release-notes.md
           fi

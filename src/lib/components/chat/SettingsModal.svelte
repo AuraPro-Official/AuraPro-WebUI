@@ -555,18 +555,39 @@
 		}, 100);
 	};
 
-	const saveSettings = async (updated) => {
-		console.log(updated);
-		await settings.set({ ...$settings, ...updated });
-		await models.set(await getModels());
-		await updateUserSettings(localStorage.token, { ui: $settings });
-	};
-
 	const getModels = async () => {
 		return await _getModels(
 			localStorage.token,
 			$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
 		);
+	};
+
+	let connectionRefresh = 0;
+	let pendingSettingsSave = Promise.resolve();
+	const saveSettings = async (updated) => {
+		const next = { ...$settings, ...updated };
+		const refresh =
+			$config?.features?.enable_direct_connections && Object.hasOwn(updated, 'directConnections')
+				? ++connectionRefresh
+				: null;
+		const token = localStorage.token;
+		settings.set(next);
+		const save = pendingSettingsSave.then(() => updateUserSettings(token, { ui: next }));
+		pendingSettingsSave = save.then(
+			() => undefined,
+			() => undefined
+		);
+		await save;
+
+		if (refresh !== null && refresh === connectionRefresh) {
+			void getModels()
+				.then((updatedModels) => {
+					if (refresh === connectionRefresh && $config?.features?.enable_direct_connections) {
+						models.set(updatedModels);
+					}
+				})
+				.catch((error) => console.warn('Failed to refresh models after saving connections', error));
+		}
 	};
 
 	let selectedTab = 'general';
@@ -926,7 +947,6 @@
 			>
 				{#if selectedTab === 'general'}
 					<General
-						{getModels}
 						{saveSettings}
 						on:save={() => {
 							toast.success($i18n.t('Settings saved successfully!'));

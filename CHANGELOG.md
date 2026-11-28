@@ -7,6 +7,26 @@ All notable changes to AuraPro WebUI are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.17] - 2026-11-28
+
+### Added
+
+- Added `medium_Q6_V2` as a manual download in Settings → Models. Its hardware requirements are comparable to `medium_Q4_V2`, with performance close to `high_Q4_2`. It is not automatically recommended.
+
+### Changed
+
+- WebUI now avoids unnecessary database writes when saving settings.
+- llama.cpp updates keep the old version usable if the new version fails to download or extract.
+- Updated speech recognition for Hindi, Nepali, Bengali, and Filipino. After the update, new models download automatically for users who have configured those languages.
+
+### Fixed
+
+- Fixed a rare issue where llama.cpp updates could get stuck during extraction.
+- Fixed incomplete AMD GPU model names or driver versions in diagnostics.
+- Fixed text corruption when pressing Backspace during composition with Chinese, Japanese, or Korean input methods.
+- Fixed a translation issue where glossary terms were occasionally ignored.
+- Fixed a stale “Not confirmed; check again later” status in diagnostics after Agent installation.
+
 ## [3.10.16] - 2026-11-25
 
 ### Added

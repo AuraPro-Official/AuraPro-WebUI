@@ -144,6 +144,7 @@ export const modelHardwareTutorial: TutorialItem = {
 			['low_E4', 4.5, 'RAM 16G', 'UMA 8G'],
 			['medium_Q3_V2', 5, 'VRAM 6G', 'UMA 8G'],
 			['medium_Q4_V2', 6, 'VRAM 8G', 'UMA 16G'],
+			['medium_Q6_V2', 8, 'VRAM 8G', 'UMA 16G'],
 			['medium_IQ2', 11, 'RAM+VRAM 24G+4G', 'UMA 18G'],
 			['high_Q4', 15, 'RAM 48G or RAM+VRAM 32G+4G', 'UMA 24G'],
 			['high_Q4_2', 21, 'RAM 64G or RAM+VRAM 48G+4G', 'UMA 32G'],

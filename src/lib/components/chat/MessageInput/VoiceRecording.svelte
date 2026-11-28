@@ -236,7 +236,7 @@
 		const ext = (recorderMimeType.split('/')[1]?.split(';')[0] || 'webm').trim();
 		const file = blobToFile(audioBlob, `Streaming-${Date.now()}.${ext}`);
 		const languageCandidates = await getGlossaryModeLanguageCandidates();
-		const res = await transcribeAudio(localStorage.token, file, undefined, {
+		const res = await transcribeAudio(localStorage.token, file, {
 			streamId: streamingStreamId,
 			chunkIndex: index,
 			resetStream: index === 0,
@@ -399,7 +399,7 @@
 
 			const streamingFallback = transcription.trim();
 			const languageCandidates = await getGlossaryModeLanguageCandidates();
-			const res = await transcribeAudio(localStorage.token, file, undefined, {
+			const res = await transcribeAudio(localStorage.token, file, {
 				languageCandidates: languageCandidates
 			}).catch((error) => {
 				toast.error(`${error}`);

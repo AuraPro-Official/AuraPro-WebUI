@@ -4,7 +4,6 @@
 	import { getVoices as _getVoices } from '$lib/apis/audio';
 	import { toast } from 'svelte-sonner';
 	import Switch from '$lib/components/common/Switch.svelte';
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import {
 		groupAudioDevices,
 		hasAnonymousAudioDevices,
@@ -20,7 +19,6 @@
 	let responseAutoPlayback = false;
 	let nonLocalVoices = false;
 	let STTEngine = '';
-	let STTLanguage = '';
 	let TTSEngine = '';
 	let TTSEngineConfig: { dtype: string } = { dtype: '' };
 	let voices = [];
@@ -132,7 +130,6 @@
 		speechAutoSend = $settings.speechAutoSend ?? false;
 		responseAutoPlayback = $settings.responseAutoPlayback ?? false;
 		STTEngine = $settings?.audio?.stt?.engine ?? '';
-		STTLanguage = $settings?.audio?.stt?.language ?? '';
 		TTSEngine = $settings?.audio?.tts?.engine ?? '';
 		TTSEngineConfig = {
 			dtype: $settings?.audio?.tts?.config?.dtype ?? ''
@@ -174,8 +171,7 @@
 					mode: simultaneousMode
 				},
 				stt: {
-					engine: STTEngine !== '' ? STTEngine : undefined,
-					language: STTLanguage !== '' ? STTLanguage : undefined
+					engine: STTEngine !== '' ? STTEngine : undefined
 				},
 				tts: {
 					engine: TTSEngine !== '' ? TTSEngine : undefined,
@@ -304,26 +300,6 @@
 						<option value="web">{$i18n.t('Web API (browser only)')}</option>
 						<option value="multimodal">{$i18n.t('Multimodal')}</option>
 					</select>
-				</div>
-
-				<div class="py-0.5 flex w-full justify-between">
-					<div class="self-center text-xs font-medium">{$i18n.t('Language')}</div>
-					<div class="flex items-center relative text-xs px-3">
-						<Tooltip
-							content={$i18n.t(
-								'The language of the input audio. Supplying the input language in ISO-639-1 (e.g. en) format will improve accuracy and latency. Leave blank to automatically detect the language.'
-							)}
-							placement="top"
-						>
-							<input
-								type="text"
-								bind:value={STTLanguage}
-								aria-label={$i18n.t('Speech-to-Text Language')}
-								placeholder={$i18n.t('e.g. en')}
-								class="text-sm text-right bg-transparent dark:text-gray-300 outline-hidden"
-							/>
-						</Tooltip>
-					</div>
 				</div>
 			{/if}
 

@@ -1381,20 +1381,9 @@
 				throw new Error('Created file is empty');
 			}
 
-			// If the file is an audio file, provide the language for STT.
-			let metadata = null;
-			if (
-				(file.type.startsWith('audio/') || file.type.startsWith('video/')) &&
-				$settings?.audio?.stt?.language
-			) {
-				metadata = {
-					language: $settings?.audio?.stt?.language
-				};
-			}
-
 			// Upload file to server
 			console.log('Uploading file to server...');
-			const uploadedFile = await uploadFile(localStorage.token, file, metadata);
+			const uploadedFile = await uploadFile(localStorage.token, file);
 
 			if (!uploadedFile) {
 				throw new Error('Server returned null response for file upload');

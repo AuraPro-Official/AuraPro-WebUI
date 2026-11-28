@@ -1,6 +1,6 @@
 {
 	"name": "aurapro-webui",
-	"version": "3.10.16",
+	"version": "3.10.17",
 	"private": true,
 	"description": "AuraPro WebUI distribution derived from Open WebUI",
 	"license": "SEE LICENSE IN LICENSE",
@@ -165,7 +165,7 @@
 		"prosemirror-schema-list": "^1.5.1",
 		"prosemirror-state": "^1.4.3",
 		"prosemirror-tables": "^1.7.1",
-		"prosemirror-view": "^1.42.3",
+		"prosemirror-view": "^1.42.9",
 		"pyodide": "^0.28.2",
 		"read-excel-file": "^9.3.4",
 		"shiki": "^4.0.1",

@@ -464,16 +464,8 @@
 
 		try {
 			// During the file upload, file content is automatically extracted.
-			// If the file is an audio file, provide the language for STT.
-			let metadata = {
-				channel_id: channel.id,
-				// If the file is an audio file, provide the language for STT.
-				...((file.type.startsWith('audio/') || file.type.startsWith('video/')) &&
-				$settings?.audio?.stt?.language
-					? {
-							language: $settings?.audio?.stt?.language
-						}
-					: {})
+			const metadata = {
+				channel_id: channel.id
 			};
 
 			const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);

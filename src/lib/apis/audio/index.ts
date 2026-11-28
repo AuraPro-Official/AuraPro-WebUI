@@ -113,7 +113,6 @@ export const updateAudioConfig = async (token: string, payload: Record<string, a
 export const transcribeAudio = async (
 	token: string,
 	file: File,
-	language?: string,
 	options?: {
 		streamId?: string;
 		chunkIndex?: number;
@@ -123,9 +122,6 @@ export const transcribeAudio = async (
 ) => {
 	const data = new FormData();
 	data.append('file', file);
-	if (language) {
-		data.append('language', language);
-	}
 	if (options?.languageCandidates) {
 		data.append(
 			'language_candidates',

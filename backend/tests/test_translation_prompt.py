@@ -1,14 +1,21 @@
 import ast
 import asyncio
+import hashlib
 import importlib.util
+import json
 import logging
+import re
 import sys
+import unicodedata
 import unittest
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import AsyncMock, Mock
+
+from rapidfuzz import fuzz
 
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -19,7 +26,7 @@ sys.modules[SPEC.name] = ROUTING
 SPEC.loader.exec_module(ROUTING)
 
 
-def load_prompt_functions():
+def load_prompt_functions(use_real_glossary=False):
     # Test prompt construction without starting database or model services.
     source = BACKEND / 'open_webui/utils/glossary_translation.py'
     tree = ast.parse(source.read_text(encoding='utf-8'))
@@ -37,10 +44,13 @@ def load_prompt_functions():
         'TRANSLATION_LANGUAGE_GUARDS',
         'TRANSLATION_MEANING_NOTE',
     }
+    if use_real_glossary:
+        functions.add('_build_glossary_block')
     nodes = [
         node
         for node in tree.body
         if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in functions)
+        or (use_real_glossary and isinstance(node, ast.ClassDef) and node.name in {'GlossaryMatcher', 'ParsedSide'})
         or (
             isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id in constants for target in node.targets)
@@ -66,7 +76,20 @@ def load_prompt_functions():
         '_strict_target_language_rule': lambda source, target: 'strict language rule',
         '_translation_name_rules_for_target': lambda target: 'legacy name rules',
     }
+    if use_real_glossary:
+        namespace.update(
+            dataclass=dataclass,
+            hashlib=hashlib,
+            json=json,
+            re=re,
+            unicodedata=unicodedata,
+            fuzz=fuzz,
+            LazyModel=lambda *args: SimpleNamespace(convert=lambda value: value),
+            _load_opencc_t2s=None,
+        )
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), namespace)
+    if use_real_glossary:
+        namespace['matcher'] = namespace['GlossaryMatcher']()
     return namespace
 
 
@@ -198,6 +221,42 @@ class TranslationPromptTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('只输出译文', prompt)
         self.assertTrue(prompt.endswith('【原文】\nhello'))
         self.assertEqual(form['messages'][-1]['content'][0]['text'], '翻译成法语：hello')
+
+
+class GlossaryCandidateCacheTest(unittest.TestCase):
+    def setUp(self):
+        self.build_block = load_prompt_functions(use_real_glossary=True)['_build_glossary_block']
+        self.settings = {'source': 'en', 'target': 'es', 'glossary_path': 'glossaries/personal.json'}
+
+    def test_edits_additions_and_deletions_take_effect_without_restart(self):
+        entries = {'refund': 'reembolso', 'receipt': 'recibo'}
+        self.assertIn('refund -> reembolso', self.build_block('refund', entries, self.settings, 'en', 'es'))
+
+        updated = {'refund': 'devolucion', 'invoice': 'factura'}
+        block = self.build_block('refund invoice receipt', updated, self.settings, 'en', 'es')
+        self.assertIn('refund -> devolucion', block)
+        self.assertIn('invoice -> factura', block)
+        self.assertNotIn('reembolso', block)
+        self.assertNotIn('recibo', block)
+
+    def test_fixed_and_smart_entries_do_not_share_candidates_for_the_same_path(self):
+        fixed = {'invoice': 'factura'}
+        merged = ROUTING.resolve_smart_glossary(
+            [
+                ROUTING.GlossaryDataset('first', 'First', 'en', 'es', fixed),
+                ROUTING.GlossaryDataset('second', 'Second', 'en', 'es', {'invoice': 'comprobante'}),
+            ],
+            'en',
+            'es',
+        ).entries
+        self.assertNotIn('comprobante', self.build_block('invoice', fixed, self.settings, 'en', 'es'))
+        self.assertIn('comprobante', self.build_block('invoice', merged, self.settings, 'en', 'es'))
+        self.assertNotIn('comprobante', self.build_block('invoice', fixed, self.settings, 'en', 'es'))
+
+    def test_forward_and_reverse_have_separate_candidates(self):
+        entries = {'invoice': 'factura'}
+        self.assertIn('invoice -> factura', self.build_block('invoice', entries, self.settings, 'en', 'es'))
+        self.assertIn('factura -> invoice', self.build_block('factura', entries, self.settings, 'es', 'en'))
 
 
 if __name__ == '__main__':

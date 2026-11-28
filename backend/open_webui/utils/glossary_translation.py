@@ -1471,8 +1471,8 @@ class GlossaryMatcher:
     def __init__(self):
         self._cc_t2s = LazyModel(_load_opencc_t2s, 'OpenCC t2s converter', log)
 
-        # 候选词典缓存: entries id → candidates
-        self._candidates_cache: dict[str, tuple[dict, list]] = {}
+        # A fixed glossary and a smart merge can share a path but not their entries.
+        self._candidates_cache: dict[tuple[str, bool], tuple[dict, list]] = {}
         self._max_candidate_caches = 8
 
     def _is_matched_pair(self, left: str, right: str) -> bool:
@@ -1593,9 +1593,8 @@ class GlossaryMatcher:
     # ── 候选词典构建 ────────────────────────────────────────
     @staticmethod
     def _entries_hash(entries: dict[str, str]) -> str:
-        """用内容 hash 做缓存 key，比 id() 可靠"""
-        h = hashlib.sha256(json.dumps(sorted(entries.items()), ensure_ascii=False).encode()).hexdigest()
-        return h
+        # Preserve entry order, which breaks ties between equally long candidates.
+        return hashlib.sha256(json.dumps(entries, ensure_ascii=False).encode('utf-8')).hexdigest()
 
     def _parse_side(self, raw: str) -> ParsedSide:
         """
@@ -1629,13 +1628,13 @@ class GlossaryMatcher:
 
     def build_candidates(
         self,
-        key: str,
         entries: dict[str, str],
         reverse: bool = False,
     ) -> tuple[dict, list]:
         """构建标准化后的候选词典"""
-        if key in self._candidates_cache:
-            return self._candidates_cache[key]
+        cache_key = (self._entries_hash(entries), reverse)
+        if cache_key in self._candidates_cache:
+            return self._candidates_cache[cache_key]
         candidates: dict[str, list] = {}
 
         for source, target in entries.items():
@@ -1670,7 +1669,7 @@ class GlossaryMatcher:
         sorted_result = sorted(candidates.items(), key=lambda x: len(x[0]), reverse=True)
         if len(self._candidates_cache) >= self._max_candidate_caches:
             self._candidates_cache.pop(next(iter(self._candidates_cache)))
-        self._candidates_cache[key] = (candidates, sorted_result)
+        self._candidates_cache[cache_key] = (candidates, sorted_result)
         return candidates, sorted_result
 
     def invalidate_cache(self) -> None:
@@ -1725,13 +1724,12 @@ class GlossaryMatcher:
     def find_matches(
         self,
         text: str,
-        key: str,
         entries: dict[str, str],
         max_terms: int,
         reverse: bool = False,
         fuzzy_threshold: int = 70,
     ) -> list[tuple[str, str]]:
-        candidates, sorted_candidates = self.build_candidates(key, entries, reverse)
+        _, sorted_candidates = self.build_candidates(entries, reverse)
 
         clean_text = re.sub(r'\s+', '', text)
         text_char_set = set(clean_text)
@@ -2547,8 +2545,7 @@ def _build_glossary_block(
     if not (forward or reverse):
         return ''
 
-    key = settings.get('glossary_path')
-    hits = matcher.find_matches(text, key, entries, max_terms=max_terms, reverse=reverse)
+    hits = matcher.find_matches(text, entries, max_terms=max_terms, reverse=reverse)
     if not hits:
         return ''
 

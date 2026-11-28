@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
-	import { config, knowledge, settings, user } from '$lib/stores';
+	import { config, knowledge, user } from '$lib/stores';
 
 	import KnowledgeSelector from './Knowledge/KnowledgeSelector.svelte';
 	import FileItem from '$lib/components/common/FileItem.svelte';
@@ -53,19 +53,8 @@
 		selectedItems = [...selectedItems, fileItem];
 
 		try {
-			// If the file is an audio file, provide the language for STT.
-			let metadata = null;
-			if (
-				(file.type.startsWith('audio/') || file.type.startsWith('video/')) &&
-				$settings?.audio?.stt?.language
-			) {
-				metadata = {
-					language: $settings?.audio?.stt?.language
-				};
-			}
-
 			// During the file upload, file content is automatically extracted.
-			const uploadedFile = await uploadFile(localStorage.token, file, metadata);
+			const uploadedFile = await uploadFile(localStorage.token, file);
 
 			if (uploadedFile) {
 				console.log('File upload completed:', {
