@@ -7,7 +7,7 @@ All notable changes to AuraPro WebUI are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.10.18] - 2026-11-27
+## [3.10.19] - 2026-11-27
 
 ### Added
 
@@ -27,6 +27,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fixed a translation issue where glossary terms were occasionally ignored.
 - Fixed a stale “Not confirmed; check again later” status in diagnostics after Agent installation.
 - Fixed an issue where speech input in some less common languages was incorrectly recognized as Chinese.
+- Fixed an issue that prevented individual speech models from downloading.
 
 ## [3.10.16] - 2026-11-25
 
